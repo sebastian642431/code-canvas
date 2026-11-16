@@ -123,7 +123,7 @@ for huge repositories); cameras and selections survive by path.
 
 ## The app (`code-canvas`)
 
-- `Page` = one opened folder: scan state, camera, filter, selected symbols, chat,
+- `Page` = one opened folder: scan state, camera, filter, selected symbols, git changes,
   search results.
 - `ui.rs` builds the chrome with egui: our own title bar (the window has no system
   frame), an icon rail per side, and panels. It never mutates pages; it returns
@@ -133,14 +133,14 @@ for huge repositories); cameras and selections survive by path.
   when the selection, filters or layout change and stay on the GPU.
 - A frame is: egui pass → apply actions → canvas render pass → egui paint pass, all
   in one command encoder.
-- `claude.rs` runs the user's `claude` CLI (`-p --output-format stream-json`), reads
-  one JSON event per line on a thread, and resumes the session for follow-ups.
 - `ext/` runs VS Code extensions: `market.rs` installs them from Open VSX,
   `host.rs` starts the extension host (`exthost/host.js`, a Node process that gives
   extensions the `vscode` API), `mod.rs` keeps what they report. See
   [EXTENSIONS.md](EXTENSIONS.md).
-- `git.rs` runs `git status`, `git diff HEAD -U0` and `git log` off the UI thread:
-  changed files, changed lines and the timeline of the selected file.
+- `git.rs` runs the user's `git` off the UI thread: status (staged and unstaged
+  sides), changed lines, the latest commits and the timeline of the selected file,
+  plus what the source control panel does (stage, unstage, commit, sync).
+- `webview.rs` shows extensions' webviews in a child browser view.
 - `session.rs` persists folders, cameras, collapsed/hidden paths and panel state.
 - `script.rs` drives the app from `CODE_CANVAS_SCRIPT` (see below).
 
@@ -163,8 +163,8 @@ CODE_CANVAS_DATA_DIR=/tmp/cc-test CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800
 
 Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <text>`,
 `left files|search|extensions|problems|changes|<publisher.name>|help|none`,
-`right symbols|claude|none`, `folders`, `collapse-all`, `expand-all`, `connected on|off`,
-`changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `chat <text>`,
+`right symbols|<extension id>|none`, `folders`, `collapse-all`, `expand-all`, `connected on|off`,
+`changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `git stage|unstage [path]`, `git commit <message>`,
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
 `maximize`, `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.

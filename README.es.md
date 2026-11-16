@@ -29,11 +29,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   configuración del proyecto. Las *webviews* (la interfaz propia de una extensión) se
   abren en el panel derecho: ahí se ve el panel oficial de Claude Code (por ahora solo
   en Windows). Las vistas de árbol todavía no se muestran.
-- **Control de código**: archivos cambiados, nuevos y borrados según git, las líneas
-  cambiadas marcadas en el lienzo, "mostrar solo lo que cambió" y el historial
-  (*timeline*) del archivo seleccionado.
-- **Claude Code**: un panel de chat que usa el comando `claude` que ya tenés instalado
-  y con sesión iniciada. No guarda ninguna API key. Solo lectura por defecto.
+- **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
+  preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas
+  marcadas en el lienzo, "mostrar solo lo que cambió" y el historial (*timeline*) del
+  archivo seleccionado.
+- **Claude Code**: la extensión oficial, instalada desde el panel de extensiones; su
+  panel se abre a la derecha de la ventana.
 - **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y
   recuerda carpetas, cámaras y disposición entre aperturas.
 
@@ -80,4 +81,5 @@ Mirá [CONTRIBUTING.md](CONTRIBUTING.md) y la hoja de ruta en el [README](README
 
 ## Licencia
 
-MIT o Apache-2.0, a elección. Incluye la fuente de íconos Lucide (ISC).
+MIT o Apache-2.0, a elección. Incluye las fuentes de íconos Lucide (ISC) y Codicons,
+los íconos de VS Code (CC BY 4.0).

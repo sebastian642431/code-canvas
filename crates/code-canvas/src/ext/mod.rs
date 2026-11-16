@@ -609,6 +609,8 @@ impl Extensions {
                     "tabWidth": canvas_core::TAB_WIDTH,
                     "storageDir": self.data_dir.join("extension-storage"),
                     "settingsFile": self.data_dir.join("settings.json"),
+                    // VS Code's own settings, read as a base when it is installed.
+                    "vscodeSettingsFile": dirs::config_dir().map(|d| d.join("Code").join("User").join("settings.json")),
                     "folders": self.folders,
                     "extensions": extensions,
                 }));
@@ -978,15 +980,8 @@ impl Extensions {
                 let id = s("id");
                 self.status_items.retain(|(i, _)| *i != id);
                 let visible = m.get("visible").and_then(Value::as_bool).unwrap_or(false);
-                // `$(icon) text`: the icon names are VS Code's, drop them.
-                let mut text = s("text");
-                while let (Some(a), Some(b)) = (text.find("$("), text.find(')')) {
-                    if b < a {
-                        break;
-                    }
-                    text.replace_range(a..=b, "");
-                }
-                let text = text.trim().to_string();
+                // `$(check) Prettier`: the icon names are codicons.
+                let text = crate::codicons::render(&s("text")).trim().to_string();
                 if visible && !text.is_empty() {
                     self.status_items.push((id, text));
                 }
@@ -1233,14 +1228,15 @@ mod tests {
     }
 
     #[test]
-    fn status_text_drops_icon_names() {
+    fn status_text_shows_icons() {
         let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
         let mut events = Vec::new();
         ext.on_message(
             &json!({ "type": "status", "id": "p", "visible": true, "text": "$(check) Prettier" }),
             &mut events,
         );
-        assert_eq!(ext.status_items, vec![("p".to_string(), "Prettier".to_string())]);
+        let check = crate::codicons::glyph("check").unwrap();
+        assert_eq!(ext.status_items, vec![("p".to_string(), format!("{check} Prettier"))]);
         ext.on_message(&json!({ "type": "status", "id": "p", "visible": false, "text": "" }), &mut events);
         assert!(ext.status_items.is_empty());
     }

@@ -47,15 +47,15 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
 **Source control**
-- What git says changed: a list of changed, new and deleted files; on the canvas a
-  strip marks each changed file and a bar marks each new or modified line.
+- A panel laid out like VS Code's: the repository and its branch, a message box and
+  Commit, *Staged Changes* and *Changes* with stage / unstage, sync, and the latest
+  commits. On the canvas a strip marks each changed file and a bar each changed line.
 - **Show only changed files** re-lays the canvas out with just your work in progress.
 - Timeline: the commits that touched the selected file, under the file tree.
 
 **Claude Code**
-- A chat panel that runs your own `claude` command-line tool, so it uses the account
-  or subscription you are already signed in with — Code Canvas stores no API key.
-- Read-only by default; files mentioned in an answer become buttons that fly to them.
+- Install the official Claude Code extension from the Extensions panel: its own
+  panel opens in the right side of the window (Windows only for now).
 
 **An app, not a demo**
 - Own title bar and panels, icon rails on both sides, remembers your folders, cameras
@@ -148,10 +148,10 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
       exact provider for the same relations the name-based index gives today.
-- [ ] Other AI providers behind the chat panel (API keys), streaming of partial answers.
 - [ ] Dependency edges between files and folders (imports), bundled for collapsed folders.
 - [x] Git: changed files and lines on the canvas, file timeline.
-- [ ] Git: the diff itself (removed lines), staging and committing, branches.
+- [x] Git: staging, committing and syncing from the source control panel.
+- [ ] Git: the diff itself (removed lines), discarding changes, branches, stashes.
 - [ ] Text read on demand instead of kept in memory (Chromium uses ~4 GB today).
 - [ ] File watching with incremental re-layout; a layout cache for instant re-open.
 - [ ] Faster symbol indexing (parallel, lazy) and memory-mapped sources for 1M+ file monorepos.
@@ -175,6 +175,8 @@ scripts/          install / uninstall, icon generation
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
 Contributions are accepted under the same terms.
 
-Bundled third-party assets: the [Lucide](https://lucide.dev) icon font (ISC, see
+Bundled third-party assets: [Codicons](https://github.com/microsoft/vscode-codicons), VS Code's
+icon set (CC BY 4.0, see `crates/code-canvas/assets/CODICON-LICENSE.txt`), and the
+[Lucide](https://lucide.dev) icon font (ISC, see
 `crates/code-canvas/assets/LUCIDE-LICENSE.txt`) and egui's default fonts (Ubuntu font
 licence / OFL, via the `epaint_default_fonts` crate).

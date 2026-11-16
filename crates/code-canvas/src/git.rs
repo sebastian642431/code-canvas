@@ -63,7 +63,12 @@ pub struct Hunk {
 pub struct FileChange {
     /// Relative to the folder, `/` separators.
     pub path: String,
+    /// What happened to the file overall.
     pub change: Change,
+    /// Its change in the index ("Staged Changes"), if any.
+    pub staged: Option<Change>,
+    /// Its change in the working tree ("Changes"), if any.
+    pub unstaged: Option<Change>,
     pub hunks: Vec<Hunk>,
     pub insertions: u32,
     pub deletions: u32,
@@ -72,6 +77,11 @@ pub struct FileChange {
 #[derive(Clone, Debug, Default)]
 pub struct GitState {
     pub branch: String,
+    /// Commits here that the remote does not have, and the other way round.
+    pub ahead: u32,
+    pub behind: u32,
+    /// The latest commits of the branch, newest first.
+    pub graph: Vec<GraphCommit>,
     /// Sorted by path.
     pub changes: Vec<FileChange>,
     /// More changes existed than are kept.
@@ -79,19 +89,72 @@ pub struct GitState {
     pub ms: u32,
 }
 
+/// A commit in the history list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphCommit {
+    pub commit: Commit,
+    /// Branches and tags pointing at it (`main`, `origin/main`, `tag: v1`).
+    pub refs: Vec<String>,
+}
+
+/// Something the user does from the source control panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitOp {
+    Stage(String),
+    Unstage(String),
+    StageAll,
+    UnstageAll,
+    /// Commit what is staged with this message.
+    Commit(String),
+    /// Stage every change, then commit.
+    CommitAll(String),
+    /// Pull (fast-forward only) and push.
+    Sync,
+}
+
+/// Run `op` in `root`. The error is what git printed.
+pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
+    let steps: Vec<Vec<&str>> = match op {
+        GitOp::Stage(path) => vec![vec!["add", "--", path]],
+        GitOp::Unstage(path) => vec![vec!["reset", "-q", "--", path]],
+        GitOp::StageAll => vec![vec!["add", "-A", "--", "."]],
+        GitOp::UnstageAll => vec![vec!["reset", "-q", "--", "."]],
+        GitOp::Commit(message) => vec![vec!["commit", "-m", message]],
+        GitOp::CommitAll(message) => vec![vec!["add", "-A", "--", "."], vec!["commit", "-m", message]],
+        GitOp::Sync => vec![vec!["pull", "--ff-only"], vec!["push"]],
+    };
+    let mut last = String::new();
+    for args in steps {
+        let mut c = command(root);
+        let out = c.args(&args).stdin(Stdio::null()).output().map_err(|e| format!("git could not be run: {e}"))?;
+        let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+        if !out.status.success() {
+            let err = text(&out.stderr);
+            return Err(if err.is_empty() { text(&out.stdout) } else { err });
+        }
+        last = text(&out.stdout);
+    }
+    Ok(last.lines().next().unwrap_or_default().to_string())
+}
+
 /// Changes kept at most (a fresh `node_modules` that is not ignored…).
 const MAX_CHANGES: usize = 5000;
 
-fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+/// `git -C root`, without a console window.
+fn command(root: &Path) -> Command {
     let mut c = Command::new("git");
-    c.arg("-C").arg(root).args(["-c", "core.quotepath=off"]).args(args).stdin(Stdio::null()).stderr(Stdio::null());
+    c.arg("-C").arg(root).args(["-c", "core.quotepath=off"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         c.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = c.output().ok()?;
+    c
+}
+
+fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let out = command(root).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     out.status.success().then_some(out.stdout)
 }
 
@@ -107,6 +170,9 @@ pub fn load(root: &Path) -> Option<GitState> {
     if let Some(diff) = git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]) {
         apply_diff(&mut state, &String::from_utf8_lossy(&diff));
     }
+    if let Some(log) = git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]) {
+        state.graph = parse_graph(&String::from_utf8_lossy(&log));
+    }
     state.ms = started.elapsed().as_millis() as u32;
     Some(state)
 }
@@ -119,6 +185,13 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
             // `main...origin/main [ahead 1]`, or `No commits yet on main`.
             let name = head.strip_prefix("No commits yet on ").unwrap_or(head);
             state.branch = name.split("...").next().unwrap_or(name).split(' ').next().unwrap_or(name).to_string();
+            // `[ahead 1, behind 2]`
+            let count = |word: &str| -> u32 {
+                let after = head.split(word).nth(1).unwrap_or("");
+                after.trim_start().split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok()).unwrap_or(0)
+            };
+            state.ahead = count("ahead ");
+            state.behind = count("behind ");
             continue;
         }
         if entry.len() < 4 {
@@ -142,9 +215,21 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
             state.truncated = true;
             break;
         }
+        let side = |code: u8| match code {
+            b'M' | b'T' => Some(Change::Modified),
+            b'A' => Some(Change::Added),
+            b'D' => Some(Change::Deleted),
+            b'R' | b'C' => Some(Change::Renamed),
+            b'U' => Some(Change::Conflicted),
+            b'?' => Some(Change::Untracked),
+            _ => None,
+        };
         state.changes.push(FileChange {
             path: rel.to_string(),
             change,
+            // Untracked files are `??`: they only exist in the working tree.
+            staged: if x == b'?' { None } else { side(x) },
+            unstaged: side(y),
             hunks: Vec::new(),
             insertions: 0,
             deletions: 0,
@@ -218,6 +303,29 @@ fn parse_log(text: &str) -> Vec<Commit> {
         .collect()
 }
 
+fn parse_graph(text: &str) -> Vec<GraphCommit> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(5, '\u{1f}');
+            let (hash, author, time, refs) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+            let commit = Commit {
+                hash: hash.to_string(),
+                author: author.to_string(),
+                time: time.parse().ok()?,
+                subject: parts.next().unwrap_or_default().to_string(),
+            };
+            // `HEAD -> main, origin/main, tag: v1`
+            let refs = refs
+                .split(", ")
+                .map(|r| r.strip_prefix("HEAD -> ").unwrap_or(r).trim())
+                .filter(|r| !r.is_empty() && *r != "HEAD" && !r.ends_with("/HEAD"))
+                .map(str::to_string)
+                .collect();
+            Some(GraphCommit { commit, refs })
+        })
+        .collect()
+}
+
 /// "3 days ago", for a moment `seconds` in the past.
 pub fn ago(seconds: i64) -> String {
     let units = [
@@ -240,6 +348,33 @@ pub fn ago(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_and_unstaged_sides() {
+        let s = parse_status("## main...origin/main [ahead 2, behind 1]\0MM a.rs\0D  b.rs\0?? c.rs\0 M d.rs\0", "");
+        assert_eq!((s.ahead, s.behind), (2, 1));
+        let sides: Vec<_> = s.changes.iter().map(|c| (c.path.as_str(), c.staged, c.unstaged)).collect();
+        assert_eq!(
+            sides,
+            vec![
+                ("a.rs", Some(Change::Modified), Some(Change::Modified)),
+                ("b.rs", Some(Change::Deleted), None),
+                ("c.rs", None, Some(Change::Untracked)),
+                ("d.rs", None, Some(Change::Modified)),
+            ]
+        );
+    }
+
+    #[test]
+    fn history_with_refs() {
+        let text = "aaa\u{1f}Ana\u{1f}1700000000\u{1f}HEAD -> main, origin/main, origin/HEAD\u{1f}Ship it\nbbb\u{1f}Leo\u{1f}1690000000\u{1f}\u{1f}First\n";
+        let graph = parse_graph(text);
+        assert_eq!(graph.len(), 2);
+        assert_eq!(graph[0].refs, vec!["main", "origin/main"]);
+        assert_eq!(graph[0].commit.subject, "Ship it");
+        assert!(graph[1].refs.is_empty());
+        assert_eq!(graph[1].commit.subject, "First");
+    }
 
     #[test]
     fn file_history() {

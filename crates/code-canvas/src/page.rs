@@ -113,14 +113,18 @@ pub struct Page {
     pub only_connected: bool,
     /// Relation curves must be rebuilt (selection, filters or layout changed).
     pub curves_dirty: bool,
-    /// Conversation with Claude Code about this folder.
-    pub chat: crate::claude::Chat,
     pub search: Option<SearchResults>,
     /// What git says changed in this folder; `None` outside a repository.
     pub git: Option<GitState>,
     git_rx: Option<Receiver<Option<GitState>>>,
     /// Show only the changed files on the canvas.
     pub only_changed: bool,
+    /// The commit message being written in the source control panel.
+    pub commit_message: String,
+    /// A git command started from the panel is running.
+    git_op: Option<Receiver<(crate::git::GitOp, Result<String, String>)>>,
+    /// How the last one went: `(ok, text)`.
+    pub git_note: Option<(bool, String)>,
     /// History of the selected file.
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
@@ -158,11 +162,13 @@ impl Page {
             selections: Vec::new(),
             only_connected: false,
             curves_dirty: true,
-            chat: Default::default(),
             search: None,
             git: None,
             git_rx: None,
             only_changed: false,
+            commit_message: String::new(),
+            git_op: None,
+            git_note: None,
             timeline: Timeline::default(),
             timeline_rx: None,
         };
@@ -200,6 +206,45 @@ impl Page {
             crate::ext::wake_ui();
         });
         self.git_rx = Some(rx);
+    }
+
+    pub fn git_busy(&self) -> bool {
+        self.git_op.is_some()
+    }
+
+    /// Run a source control command on a background thread; the changes
+    /// are read again when it finishes.
+    pub fn run_git(&mut self, op: crate::git::GitOp) {
+        if self.git_op.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let result = crate::git::run(&root, &op);
+            let _ = tx.send((op, result));
+            crate::ext::wake_ui();
+        });
+        self.git_op = Some(rx);
+        self.git_note = None;
+    }
+
+    /// Take in a finished `run_git`. True when one finished.
+    pub fn poll_git_op(&mut self) -> bool {
+        let Some(rx) = &self.git_op else { return false };
+        let Ok((op, result)) = rx.try_recv() else { return false };
+        self.git_op = None;
+        match (&op, result) {
+            (crate::git::GitOp::Commit(_) | crate::git::GitOp::CommitAll(_), Ok(line)) => {
+                self.commit_message.clear();
+                self.git_note = Some((true, line));
+            }
+            (crate::git::GitOp::Sync, Ok(_)) => self.git_note = Some((true, "Synced with the remote.".into())),
+            (_, Ok(_)) => {}
+            (_, Err(e)) => self.git_note = Some((false, e)),
+        }
+        self.refresh_git();
+        true
     }
 
     /// Take in a finished `refresh_git`. True when the changes were updated.

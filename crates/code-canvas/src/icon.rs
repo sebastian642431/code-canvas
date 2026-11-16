@@ -11,3 +11,9 @@ static RGBA: &[u8] = include_bytes!("../assets/icon_64.rgba");
 pub fn window_icon() -> Option<Icon> {
     Icon::from_rgba(RGBA.to_vec(), SIZE, SIZE).ok()
 }
+
+/// The larger icon Windows shows in the taskbar and in Alt+Tab.
+#[cfg(windows)]
+pub fn taskbar_icon() -> Option<Icon> {
+    Icon::from_rgba(include_bytes!("../assets/icon_128.rgba").to_vec(), 128, 128).ok()
+}

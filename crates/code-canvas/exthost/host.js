@@ -974,6 +974,9 @@ const config = {
   },
   userFile: '',
   user: {},
+  // The user's own VS Code settings, when VS Code is installed: a base for
+  // ours, so formatters and linters behave here as they do there.
+  imported: {},
   folders: new Map(), // folder fsPath -> flat settings from .vscode/settings.json
   changed: new EventEmitter(),
 };
@@ -995,7 +998,7 @@ function getConfiguration(section, scopeArg) {
     const doc = documents.get(uriKey(uri));
     languageId = doc ? doc.languageId : undefined;
   }
-  const layers = { defaultValue: config.defaults, globalValue: config.user, workspaceValue: folderSettingsFor(uri) };
+  const layers = { defaultValue: config.defaults, globalValue: { ...config.imported, ...config.user }, workspaceValue: folderSettingsFor(uri) };
   const trees = Object.fromEntries(Object.entries(layers).map(([k, flat]) => [k, layerTree(flat, languageId)]));
   const lookup = (tree, key) => getDotted(tree, [section, key].filter(Boolean).join('.'));
   const merged = (key) => {
@@ -2152,6 +2155,7 @@ async function handle(msg) {
       state.storageDir = msg.storageDir;
       config.userFile = msg.settingsFile || '';
       config.user = config.userFile ? readSettings(config.userFile) : {};
+      config.imported = msg.vscodeSettingsFile ? readSettings(msg.vscodeSettingsFile) : {};
       setFolders(msg.folders || []);
       installVscodeModule([...new Set((msg.extensions || []).map((e) => path.dirname(e.dir)))]);
       for (const e of msg.extensions || []) {

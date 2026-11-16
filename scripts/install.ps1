@@ -45,6 +45,9 @@ function New-Shortcut([string]$path) {
 }
 New-Shortcut (Join-Path ([Environment]::GetFolderPath("Programs")) "Code Canvas.lnk")
 if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "Code Canvas.lnk") }
+# Windows keeps the icons of programs in a cache; without this an update can
+# keep showing the previous icon on shortcuts and the taskbar.
+try { & "$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
 
 if ($ContextMenu) {
     # Per-user registry keys: right-click a folder (or inside one) -> Open with Code Canvas.

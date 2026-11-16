@@ -21,7 +21,7 @@ use crate::overlay::{self, CanvasOverlay, SYMBOL_HOVER_MIN_PX};
 use crate::page::{Page, PageState, Ready};
 use crate::script::{Script, Step};
 use crate::session::{self, PageSession, Session};
-use crate::ui::{self, Action, ClaudeStatus, FrameInfo, LeftPanel, QuickOpen, RightPanel, UiState};
+use crate::ui::{self, Action, FrameInfo, LeftPanel, QuickOpen, RightPanel, UiState};
 
 struct Gfx {
     renderer: Renderer,
@@ -85,8 +85,6 @@ pub struct App {
     exit_requested: bool,
     /// Edge under the pointer where a press resizes the window.
     resize_edge: Option<ResizeDirection>,
-    /// Result of looking for the `claude` command (checked off-thread once).
-    claude_probe: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// Something worth persisting changed since the last save.
     session_dirty: bool,
     last_save: Instant,
@@ -123,7 +121,7 @@ impl App {
         }
         let mut ui = UiState::default();
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
-        ui.last_right = [RightPanel::Symbols, RightPanel::Claude][(saved.right_panel as usize).min(1)];
+        ui.last_right = RightPanel::Symbols;
         ui.left = saved.left_open.then_some(ui.last_left);
         ui.right = saved.right_open.then_some(ui.last_right);
         Self {
@@ -151,13 +149,6 @@ impl App {
             script: Script::from_env(),
             exit_requested: false,
             resize_edge: None,
-            claude_probe: {
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let _ = tx.send(crate::claude::detect());
-                });
-                Some(rx)
-            },
             session_dirty: false,
             last_save: Instant::now(),
             ext: Extensions::new(session::data_dir(), waker),
@@ -214,11 +205,7 @@ impl App {
             left_open: self.ui.left.is_some(),
             right_open: self.ui.right.is_some(),
             left_panel: LEFT_PANELS.iter().position(|p| *p == self.ui.last_left).unwrap_or(0) as u8,
-            right_panel: match self.ui.last_right {
-                RightPanel::Symbols => 0,
-                RightPanel::Claude => 1,
-                RightPanel::Webview => 0,
-            },
+            right_panel: 0,
             window,
         });
     }
@@ -862,20 +849,13 @@ impl App {
                 }
             }
             Action::CloseWindow => self.exit_requested = true,
-            Action::ChatSend => self.chat_send(),
-            Action::ChatStop => {
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.chat.stop();
-                }
-                self.request_redraw();
-            }
-            Action::ChatNew => {
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.chat.reset();
-                }
-                self.request_redraw();
-            }
             Action::FormatFile(rel) => self.format_file(rel),
+            Action::Git(op) => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.run_git(op);
+                }
+                self.request_redraw();
+            }
             Action::RefreshGit => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.refresh_git();
@@ -975,9 +955,24 @@ impl App {
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
             Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
+            Step::Git(what) => {
+                use crate::git::GitOp;
+                let (verb, arg) = what.split_once(' ').unwrap_or((what.as_str(), ""));
+                let op = match verb {
+                    "stage" if arg.is_empty() => Some(GitOp::StageAll),
+                    "stage" => Some(GitOp::Stage(arg.to_string())),
+                    "unstage" if arg.is_empty() => Some(GitOp::UnstageAll),
+                    "unstage" => Some(GitOp::Unstage(arg.to_string())),
+                    "commit" if !arg.is_empty() => Some(GitOp::Commit(arg.to_string())),
+                    _ => None,
+                };
+                match op {
+                    Some(op) => self.apply(Action::Git(op)),
+                    None => log::warn!("script: git needs stage|unstage [path] or commit <message>"),
+                }
+            }
             Step::Right(which) => match which.as_str() {
                 "symbols" => self.ui.show_right(RightPanel::Symbols),
-                "claude" => self.ui.show_right(RightPanel::Claude),
                 key if !key.is_empty() && key != "none" => {
                     // `right <view id or extension id>`: that extension's webview.
                     let found = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
@@ -995,19 +990,9 @@ impl App {
             Step::ExpandAll => self.apply(Action::ExpandAll),
             Step::Connected(on) => self.apply(Action::SetOnlyConnected(on)),
             Step::Tab(n) => self.switch_to(n.saturating_sub(1)),
-            Step::Folders => {
-                self.ui.files_tab = crate::ui::FilesTab::Folders;
-                self.ui.show_left(LeftPanel::Files);
-            }
+            Step::Folders => self.ui.show_left(LeftPanel::Files),
             Step::Zoom(f) => self.apply(Action::ZoomBy(f)),
             Step::Quick(text) => self.ui.quick = Some(QuickOpen { query: text, selected: 0, focus: true }),
-            Step::Chat(text) => {
-                self.ui.show_right(RightPanel::Claude);
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.chat.input = text;
-                }
-                self.apply(Action::ChatSend);
-            }
             Step::Maximize => self.apply(Action::ToggleMaximize),
             Step::Quit => self.exit_requested = true,
         }
@@ -1015,69 +1000,17 @@ impl App {
         true
     }
 
-    // ----- Claude Code ----------------------------------------------------
-
-    /// What is selected on the canvas, as plain text for the model.
-    fn chat_context(page: &Page) -> String {
-        let Some(r) = page.ready() else { return String::new() };
-        let mut out = String::new();
-        if !page.selections.is_empty() {
-            out.push_str("Symbols selected on the canvas:\n");
-            for sel in page.selections.iter().take(20) {
-                let f = &r.repo.files[sel.sym.file as usize];
-                let s = r.repo.sym(sel.sym);
-                out.push_str(&format!(
-                    "- {} {} at {}:{}\n",
-                    s.kind.badge(),
-                    r.repo.sym_name(sel.sym),
-                    f.rel_path,
-                    s.line + 1
-                ));
-            }
-        }
-        if let Some(n) = page.selected.and_then(|i| r.layout.nodes.get(i)) {
-            if !n.rel_path.is_empty() {
-                let kind = if n.is_dir() { "folder" } else { "file" };
-                out.push_str(&format!("Selected {kind}: {}\n", n.rel_path));
-            }
-        }
-        if out.is_empty() {
-            return out;
-        }
-        format!("[Context from Code Canvas]\n{out}[End of context]")
-    }
-
-    fn chat_send(&mut self) {
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        let text = std::mem::take(&mut page.chat.input);
-        let context = if page.chat.include_selection { Self::chat_context(page) } else { String::new() };
-        let root = page.root.clone();
-        page.chat.send(&root, text, &context);
-        self.request_redraw();
-    }
+    // ----- background work -------------------------------------------------
 
     /// Pull finished work from background helpers. Returns true while any
     /// of them is still running (so the UI keeps ticking).
     fn poll_background(&mut self) -> bool {
-        if let Some(rx) = &self.claude_probe {
-            if let Ok(result) = rx.try_recv() {
-                self.ui.claude = match result {
-                    Ok(v) => ClaudeStatus::Ready(v),
-                    Err(e) => ClaudeStatus::Missing(e),
-                };
-                self.claude_probe = None;
-                self.request_redraw();
-            }
-        }
         let mut busy = false;
         let mut changed = false;
-        for page in &mut self.pages {
-            changed |= page.chat.poll();
-            busy |= page.chat.is_running();
-        }
         // Source control: results of `git status` runs.
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
+            changed |= page.poll_git_op();
             if page.poll_git() {
                 changed = true;
                 git_relayout |= i == self.active && page.only_changed;
@@ -1497,7 +1430,12 @@ impl ApplicationHandler for App {
         #[cfg(windows)]
         let attrs = {
             use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-            attrs.with_undecorated_shadow(true).with_corner_preference(CornerPreference::Round)
+            // The taskbar and Alt+Tab use the big icon. Setting it here keeps
+            // them from falling back to whatever Windows cached for the file.
+            attrs
+                .with_undecorated_shadow(true)
+                .with_corner_preference(CornerPreference::Round)
+                .with_taskbar_icon(crate::icon::taskbar_icon())
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
@@ -1716,9 +1654,9 @@ impl ApplicationHandler for App {
         if self.session_dirty && self.last_save.elapsed() > Duration::from_secs(3) {
             self.save_session();
         }
-        let chatting = self.poll_background();
+        let working = self.poll_background();
         let scripting = self.run_script();
-        let loading = self.pages.iter().any(|p| p.is_loading()) || chatting || scripting;
+        let loading = self.pages.iter().any(|p| p.is_loading()) || working || scripting;
         // Refresh scan progress a few times per second; otherwise sleep
         // until input arrives or egui's next scheduled repaint.
         let tick = now + Duration::from_millis(100);

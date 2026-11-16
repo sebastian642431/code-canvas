@@ -9,7 +9,7 @@
 mod app;
 mod bench;
 mod camera;
-mod claude;
+mod codicons;
 mod ext;
 mod git;
 mod icon;

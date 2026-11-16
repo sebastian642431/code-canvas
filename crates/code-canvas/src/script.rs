@@ -35,9 +35,11 @@ pub enum Step {
     Format(String),
     /// `command <id>`: run an extension's command.
     Command(String),
+    /// `git stage [path]`, `git unstage [path]`, `git commit <message>`.
+    Git(String),
     /// `changed on|off`: show only the files git reports as changed.
     OnlyChanged(bool),
-    /// `right symbols|claude|none`
+    /// `right symbols|<extension id>|none`
     Right(String),
     CollapseAll,
     ExpandAll,
@@ -51,8 +53,6 @@ pub enum Step {
     Zoom(f32),
     /// `quick <text>`: open "go to file" with a query typed in.
     Quick(String),
-    /// `chat <text>`: send a message to Claude Code.
-    Chat(String),
     /// `maximize`
     Maximize,
     /// `quit`
@@ -82,6 +82,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "ext-search" => Step::ExtSearch(arg.into()),
         "format" => Step::Format(arg.into()),
         "command" => Step::Command(arg.into()),
+        "git" => Step::Git(arg.into()),
         "changed" => Step::OnlyChanged(arg == "on"),
         "right" => Step::Right(arg.into()),
         "collapse-all" => Step::CollapseAll,
@@ -91,7 +92,6 @@ fn parse_step(text: &str) -> Option<Step> {
         "folders" => Step::Folders,
         "zoom" => Step::Zoom(arg.parse().ok()?),
         "quick" => Step::Quick(arg.into()),
-        "chat" => Step::Chat(arg.into()),
         "maximize" => Step::Maximize,
         "quit" => Step::Quit,
         _ => return None,

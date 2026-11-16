@@ -5,7 +5,7 @@
 //! on each side opens one panel at a time, like an activity bar:
 //!
 //! * left: files, search in files, extensions, problems, shortcuts
-//! * right: symbols (selection, filters, names), Claude Code chat
+//! * right: symbols (selection, filters, names), and extensions' webviews
 //!
 //! The UI never mutates pages directly; it emits [`Action`]s that the app
 //! applies after the egui pass.
@@ -43,27 +43,8 @@ pub enum LeftPanel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RightPanel {
     Symbols,
-    Claude,
     /// An extension's webview (`UiState::webview`).
     Webview,
-}
-
-/// Is the `claude` command-line tool usable?
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClaudeStatus {
-    Checking,
-    /// Its `--version` output.
-    Ready(String),
-    Missing(String),
-}
-
-/// The two views of the files panel.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FilesTab {
-    /// The tree of the active folder.
-    Files,
-    /// Every opened folder (each one is its own canvas).
-    Folders,
 }
 
 pub struct QuickOpen {
@@ -79,14 +60,12 @@ pub struct UiState {
     /// What the rail reopens when a closed side is toggled from the header.
     pub last_left: LeftPanel,
     pub last_right: RightPanel,
-    pub files_tab: FilesTab,
     pub explorer_filter: String,
     pub search_query: String,
     pub quick: Option<QuickOpen>,
     pub filters: RelFilters,
     /// Interactive floating areas over the canvas, in points.
     pub floating: Vec<Rect>,
-    pub claude: ClaudeStatus,
     pub maximized: bool,
     /// The app icon, shown in the top-left corner of the header.
     logo: Option<egui::TextureHandle>,
@@ -107,13 +86,11 @@ impl Default for UiState {
             right: Some(RightPanel::Symbols),
             last_left: LeftPanel::Files,
             last_right: RightPanel::Symbols,
-            files_tab: FilesTab::Files,
             explorer_filter: String::new(),
             search_query: String::new(),
             quick: None,
             filters: RelFilters::default(),
             floating: Vec::new(),
-            claude: ClaudeStatus::Checking,
             maximized: false,
             logo: None,
             extension: String::new(),
@@ -178,16 +155,14 @@ pub enum Action {
     /// Format a file of the active page with the installed formatter:
     /// the given path, else the file under the pointer or the selected one.
     FormatFile(Option<String>),
+    /// A source control command on the active page.
+    Git(crate::git::GitOp),
     /// Ask git again what changed in the active page.
     RefreshGit,
     /// Show only the files git reports as changed.
     SetOnlyChanged(bool),
     /// Pick a `.vsix` file and install it.
     InstallVsix,
-    /// Send the chat input of the active page to Claude Code.
-    ChatSend,
-    ChatStop,
-    ChatNew,
     // The window itself (it has no system title bar).
     DragWindow,
     ToggleMaximize,
@@ -234,6 +209,17 @@ pub fn style(ctx: &egui::Context) {
     ctx.add_font(FontInsert {
         name: "lucide".into(),
         data: egui::FontData::from_static(include_bytes!("../assets/lucide.ttf")),
+        families: vec![
+            InsertFontFamily { family: egui::FontFamily::Proportional, priority: FontPriority::Lowest },
+            InsertFontFamily { family: egui::FontFamily::Monospace, priority: FontPriority::Lowest },
+        ],
+    });
+
+    // Codicons (VS Code's icons) too: extensions name them in their texts,
+    // and a few panels that mirror VS Code's use the same icons it does.
+    ctx.add_font(FontInsert {
+        name: "codicon".into(),
+        data: egui::FontData::from_static(include_bytes!("../assets/codicon.ttf")),
         families: vec![
             InsertFontFamily { family: egui::FontFamily::Proportional, priority: FontPriority::Lowest },
             InsertFontFamily { family: egui::FontFamily::Monospace, priority: FontPriority::Lowest },
@@ -370,8 +356,8 @@ pub fn build(
 ) -> Rect {
     st.floating.clear();
     st.webview_rect = None;
-    header(ui, st, pages, active, actions);
-    status_bar(ui, st, ext, info);
+    header(ui, st, actions);
+    status_bar(ui, st, ext, pages.get(active), info);
     left_rail(ui, st, ext, pages.get(active));
     right_rail(ui, st, ext);
 
@@ -382,7 +368,7 @@ pub fn build(
             LeftPanel::Search => search_panel(ui, st, pages.get(active), actions),
             LeftPanel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
             LeftPanel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
-            LeftPanel::Changes => git_panel::changes_panel(ui, pages.get(active), actions),
+            LeftPanel::Changes => git_panel::changes_panel(ui, pages.get_mut(active), actions),
             LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
             LeftPanel::Help => help_panel(ui),
         });
@@ -391,7 +377,6 @@ pub fn build(
         let p = egui::Panel::right("right").resizable(true).default_size(340.0).size_range(260.0..=600.0);
         card_panel(ui, p, |ui| match panel {
             RightPanel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
-            RightPanel::Claude => claude_panel(ui, st, pages.get_mut(active), actions),
             RightPanel::Webview => ext_panels::webview_panel(ui, st, ext),
         });
     }
@@ -406,7 +391,7 @@ pub fn build(
     canvas
 }
 
-fn header(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, actions: &mut Vec<Action>) {
+fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     egui::Panel::top("header").frame(Frame::NONE.fill(CHROME)).exact_size(HEADER_H).show(ui, |ui| {
         let bar = ui.max_rect();
         // The empty parts of the header move the window. Added first, so
@@ -443,40 +428,6 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, ac
             }
             ui.add_space(8.0);
 
-            // The active folder, as a switcher. Its width does not depend on
-            // how many folders are open; the full list lives in the files panel.
-            let title = match pages.get(active) {
-                Some(p) if p.is_loading() => format!("{} …", p.title),
-                Some(p) => p.title.clone(),
-                None => "No folder".into(),
-            };
-            let count = if pages.len() > 1 { format!("  {}/{}", active + 1, pages.len()) } else { String::new() };
-            let label = format!("{}  {title}{count}  {}", icons::FOLDER, icons::CHEVRON_DOWN);
-            ui.menu_button(RichText::new(label).size(13.0).color(TEXT), |ui| {
-                ui.set_min_width(260.0);
-                for (i, p) in pages.iter().enumerate() {
-                    let text = RichText::new(format!("{}  {}", icons::FOLDER, p.title)).size(13.0);
-                    let row = ui.selectable_label(i == active, text).on_hover_text(p.root.display().to_string());
-                    if row.clicked() {
-                        actions.push(Action::SwitchTab(i));
-                        ui.close();
-                    }
-                }
-                if !pages.is_empty() {
-                    ui.separator();
-                }
-                if ui.button(format!("{}  Open folder…   Ctrl+O", icons::PLUS)).clicked() {
-                    actions.push(Action::OpenFolder);
-                    ui.close();
-                }
-                if pages.len() > 1 && ui.button(format!("{}  All folders…", icons::FOLDER_TREE)).clicked() {
-                    st.files_tab = FilesTab::Folders;
-                    st.show_left(LeftPanel::Files);
-                    ui.close();
-                }
-            })
-            .response
-            .on_hover_text("Switch folder (Ctrl+Tab)");
             left_end = ui.min_rect().right();
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -541,12 +492,28 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, ac
     });
 }
 
-fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, info: &FrameInfo) {
+fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option<&Page>, info: &FrameInfo) {
     let mut panel_to_show = None;
     egui::Panel::bottom("status").frame(Frame::NONE.fill(CHROME).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
         ui,
         |ui| {
             ui.horizontal_centered(|ui| {
+                // Like VS Code's: the branch first (`*` when there are changes).
+                if let Some(git) = page.and_then(|p| p.git.as_ref()) {
+                    let icon = crate::codicons::glyph("source-control").unwrap_or(icons::GIT_BRANCH);
+                    let mut text = format!("{icon} {}{}", git.branch, if git.changes.is_empty() { "" } else { "*" });
+                    if git.ahead > 0 {
+                        text.push_str(&format!(" ↑{}", git.ahead));
+                    }
+                    if git.behind > 0 {
+                        text.push_str(&format!(" ↓{}", git.behind));
+                    }
+                    let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(TEXT)).sense(Sense::click()));
+                    if label.on_hover_text("Source control").clicked() {
+                        panel_to_show = Some(LeftPanel::Changes);
+                    }
+                    ui.add_space(10.0);
+                }
                 ui.label(RichText::new(&info.status).size(12.0).color(TEXT_DIM));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let st = info.stats;
@@ -601,8 +568,12 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
         for (panel, glyph, tip) in [
             (LeftPanel::Files, icons::FOLDER, "Files (Ctrl+B)"),
             (LeftPanel::Search, icons::TEXT_SEARCH, "Search in files (Ctrl+Shift+F)"),
-            (LeftPanel::Changes, icons::GIT_BRANCH, "Source control: what changed"),
-            (LeftPanel::Extensions, icons::PUZZLE, "Extensions"),
+            (
+                LeftPanel::Changes,
+                crate::codicons::glyph("source-control").unwrap_or(icons::GIT_GRAPH),
+                "Source control",
+            ),
+            (LeftPanel::Extensions, crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE), "Extensions"),
             (LeftPanel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions"),
         ] {
             let resp = icon_button(ui, glyph, b, st.left == Some(panel), HOVER);
@@ -650,10 +621,7 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
     egui::Panel::right("rail_right").frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
         let b = Vec2::splat(34.0);
-        for (panel, glyph, tip) in [
-            (RightPanel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names"),
-            (RightPanel::Claude, icons::MESSAGE_CIRCLE, "Ask Claude Code about this repository"),
-        ] {
+        for (panel, glyph, tip) in [(RightPanel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names")] {
             if icon_button(ui, glyph, b, st.right == Some(panel), HOVER).on_hover_text(tip).clicked() {
                 if st.right == Some(panel) {
                     st.right = None;
@@ -760,148 +728,78 @@ fn file_glyph(name: &str) -> &'static str {
     }
 }
 
-/// A text tab with an accent underline when active.
-fn text_tab(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
-    let color = if active { TEXT } else { TEXT_DIM };
-    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(14.0), color);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x, 26.0), Sense::click());
-    let color = if resp.hovered() { TEXT } else { color };
-    ui.painter().galley(Pos2::new(rect.left(), rect.top() + 2.0), galley, color);
-    if active {
-        ui.painter().hline(rect.x_range(), rect.bottom() - 1.0, Stroke::new(2.0, ACCENT));
-    }
-    resp.clicked()
+/// The open folders as a menu: pick one, close one, open another. Each
+/// folder is its own canvas.
+fn folder_switcher(ui: &mut egui::Ui, pages: &[Page], active: usize, actions: &mut Vec<Action>) {
+    let title = match pages.get(active) {
+        Some(p) if p.is_loading() => format!("{} …", p.title),
+        Some(p) => p.title.clone(),
+        None => "No folder".into(),
+    };
+    let count = if pages.len() > 1 { format!("  {}/{}", active + 1, pages.len()) } else { String::new() };
+    let label = format!("{}  {title}{count}  {}", icons::FOLDER, icons::CHEVRON_DOWN);
+    ui.menu_button(RichText::new(label).size(13.5).color(TEXT), |ui| {
+        ui.set_min_width(300.0);
+        for (i, p) in pages.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if small_icon(ui, icons::X, "Close this folder (Ctrl+W)") {
+                        actions.push(Action::CloseTab(i));
+                        ui.close();
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let text = RichText::new(format!("{}  {}", icons::FOLDER, p.title)).size(13.0);
+                        let files = match &p.state {
+                            PageState::Ready(r) => format!("{} files · ", r.repo.files.len()),
+                            _ => String::new(),
+                        };
+                        let row = ui
+                            .selectable_label(i == active, text)
+                            .on_hover_text(format!("{files}{}", p.root.display()));
+                        if row.clicked() {
+                            actions.push(Action::SwitchTab(i));
+                            ui.close();
+                        }
+                    });
+                });
+            });
+        }
+        if !pages.is_empty() {
+            ui.separator();
+        }
+        if ui.button(format!("{}  Open folder…   Ctrl+O", icons::PLUS)).clicked() {
+            actions.push(Action::OpenFolder);
+            ui.close();
+        }
+    })
+    .response
+    .on_hover_text("Switch folder (Ctrl+Tab)");
 }
 
 fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
-    Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 0 }).show(ui, |ui| {
+    Frame::NONE.inner_margin(Margin { left: 6, right: 8, top: 8, bottom: 0 }).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            if text_tab(ui, "Files", st.files_tab == FilesTab::Files) {
-                st.files_tab = FilesTab::Files;
-            }
-            if text_tab(ui, &format!("Folders ({})", pages.len()), st.files_tab == FilesTab::Folders) {
-                st.files_tab = FilesTab::Folders;
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if small_icon(ui, icons::PLUS, "Open a folder in a new canvas (Ctrl+O)") {
                     actions.push(Action::OpenFolder);
                 }
-                if st.files_tab == FilesTab::Files {
-                    if small_icon(ui, icons::EYE, "Put every hidden file back on the canvas") {
-                        actions.push(Action::ShowAll);
-                    }
-                    if small_icon(ui, icons::FOLD_VERTICAL, "Collapse every folder on the canvas") {
-                        actions.push(Action::CollapseAll);
-                    }
-                    if small_icon(ui, icons::UNFOLD_VERTICAL, "Expand every folder on the canvas") {
-                        actions.push(Action::ExpandAll);
-                    }
+                if small_icon(ui, icons::EYE, "Put every hidden file back on the canvas") {
+                    actions.push(Action::ShowAll);
                 }
+                if small_icon(ui, icons::FOLD_VERTICAL, "Collapse every folder on the canvas") {
+                    actions.push(Action::CollapseAll);
+                }
+                if small_icon(ui, icons::UNFOLD_VERTICAL, "Expand every folder on the canvas") {
+                    actions.push(Action::ExpandAll);
+                }
+                // The folder being shown: what is left of the row.
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| folder_switcher(ui, pages, active, actions));
             });
         });
     });
-    if st.files_tab == FilesTab::Files {
-        git_panel::timeline(ui, pages.get(active));
-    }
-    match st.files_tab {
-        FilesTab::Files => explorer(ui, st, pages.get_mut(active), actions),
-        FilesTab::Folders => folders_list(ui, st, pages, active, actions),
-    }
-}
-
-/// Every opened folder. Each one is its own canvas; this list is how you
-/// move between them when there are more than a couple.
-fn folders_list(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, actions: &mut Vec<Action>) {
-    ui.add_space(8.0);
-    if pages.is_empty() {
-        ui.vertical_centered(|ui| ui.label(RichText::new("No folder open").color(TEXT_DIM)));
-    }
-    ui.spacing_mut().item_spacing.y = 2.0;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for (i, p) in pages.iter().enumerate() {
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
-            if !ui.is_rect_visible(rect) {
-                continue;
-            }
-            let painter = ui.painter();
-            let bg = rect.shrink2(Vec2::new(6.0, 0.0));
-            let is_active = i == active;
-            if is_active {
-                painter.rect_filled(bg, 8.0, RAISED);
-                let bar = Rect::from_min_size(bg.left_top() + Vec2::new(0.0, 10.0), Vec2::new(3.0, bg.height() - 20.0));
-                painter.rect_filled(bar, 2.0, ACCENT);
-            } else if resp.hovered() {
-                painter.rect_filled(bg, 8.0, Color32::from_rgb(20, 22, 27));
-            }
-            let close = Rect::from_center_size(Pos2::new(rect.right() - 22.0, rect.center().y), Vec2::splat(22.0));
-            let over_close = resp.hover_pos().is_some_and(|pos| close.contains(pos));
-            let icon_color = if is_active { TEXT } else { TEXT_DIM };
-            painter.text(
-                Pos2::new(rect.left() + 24.0, rect.center().y),
-                Align2::CENTER_CENTER,
-                icons::FOLDER,
-                FontId::proportional(16.0),
-                icon_color,
-            );
-            let clip = Rect::from_min_max(
-                rect.left_top() + Vec2::new(42.0, 0.0),
-                Pos2::new(rect.right() - 40.0, rect.bottom()),
-            );
-            let p2 = painter.with_clip_rect(clip);
-            let name_color = if is_active { TEXT } else { Color32::from_rgb(196, 199, 208) };
-            p2.text(
-                Pos2::new(clip.left(), rect.top() + 14.0),
-                Align2::LEFT_CENTER,
-                &p.title,
-                FontId::proportional(13.5),
-                name_color,
-            );
-            let detail = match &p.state {
-                PageState::Ready(r) => format!("{} files · {}", r.repo.files.len(), p.root.display()),
-                PageState::Loading { .. } => format!("scanning… · {}", p.root.display()),
-                PageState::Failed(e) => e.clone(),
-            };
-            p2.text(
-                Pos2::new(clip.left(), rect.top() + 31.0),
-                Align2::LEFT_CENTER,
-                detail,
-                FontId::proportional(11.0),
-                TEXT_FAINT,
-            );
-            if resp.hovered() {
-                if over_close {
-                    painter.rect_filled(close, 6.0, HOVER);
-                }
-                let x = if over_close { TEXT } else { TEXT_DIM };
-                painter.text(close.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(13.0), x);
-            }
-            if resp.clicked() {
-                if over_close {
-                    actions.push(Action::CloseTab(i));
-                } else {
-                    actions.push(Action::SwitchTab(i));
-                    st.files_tab = FilesTab::Files;
-                }
-            }
-            if resp.middle_clicked() {
-                actions.push(Action::CloseTab(i));
-            }
-            resp.on_hover_text(p.root.display().to_string());
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            if ui
-                .button(format!("{}  Open folder…", icons::PLUS))
-                .on_hover_text("Ctrl+O, or drop a folder on the window")
-                .clicked()
-            {
-                actions.push(Action::OpenFolder);
-            }
-        });
-    });
+    git_panel::timeline(ui, pages.get(active));
+    explorer(ui, st, pages.get_mut(active), actions);
 }
 
 fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, actions: &mut Vec<Action>) {
@@ -1370,166 +1268,6 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                 });
         }
         ui.add_space(8.0);
-    });
-}
-
-fn claude_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, actions: &mut Vec<Action>) {
-    use crate::claude::{mentions, Role};
-
-    Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 10, bottom: 4 }).show(ui, |ui| {
-        panel_title(ui, "Claude Code", |ui| {
-            if small_icon(ui, icons::PLUS, "New chat: forget this conversation") {
-                actions.push(Action::ChatNew);
-            }
-        });
-        match &st.claude {
-            ClaudeStatus::Checking => {
-                ui.label(RichText::new("Looking for the claude command…").size(11.0).color(TEXT_DIM));
-            }
-            ClaudeStatus::Ready(version) => {
-                ui.label(
-                    RichText::new(format!("Using your Claude Code login · {version}")).size(11.0).color(TEXT_FAINT),
-                )
-                .on_hover_text(
-                    "Messages are answered by the `claude` command installed on this computer, with the \
-                         account it is signed in to. Code Canvas stores no API key.",
-                );
-            }
-            ClaudeStatus::Missing(why) => {
-                ui.label(
-                    RichText::new(
-                        "The `claude` command was not found. Install Claude Code and sign in to use this panel.",
-                    )
-                    .size(12.0)
-                    .color(c(theme::UI_WARN)),
-                )
-                .on_hover_text(why);
-            }
-        }
-    });
-    let Some(page) = page else {
-        ui.add_space(8.0);
-        ui.vertical_centered(|ui| ui.label(RichText::new("Open a folder to chat about it").color(TEXT_DIM)));
-        return;
-    };
-
-    // Input pinned to the bottom, transcript above it.
-    let running = page.chat.is_running();
-    egui::Panel::bottom("chat_input").frame(Frame::NONE.inner_margin(Margin::same(10))).show(ui, |ui| {
-        let has_context = page.selected.is_some() || !page.selections.is_empty();
-        check(ui, &mut page.chat.include_selection, "Include what is selected on the canvas", has_context, true)
-            .on_hover_text("Tell Claude which symbols and file are selected");
-        check(ui, &mut page.chat.allow_edits, "Allow Claude to edit files", true, true)
-            .on_hover_text("Off: Claude can only read the repository. On: it may change files without asking.");
-        ui.add_space(2.0);
-        let edit = Frame::NONE
-            .fill(WELL)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(CornerRadius::same(8))
-            .inner_margin(Margin::same(8))
-            .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut page.chat.input)
-                        .hint_text("Ask about this code…  (Ctrl+Enter to send)")
-                        .frame(Frame::NONE)
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY),
-                )
-            })
-            .inner;
-        let send_key = edit.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
-        ui.horizontal(|ui| {
-            if running {
-                if ui.button(format!("{}  Stop", icons::CIRCLE_STOP)).clicked() {
-                    actions.push(Action::ChatStop);
-                }
-                ui.label(
-                    RichText::new(format!("working… {:.0} s", page.chat.elapsed_secs())).size(11.0).color(TEXT_DIM),
-                );
-            } else {
-                let can_send = !page.chat.input.trim().is_empty() && matches!(st.claude, ClaudeStatus::Ready(_));
-                let send = ui.add_enabled(can_send, egui::Button::new(format!("{}  Send", icons::SEND)));
-                if send.clicked() || (send_key && can_send) {
-                    actions.push(Action::ChatSend);
-                }
-            }
-        });
-    });
-
-    let repo = page.ready().map(|r| &r.repo);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-        Frame::NONE.inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
-            if page.chat.messages.is_empty() {
-                well(ui, |ui| {
-                    ui.label(
-                        RichText::new(
-                            "Ask anything about this repository: how a feature works, where something is handled, \
-                             what a function is for. Files mentioned in the answer become buttons that fly to them.",
-                        )
-                        .size(12.0)
-                        .color(TEXT_DIM),
-                    );
-                });
-            }
-            for msg in &page.chat.messages {
-                match msg.role {
-                    Role::User => {
-                        Frame::NONE
-                            .fill(RAISED)
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(Margin::symmetric(9, 7))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.label(RichText::new(&msg.text).color(TEXT));
-                            });
-                    }
-                    Role::Assistant => {
-                        ui.add(egui::Label::new(RichText::new(&msg.text).color(TEXT)).wrap().selectable(true));
-                        // Files named in the answer: one click flies to them.
-                        if let Some(repo) = repo {
-                            let found = mentions(&msg.text, |p| repo.files.iter().any(|f| f.rel_path == p));
-                            if !found.is_empty() {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                                    for m in found {
-                                        let name = m.path.rsplit('/').next().unwrap_or(&m.path);
-                                        let label = match m.line {
-                                            Some(l) => format!("{}  {name}:{}", icons::LOCATE_FIXED, l + 1),
-                                            None => format!("{}  {name}", icons::LOCATE_FIXED),
-                                        };
-                                        if ui
-                                            .small_button(RichText::new(label).size(11.0))
-                                            .on_hover_text(&m.path)
-                                            .clicked()
-                                        {
-                                            match (m.line, repo.files.iter().position(|f| f.rel_path == m.path)) {
-                                                (Some(line), Some(file)) => actions.push(Action::FlyToSite(Site {
-                                                    file: file as u32,
-                                                    line,
-                                                    col: 0,
-                                                    len: 0,
-                                                })),
-                                                _ => actions.push(Action::FlyToPath(m.path.clone())),
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    Role::Tool => {
-                        ui.label(RichText::new(format!("· {}", msg.text)).monospace().size(11.0).color(TEXT_FAINT));
-                    }
-                    Role::Info => {
-                        ui.label(RichText::new(&msg.text).size(10.0).color(TEXT_FAINT));
-                    }
-                    Role::Error => {
-                        ui.label(RichText::new(&msg.text).color(c(theme::UI_WARN)));
-                    }
-                }
-                ui.add_space(6.0);
-            }
-        });
     });
 }
 
