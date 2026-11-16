@@ -4,17 +4,20 @@
 
 use std::collections::HashSet;
 
-use canvas_core::layout::{NodeKind, DIR_HEADER, FILE_LABEL_H, NONE};
+use canvas_core::layout::{NodeKind, CARD_PAD, DIR_HEADER, FILE_LABEL_H, NONE};
 use canvas_core::{Layout, Rect, RelKind, Repo, Site, SymRef, LINE_H};
 use canvas_render::text::TextLayer;
 use canvas_render::{push_curve, theme, CurveVertex, Label, RectInstance, View};
 
+use crate::ext::{Extensions, Severity};
+use crate::git::{Change, HunkKind};
 use crate::page::{Page, PageState, RelFilters, Selection};
 
 const MAX_WORLD_LABELS: usize = 600;
 const MAX_CHIPS: usize = 260;
 const MAX_BODIES: usize = 400;
 const MAX_MARKERS: usize = 3000;
+const MAX_DECORATIONS: usize = 600;
 /// Symbols react to the pointer once a line is at least this many pixels tall.
 pub const SYMBOL_HOVER_MIN_PX: f32 = 0.6;
 
@@ -54,6 +57,14 @@ pub struct CanvasOverlay {
     pub chip_hits: Vec<(Rect, SymRef)>,
     /// Screen rectangles of folder collapse markers and the folder's path.
     pub toggle_hits: Vec<(Rect, String)>,
+}
+
+fn severity_color(severity: Severity) -> u32 {
+    match severity {
+        Severity::Error => theme::PROBLEM_ERROR,
+        Severity::Warning => theme::PROBLEM_WARNING,
+        Severity::Info | Severity::Hint => theme::PROBLEM_INFO,
+    }
 }
 
 fn with_alpha(color: u32, alpha: f32) -> u32 {
@@ -224,7 +235,15 @@ fn selection_overlay(
 }
 
 /// Build the per-frame overlay for the active page.
-pub fn build(page: &Page, view: View, area: Rect, s: f32, filters: &RelFilters, text: &mut TextLayer) -> CanvasOverlay {
+pub fn build(
+    page: &Page,
+    view: View,
+    area: Rect,
+    s: f32,
+    filters: &RelFilters,
+    ext: &Extensions,
+    text: &mut TextLayer,
+) -> CanvasOverlay {
     let mut out = CanvasOverlay::default();
     let PageState::Ready(r) = &page.state else { return out };
     let (repo, layout) = (&r.repo, &r.layout);
@@ -373,6 +392,167 @@ pub fn build(page: &Page, view: View, area: Rect, s: f32, filters: &RelFilters, 
             if let Some(rect) = site_rect(layout, hit) {
                 if rect.intersects(&world) {
                     out.over.push(RectInstance::new(rect.expand(1.0), 0xffd84d30, 0xffd84dff, 2.0, 1.0));
+                }
+            }
+        }
+    }
+
+    let readable = z * LINE_H >= 2.5;
+
+    // --- source control: what changed since the last commit -------------------
+    // A coloured strip along the card's left side (and a dot from far away);
+    // close up, a bar next to each changed line, like an editor's gutter.
+    if let Some(git) = &page.git {
+        for change in git.changes.iter().take(MAX_MARKERS) {
+            let Some(fi) = repo.file_index(&change.path) else { continue };
+            let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
+                continue;
+            };
+            if !n.rect.intersects(&world) {
+                continue;
+            }
+            let color = match change.change {
+                Change::Added | Change::Untracked => theme::GIT_ADDED,
+                Change::Deleted | Change::Conflicted => theme::GIT_REMOVED,
+                Change::Modified | Change::Renamed => theme::GIT_MODIFIED,
+            };
+            let strip = (3.0 * s / z).max(1.5);
+            out.over.push(RectInstance::new(
+                Rect::new(n.rect.x - strip, n.rect.y, strip, n.rect.h),
+                color,
+                0,
+                0.0,
+                0.0,
+            ));
+            if !readable {
+                let side = 7.0 * s / z;
+                let dot = Rect::new(n.rect.x - side * 0.5, n.rect.y - side * 0.5, side, side);
+                out.over.push(RectInstance::new(dot, color, 0, 3.5 * s, 0.0));
+                continue;
+            }
+            let lines = repo.files[fi].line_count() as u32;
+            let bar = (2.5 * s / z).min(CARD_PAD * 0.6);
+            for h in &change.hunks {
+                let (c, first, count) = match h.kind {
+                    HunkKind::Added => (theme::GIT_ADDED, h.line, h.count),
+                    HunkKind::Modified => (theme::GIT_MODIFIED, h.line, h.count),
+                    HunkKind::Removed => (theme::GIT_REMOVED, h.line, 0),
+                };
+                if first > lines {
+                    continue;
+                }
+                for line in first..(first + count.max(1)).min(lines.max(first + 1)) {
+                    let cell = n.cell_rect(line.min(lines.saturating_sub(1)), 0, 1);
+                    if !cell.intersects(&world.expand(CARD_PAD)) {
+                        continue;
+                    }
+                    let rect = if count == 0 {
+                        // Lines were removed here: a short mark between two lines.
+                        let y = if line >= lines { cell.bottom() } else { cell.y };
+                        Rect::new(cell.x - CARD_PAD * 0.9, y - bar * 0.5, CARD_PAD * 0.8, bar)
+                    } else {
+                        Rect::new(cell.x - CARD_PAD * 0.75, cell.y, bar, cell.h)
+                    };
+                    out.over.push(RectInstance::new(rect, c, 0, 0.0, 0.0));
+                }
+            }
+        }
+    }
+
+    // --- problems reported by extensions -------------------------------------
+    // Close up, each one underlines its code. From any distance the file's
+    // card gets a coloured edge and a dot, so problems show on the whole map.
+    let mut marked = 0usize;
+    for (rel, found) in ext.diagnostics_under(&page.root) {
+        let Some(fi) = repo.file_index(rel) else { continue };
+        let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
+            continue;
+        };
+        if !n.rect.intersects(&world) || marked >= MAX_MARKERS {
+            continue;
+        }
+        marked += 1;
+        let worst = found.items.iter().map(|d| d.severity).min().unwrap_or(Severity::Hint);
+        let color = severity_color(worst);
+        out.over.push(RectInstance::new(n.rect, 0, color, 3.0, 1.5));
+        if readable {
+            let f = &repo.files[fi];
+            for d in found.items.iter().take(500) {
+                if d.line as usize >= f.line_count() {
+                    continue;
+                }
+                let cols = if d.end_line > d.line {
+                    (f.line(d.line as usize).chars().count() as u32).saturating_sub(d.col)
+                } else {
+                    d.end_col.saturating_sub(d.col)
+                };
+                let cell = n.cell_rect(d.line, d.col, cols.max(1));
+                if !cell.intersects(&world) {
+                    continue;
+                }
+                let c = severity_color(d.severity);
+                let h = (2.0 * s / z).min(LINE_H * 0.3);
+                out.over.push(RectInstance::new(cell, with_alpha(c, 0.14), 0, 2.0, 0.0));
+                out.over.push(RectInstance::new(Rect::new(cell.x, cell.bottom() - h, cell.w, h), c, 0, 0.0, 0.0));
+            }
+        } else {
+            let side = 7.0 * s / z;
+            let dot = Rect::new(n.rect.right() - side * 0.5, n.rect.y - side * 0.5, side, side);
+            out.over.push(RectInstance::new(dot, color, 0, 3.5 * s, 0.0));
+        }
+    }
+
+    // --- what extensions draw on the code (decorations) -----------------------
+    // Readable only close up: a wash over the range, and text after the line.
+    if z * LINE_H >= 6.5 {
+        let size = (z * LINE_H * 0.8).round();
+        let mut drawn = 0usize;
+        for (rel, found) in ext.decorations_under(&page.root) {
+            let Some(fi) = repo.file_index(rel) else { continue };
+            let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
+                continue;
+            };
+            if !n.rect.intersects(&world) {
+                continue;
+            }
+            let f = &repo.files[fi];
+            // Several texts on one line (two problems) follow each other.
+            let mut next_col: std::collections::HashMap<u32, u32> = Default::default();
+            let mut types: Vec<_> = found.by_type.iter().collect();
+            types.sort_by(|a, b| a.0.cmp(b.0));
+            for d in types.into_iter().flat_map(|(_, items)| items) {
+                if d.line as usize >= f.line_count() || drawn >= MAX_DECORATIONS {
+                    continue;
+                }
+                let len = f.line(d.line as usize).chars().count() as u32;
+                let line_cell = n.cell_rect(d.line, 0, len.max(1));
+                if !line_cell.intersects(&world.expand(400.0 / z)) {
+                    continue;
+                }
+                drawn += 1;
+                if d.background & 0xff != 0 {
+                    let cell = if d.whole_line || d.end_line > d.line {
+                        line_cell
+                    } else {
+                        n.cell_rect(d.line, d.col, d.end_col.saturating_sub(d.col).max(1))
+                    };
+                    out.under.push(RectInstance::new(cell, d.background, 0, 2.0, 0.0));
+                }
+                if !d.text.is_empty() {
+                    let col = next_col.get(&d.line).copied().unwrap_or(len + 3);
+                    let at = n.cell_rect(d.line, col.min(canvas_core::layout::MAX_COLS), 1);
+                    let p = view.to_screen([at.x, at.y]);
+                    let text: String = d.text.chars().take(160).collect();
+                    next_col.insert(d.line, col + text.chars().count() as u32 + 3);
+                    out.labels.push(OwnedLabel {
+                        text,
+                        left: p[0],
+                        top: p[1] + (z * LINE_H - size * 1.25) * 0.5,
+                        size,
+                        color: if d.color & 0xff != 0 { d.color } else { theme::LABEL_DIR },
+                        max_w: 2000.0 * s,
+                        bold: false,
+                    });
                 }
             }
         }

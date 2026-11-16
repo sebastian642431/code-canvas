@@ -21,6 +21,9 @@ egui-winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+ureq.workspace = true
+image.workspace = true
+zip.workspace = true
 
 [build-dependencies]
 winresource = "0.1"

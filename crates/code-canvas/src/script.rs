@@ -25,8 +25,18 @@ pub enum Step {
     Select(String),
     /// `search <text>`: search in files.
     Search(String),
-    /// `left files|search|help|none`
+    /// `left files|search|extensions|problems|changes|help|none`
     Left(String),
+    /// `install <publisher.name>`: install an extension from Open VSX.
+    Install(String),
+    /// `ext-search <text>`: search the extension registry.
+    ExtSearch(String),
+    /// `format <path>`: format a file with the installed formatter.
+    Format(String),
+    /// `command <id>`: run an extension's command.
+    Command(String),
+    /// `changed on|off`: show only the files git reports as changed.
+    OnlyChanged(bool),
     /// `right symbols|claude|none`
     Right(String),
     CollapseAll,
@@ -68,6 +78,11 @@ fn parse_step(text: &str) -> Option<Step> {
         "select" => Step::Select(arg.into()),
         "search" => Step::Search(arg.into()),
         "left" => Step::Left(arg.into()),
+        "install" => Step::Install(arg.into()),
+        "ext-search" => Step::ExtSearch(arg.into()),
+        "format" => Step::Format(arg.into()),
+        "command" => Step::Command(arg.into()),
+        "changed" => Step::OnlyChanged(arg == "on"),
         "right" => Step::Right(arg.into()),
         "collapse-all" => Step::CollapseAll,
         "expand-all" => Step::ExpandAll,

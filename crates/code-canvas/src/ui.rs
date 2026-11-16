@@ -4,7 +4,7 @@
 //! rescan, folder tabs, the "go to file" box, window buttons). An icon rail
 //! on each side opens one panel at a time, like an activity bar:
 //!
-//! * left: files, search in files, shortcuts
+//! * left: files, search in files, extensions, problems, shortcuts
 //! * right: symbols (selection, filters, names), Claude Code chat
 //!
 //! The UI never mutates pages directly; it emits [`Action`]s that the app
@@ -18,13 +18,25 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 
+use crate::ext::Extensions;
 use crate::icons;
 use crate::page::{build_tree, Page, PageState, RelFilters};
+
+mod ext_panels;
+mod git_panel;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LeftPanel {
     Files,
     Search,
+    /// Find, install and manage VS Code extensions.
+    Extensions,
+    /// What the extensions report: errors and warnings.
+    Problems,
+    /// Source control: what git says changed.
+    Changes,
+    /// One installed extension (`UiState::extension`): what it offers.
+    Extension,
     Help,
 }
 
@@ -76,6 +88,10 @@ pub struct UiState {
     pub maximized: bool,
     /// The app icon, shown in the top-left corner of the header.
     logo: Option<egui::TextureHandle>,
+    /// Id of the extension shown by [`LeftPanel::Extension`].
+    pub extension: String,
+    /// Icons of installed extensions, by extension id (`None`: it has none).
+    ext_icons: std::collections::HashMap<String, Option<egui::TextureHandle>>,
 }
 
 impl Default for UiState {
@@ -94,6 +110,8 @@ impl Default for UiState {
             claude: ClaudeStatus::Checking,
             maximized: false,
             logo: None,
+            extension: String::new(),
+            ext_icons: Default::default(),
         }
     }
 }
@@ -149,6 +167,15 @@ pub enum Action {
     ShowAll,
     /// Search the text of every file of the active page.
     Search(String),
+    /// Format a file of the active page with the installed formatter:
+    /// the given path, else the file under the pointer or the selected one.
+    FormatFile(Option<String>),
+    /// Ask git again what changed in the active page.
+    RefreshGit,
+    /// Show only the files git reports as changed.
+    SetOnlyChanged(bool),
+    /// Pick a `.vsix` file and install it.
+    InstallVsix,
     /// Send the chat input of the active page to Claude Code.
     ChatSend,
     ChatStop,
@@ -329,13 +356,14 @@ pub fn build(
     st: &mut UiState,
     pages: &mut [Page],
     active: usize,
+    ext: &mut Extensions,
     info: &FrameInfo,
     actions: &mut Vec<Action>,
 ) -> Rect {
     st.floating.clear();
     header(ui, st, pages, active, actions);
-    status_bar(ui, info);
-    left_rail(ui, st);
+    status_bar(ui, st, ext, info);
+    left_rail(ui, st, ext, pages.get(active));
     right_rail(ui, st);
 
     if let Some(panel) = st.left {
@@ -343,6 +371,10 @@ pub fn build(
         card_panel(ui, p, |ui| match panel {
             LeftPanel::Files => files_panel(ui, st, pages, active, actions),
             LeftPanel::Search => search_panel(ui, st, pages.get(active), actions),
+            LeftPanel::Extensions => ext_panels::extensions_panel(ui, ext, actions),
+            LeftPanel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
+            LeftPanel::Changes => git_panel::changes_panel(ui, pages.get(active), actions),
+            LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
             LeftPanel::Help => help_panel(ui),
         });
     }
@@ -358,6 +390,7 @@ pub fn build(
     let ctx = ui.ctx().clone();
     center_message(ui, canvas, pages.get(active));
     toolbar(&ctx, st, canvas, info, actions);
+    ext_panels::notices(&ctx, canvas, ext);
     quick_open(&ctx, st, canvas, pages.get(active), actions);
     tooltip(&ctx, canvas, info);
     canvas
@@ -498,7 +531,8 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, ac
     });
 }
 
-fn status_bar(ui: &mut egui::Ui, info: &FrameInfo) {
+fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, info: &FrameInfo) {
+    let mut panel_to_show = None;
     egui::Panel::bottom("status").frame(Frame::NONE.fill(CHROME).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
         ui,
         |ui| {
@@ -522,29 +556,96 @@ fn status_bar(ui: &mut egui::Ui, info: &FrameInfo) {
                         st.cached_chunks,
                         info.frame_ms
                     ));
+                    // What extensions report: problems, and their status items.
+                    let (errors, warnings) = ext.totals();
+                    if errors + warnings > 0 {
+                        ui.add_space(8.0);
+                        let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
+                        let color = if errors > 0 { c(theme::PROBLEM_ERROR) } else { c(theme::PROBLEM_WARNING) };
+                        let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
+                        if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
+                            panel_to_show = Some(LeftPanel::Problems);
+                        }
+                    }
+                    for (_, text) in &ext.status_items {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(text).size(12.0).color(TEXT_DIM));
+                    }
                 });
             });
         },
     );
+    if let Some(panel) = panel_to_show {
+        st.show_left(panel);
+    }
 }
 
 fn rail_frame() -> Frame {
     Frame::NONE.fill(CHROME).inner_margin(Margin { left: 5, right: 5, top: 0, bottom: GAP })
 }
 
-fn left_rail(ui: &mut egui::Ui, st: &mut UiState) {
+fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option<&Page>) {
     egui::Panel::left("rail_left").frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
         let b = Vec2::splat(34.0);
         for (panel, glyph, tip) in [
             (LeftPanel::Files, icons::FOLDER, "Files (Ctrl+B)"),
             (LeftPanel::Search, icons::TEXT_SEARCH, "Search in files (Ctrl+Shift+F)"),
+            (LeftPanel::Changes, icons::GIT_BRANCH, "Source control: what changed"),
+            (LeftPanel::Extensions, icons::PUZZLE, "Extensions"),
+            (LeftPanel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions"),
         ] {
-            if icon_button(ui, glyph, b, st.left == Some(panel), HOVER).on_hover_text(tip).clicked() {
+            let resp = icon_button(ui, glyph, b, st.left == Some(panel), HOVER);
+            if panel == LeftPanel::Problems {
+                // A dot on the icon while there is something to look at.
+                let (errors, warnings) = ext.totals();
+                if errors + warnings > 0 {
+                    let color = if errors > 0 { c(theme::PROBLEM_ERROR) } else { c(theme::PROBLEM_WARNING) };
+                    ui.painter().circle_filled(resp.rect.right_top() + Vec2::new(-9.0, 9.0), 3.5, color);
+                }
+            }
+            if panel == LeftPanel::Changes && page.and_then(|p| p.git.as_ref()).is_some_and(|g| !g.changes.is_empty()) {
+                ui.painter().circle_filled(resp.rect.right_top() + Vec2::new(-9.0, 9.0), 3.5, c(theme::GIT_MODIFIED));
+            }
+            if resp.on_hover_text(tip).clicked() {
                 if st.left == Some(panel) {
                     st.left = None;
                 } else {
                     st.show_left(panel);
+                }
+            }
+        }
+        // One icon per extension that has something to use, like VS Code's
+        // activity bar: it opens what the extension offers.
+        let room = ((ui.available_height() - 2.0 * 36.0) / 36.0).floor().max(0.0) as usize;
+        let usable =
+            ext.installed.iter().filter(|e| e.enabled && e.has_code && !(e.commands.is_empty() && e.views.is_empty()));
+        for e in usable.take(room) {
+            let active = st.left == Some(LeftPanel::Extension) && st.extension == e.id;
+            let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
+            if active {
+                ui.painter().rect_filled(rect.shrink(4.0), 8.0, RAISED);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect.shrink(4.0), 8.0, HOVER);
+            }
+            match ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e) {
+                Some(texture) => {
+                    let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
+                    let tint = if active || resp.hovered() { Color32::WHITE } else { Color32::from_gray(190) };
+                    egui::Image::new(&texture).corner_radius(4).tint(tint).paint_at(ui, at);
+                }
+                None => {
+                    let color = if active || resp.hovered() { TEXT } else { TEXT_DIM };
+                    let letter = e.display_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, letter, FontId::proportional(15.0), color);
+                }
+            }
+            if resp.on_hover_text(&e.display_name).clicked() {
+                if active {
+                    st.left = None;
+                } else {
+                    st.extension = e.id.clone();
+                    st.show_left(LeftPanel::Extension);
                 }
             }
         }
@@ -686,6 +787,9 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
             });
         });
     });
+    if st.files_tab == FilesTab::Files {
+        git_panel::timeline(ui, pages.get(active));
+    }
     match st.files_tab {
         FilesTab::Files => explorer(ui, st, pages.get_mut(active), actions),
         FilesTab::Folders => folders_list(ui, st, pages, active, actions),
@@ -1042,6 +1146,13 @@ fn help_panel(ui: &mut egui::Ui) {
                     ][..],
                 ),
                 ("Find", &[("Go to a file or folder", "Ctrl+P"), ("Search in files", "Ctrl+Shift+F")][..]),
+                (
+                    "Extensions",
+                    &[
+                        ("Format the file under the pointer", "Shift+Alt+F"),
+                        ("See a problem's message", "Point at the underlined code"),
+                    ][..],
+                ),
                 (
                     "Folders and panels",
                     &[
@@ -1454,6 +1565,12 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                             .clicked()
                         {
                             actions.push(Action::FrameSelection);
+                        }
+                        if icon_button(ui, icons::WAND_SPARKLES, b, false, HOVER)
+                            .on_hover_text("Format the selected file with the installed formatter (Shift+Alt+F formats the file under the pointer)")
+                            .clicked()
+                        {
+                            actions.push(Action::FormatFile(None));
                         }
                         ui.add_space(4.0);
                         let (sep, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());

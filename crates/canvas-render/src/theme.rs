@@ -24,6 +24,16 @@ pub const HOVER: u32 = 0x8aa0d0ff;
 pub const SELECT: u32 = 0x7aa2f7ff;
 pub const SELECT_FILL: u32 = 0x7aa2f714;
 
+/// Problems reported by extensions (linters, language servers).
+pub const PROBLEM_ERROR: u32 = 0xf7768eff;
+pub const PROBLEM_WARNING: u32 = 0xe0af68ff;
+pub const PROBLEM_INFO: u32 = 0x7aa2f7ff;
+
+/// Source control: new, changed and removed.
+pub const GIT_ADDED: u32 = 0x3ddc84ff;
+pub const GIT_MODIFIED: u32 = 0x5a96ffff;
+pub const GIT_REMOVED: u32 = 0xf7768eff;
+
 pub const LABEL_DIR: u32 = 0x8b93abff;
 pub const LABEL_FILE: u32 = 0xa9b1d6ff;
 

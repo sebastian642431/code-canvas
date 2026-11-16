@@ -10,6 +10,8 @@ mod app;
 mod bench;
 mod camera;
 mod claude;
+mod ext;
+mod git;
 mod icon;
 mod icons;
 mod overlay;
@@ -67,10 +69,38 @@ fn init_logging() {
     }));
 }
 
+/// `code-canvas --install-extension <publisher.name | file.vsix> ...`:
+/// install extensions without opening a window (like `code` does). The
+/// outcome goes to the log; the exit code is the number of failures.
+fn install_extensions(args: &[String]) -> i32 {
+    let dir = session::data_dir().join("extensions");
+    let mut failures = 0;
+    let mut wanted = args.iter().skip_while(|a| *a != "--install-extension").filter(|a| !a.starts_with("--"));
+    for what in &mut wanted {
+        let done = match what.split_once('.') {
+            _ if what.to_lowercase().ends_with(".vsix") => ext::market::install_vsix(what.as_ref(), &dir),
+            Some((namespace, name)) => ext::market::install(namespace, name, &dir),
+            None => Err("expected publisher.name or a .vsix file".to_string()),
+        };
+        match done {
+            Ok(path) => log::info!("installed {what} in {}", path.display()),
+            Err(e) => {
+                failures += 1;
+                log::error!("{what} was not installed: {e}");
+            }
+        }
+    }
+    failures
+}
+
 fn main() -> anyhow::Result<()> {
     init_logging();
     log::info!("Code Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--install-extension") {
+        std::process::exit(install_extensions(&args));
+    }
     let mut paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     paths.retain(|p| {
         let ok = p.is_dir();
@@ -81,7 +111,13 @@ fn main() -> anyhow::Result<()> {
     });
 
     let event_loop = winit::event_loop::EventLoop::new()?;
-    let mut app = app::App::new(paths);
+    // Background work (the extension host) wakes the UI thread through this.
+    let proxy = event_loop.create_proxy();
+    let waker = ext::Waker::new(move || {
+        let _ = proxy.send_event(());
+    });
+    ext::set_ui_waker(waker.clone());
+    let mut app = app::App::new(paths, waker);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

@@ -34,6 +34,23 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - `Ctrl+P` go to a file or folder; `Ctrl+Shift+F` search text in every file, with the
   hits marked on the canvas.
 
+**VS Code extensions**
+- Installs the same `.vsix` extensions VS Code uses, from [Open VSX](https://open-vsx.org)
+  or a file, and runs them unmodified in an extension host.
+- Linters and language servers: problems underline their code, and files with problems
+  stay marked from any zoom level, so they show on the map of the whole repository.
+- Formatters: `Shift+Alt+F` formats the file under the pointer with the project's own
+  configuration. Each extension gets its icon in the rail, with its commands.
+- Checked so far with ESLint, Prettier and Error Lens. Extensions whose interface is a
+  webview or a tree view start but cannot show it yet — the state of each piece is in
+  [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+
+**Source control**
+- What git says changed: a list of changed, new and deleted files; on the canvas a
+  strip marks each changed file and a bar marks each new or modified line.
+- **Show only changed files** re-lays the canvas out with just your work in progress.
+- Timeline: the commits that touched the selected file, under the file tree.
+
 **Claude Code**
 - A chat panel that runs your own `claude` command-line tool, so it uses the account
   or subscription you are already signed in with — Code Canvas stores no API key.
@@ -92,6 +109,18 @@ whole local cargo registry, **33,500 files / 14.1 M lines / 2.27 M symbols**
 | Relations of a symbol in a 90k-line repository | **~1 ms** (231 usages) |
 | Text search in a 90k-line repository | **< 1 ms** |
 
+And on **Chromium** (a shallow clone: **514,507 files / 63.7 M lines**), same machine:
+
+| | |
+|---|---|
+| Open, files already in the disk cache | **~26 s** (walk 2 s, read + analyse 18 s, layout 0.5 s) |
+| Open, first time after cloning | 7.6 min — almost all of it the disk reading 5 GB of small files |
+| CPU time per frame, whole repository on screen | **~5 ms** |
+| Memory | ~4 GB: every file's text is kept in memory today |
+
+The memory and the cold start are the next targets: read only what is on screen and
+keep the rest on disk.
+
 How (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): parallel walk and load;
 tokens produced on demand per visible chunk instead of stored; static geometry uploaded
 once and culled by contiguous folder ranges; near views built only from visible lines;
@@ -107,17 +136,20 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - [ ] **Editing**: click into a file and type, with undo and save. Needs a real text
       buffer that keeps each file's own tabs and line endings.
-- [ ] **Diagnostics and formatting**: lint errors on the canvas and in a problems
-      panel, format on save — using the project's own ESLint / Prettier / rustfmt
-      configuration, so results match its CI.
+- [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
+      diagnostics, formatting, decorations and commands. See
+      [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+- [ ] **Webviews** for extensions (the official Claude Code panel, Git Graph, GitHub
+      pull requests), then tree views, code lenses and hovers on the canvas.
+- [ ] Format on save; themes and grammars from extensions.
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
       exact provider for the same relations the name-based index gives today.
-- [ ] VS Code **themes and grammars** loaded from `.vsix` files; an extension model for
-      everything else — see [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 - [ ] Other AI providers behind the chat panel (API keys), streaming of partial answers.
 - [ ] Dependency edges between files and folders (imports), bundled for collapsed folders.
-- [ ] Git: changed files on the canvas, history.
+- [x] Git: changed files and lines on the canvas, file timeline.
+- [ ] Git: the diff itself (removed lines), staging and committing, branches.
+- [ ] Text read on demand instead of kept in memory (Chromium uses ~4 GB today).
 - [ ] File watching with incremental re-layout; a layout cache for instant re-open.
 - [ ] Faster symbol indexing (parallel, lazy) and memory-mapped sources for 1M+ file monorepos.
 - [ ] Line numbers, a settings panel, configurable skip lists.
@@ -129,7 +161,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 crates/
   canvas-core/    scanning, tokenizer, symbols, relations, search, layout   (no GPU, unit-tested)
   canvas-render/  wgpu renderer: rects, code bars, curves, text (glyphon), LOD, culling
-  code-canvas/    the app: window, UI (egui), pages, camera, Claude Code, sessions
+  code-canvas/    the app: window, UI (egui), pages, camera, extensions, git, Claude Code
+    exthost/      the extension host (Node): the `vscode` API for real VS Code extensions
 docs/             ARCHITECTURE.md, EXTENSIONS.md
 scripts/          install / uninstall, icon generation
 ```

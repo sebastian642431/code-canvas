@@ -1,6 +1,6 @@
 //! Window, input and the per-frame glue between pages, the UI and the renderer.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 
 use crate::bench::Bench;
 use crate::camera::Camera;
+use crate::ext::{self, Extensions};
 use crate::overlay::{self, CanvasOverlay, SYMBOL_HOVER_MIN_PX};
 use crate::page::{Page, PageState, Ready};
 use crate::script::{Script, Step};
@@ -42,6 +43,16 @@ struct Drag {
     moved: bool,
     button: MouseButton,
 }
+
+/// Left panels in the order their index is saved in the session.
+const LEFT_PANELS: [LeftPanel; 6] = [
+    LeftPanel::Files,
+    LeftPanel::Search,
+    LeftPanel::Help,
+    LeftPanel::Extensions,
+    LeftPanel::Problems,
+    LeftPanel::Changes,
+];
 
 pub struct App {
     gfx: Option<Gfx>,
@@ -79,12 +90,14 @@ pub struct App {
     /// Something worth persisting changed since the last save.
     session_dirty: bool,
     last_save: Instant,
+    /// Installed VS Code extensions and the process that runs them.
+    ext: Extensions,
 }
 
 impl App {
     /// Restores the previous session and adds `paths` (from the command
     /// line) to it.
-    pub fn new(paths: Vec<PathBuf>) -> Self {
+    pub fn new(paths: Vec<PathBuf>, waker: ext::Waker) -> Self {
         let saved: Session = session::load();
         // The previous session always comes back; folders given on the
         // command line are added to it (and the first one is shown).
@@ -105,7 +118,7 @@ impl App {
             }
         }
         let mut ui = UiState::default();
-        ui.last_left = [LeftPanel::Files, LeftPanel::Search, LeftPanel::Help][(saved.left_panel as usize).min(2)];
+        ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
         ui.last_right = [RightPanel::Symbols, RightPanel::Claude][(saved.right_panel as usize).min(1)];
         ui.left = saved.left_open.then_some(ui.last_left);
         ui.right = saved.right_open.then_some(ui.last_right);
@@ -143,6 +156,7 @@ impl App {
             },
             session_dirty: false,
             last_save: Instant::now(),
+            ext: Extensions::new(session::data_dir(), waker),
         }
     }
 
@@ -193,11 +207,7 @@ impl App {
             active: self.active,
             left_open: self.ui.left.is_some(),
             right_open: self.ui.right.is_some(),
-            left_panel: match self.ui.last_left {
-                LeftPanel::Files => 0,
-                LeftPanel::Search => 1,
-                LeftPanel::Help => 2,
-            },
+            left_panel: LEFT_PANELS.iter().position(|p| *p == self.ui.last_left).unwrap_or(0) as u8,
             right_panel: match self.ui.last_right {
                 RightPanel::Symbols => 0,
                 RightPanel::Claude => 1,
@@ -302,6 +312,99 @@ impl App {
             page.relayout(&g.renderer, &g.device, &self.ui.filters);
         }
         self.request_redraw();
+    }
+
+    // ----- files and extensions ----------------------------------------
+
+    /// The page that holds `path` and the path relative to its root.
+    fn locate_file(&self, path: &Path) -> Option<(usize, String)> {
+        let key = ext::path_key(&path.to_string_lossy());
+        self.pages.iter().enumerate().find_map(|(i, p)| {
+            let mut root = ext::path_key(&p.root.to_string_lossy());
+            root.push('/');
+            // The key differs from the path in case only, so lengths match.
+            key.starts_with(&root).then(|| (i, path.to_string_lossy().replace('\\', "/")[root.len()..].to_string()))
+        })
+    }
+
+    /// Replace a file's contents on disk (a formatter or a fix produced
+    /// them) and show the new contents.
+    fn write_file(&mut self, path: &Path, text: &str) {
+        if let Err(e) = std::fs::write(path, text) {
+            log::error!("cannot write {}: {e}", path.display());
+            return;
+        }
+        log::info!("wrote {} ({} bytes)", path.display(), text.len());
+        self.ext.file_changed(path);
+        if let Some((i, rel)) = self.locate_file(path) {
+            if let (Some(g), Some(page)) = (self.gfx.as_mut(), self.pages.get_mut(i)) {
+                g.renderer.text.drop_page(page.id);
+                page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+                page.refresh_git();
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn reveal_file(&mut self, path: &Path) {
+        if let Some((i, rel)) = self.locate_file(path) {
+            self.switch_to(i);
+            self.apply(Action::FlyToPath(rel));
+        }
+    }
+
+    /// The file the user means: under the pointer, else the selected one.
+    fn current_file(&self) -> Option<PathBuf> {
+        let page = self.pages.get(self.active)?;
+        let r = page.ready()?;
+        [page.hover, page.selected].into_iter().flatten().find_map(|i| match r.layout.nodes.get(i)?.kind {
+            NodeKind::File(fi) => Some(page.root.join(&r.repo.files[fi].rel_path)),
+            NodeKind::Dir => None,
+        })
+    }
+
+    fn format_file(&mut self, rel_path: Option<String>) {
+        let path = match (rel_path, self.pages.get(self.active)) {
+            (Some(rel), Some(page)) => Some(page.root.join(rel)),
+            _ => self.current_file(),
+        };
+        match path {
+            Some(path) => self.ext.format(&path),
+            None => log::info!("format: point at a file or select one first"),
+        }
+        self.request_redraw();
+    }
+
+    /// Tell the extensions which files are readable on screen: those are
+    /// their open documents (what linters check).
+    fn sync_documents(&mut self) {
+        if self.drag.is_some() {
+            return;
+        }
+        let vp = self.viewport();
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(r) = page.ready() else { return };
+        if page.target.is_some() || Lod::for_zoom(page.camera.zoom) != Lod::Text {
+            return;
+        }
+        const MAX_VISIBLE: usize = 16;
+        let (z, area) = (page.camera.zoom, self.canvas);
+        let mut world = page.camera.view(vp).world_rect();
+        world.x += area.x / z;
+        world.y += area.y / z;
+        world.w = area.w / z;
+        world.h = area.h / z;
+        let mut visible = Vec::new();
+        r.layout.visit_visible(&world, |_, n| {
+            if let NodeKind::File(fi) = n.kind {
+                if r.repo.files[fi].note.is_none() {
+                    visible.push(page.root.join(&r.repo.files[fi].rel_path));
+                }
+            }
+            visible.len() < MAX_VISIBLE
+        });
+        let focus = page.hover_cell.map(|(fi, _, _)| page.root.join(&r.repo.files[fi as usize].rel_path));
+        self.ext.show_documents(&visible, focus.as_deref());
     }
 
     // ----- camera helpers ---------------------------------------------
@@ -543,6 +646,12 @@ impl App {
         if typing || self.ui.quick.is_some() {
             return;
         }
+        if let Key::Character(c) = &event.logical_key {
+            if shift && self.mods.alt_key() && c.as_str().eq_ignore_ascii_case("f") {
+                self.format_file(None);
+                return;
+            }
+        }
 
         match &event.logical_key {
             Key::Named(NamedKey::Tab) if cmd => self.cycle(if shift { -1 } else { 1 }),
@@ -759,6 +868,29 @@ impl App {
                 }
                 self.request_redraw();
             }
+            Action::FormatFile(rel) => self.format_file(rel),
+            Action::RefreshGit => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.refresh_git();
+                }
+            }
+            Action::SetOnlyChanged(on) => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.only_changed = on;
+                }
+                self.relayout();
+                self.frame_all();
+            }
+            Action::InstallVsix => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Install an extension from a .vsix file")
+                    .add_filter("VS Code extension", &["vsix"])
+                    .pick_file();
+                if let Some(file) = picked {
+                    self.ext.install_vsix(file);
+                }
+                self.request_redraw();
+            }
             Action::FiltersChanged => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.curves_dirty = true;
@@ -814,8 +946,28 @@ impl App {
                 "files" => self.ui.show_left(LeftPanel::Files),
                 "search" => self.ui.show_left(LeftPanel::Search),
                 "help" => self.ui.show_left(LeftPanel::Help),
+                "extensions" => self.ui.show_left(LeftPanel::Extensions),
+                "problems" => self.ui.show_left(LeftPanel::Problems),
+                "changes" => self.ui.show_left(LeftPanel::Changes),
+                id if id.contains('.') => {
+                    // `left publisher.name`: that extension's own panel.
+                    self.ui.extension = id.to_string();
+                    self.ui.show_left(LeftPanel::Extension);
+                }
                 _ => self.ui.left = None,
             },
+            Step::Install(id) => match id.split_once('.') {
+                Some((namespace, name)) => self.ext.install(namespace, name),
+                None => log::warn!("script: install needs publisher.name, got '{id}'"),
+            },
+            Step::ExtSearch(text) => {
+                self.ui.show_left(LeftPanel::Extensions);
+                self.ext.query = text;
+                self.ext.search();
+            }
+            Step::Format(path) => self.format_file(Some(path)),
+            Step::Command(id) => self.ext.run_command(&id, &id),
+            Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
             Step::Right(which) => match which.as_str() {
                 "symbols" => self.ui.show_right(RightPanel::Symbols),
                 "claude" => self.ui.show_right(RightPanel::Claude),
@@ -905,6 +1057,40 @@ impl App {
             changed |= page.chat.poll();
             busy |= page.chat.is_running();
         }
+        // Source control: results of `git status` runs.
+        let mut git_relayout = false;
+        for (i, page) in self.pages.iter_mut().enumerate() {
+            if page.poll_git() {
+                changed = true;
+                git_relayout |= i == self.active && page.only_changed;
+            }
+        }
+        if git_relayout {
+            self.relayout();
+        }
+        // The timeline follows the selected file.
+        if let Some(page) = self.pages.get_mut(self.active) {
+            let selected = page.ready().and_then(|r| {
+                let n = r.layout.nodes.get(page.selected?)?;
+                matches!(n.kind, NodeKind::File(_)).then(|| n.rel_path.clone())
+            });
+            if page.ready().is_some() {
+                page.want_timeline(selected);
+            }
+            changed |= page.poll_timeline();
+        }
+        // Extensions: their workspace is the set of open folders.
+        self.ext.set_folders(self.pages.iter().map(|p| p.root.clone()).collect());
+        let (events, ext_changed) = self.ext.poll();
+        changed |= ext_changed;
+        for event in events {
+            match event {
+                ext::Event::Write { path, text } => self.write_file(&path, &text),
+                ext::Event::Reveal(path) => self.reveal_file(&path),
+            }
+        }
+        // Notices fade out by themselves: keep ticking while one is up.
+        busy |= !self.ext.notices.is_empty();
         if changed {
             self.request_redraw();
         }
@@ -972,6 +1158,14 @@ impl App {
                             status.push_str(&format!("  ·  {note}"));
                         }
                         let sym = page.hover_cell.and_then(|(file, line, _)| r.repo.sym_at(file, line));
+                        let problem = page.hover_cell.filter(|_| on_canvas).and_then(|(_, line, col)| {
+                            let key = ext::path_key(&page.root.join(&f.rel_path).to_string_lossy());
+                            let found = self.ext.diagnostics.get(&key)?;
+                            found.items.iter().filter(|d| d.covers(line, col)).min_by_key(|d| d.severity)
+                        });
+                        if let Some(d) = problem {
+                            return (status, Some((d.title(), d.message.clone())));
+                        }
                         let tip = on_canvas.then(|| match (sym, page.hover_cell) {
                             (Some(sym), Some((_, line, _))) => (
                                 format!("{} {}", r.repo.sym(sym).kind.badge(), r.repo.sym_name(sym)),
@@ -1018,9 +1212,9 @@ impl App {
             let raw = g.egui_state.take_egui_input(&g.window);
             let info = FrameInfo { stats: &self.stats, frame_ms: self.frame_ms, zoom, tooltip, status };
             let mut canvas = egui::Rect::NOTHING;
-            let (ui_state, pages, active) = (&mut self.ui, &mut self.pages, self.active);
+            let (ui_state, pages, active, ext) = (&mut self.ui, &mut self.pages, self.active, &mut self.ext);
             let full = g.egui.run_ui(raw, |ui| {
-                canvas = ui::build(ui, ui_state, pages, active, &info, &mut actions);
+                canvas = ui::build(ui, ui_state, pages, active, ext, &info, &mut actions);
             });
             (full, canvas)
         };
@@ -1066,6 +1260,7 @@ impl App {
         if animating {
             self.update_hover();
         }
+        self.sync_documents();
 
         // 3. Relation curves (only when they changed) and the overlay.
         let filters = self.ui.filters;
@@ -1081,7 +1276,7 @@ impl App {
                         self.curves_for = Some(page.id);
                     }
                     let view = page.camera.view(vp);
-                    canvas_overlay = overlay::build(page, view, area, s, &filters, &mut g.renderer.text);
+                    canvas_overlay = overlay::build(page, view, area, s, &filters, &self.ext, &mut g.renderer.text);
                 }
                 None => {
                     if self.curves_for.take().is_some() {
@@ -1235,6 +1430,13 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    /// A background thread has something for us; `about_to_wait` picks it up.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {}
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.ext.shutdown();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;

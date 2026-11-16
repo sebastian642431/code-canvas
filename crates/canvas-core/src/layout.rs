@@ -477,7 +477,7 @@ impl Layout {
         if let Some(&n) = self.dir_node.get(path) {
             return Some(n as usize);
         }
-        let fi = repo.files.iter().position(|f| f.rel_path == path)?;
+        let fi = repo.file_index(path)?;
         let n = self.file_anchor[fi];
         (n != NONE).then_some(n as usize)
     }

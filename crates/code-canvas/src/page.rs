@@ -11,6 +11,7 @@ use canvas_core::{Layout, LayoutFilter, RelKind, Relations, Repo, ScanOptions, S
 use canvas_render::{Renderer, SceneData, SceneGpu};
 
 use crate::camera::Camera;
+use crate::git::{Commit, GitState};
 use crate::session::PageSession;
 
 pub struct Loaded {
@@ -115,6 +116,23 @@ pub struct Page {
     /// Conversation with Claude Code about this folder.
     pub chat: crate::claude::Chat,
     pub search: Option<SearchResults>,
+    /// What git says changed in this folder; `None` outside a repository.
+    pub git: Option<GitState>,
+    git_rx: Option<Receiver<Option<GitState>>>,
+    /// Show only the changed files on the canvas.
+    pub only_changed: bool,
+    /// History of the selected file.
+    pub timeline: Timeline,
+    timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
+}
+
+/// The commits that touched one file, newest first.
+#[derive(Default)]
+pub struct Timeline {
+    /// The file this is (or will be) the history of.
+    pub path: Option<String>,
+    pub commits: Vec<Commit>,
+    pub loading: bool,
 }
 
 impl Page {
@@ -142,6 +160,11 @@ impl Page {
             curves_dirty: true,
             chat: Default::default(),
             search: None,
+            git: None,
+            git_rx: None,
+            only_changed: false,
+            timeline: Timeline::default(),
+            timeline_rx: None,
         };
         if let Some(s) = saved {
             page.filter.collapsed = s.collapsed.iter().cloned().collect();
@@ -168,8 +191,73 @@ impl Page {
         }
     }
 
+    /// Ask git what changed, on a background thread.
+    pub fn refresh_git(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::git::load(&root));
+            crate::ext::wake_ui();
+        });
+        self.git_rx = Some(rx);
+    }
+
+    /// Take in a finished `refresh_git`. True when the changes were updated.
+    pub fn poll_git(&mut self) -> bool {
+        let Some(rx) = &self.git_rx else { return false };
+        match rx.try_recv() {
+            Ok(state) => {
+                self.git = state;
+                self.git_rx = None;
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.git_rx = None;
+                false
+            }
+        }
+    }
+
+    /// Make the timeline follow `path` (the selected file): its history is
+    /// read on a background thread when it is not the one already shown.
+    pub fn want_timeline(&mut self, path: Option<String>) {
+        if self.timeline.path == path {
+            return;
+        }
+        self.timeline = Timeline { path: path.clone(), commits: Vec::new(), loading: path.is_some() };
+        self.timeline_rx = None;
+        let Some(path) = path else { return };
+        let (tx, rx) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let commits = crate::git::log(&root, &path, 60);
+            let _ = tx.send((path, commits));
+            crate::ext::wake_ui();
+        });
+        self.timeline_rx = Some(rx);
+    }
+
+    pub fn poll_timeline(&mut self) -> bool {
+        let Some(rx) = &self.timeline_rx else { return false };
+        let Ok((path, commits)) = rx.try_recv() else { return false };
+        self.timeline_rx = None;
+        if self.timeline.path.as_deref() == Some(path.as_str()) {
+            self.timeline.commits = commits;
+            self.timeline.loading = false;
+        }
+        true
+    }
+
+    /// Files git reports as changed that exist on disk (deleted ones do not).
+    pub fn changed_files(&self) -> HashSet<u32> {
+        let (Some(git), Some(r)) = (&self.git, self.ready()) else { return HashSet::new() };
+        git.changes.iter().filter_map(|c| r.repo.file_index(&c.path)).map(|i| i as u32).collect()
+    }
+
     /// (Re)scan the folder on a background thread.
     pub fn start_scan(&mut self) {
+        self.refresh_git();
         let progress = Arc::new(ScanProgress::default());
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
@@ -271,7 +359,13 @@ impl Page {
     /// Rebuild the layout and the GPU scene after the filter changed
     /// (collapse, hide, "only connected"). Keeps the selection by path.
     pub fn relayout(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
-        let only = (self.only_connected && !self.selections.is_empty()).then(|| self.connected_files(filters));
+        let changed = self.only_changed.then(|| self.changed_files()).filter(|set| !set.is_empty());
+        let connected = (self.only_connected && !self.selections.is_empty()).then(|| self.connected_files(filters));
+        // Both on: the changed files and what the selection connects them to.
+        let only = match (changed, connected) {
+            (Some(a), Some(b)) => Some(a.union(&b).copied().collect()),
+            (a, b) => a.or(b),
+        };
         let filter = LayoutFilter { only_files: only, ..self.filter.clone() };
         let selected = self.selected;
         let PageState::Ready(r) = &mut self.state else { return };
@@ -286,6 +380,27 @@ impl Page {
         self.hover_cell = None;
         self.curves_dirty = true;
         log::debug!("relayout: {} nodes in {:.1} ms", r.layout.nodes.len(), t.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// `rel_path` changed on disk: read it again and rebuild what shows it.
+    /// The caller drops this page's cached text first. False when the file
+    /// is not part of this page.
+    pub fn reload_file(
+        &mut self,
+        rel_path: &str,
+        renderer: &Renderer,
+        device: &wgpu::Device,
+        filters: &RelFilters,
+    ) -> bool {
+        let PageState::Ready(r) = &mut self.state else { return false };
+        let Some(index) = r.repo.file_index(rel_path) else { return false };
+        r.repo.reload_file(index, &ScanOptions::default());
+        r.tokens = Default::default();
+        // Symbols and lines of that file moved: what pointed at them is stale.
+        self.selections.clear();
+        self.search = None;
+        self.relayout(renderer, device, filters);
+        true
     }
 
     /// Add `sym` to the selection, or remove it if it is already there.

@@ -23,6 +23,14 @@ muy grandes. Código abierto: cualquiera puede aportar.
   por nombres (aproximado); los *language servers* darán resultados exactos.
 - **Buscar**: explorador con casillas y filtro, `Ctrl+P` para ir a un archivo,
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
+- **Extensiones de VS Code**: instala las mismas extensiones `.vsix` desde
+  [Open VSX](https://open-vsx.org) y las ejecuta sin modificar. Los linters marcan los
+  errores sobre el código y en un panel de problemas; `Shift+Alt+F` formatea con la
+  configuración del proyecto. Probado con ESLint, Prettier y Error Lens; las que usan
+  *webviews* o vistas de árbol arrancan pero todavía no se ven.
+- **Control de código**: archivos cambiados, nuevos y borrados según git, las líneas
+  cambiadas marcadas en el lienzo, "mostrar solo lo que cambió" y el historial
+  (*timeline*) del archivo seleccionado.
 - **Claude Code**: un panel de chat que usa el comando `claude` que ya tenés instalado
   y con sesión iniciada. No guarda ninguna API key. Solo lectura por defecto.
 - **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y
@@ -55,10 +63,15 @@ Prueba de estrés con **33.500 archivos / 14,1 M de líneas / 2,27 M de símbolo
 en ~2,8 s sin bloquear la ventana y se mueve a 240 fps (0,7 ms de CPU por fotograma)
 en cualquier nivel de zoom. Cómo se logra: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+Con **Chromium** (514.507 archivos / 63,7 M de líneas): abre en ~26 s con los archivos
+ya en la caché del disco y dibuja el repositorio entero en ~5 ms por fotograma. Usa
+~4 GB de memoria porque hoy guarda el texto de todos los archivos; leerlo a demanda es
+lo próximo.
+
 ## Extensiones
 
-Qué se puede aprovechar de las extensiones de VS Code y qué no, y cómo va a ser el
-sistema de extensiones propio: [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+Cómo se ejecutan las extensiones de VS Code, cuáles están probadas y qué falta
+(*webviews*, vistas de árbol): [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
 ## Cómo aportar
 

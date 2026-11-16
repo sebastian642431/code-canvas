@@ -1,65 +1,115 @@
-# Extensions: what is planned, and what "VS Code extensions" means here
+# Extensions
 
-Status: **design notes — nothing in this document is implemented yet.**
+Code Canvas runs **real VS Code extensions**: the same `.vsix` packages, unmodified,
+installed from [Open VSX](https://open-vsx.org) or from a file. This document says how
+it works, what works today, and what does not yet.
 
-People ask whether Code Canvas can use VS Code extensions. The honest answer depends
-on what kind of extension it is, because "an extension" covers three very different
-things.
+## Using them
 
-## 1. Data contributions — feasible, planned first
+- **Extensions panel** (puzzle icon in the left rail): search Open VSX, press *Install*.
+  The archive icon installs a `.vsix` file from disk.
+- From a terminal, like `code` does:
+  `code-canvas --install-extension dbaeumer.vscode-eslint esbenp.prettier-vscode`
+- Each extension that offers something gets **its own icon in the left rail**. It opens
+  the extension's panel: what it is, and its commands, which run with a click.
+- **Problems** (circle icon): what linters and language servers report. On the canvas
+  each problem underlines its code, and the file's card gets a coloured edge and a dot
+  that stay visible from far away, so problems show on the map of the whole repository.
+- **Format a file**: `Shift+Alt+F` over it, or the wand in the toolbar. The formatter
+  comes from an installed extension and uses the project's own configuration.
+- Settings are read like VS Code reads them: the extension's defaults, then
+  `settings.json` in the app's data folder, then the folder's `.vscode/settings.json`
+  (including `"[language]"` sections and `editor.defaultFormatter`).
 
-Colour themes, TextMate grammars, file icon themes and snippets are plain data files
-inside a `.vsix` (which is a zip with a `package.json`). Nothing has to be executed.
+Extensions with code need **Node.js** on the `PATH`. Extensions run with your
+permissions, exactly as in VS Code: install the ones you trust.
 
-Plan:
-- Read `.vsix` files and the `contributes.themes` / `contributes.grammars` entries.
-- Map a VS Code colour theme to our token kinds and UI colours.
-- Use TextMate grammars (or tree-sitter) behind the existing `Tokens` interface, so
-  highlighting stops depending on the built-in tokenizer.
+## How it works
 
-## 2. Language features — feasible through the same servers
+```
+code-canvas (Rust)  ── JSON lines over stdio ──►  node exthost/host.js
+   ext/mod.rs                                        │  provides the `vscode` module
+   ext/host.rs                                       ▼
+   ext/market.rs (Open VSX, .vsix)              the extensions, unmodified
+```
 
-Most language extensions are thin wrappers around a **language server** speaking LSP
-(rust-analyzer, typescript-language-server, pyright, gopls, clangd …). We do not need
-the extension, only the server.
+- `ext/market.rs` downloads and unpacks extensions into `<data dir>/extensions`.
+- `exthost/host.js` is the **extension host**: one Node process that loads every
+  enabled extension and gives it a `vscode` module, the API extensions are written
+  against. It is embedded in the app and written to the data folder at start.
+- The host and the app exchange one JSON object per line. The app sends the open
+  folders, which files are readable on screen (those are the extensions' *open
+  documents*) and requests (format this file, run this command). The host sends back
+  diagnostics, decorations, messages, status items and file contents to write.
+- The app never blocks on the host: reader threads feed a channel and wake the UI.
 
-Plan:
-- A `RelationProvider` interface with two implementations: today's name-based index
-  (`canvas-core::refs`) and an LSP client.
-- Per-language start / stop with progress, like the concept's "Language servers" list.
-- LSP results fill the same `Relation` type, so the canvas and panels do not change.
+### What the canvas means to an extension
 
-This gives exact definitions, references, call hierarchies, type hierarchies and
-diagnostics for dozens of languages.
+VS Code extensions assume an editor made of tabs. Code Canvas maps its own ideas onto
+theirs:
 
-## 3. Arbitrary extensions with their own UI — not planned for now
+| VS Code | Code Canvas |
+|---|---|
+| workspace folders | the folders open as canvases |
+| open text documents, tabs | files whose code is readable on screen right now |
+| active editor | the file under the pointer |
+| diagnostics | underlines, card markers and the Problems panel |
+| text editor decorations | washes over ranges and text after a line, drawn on the card |
+| `workspace.applyEdit`, formatting edits | the app writes the file and reloads its card |
+| status bar items | text in the status bar |
+| `showInformationMessage` & co. | notices in the corner of the canvas |
 
-Running any extension from the marketplace (GitLens, Docker, test explorers, anything
-with a webview) requires the **VS Code extension host**: a Node.js process plus the
-`vscode` API — hundreds of functions for editors, documents, tree views, webviews,
-terminals, debugging, tasks. Extensions assume a text editor made of tabs and
-documents; Code Canvas is a canvas. That is why editors that want this compatibility
-(Cursor, Windsurf, VSCodium) are forks of VS Code rather than reimplementations.
+### Coverage of the `vscode` API
 
-What would be possible later, as a separate research project: hosting the open-source
-extension host out of process and implementing a *subset* of the API (commands,
-tree views as panels, status bar items). It is a large effort with an open-ended
-tail, so it should start as a spike with a clear list of target extensions.
+The API is large; the host implements a growing part of it. Anything an extension
+asks for that is missing gets a harmless stand-in and is reported once, so gaps are
+visible (the Extensions panel says "N VS Code features it asked for are not available
+yet", and the log lists them) instead of crashing the extension.
 
-Also note the Visual Studio Marketplace's terms only allow its use from Microsoft's
-own products; a third-party app has to use [Open VSX](https://open-vsx.org).
+Implemented: documents and their events, configuration, diagnostics, every
+`languages.register…Provider` (kept by kind; the app uses formatting today, and
+definitions, references and hovers can be requested), commands, workspace edits,
+`workspace.fs`, output channels, status bar items, messages, decorations, extension
+storage, activation events, and the classes and enums extensions construct.
 
-## Our own extension model
+Not yet — these are the next pieces, in order:
 
-For things specific to a canvas (new overlays, analyses, panels), the plan is the
-model that already works well for tools like this one:
+1. **Webviews.** An extension's own HTML interface (the official Claude Code panel,
+   Git Graph's graph, GitHub's pull request pages). Needs a browser view inside the
+   window (WebView2 on Windows) and the message bridge. Until then, opening one says so.
+2. **Tree views and view containers**: the lists extensions add to the side bar.
+3. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
+4. **Editing**: typing in a card. Extensions that react to keystrokes (completion,
+   on-type formatting) wait for this.
+5. Terminals, debugging, notebooks, source control providers, authentication.
 
-- An extension is an **external process** that speaks JSON-RPC over stdio (as LSP and
-  MCP servers do), described by a small manifest. Any language can be used.
-- It can contribute: relations and symbols, canvas overlays (rectangles, curves,
-  labels in world coordinates), panel content, and commands.
-- It never runs inside the app's process, so a broken extension cannot crash it or
-  slow down the frame.
+### Checked with real extensions
 
-The Claude Code panel already follows this shape: an external process, a line-based
-JSON protocol, results turned into canvas actions.
+| Extension | State |
+|---|---|
+| ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
+| Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
+| Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
+| Version Lens (`pflannery.vscode-versionlens`) | starts; shows nothing until code lenses are drawn |
+| Pretty TypeScript Errors (`yoavbls.pretty-ts-errors`) | starts; needs hovers and a TypeScript language server |
+| Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview |
+| GitHub Pull Requests | starts; its interface is tree views and webviews |
+
+Other extensions have not been tried yet. Language servers shipped as extensions
+(rust-analyzer and the like) use the same client library as ESLint, which works, but
+each one should be checked before it is listed here.
+
+## Testing the host
+
+The host is plain Node and can be driven without the app: send it an `init` message
+with a folder and extension folders, then `open` a file, and read what comes back.
+In the app, script steps cover the same ground (see "Testing the real app" in
+[ARCHITECTURE.md](ARCHITECTURE.md)): `install <publisher.name>`, `ext-search <text>`,
+`format <path>`, `command <id>`, `left extensions|problems|<publisher.name>`.
+
+## A model of our own, later
+
+For things specific to a canvas (new overlays, analyses, layouts) a small native
+extension model is still planned: an external process speaking JSON-RPC, contributing
+relations, overlays in world coordinates and panels. The host protocol above is the
+first half of it.

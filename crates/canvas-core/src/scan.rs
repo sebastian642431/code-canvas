@@ -33,7 +33,7 @@ impl Default for ScanOptions {
         Self {
             max_file_bytes: 1024 * 1024,
             max_lines: 100_000,
-            max_files: 200_000,
+            max_files: 2_000_000,
             skip_dirs: [".git", "node_modules", "target", ".next", "dist", "build", "__pycache__", ".venv", "venv"]
                 .into_iter()
                 .map(String::from)
@@ -162,6 +162,24 @@ pub struct Repo {
     pub timings: ScanTimings,
     /// Definitions of the whole repository, by name.
     pub symbols: crate::refs::SymbolIndex,
+}
+
+impl Repo {
+    /// Index in [`Repo::files`] of the file at `rel_path` (`/` separators).
+    /// Files are kept sorted by path, so this is a binary search.
+    pub fn file_index(&self, rel_path: &str) -> Option<usize> {
+        self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(rel_path))).ok()
+    }
+
+    /// Read one file again (it changed on disk) and refresh what is derived
+    /// from the files: line totals and the symbol index.
+    pub fn reload_file(&mut self, index: usize, opts: &ScanOptions) {
+        let rel = self.files[index].rel_path.clone();
+        let path = self.root.join(&rel);
+        self.files[index] = load_file(&path, rel, opts);
+        self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
+        self.symbols = crate::refs::SymbolIndex::build(&self.files);
+    }
 }
 
 /// `canonicalize` on Windows returns `\\?\C:\...`; strip that prefix.
@@ -409,6 +427,10 @@ mod tests {
         let repo = scan(root, &ScanOptions::default(), None);
         assert!(repo.files.iter().any(|f| f.rel_path == "src/scan.rs"));
         assert!(repo.tree.dirs.iter().any(|d| d.name == "src"));
+        for (i, f) in repo.files.iter().enumerate() {
+            assert_eq!(repo.file_index(&f.rel_path), Some(i), "{}", f.rel_path);
+        }
+        assert_eq!(repo.file_index("src/nope.rs"), None);
         let f = repo.files.iter().find(|f| f.name == "lib.rs").unwrap();
         assert_eq!(f.analysis.blocks.len(), f.line_count().div_ceil(syntax::BLOCK_LINES));
         let all: usize = (0..f.chunk_count()).map(|c| f.tokenize_chunk(c).lines()).sum();

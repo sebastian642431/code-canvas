@@ -11,7 +11,8 @@ WANT = """folder folder-open file file-code file-text file-json braces settings 
 chevron-right chevron-down refresh-cw panel-left panel-right list-tree message-circle bot git-branch eye check square copy
 ellipsis-vertical locate-fixed scan maximize zoom-in zoom-out send circle-stop sparkles puzzle circle-help layout-grid
 database image activity palette workflow text-search mouse-pointer-2 hand trash-2 arrow-up corner-down-left
-folder-tree network waypoints code share-2 square-check eye-off unfold-vertical fold-vertical""".split()
+folder-tree network waypoints code share-2 square-check eye-off unfold-vertical fold-vertical
+circle-alert triangle-alert info wand-sparkles download package circle-check chart-column file-archive""".split()
 
 css = open(sys.argv[1], encoding="utf8").read()
 codes = dict(re.findall(r'\.icon-([a-z0-9-]+):before\s*\{\s*content:\s*"\\([0-9a-f]+)"', css))
