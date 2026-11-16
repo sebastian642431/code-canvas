@@ -27,6 +27,7 @@ pub struct Host {
 }
 
 pub fn node_command() -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut c = Command::new("node");
     #[cfg(windows)]
     {
