@@ -44,6 +44,8 @@ pub enum LeftPanel {
 pub enum RightPanel {
     Symbols,
     Claude,
+    /// An extension's webview (`UiState::webview`).
+    Webview,
 }
 
 /// Is the `claude` command-line tool usable?
@@ -88,6 +90,10 @@ pub struct UiState {
     pub maximized: bool,
     /// The app icon, shown in the top-left corner of the header.
     logo: Option<egui::TextureHandle>,
+    /// Key of the webview shown by [`RightPanel::Webview`].
+    pub webview: String,
+    /// Where that webview's page goes this frame, in points.
+    pub webview_rect: Option<Rect>,
     /// Id of the extension shown by [`LeftPanel::Extension`].
     pub extension: String,
     /// Icons of installed extensions, by extension id (`None`: it has none).
@@ -111,6 +117,8 @@ impl Default for UiState {
             maximized: false,
             logo: None,
             extension: String::new(),
+            webview: String::new(),
+            webview_rect: None,
             ext_icons: Default::default(),
         }
     }
@@ -361,17 +369,18 @@ pub fn build(
     actions: &mut Vec<Action>,
 ) -> Rect {
     st.floating.clear();
+    st.webview_rect = None;
     header(ui, st, pages, active, actions);
     status_bar(ui, st, ext, info);
     left_rail(ui, st, ext, pages.get(active));
-    right_rail(ui, st);
+    right_rail(ui, st, ext);
 
     if let Some(panel) = st.left {
         let p = egui::Panel::left("left").resizable(true).default_size(300.0).size_range(220.0..=560.0);
         card_panel(ui, p, |ui| match panel {
             LeftPanel::Files => files_panel(ui, st, pages, active, actions),
             LeftPanel::Search => search_panel(ui, st, pages.get(active), actions),
-            LeftPanel::Extensions => ext_panels::extensions_panel(ui, ext, actions),
+            LeftPanel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
             LeftPanel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
             LeftPanel::Changes => git_panel::changes_panel(ui, pages.get(active), actions),
             LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
@@ -383,6 +392,7 @@ pub fn build(
         card_panel(ui, p, |ui| match panel {
             RightPanel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
             RightPanel::Claude => claude_panel(ui, st, pages.get_mut(active), actions),
+            RightPanel::Webview => ext_panels::webview_panel(ui, st, ext),
         });
     }
 
@@ -390,7 +400,7 @@ pub fn build(
     let ctx = ui.ctx().clone();
     center_message(ui, canvas, pages.get(active));
     toolbar(&ctx, st, canvas, info, actions);
-    ext_panels::notices(&ctx, canvas, ext);
+    ext_panels::notices(&ctx, st, canvas, ext);
     quick_open(&ctx, st, canvas, pages.get(active), actions);
     tooltip(&ctx, canvas, info);
     canvas
@@ -615,40 +625,6 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
                 }
             }
         }
-        // One icon per extension that has something to use, like VS Code's
-        // activity bar: it opens what the extension offers.
-        let room = ((ui.available_height() - 2.0 * 36.0) / 36.0).floor().max(0.0) as usize;
-        let usable =
-            ext.installed.iter().filter(|e| e.enabled && e.has_code && !(e.commands.is_empty() && e.views.is_empty()));
-        for e in usable.take(room) {
-            let active = st.left == Some(LeftPanel::Extension) && st.extension == e.id;
-            let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
-            if active {
-                ui.painter().rect_filled(rect.shrink(4.0), 8.0, RAISED);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect.shrink(4.0), 8.0, HOVER);
-            }
-            match ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e) {
-                Some(texture) => {
-                    let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
-                    let tint = if active || resp.hovered() { Color32::WHITE } else { Color32::from_gray(190) };
-                    egui::Image::new(&texture).corner_radius(4).tint(tint).paint_at(ui, at);
-                }
-                None => {
-                    let color = if active || resp.hovered() { TEXT } else { TEXT_DIM };
-                    let letter = e.display_name.chars().next().unwrap_or('?').to_uppercase().to_string();
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, letter, FontId::proportional(15.0), color);
-                }
-            }
-            if resp.on_hover_text(&e.display_name).clicked() {
-                if active {
-                    st.left = None;
-                } else {
-                    st.extension = e.id.clone();
-                    st.show_left(LeftPanel::Extension);
-                }
-            }
-        }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
             if icon_button(ui, icons::PANEL_LEFT, b, false, HOVER)
                 .on_hover_text("Show or hide the left panel (Ctrl+B)")
@@ -670,7 +646,7 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
     });
 }
 
-fn right_rail(ui: &mut egui::Ui, st: &mut UiState) {
+fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
     egui::Panel::right("rail_right").frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
         let b = Vec2::splat(34.0);
@@ -683,6 +659,45 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState) {
                     st.right = None;
                 } else {
                     st.show_right(panel);
+                }
+            }
+        }
+        // Extensions' own interfaces (webviews): one icon per extension.
+        let mut seen: Vec<&str> = Vec::new();
+        for w in &ext.webviews {
+            if seen.contains(&w.extension.as_str()) {
+                continue;
+            }
+            seen.push(&w.extension);
+            let active = st.right == Some(RightPanel::Webview) && st.webview == w.key;
+            let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
+            if active {
+                ui.painter().rect_filled(rect.shrink(4.0), 8.0, RAISED);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect.shrink(4.0), 8.0, HOVER);
+            }
+            let installed = ext.installed.iter().find(|e| e.id == w.extension);
+            match installed.and_then(|e| ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e)) {
+                Some(texture) => {
+                    let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
+                    egui::Image::new(&texture).corner_radius(4).paint_at(ui, at);
+                }
+                None => {
+                    ui.painter().text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        icons::PUZZLE,
+                        FontId::proportional(17.0),
+                        TEXT_DIM,
+                    );
+                }
+            }
+            if resp.on_hover_text(&w.title).clicked() {
+                if active {
+                    st.right = None;
+                } else {
+                    st.webview = w.key.clone();
+                    st.right = Some(RightPanel::Webview);
                 }
             }
         }

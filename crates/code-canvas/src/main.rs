@@ -19,6 +19,7 @@ mod page;
 mod script;
 mod session;
 mod ui;
+mod webview;
 
 use std::io::Write;
 use std::path::PathBuf;

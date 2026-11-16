@@ -25,5 +25,9 @@ ureq.workspace = true
 image.workspace = true
 zip.workspace = true
 
+# Extensions' webviews: a browser view inside the window (WebView2).
+[target.'cfg(windows)'.dependencies]
+wry.workspace = true
+
 [build-dependencies]
 winresource = "0.1"

@@ -205,6 +205,10 @@ pub struct Notice {
     pub source: String,
     pub text: String,
     pub at: Instant,
+    /// Choices the extension offers; it waits for one (or a dismissal).
+    pub actions: Vec<String>,
+    /// The host's id of a message with choices.
+    reply_to: Option<u64>,
 }
 
 pub enum NodeStatus {
@@ -216,9 +220,37 @@ pub enum NodeStatus {
 /// Things the app has to do for the extensions.
 pub enum Event {
     /// Replace a file's contents (a formatter or a fix produced them).
-    Write { path: PathBuf, text: String },
+    Write {
+        path: PathBuf,
+        text: String,
+    },
     /// Show this file.
     Reveal(PathBuf),
+    /// An extension set the page of a webview.
+    WebviewHtml {
+        handle: String,
+        html: String,
+    },
+    /// An extension sent a message to a webview's page.
+    WebviewPost {
+        handle: String,
+        message: Value,
+    },
+    WebviewClosed(String),
+    /// Bring this webview (by key) in front of the user.
+    ShowWebview(String),
+}
+
+/// A webview an extension offers: a view it registered (shown when the user
+/// asks for it) or a panel it opened itself.
+pub struct WebviewEntry {
+    /// The view's id, or the handle of a panel.
+    pub key: String,
+    pub extension: String,
+    pub title: String,
+    /// Set once the extension has been asked to fill it.
+    pub handle: Option<String>,
+    resolving: bool,
 }
 
 enum Job {
@@ -231,6 +263,8 @@ enum Pending {
     Format(PathBuf),
     /// A command, by its title.
     Command(String),
+    /// A webview view being filled, by key.
+    Webview(String),
 }
 
 /// Documents kept open in the host at most (least recently seen go first).
@@ -255,6 +289,9 @@ pub struct Extensions {
     pub log: VecDeque<String>,
     /// Status bar items extensions are showing, `(id, text)`.
     pub status_items: Vec<(String, String)>,
+    pub webviews: Vec<WebviewEntry>,
+    /// Webviews that went away with their host; reported by `poll`.
+    dropped_webviews: Vec<String>,
     pub host_running: bool,
 
     dir: PathBuf,
@@ -413,6 +450,8 @@ impl Extensions {
             notices: Vec::new(),
             log: VecDeque::new(),
             status_items: Vec::new(),
+            webviews: Vec::new(),
+            dropped_webviews: Vec::new(),
             host_running: false,
             dir,
             data_dir,
@@ -453,9 +492,18 @@ impl Extensions {
     fn notice(&mut self, level: Level, source: &str, text: impl Into<String>) {
         let text = text.into();
         self.log_line(&format!("[{source}] {text}"));
-        self.notices.push(Notice { level, source: source.to_string(), text, at: Instant::now() });
-        if self.notices.len() > 6 {
-            self.notices.remove(0);
+        self.notices.push(Notice {
+            level,
+            source: source.to_string(),
+            text,
+            at: Instant::now(),
+            actions: Vec::new(),
+            reply_to: None,
+        });
+        // Keep the corner small; questions stay until they are answered.
+        while self.notices.iter().filter(|n| n.reply_to.is_none()).count() > 5 {
+            let oldest = self.notices.iter().position(|n| n.reply_to.is_none()).unwrap_or(0);
+            self.notices.remove(oldest);
         }
     }
 
@@ -540,6 +588,7 @@ impl Extensions {
         self.host_running = false;
         self.pending.clear();
         self.status_items.clear();
+        self.dropped_webviews.extend(self.webviews.drain(..).filter_map(|w| w.handle));
         self.decorations.clear();
         if !self.diagnostics.is_empty() {
             self.diagnostics.clear();
@@ -660,6 +709,41 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": id, "method": "format", "params": { "path": path } }));
     }
 
+    /// Answer the question in notice `index`: one of its actions, or
+    /// `None` to dismiss it. Plain notices are just removed.
+    pub fn answer_notice(&mut self, index: usize, action: Option<&str>) {
+        if index >= self.notices.len() {
+            return;
+        }
+        let notice = self.notices.remove(index);
+        if let Some(id) = notice.reply_to {
+            self.send(json!({ "type": "messageReply", "id": id, "action": action }));
+        }
+    }
+
+    /// Folder the installed extensions live in.
+    pub fn extensions_dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Ask the extension to fill the webview view `key` (once).
+    pub fn resolve_webview(&mut self, key: &str) {
+        let Some(entry) = self.webviews.iter_mut().find(|w| w.key == key) else { return };
+        if entry.handle.is_some() || entry.resolving {
+            return;
+        }
+        entry.resolving = true;
+        let request = self.next_request;
+        self.next_request += 1;
+        self.pending.insert(request, Pending::Webview(key.to_string()));
+        self.send(json!({ "type": "request", "id": request, "method": "resolveWebview", "params": { "view": key } }));
+    }
+
+    /// The page of a webview sent a message to its extension.
+    pub fn webview_message(&mut self, handle: &str, message: Value) {
+        self.send(json!({ "type": "webviewMessage", "handle": handle, "message": message }));
+    }
+
     /// Run one of an extension's commands (`title` is for messages).
     pub fn run_command(&mut self, id: &str, title: &str) {
         if self.host.is_none() {
@@ -681,8 +765,8 @@ impl Extensions {
     /// Take in what background work and the host produced. Returns what the
     /// app must do, and whether anything visible changed.
     pub fn poll(&mut self) -> (Vec<Event>, bool) {
-        let mut events = Vec::new();
-        let mut changed = false;
+        let mut events: Vec<Event> = self.dropped_webviews.drain(..).map(Event::WebviewClosed).collect();
+        let mut changed = !events.is_empty();
 
         while let Ok(job) = self.jobs_rx.try_recv() {
             changed = true;
@@ -740,9 +824,19 @@ impl Extensions {
             }
         }
 
-        // Notices fade after a while.
+        // Notices fade after a while; questions wait much longer, and an
+        // unanswered one counts as dismissed.
         let before = self.notices.len();
-        self.notices.retain(|n| n.at.elapsed().as_secs_f32() < 9.0);
+        let expired: Vec<usize> = (0..self.notices.len())
+            .rev()
+            .filter(|&i| {
+                self.notices[i].at.elapsed().as_secs_f32()
+                    > if self.notices[i].reply_to.is_some() { 300.0 } else { 9.0 }
+            })
+            .collect();
+        for i in expired {
+            self.answer_notice(i, None);
+        }
         changed |= before != self.notices.len();
         (events, changed)
     }
@@ -797,6 +891,44 @@ impl Extensions {
                 }
                 self.revision += 1;
             }
+            "webviewView" => {
+                let key = s("view");
+                if !self.webviews.iter().any(|w| w.key == key) {
+                    self.webviews.push(WebviewEntry {
+                        key,
+                        extension: s("extension"),
+                        title: s("title"),
+                        handle: None,
+                        resolving: false,
+                    });
+                }
+            }
+            "webviewPanel" => {
+                let handle = s("handle");
+                match self.webviews.iter_mut().find(|w| w.key == handle) {
+                    Some(entry) => entry.title = s("title"),
+                    None => self.webviews.push(WebviewEntry {
+                        key: handle.clone(),
+                        extension: s("extension"),
+                        title: s("title"),
+                        handle: Some(handle.clone()),
+                        resolving: false,
+                    }),
+                }
+                if m.get("reveal").and_then(Value::as_bool).unwrap_or(false) {
+                    events.push(Event::ShowWebview(handle));
+                }
+            }
+            "webviewHtml" => events.push(Event::WebviewHtml { handle: s("handle"), html: s("html") }),
+            "webviewPost" => events.push(Event::WebviewPost {
+                handle: s("handle"),
+                message: m.get("message").cloned().unwrap_or(Value::Null),
+            }),
+            "webviewClosed" => {
+                let handle = s("handle");
+                self.webviews.retain(|w| w.handle.as_deref() != Some(handle.as_str()));
+                events.push(Event::WebviewClosed(handle));
+            }
             "decorations" => {
                 let path = s("path").replace('\\', "/");
                 let key = path_key(&path);
@@ -830,6 +962,17 @@ impl Extensions {
                 };
                 let source = self.display_name(&s("extension"));
                 self.notice(level, &source, s("text"));
+                let actions: Vec<String> = m
+                    .get("actions")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default();
+                if let (Some(id), Some(last), false) =
+                    (m.get("id").and_then(Value::as_u64), self.notices.last_mut(), actions.is_empty())
+                {
+                    last.actions = actions;
+                    last.reply_to = Some(id);
+                }
             }
             "status" => {
                 let id = s("id");
@@ -855,6 +998,22 @@ impl Extensions {
                 let id = m.get("id").and_then(Value::as_u64).unwrap_or(0);
                 let path = match self.pending.remove(&id) {
                     Some(Pending::Format(path)) => path,
+                    Some(Pending::Webview(key)) => {
+                        let handle = m.pointer("/result/handle").and_then(Value::as_str).map(str::to_string);
+                        let error = m.get("error").and_then(Value::as_str).unwrap_or("it gave no page").to_string();
+                        let mut failed = None;
+                        if let Some(entry) = self.webviews.iter_mut().find(|w| w.key == key) {
+                            entry.resolving = false;
+                            match handle {
+                                Some(h) => entry.handle = Some(h),
+                                None => failed = Some(entry.title.clone()),
+                            }
+                        }
+                        if let Some(title) = failed {
+                            self.notice(Level::Error, &title, error);
+                        }
+                        return;
+                    }
                     Some(Pending::Command(title)) => {
                         match m.get("error").and_then(Value::as_str) {
                             Some(error) => self.notice(Level::Warn, &title, error.to_string()),
@@ -996,6 +1155,24 @@ mod tests {
         // An empty list clears the file.
         ext.on_message(&json!({ "type": "diagnostics", "path": "C:\\Work\\App\\src\\a.ts", "items": [] }), &mut events);
         assert_eq!(ext.totals(), (0, 0));
+    }
+
+    #[test]
+    fn questions_wait_for_an_answer() {
+        let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
+        let mut events = Vec::new();
+        let ask = json!({ "type": "message", "id": 7, "level": "info", "extension": "x.y", "text": "Trust?", "actions": ["Yes", "No"] });
+        ext.on_message(&ask, &mut events);
+        ext.on_message(
+            &json!({ "type": "message", "level": "info", "extension": "x.y", "text": "fyi", "actions": [] }),
+            &mut events,
+        );
+        assert_eq!(ext.notices.len(), 2);
+        assert_eq!(ext.notices[0].actions, vec!["Yes", "No"]);
+        assert!(ext.notices[1].actions.is_empty());
+        ext.answer_notice(0, Some("Yes"));
+        assert_eq!(ext.notices.len(), 1);
+        assert_eq!(ext.notices[0].text, "fyi");
     }
 
     #[test]

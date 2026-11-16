@@ -7,8 +7,8 @@ use egui::{
 };
 
 use super::{
-    c, icon, panel_title, search_field, section, small_icon, well, Action, UiState, ACCENT, BORDER, CARD, HOVER,
-    RAISED, ROW_H, TEXT, TEXT_DIM, TEXT_FAINT,
+    c, icon, panel_title, search_field, section, small_icon, well, Action, LeftPanel, UiState, ACCENT, BORDER, CARD,
+    HOVER, RAISED, ROW_H, TEXT, TEXT_DIM, TEXT_FAINT, WELL,
 };
 use crate::ext::{Extensions, Installed, Level, NodeStatus, Severity, Status};
 use crate::icons;
@@ -63,7 +63,27 @@ enum Op {
     Install(String, String),
 }
 
-pub fn extensions_panel(ui: &mut egui::Ui, ext: &mut Extensions, actions: &mut Vec<Action>) {
+/// The square an extension's icon goes in (a placeholder when it has none).
+fn icon_slot(ui: &egui::Ui, slot: Rect, texture: Option<&egui::TextureHandle>, enabled: bool) {
+    match texture {
+        Some(t) => {
+            let tint = if enabled { Color32::WHITE } else { Color32::from_gray(110) };
+            egui::Image::new(t).corner_radius(6).tint(tint).paint_at(ui, slot);
+        }
+        None => {
+            ui.painter().rect_filled(slot, 8.0, RAISED);
+            ui.painter().text(
+                slot.center(),
+                Align2::CENTER_CENTER,
+                icons::PUZZLE,
+                FontId::proportional(18.0),
+                TEXT_DIM,
+            );
+        }
+    }
+}
+
+pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, actions: &mut Vec<Action>) {
     Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 10, bottom: 6 }).show(ui, |ui| {
         panel_title(ui, "Extensions", |ui| {
             if small_icon(ui, icons::FILE_ARCHIVE, "Install from a .vsix file") {
@@ -117,51 +137,77 @@ pub fn extensions_panel(ui: &mut egui::Ui, ext: &mut Extensions, actions: &mut V
                 });
             }
             for e in &ext.installed {
-                well(ui, |ui| {
+                let texture = extension_icon(ui.ctx(), &mut st.ext_icons, e);
+                // Right of the name, like VS Code: how long it took to start, or what is wrong.
+                let (state, color) = match e.status {
+                    Status::Active => (format!("{}  {} ms", icons::HISTORY, e.activation_ms), TEXT_FAINT),
+                    Status::Activating => ("starting …".to_string(), TEXT_DIM),
+                    Status::Failed => ("failed to start".to_string(), c(theme::PROBLEM_ERROR)),
+                    Status::Declarative => (String::new(), TEXT_FAINT),
+                    Status::Disabled => ("disabled".to_string(), TEXT_FAINT),
+                    Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => ("needs Node.js".to_string(), c(theme::PROBLEM_WARNING)),
+                    Status::Idle => (String::new(), TEXT_FAINT),
+                };
+                let mut open = false;
+                let mut row = Frame::NONE.corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(8, 7)).begin(ui);
+                {
+                    let ui = &mut row.content_ui;
+                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        let name = ui.label(RichText::new(&e.display_name).size(13.0).color(if e.enabled { TEXT } else { TEXT_DIM }));
-                        if !e.description.is_empty() {
-                            name.on_hover_text(&e.description);
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            if small_icon(ui, icons::TRASH_2, "Uninstall") {
-                                op = Some(Op::Uninstall(e.id.clone()));
-                            }
-                            let (glyph, tip) =
-                                if e.enabled { (icons::SQUARE_CHECK, "Enabled: click to disable") } else { (icons::SQUARE, "Disabled: click to enable") };
-                            if small_icon(ui, glyph, tip) {
-                                op = Some(Op::Enable(e.id.clone(), !e.enabled));
-                            }
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let (slot, icon_resp) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
+                        icon_slot(ui, slot, texture.as_ref(), e.enabled);
+                        open |= icon_resp.clicked();
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if !state.is_empty() {
+                                    ui.label(RichText::new(&state).size(11.0).color(color));
+                                }
+                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                    let name_color = if e.enabled { TEXT } else { TEXT_DIM };
+                                    let name = RichText::new(&e.display_name).size(13.5).strong().color(name_color);
+                                    open |= ui.add(egui::Label::new(name).truncate().sense(Sense::click())).clicked();
+                                });
+                            });
+                            let second = if e.status == Status::Failed && !e.error.is_empty() { &e.error } else { &e.description };
+                            let second_color = if e.status == Status::Failed { c(theme::PROBLEM_ERROR) } else { TEXT_DIM };
+                            ui.add(egui::Label::new(RichText::new(second).size(12.0).color(second_color)).truncate());
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                if small_icon(ui, icons::TRASH_2, "Uninstall") {
+                                    op = Some(Op::Uninstall(e.id.clone()));
+                                }
+                                let (glyph, tip) = if e.enabled {
+                                    (icons::SQUARE_CHECK, "Enabled: click to disable")
+                                } else {
+                                    (icons::SQUARE, "Disabled: click to enable")
+                                };
+                                if small_icon(ui, glyph, tip) {
+                                    op = Some(Op::Enable(e.id.clone(), !e.enabled));
+                                }
+                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                    let mut by = e.publisher.clone();
+                                    if !e.unsupported.is_empty() {
+                                        by.push_str(&format!("  ·  {} features not available yet", e.unsupported.len()));
+                                    }
+                                    let label = ui.add(egui::Label::new(RichText::new(by).size(11.5).color(TEXT_FAINT)).truncate());
+                                    if !e.unsupported.is_empty() {
+                                        label.on_hover_text(e.unsupported.join("\n"));
+                                    }
+                                });
+                            });
                         });
                     });
-                    let (state, color) = match e.status {
-                        Status::Active => (format!("running · started in {} ms", e.activation_ms), c(0x3ddc84ff)),
-                        Status::Activating => ("starting …".to_string(), TEXT_DIM),
-                        Status::Failed => ("failed to start".to_string(), c(theme::PROBLEM_ERROR)),
-                        Status::Declarative => ("data only (nothing to run)".to_string(), TEXT_DIM),
-                        Status::Disabled => ("disabled".to_string(), TEXT_FAINT),
-                        Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => ("needs Node.js".to_string(), c(theme::PROBLEM_WARNING)),
-                        Status::Idle if ext.host_running => ("waiting for a file it handles".to_string(), TEXT_DIM),
-                        Status::Idle => ("starts when a folder is open".to_string(), TEXT_DIM),
-                    };
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.label(RichText::new(format!("{} · {} · ", e.publisher, e.version)).size(11.5).color(TEXT_FAINT));
-                        ui.label(RichText::new(state).size(11.5).color(color));
-                    });
-                    if e.status == Status::Failed && !e.error.is_empty() {
-                        ui.label(RichText::new(&e.error).size(11.5).color(c(theme::PROBLEM_ERROR)));
-                    }
-                    if !e.unsupported.is_empty() {
-                        ui.label(
-                            RichText::new(format!("{} VS Code features it asked for are not available yet", e.unsupported.len()))
-                                .size(11.0)
-                                .color(TEXT_FAINT),
-                        )
-                        .on_hover_text(e.unsupported.join("\n"));
-                    }
-                });
+                }
+                if ui.rect_contains_pointer(row.content_ui.min_rect().expand(6.0)) {
+                    row.frame.fill = WELL;
+                }
+                row.end(ui);
+                if open {
+                    st.extension = e.id.clone();
+                    st.show_left(LeftPanel::Extension);
+                }
             }
 
             if ext.searching || !ext.results.is_empty() || !ext.market_error.is_empty() {
@@ -183,7 +229,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, ext: &mut Extensions, actions: &mut V
                 let id = item.id();
                 well(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&item.display_name).size(13.0).color(TEXT));
+                        ui.label(RichText::new(&item.display_name).size(13.5).strong().color(TEXT));
                         if item.verified {
                             ui.label(icon(icons::CIRCLE_CHECK, 12.0, ACCENT)).on_hover_text("Verified publisher");
                         }
@@ -360,8 +406,10 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
         return;
     };
     let mut run = None;
+    let mut back = false;
     Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 10, bottom: 6 }).show(ui, |ui| {
         ui.horizontal(|ui| {
+            back = small_icon(ui, icons::ARROW_LEFT, "Back to the installed extensions");
             if let Some(texture) = extension_icon(ui.ctx(), &mut st.ext_icons, e) {
                 ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::splat(22.0)).corner_radius(4));
             }
@@ -415,42 +463,89 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
     if let Some((id, title)) = run {
         ext.run_command(&id, &title);
     }
+    if back {
+        st.show_left(LeftPanel::Extensions);
+    }
 }
 
-/// Messages from extensions, stacked in the canvas corner; they fade by themselves.
-pub fn notices(ctx: &egui::Context, canvas: Rect, ext: &Extensions) {
+/// The panel an extension's webview is shown in. The page itself is a
+/// browser view the app places over this panel; here its place is reserved
+/// and the extension is asked to fill it the first time.
+pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
+    let Some(entry) = ext.webviews.iter().find(|w| w.key == st.webview) else {
+        Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.label(RichText::new("This view is gone: its extension is not running.").size(12.0).color(TEXT_DIM));
+        });
+        return;
+    };
+    let (key, waiting) = (entry.key.clone(), entry.handle.is_none());
+    let rect = ui.available_rect_before_wrap().shrink(1.0);
+    ui.allocate_rect(rect, Sense::hover());
+    if !crate::webview::AVAILABLE {
+        let text = "Webviews are only available on Windows for now.";
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), TEXT_DIM);
+    } else if waiting {
+        let text = format!("Starting {} …", entry.title);
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), TEXT_DIM);
+        ext.resolve_webview(&key);
+    }
+    st.webview_rect = Some(rect);
+}
+
+/// Messages from extensions, stacked in the canvas corner. Plain ones fade
+/// by themselves; those that ask something show their choices as buttons.
+pub fn notices(ctx: &egui::Context, st: &mut UiState, canvas: Rect, ext: &mut Extensions) {
     if ext.notices.is_empty() {
         return;
     }
-    egui::Area::new(egui::Id::unique("notices"))
+    let mut answer: Option<(usize, Option<String>)> = None;
+    let resp = egui::Area::new(egui::Id::unique("notices"))
         .pivot(Align2::RIGHT_BOTTOM)
         .fixed_pos(canvas.right_bottom() - Vec2::new(12.0, 12.0))
         .order(egui::Order::Foreground)
-        .interactable(false)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
-            {
-                for n in &ext.notices {
-                    let color = match n.level {
-                        Level::Info => ACCENT,
-                        Level::Warn => c(theme::PROBLEM_WARNING),
-                        Level::Error => c(theme::PROBLEM_ERROR),
-                    };
-                    Frame::NONE
-                        .fill(CARD)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(CornerRadius::same(8))
-                        .inner_margin(Margin::symmetric(10, 7))
-                        .show(ui, |ui| {
-                            ui.set_max_width(420.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(icon(icons::PUZZLE, 13.0, color));
-                                ui.label(RichText::new(&n.source).size(12.0).color(TEXT));
-                                let text: String = n.text.chars().take(300).collect();
-                                ui.label(RichText::new(text).size(12.0).color(TEXT_DIM));
-                            });
+            for (i, n) in ext.notices.iter().enumerate() {
+                let color = match n.level {
+                    Level::Info => ACCENT,
+                    Level::Warn => c(theme::PROBLEM_WARNING),
+                    Level::Error => c(theme::PROBLEM_ERROR),
+                };
+                Frame::NONE
+                    .fill(CARD)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::symmetric(10, 7))
+                    .show(ui, |ui| {
+                        ui.set_max_width(420.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(icon(icons::PUZZLE, 13.0, color));
+                            ui.label(RichText::new(&n.source).size(12.0).color(TEXT));
+                            let limit = if n.actions.is_empty() { 300 } else { 900 };
+                            let text: String = n.text.chars().take(limit).collect();
+                            ui.label(RichText::new(text).size(12.0).color(TEXT_DIM));
                         });
-                }
+                        if !n.actions.is_empty() {
+                            ui.add_space(2.0);
+                            ui.horizontal(|ui| {
+                                for (k, action) in n.actions.iter().enumerate() {
+                                    if pill(ui, action, k == 0) {
+                                        answer = Some((i, Some(action.clone())));
+                                    }
+                                }
+                                if pill(ui, "Dismiss", false) {
+                                    answer = Some((i, None));
+                                }
+                            });
+                        }
+                    });
             }
         });
+    // Only questions take clicks; plain notices let them through to the canvas.
+    if ext.notices.iter().any(|n| !n.actions.is_empty()) {
+        st.floating.push(resp.response.rect);
+    }
+    if let Some((i, action)) = answer {
+        ext.answer_notice(i, action.as_deref());
+    }
 }

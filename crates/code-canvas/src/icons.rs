@@ -71,3 +71,5 @@ pub const PACKAGE: &str = "\u{e12c}";
 pub const CIRCLE_CHECK: &str = "\u{e225}";
 pub const CHART_COLUMN: &str = "\u{e2a2}";
 pub const FILE_ARCHIVE: &str = "\u{e30c}";
+pub const ARROW_LEFT: &str = "\u{e04c}";
+pub const HISTORY: &str = "\u{e1f4}";

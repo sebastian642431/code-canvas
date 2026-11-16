@@ -12,6 +12,9 @@ it works, what works today, and what does not yet.
   `code-canvas --install-extension dbaeumer.vscode-eslint esbenp.prettier-vscode`
 - Each extension that offers something gets **its own icon in the left rail**. It opens
   the extension's panel: what it is, and its commands, which run with a click.
+- **Webviews**: an extension's own interface (the official Claude Code panel, for
+  one) opens in the right panel; the extension's icon appears in the right rail.
+  Windows only for now.
 - **Problems** (circle icon): what linters and language servers report. On the canvas
   each problem underlines its code, and the file's card gets a coloured edge and a dot
   that stay visible from far away, so problems show on the map of the whole repository.
@@ -57,6 +60,7 @@ theirs:
 | text editor decorations | washes over ranges and text after a line, drawn on the card |
 | `workspace.applyEdit`, formatting edits | the app writes the file and reloads its card |
 | status bar items | text in the status bar |
+| webview views and panels | a browser view (WebView2) over the right panel |
 | `showInformationMessage` & co. | notices in the corner of the canvas |
 
 ### Coverage of the `vscode` API
@@ -66,7 +70,18 @@ asks for that is missing gets a harmless stand-in and is reported once, so gaps 
 visible (the Extensions panel says "N VS Code features it asked for are not available
 yet", and the log lists them) instead of crashing the extension.
 
-Implemented: documents and their events, configuration, diagnostics, every
+### Webviews
+
+`webview.rs` shows a webview's page in a child browser view (`wry`, WebView2 on
+Windows) placed over the right panel. The page and its files are served from
+`https://ccres.localhost` by a protocol handler: `/view/<handle>` is the HTML the
+extension set, `/file/<path>` a file under the extensions folder or an open folder
+(anything else is refused). A script added to every page provides
+`acquireVsCodeApi()` and the `--vscode-*` colours pages are styled with: the common
+ones are set exactly, the rest are guessed from their name. Messages travel as JSON:
+page → app → host → extension, and back.
+
+Implemented: webview views and panels, documents and their events, configuration, diagnostics, every
 `languages.register…Provider` (kept by kind; the app uses formatting today, and
 definitions, references and hovers can be requested), commands, workspace edits,
 `workspace.fs`, output channels, status bar items, messages, decorations, extension
@@ -74,13 +89,12 @@ storage, activation events, and the classes and enums extensions construct.
 
 Not yet — these are the next pieces, in order:
 
-1. **Webviews.** An extension's own HTML interface (the official Claude Code panel,
-   Git Graph's graph, GitHub's pull request pages). Needs a browser view inside the
-   window (WebView2 on Windows) and the message bridge. Until then, opening one says so.
-2. **Tree views and view containers**: the lists extensions add to the side bar.
-3. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
-4. **Editing**: typing in a card. Extensions that react to keystrokes (completion,
-   on-type formatting) wait for this.
+1. **Tree views and view containers**: the lists extensions add to the side bar.
+2. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
+3. **Editing**: typing in a card. Extensions that react to keystrokes (completion,
+   on-type formatting) wait for this; so does showing the diffs Claude Code proposes.
+4. Webviews on Linux and macOS; `when` clauses (which of an extension's views to show);
+   webview state kept across restarts.
 5. Terminals, debugging, notebooks, source control providers, authentication.
 
 ### Checked with real extensions
@@ -92,7 +106,8 @@ Not yet — these are the next pieces, in order:
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
 | Version Lens (`pflannery.vscode-versionlens`) | starts; shows nothing until code lenses are drawn |
 | Pretty TypeScript Errors (`yoavbls.pretty-ts-errors`) | starts; needs hovers and a TypeScript language server |
-| Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview |
+| Claude Code (`Anthropic.claude-code`) | its panel opens and renders, signed in; sending a message has not been tested yet |
+| Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview panel — not tried since webviews landed |
 | GitHub Pull Requests | starts; its interface is tree views and webviews |
 
 Other extensions have not been tried yet. Language servers shipped as extensions

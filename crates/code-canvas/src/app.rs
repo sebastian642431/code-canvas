@@ -92,6 +92,10 @@ pub struct App {
     last_save: Instant,
     /// Installed VS Code extensions and the process that runs them.
     ext: Extensions,
+    /// Browser views showing extensions' webviews.
+    webviews: crate::webview::WebViews,
+    /// Folders webview pages may load files from (to notice changes).
+    webview_roots: Vec<PathBuf>,
 }
 
 impl App {
@@ -157,6 +161,8 @@ impl App {
             session_dirty: false,
             last_save: Instant::now(),
             ext: Extensions::new(session::data_dir(), waker),
+            webviews: crate::webview::WebViews::new(),
+            webview_roots: Vec::new(),
         }
     }
 
@@ -211,6 +217,7 @@ impl App {
             right_panel: match self.ui.last_right {
                 RightPanel::Symbols => 0,
                 RightPanel::Claude => 1,
+                RightPanel::Webview => 0,
             },
             window,
         });
@@ -971,6 +978,17 @@ impl App {
             Step::Right(which) => match which.as_str() {
                 "symbols" => self.ui.show_right(RightPanel::Symbols),
                 "claude" => self.ui.show_right(RightPanel::Claude),
+                key if !key.is_empty() && key != "none" => {
+                    // `right <view id or extension id>`: that extension's webview.
+                    let found = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
+                    match found.map(|w| w.key.clone()) {
+                        Some(k) => {
+                            self.ui.webview = k;
+                            self.ui.right = Some(RightPanel::Webview);
+                        }
+                        None => log::warn!("script: no webview '{key}'"),
+                    }
+                }
                 _ => self.ui.right = None,
             },
             Step::CollapseAll => self.apply(Action::CollapseAll),
@@ -1087,7 +1105,24 @@ impl App {
             match event {
                 ext::Event::Write { path, text } => self.write_file(&path, &text),
                 ext::Event::Reveal(path) => self.reveal_file(&path),
+                ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
+                ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
+                ext::Event::WebviewClosed(handle) => self.webviews.close(&handle),
+                ext::Event::ShowWebview(key) => {
+                    self.ui.webview = key;
+                    self.ui.right = Some(RightPanel::Webview);
+                }
             }
+        }
+        // Webview pages: what they may load, and what they sent.
+        let mut roots: Vec<PathBuf> = self.pages.iter().map(|p| p.root.clone()).collect();
+        roots.push(self.ext.extensions_dir().to_path_buf());
+        if roots != self.webview_roots {
+            self.webviews.set_roots(roots.clone());
+            self.webview_roots = roots;
+        }
+        for (handle, message) in self.webviews.poll() {
+            self.ext.webview_message(&handle, message);
         }
         // Notices fade out by themselves: keep ticking while one is up.
         busy |= !self.ext.notices.is_empty();
@@ -1228,6 +1263,16 @@ impl App {
         }
         for a in actions {
             self.apply(a);
+        }
+        // The webview on screen, if any: a browser view over its panel.
+        {
+            let shown =
+                (self.ui.right == Some(RightPanel::Webview)).then_some(()).and(self.ui.webview_rect).and_then(|r| {
+                    let entry = self.ext.webviews.iter().find(|w| w.key == self.ui.webview)?;
+                    Some((entry.handle.clone()?, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
+                });
+            let g = self.gfx.as_ref().unwrap();
+            self.webviews.show(&g.window, shown.as_ref().map(|(h, r)| (h.as_str(), *r)));
         }
         let area = self.canvas;
 

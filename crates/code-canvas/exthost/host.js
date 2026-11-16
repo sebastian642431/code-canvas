@@ -721,6 +721,29 @@ class ThemeIcon {
 ThemeIcon.File = new ThemeIcon('file');
 ThemeIcon.Folder = new ThemeIcon('folder');
 
+class NotebookCellOutputItem {
+  constructor(data, mime) {
+    this.data = data;
+    this.mime = mime;
+  }
+  static text(value, mime) {
+    return new NotebookCellOutputItem(Buffer.from(String(value)), mime || 'text/plain');
+  }
+  static json(value, mime) {
+    return new NotebookCellOutputItem(Buffer.from(JSON.stringify(value)), mime || 'text/x-json');
+  }
+  static stdout(value) {
+    return NotebookCellOutputItem.text(value, 'application/vnd.code.notebook.stdout');
+  }
+  static stderr(value) {
+    return NotebookCellOutputItem.text(value, 'application/vnd.code.notebook.stderr');
+  }
+  static error(err) {
+    const plain = { name: err && err.name, message: err && err.message, stack: err && err.stack };
+    return NotebookCellOutputItem.json(plain, 'application/vnd.code.notebook.error');
+  }
+}
+
 class TabInputText {
   constructor(uri) {
     this.uri = uri;
@@ -751,6 +774,8 @@ const classes = {
   ThemeColor,
   ThemeIcon,
   TabInputText,
+  NotebookCellOutputItem,
+  NotebookCellOutput: record('NotebookCellOutput', ['items', 'metadata']),
   SnippetTextEdit: record('SnippetTextEdit', ['range', 'snippet']),
   DiagnosticRelatedInformation: record('DiagnosticRelatedInformation', ['location', 'message']),
   CodeAction: record('CodeAction', ['title', 'kind']),
@@ -1363,11 +1388,119 @@ function permissive(name, target) {
   });
 }
 
+// ----------------------------------------------------------------- webviews
+//
+// A webview is an extension's own HTML interface. The page is shown by the
+// app in a browser view; here lives the object the extension talks to. The
+// page's files are served by the app from RESOURCE_ORIGIN.
+
+const RESOURCE_ORIGIN = 'https://ccres.localhost';
+const webviews = new Map(); // handle -> { webview, received, extension, closed }
+const webviewProviders = new Map(); // view id -> { provider, extension }
+let webviewSeq = 0;
+
+function createWebview(extension, options) {
+  const handle = 'w' + ++webviewSeq;
+  const received = new EventEmitter();
+  let html = '';
+  let opts = options || {};
+  const webview = {
+    get options() {
+      return opts;
+    },
+    set options(v) {
+      opts = v || {};
+    },
+    get html() {
+      return html;
+    },
+    set html(v) {
+      html = String(v);
+      send({ type: 'webviewHtml', handle, html });
+    },
+    cspSource: RESOURCE_ORIGIN,
+    asWebviewUri(uri) {
+      const file = uri.fsPath.replace(/\\/g, '/');
+      return Uri.parse(RESOURCE_ORIGIN + '/file/' + file.split('/').map(encodeURIComponent).join('/'));
+    },
+    postMessage(message) {
+      send({ type: 'webviewPost', handle, message });
+      return Promise.resolve(true);
+    },
+    onDidReceiveMessage: received.event,
+  };
+  const entry = { webview, received, extension, closed: new EventEmitter() };
+  webviews.set(handle, entry);
+  return { handle, ...entry };
+}
+
+function viewTitle(extension, view) {
+  const ext = state.extensions.get(extension);
+  const views = (ext && ext.manifest.contributes && ext.manifest.contributes.views) || {};
+  for (const list of Object.values(views)) for (const v of list || []) if (v.id === view) return v.name || ext.manifest.displayName || view;
+  return (ext && ext.manifest.displayName) || view;
+}
+
+function registerWebviewViewProvider(view, provider) {
+  const extension = currentId() || '';
+  webviewProviders.set(view, { provider, extension });
+  send({ type: 'webviewView', view, extension, title: viewTitle(extension, view) });
+  return new Disposable(() => webviewProviders.delete(view));
+}
+
+function createWebviewPanel(viewType, title, _show, options) {
+  const extension = currentId() || '';
+  const w = createWebview(extension, options);
+  const viewState = new EventEmitter();
+  let name = String(title || viewType);
+  const panel = {
+    viewType,
+    webview: w.webview,
+    options: options || {},
+    viewColumn: 1,
+    active: true,
+    visible: true,
+    iconPath: undefined,
+    get title() {
+      return name;
+    },
+    set title(v) {
+      name = String(v);
+      send({ type: 'webviewPanel', handle: w.handle, extension, title: name });
+    },
+    onDidDispose: w.closed.event,
+    onDidChangeViewState: viewState.event,
+    reveal() {
+      send({ type: 'webviewPanel', handle: w.handle, extension, title: name, reveal: true });
+    },
+    dispose() {
+      if (!webviews.delete(w.handle)) return;
+      send({ type: 'webviewClosed', handle: w.handle });
+      w.closed.fire();
+    },
+  };
+  send({ type: 'webviewPanel', handle: w.handle, extension, title: name, reveal: true });
+  return panel;
+}
+
+// Messages that offer choices wait for the user's answer in the app.
+const pendingMessages = new Map(); // id -> { resolve, items }
+let messageSeq = 0;
+const itemTitle = (i) => (typeof i === 'string' ? i : i.title);
+
 function showMessage(level) {
   return (message, ...rest) => {
-    const items = rest.filter((r) => typeof r === 'string' || (r && r.title));
-    send({ type: 'message', level, extension: currentId() || '', text: String(message), actions: items.map((i) => (typeof i === 'string' ? i : i.title)) });
-    return Promise.resolve(undefined);
+    const items = rest.filter((r) => typeof r === 'string' || (r && typeof r.title === 'string'));
+    const detail = rest.find((r) => r && typeof r === 'object' && typeof r.detail === 'string');
+    const text = String(message) + (detail ? ' ' + detail.detail : '');
+    const base = { type: 'message', level, extension: currentId() || '', text };
+    if (items.length === 0) {
+      send({ ...base, actions: [] });
+      return Promise.resolve(undefined);
+    }
+    const id = ++messageSeq;
+    send({ ...base, id, actions: items.map(itemTitle) });
+    return new Promise((resolve) => pendingMessages.set(id, { resolve, items }));
   };
 }
 
@@ -1581,11 +1714,8 @@ const window = permissive('window', {
     return Promise.resolve(task({ report() {} }, source.token));
   },
   createTerminal: () => permissive('Terminal', { name: 'terminal', processId: Promise.resolve(undefined), sendText() {}, show() {}, hide() {}, dispose() {} }),
-  createWebviewPanel(_viewType, title) {
-    // Webviews (an extension's own HTML interface) need a browser inside the
-    // app. Say so plainly instead of failing somewhere deeper.
-    throw new Error(`"${title}" is a webview, and Code Canvas cannot show webviews yet`);
-  },
+  createWebviewPanel,
+  registerWebviewViewProvider,
   registerTreeDataProvider: disposableStub,
   // Tree views have nowhere to be shown yet: they exist and stay empty.
   createTreeView: () => ({
@@ -1599,7 +1729,6 @@ const window = permissive('window', {
     reveal: () => Promise.resolve(),
     dispose() {},
   }),
-  registerWebviewViewProvider: disposableStub,
   registerWebviewPanelSerializer: disposableStub,
   registerCustomEditorProvider: disposableStub,
   registerUriHandler: disposableStub,
@@ -1979,6 +2108,26 @@ const requests = {
     }
     return { text: '' };
   },
+  /// The app is about to show a webview view: let its extension fill it.
+  async resolveWebview({ view }) {
+    const entry = webviewProviders.get(view);
+    if (!entry) throw new Error(`no extension provides the view ${view}`);
+    const w = createWebview(entry.extension, {});
+    const visibility = new EventEmitter();
+    const viewObject = {
+      viewType: view,
+      webview: w.webview,
+      title: undefined,
+      description: undefined,
+      badge: undefined,
+      visible: true,
+      onDidChangeVisibility: visibility.event,
+      onDidDispose: w.closed.event,
+      show() {},
+    };
+    await scope.run(entry.extension, () => entry.provider.resolveWebviewView(viewObject, { state: undefined }, noToken));
+    return { handle: w.handle };
+  },
   async command({ command, args }) {
     // What a command returns stays here: it is rarely something that can be sent.
     await commands.executeCommand(command, ...(args || []));
@@ -1987,7 +2136,12 @@ const requests = {
   async describe() {
     const kinds = {};
     for (const p of state.providers) (kinds[p.kind] = kinds[p.kind] || []).push(p.extension);
-    return { providers: kinds, commands: [...state.commands.keys()], documents: [...documents.values()].map((d) => d.fileName) };
+    return {
+      providers: kinds,
+      commands: [...state.commands.keys()],
+      documents: [...documents.values()].map((d) => d.fileName),
+      webviews: [...webviewProviders.keys()],
+    };
   },
 };
 
@@ -2027,6 +2181,26 @@ async function handle(msg) {
     case 'changed':
       reloadDocument(msg.path);
       break;
+    case 'messageReply': {
+      // The user picked one of a message's choices (or dismissed it: no action).
+      const pending = pendingMessages.get(msg.id);
+      if (pending) {
+        pendingMessages.delete(msg.id);
+        pending.resolve(pending.items.find((i) => itemTitle(i) === msg.action));
+      }
+      break;
+    }
+    case 'webviewMessage': {
+      // The page called `acquireVsCodeApi().postMessage(...)`.
+      const w = webviews.get(msg.handle);
+      if (w) w.received.fire(msg.message);
+      break;
+    }
+    case 'webviewClosed': {
+      const w = webviews.get(msg.handle);
+      if (w && webviews.delete(msg.handle)) w.closed.fire();
+      break;
+    }
     case 'request': {
       const fn = requests[msg.method];
       try {

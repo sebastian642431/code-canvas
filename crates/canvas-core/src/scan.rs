@@ -176,7 +176,7 @@ impl Repo {
     pub fn reload_file(&mut self, index: usize, opts: &ScanOptions) {
         let rel = self.files[index].rel_path.clone();
         let path = self.root.join(&rel);
-        self.files[index] = load_file(&path, rel, opts);
+        self.files[index] = load_file(&path, rel, None, opts);
         self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
         self.symbols = crate::refs::SymbolIndex::build(&self.files);
     }
@@ -232,18 +232,42 @@ pub fn normalise(raw: &str) -> (String, Vec<u32>, u32) {
     (text, starts, max_cols as u32)
 }
 
-fn load_file(path: &Path, rel_path: String, opts: &ScanOptions) -> SourceFile {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
+/// CPU time spent per loading step, summed over all threads, in
+/// nanoseconds: `[stat, read, normalise, analyse]`. For `scan_bench`.
+pub static LOAD_PROFILE: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+fn lap(step: usize, since: &mut Instant) {
+    let now = Instant::now();
+    LOAD_PROFILE[step].fetch_add(now.duration_since(*since).as_nanos() as u64, Ordering::Relaxed);
+    *since = now;
+}
+
+/// Read a whole file whose size is known: one open, no question about its size.
+fn read_sized(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::with_capacity(size as usize + 1);
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOptions) -> SourceFile {
+    let mut t = Instant::now();
+    if is_binary_name(&rel_path) {
+        return SourceFile::placeholder(rel_path, "binary".into());
+    }
+    let size = match size.map(Ok).unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len())) {
+        Ok(size) => size,
         Err(e) => return SourceFile::placeholder(rel_path, format!("unreadable: {e}")),
     };
-    if meta.len() > opts.max_file_bytes {
-        return SourceFile::placeholder(rel_path, format!("too large ({} KB)", meta.len() / 1024));
+    if size > opts.max_file_bytes {
+        return SourceFile::placeholder(rel_path, format!("too large ({} KB)", size / 1024));
     }
-    let bytes = match std::fs::read(path) {
+    lap(0, &mut t);
+    let bytes = match read_sized(path, size) {
         Ok(b) => b,
         Err(e) => return SourceFile::placeholder(rel_path, format!("unreadable: {e}")),
     };
+    lap(1, &mut t);
     if bytes[..bytes.len().min(8000)].contains(&0) {
         return SourceFile::placeholder(rel_path, "binary".into());
     }
@@ -256,24 +280,48 @@ fn load_file(path: &Path, rel_path: String, opts: &ScanOptions) -> SourceFile {
         text.truncate(cut);
         line_starts.truncate(opts.max_lines);
     }
+    lap(2, &mut t);
     let lang = Lang::from_path(&rel_path);
     let analysis = syntax::analyze(&text, &line_starts, lang, crate::symbols::Dialect::from_path(&rel_path));
     text.shrink_to_fit();
+    lap(3, &mut t);
     SourceFile { name: file_name(&rel_path), rel_path, lang, text, line_starts, analysis, max_cols, note }
 }
 
 /// Parallel directory walk: every walker thread gets a [`Visitor`] that
 /// collects paths locally and hands them over in batches.
+/// A file found by the walk: its path, its path relative to the root, and
+/// its size when the directory listing gave it for free (it does on Windows;
+/// asking again costs one system call per file, which adds up to seconds).
+type Found = (PathBuf, String, Option<u64>);
+
+/// Extensions of files that are never text: they become a card without the
+/// file being opened at all.
+const BINARY_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "icns", "cur", "webp", "avif", "tif", "tiff", "psd", "woff", "woff2",
+    "ttf", "otf", "eot", "pdf", "zip", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar", "jar", "war", "apk", "aab", "crx",
+    "exe", "dll", "so", "dylib", "a", "lib", "o", "obj", "pdb", "class", "wasm", "pyc", "mp3", "mp4", "m4a", "aac",
+    "wav", "ogg", "opus", "flac", "webm", "mov", "avi", "mkv", "sqlite", "db", "pak", "nib", "keystore",
+];
+
+fn is_binary_name(rel_path: &str) -> bool {
+    let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    match name.rsplit_once('.') {
+        Some((_, ext)) => BINARY_EXTENSIONS.iter().any(|b| ext.eq_ignore_ascii_case(b)),
+        None => false,
+    }
+}
+
 struct Collector<'a> {
     root: &'a Path,
     opts: &'a ScanOptions,
     progress: Option<&'a ScanProgress>,
-    shared: &'a Mutex<Vec<(PathBuf, String)>>,
+    shared: &'a Mutex<Vec<Found>>,
 }
 
 struct Visitor<'a> {
     c: Collector<'a>,
-    local: Vec<(PathBuf, String)>,
+    local: Vec<Found>,
 }
 
 impl<'s> ignore::ParallelVisitorBuilder<'s> for Collector<'s> {
@@ -300,7 +348,9 @@ impl ignore::ParallelVisitor for Visitor<'_> {
             return ignore::WalkState::Continue;
         }
         let rel = entry.path().strip_prefix(self.c.root).unwrap_or(entry.path()).to_string_lossy().replace('\\', "/");
-        self.local.push((entry.into_path(), rel));
+        // Free where the listing carries it; never an extra system call.
+        let size = if cfg!(windows) { entry.metadata().ok().map(|m| m.len()) } else { None };
+        self.local.push((entry.into_path(), rel, size));
         if let Some(p) = self.c.progress {
             p.discovered.fetch_add(1, Ordering::Relaxed);
         }
@@ -341,7 +391,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
         })
         .build_parallel();
 
-    let shared = Mutex::new(Vec::<(PathBuf, String)>::new());
+    let shared = Mutex::new(Vec::<Found>::new());
     let mut builder = Collector { root: &root, opts, progress: progress.as_deref(), shared: &shared };
     walker.visit(&mut builder);
     let mut paths = shared.into_inner().unwrap();
@@ -357,8 +407,8 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
     // 2. Read + tokenise in parallel, keeping the original order.
     let files: Vec<SourceFile> = paths
         .par_iter()
-        .map(|(path, rel)| {
-            let f = load_file(path, rel.clone(), opts);
+        .map(|(path, rel, size)| {
+            let f = load_file(path, rel.clone(), *size, opts);
             if let Some(p) = &progress {
                 p.loaded.fetch_add(1, Ordering::Relaxed);
             }

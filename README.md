@@ -41,9 +41,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   stay marked from any zoom level, so they show on the map of the whole repository.
 - Formatters: `Shift+Alt+F` formats the file under the pointer with the project's own
   configuration. Each extension gets its icon in the rail, with its commands.
-- Checked so far with ESLint, Prettier and Error Lens. Extensions whose interface is a
-  webview or a tree view start but cannot show it yet — the state of each piece is in
-  [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+- Webviews: an extension's own interface opens in the right panel — the official
+  Claude Code extension renders there (Windows only for now).
+- Checked so far with ESLint, Prettier, Error Lens and Claude Code. Tree views are
+  not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
 **Source control**
 - What git says changed: a list of changed, new and deleted files; on the canvas a
@@ -113,13 +114,15 @@ And on **Chromium** (a shallow clone: **514,507 files / 63.7 M lines**), same ma
 
 | | |
 |---|---|
-| Open, files already in the disk cache | **~26 s** (walk 2 s, read + analyse 18 s, layout 0.5 s) |
+| Open, files already in the disk cache | **~19 s** (walk 3 s, read + analyse 12 s, layout 0.7 s) |
 | Open, first time after cloning | 7.6 min — almost all of it the disk reading 5 GB of small files |
 | CPU time per frame, whole repository on screen | **~5 ms** |
 | Memory | ~4 GB: every file's text is kept in memory today |
 
-The memory and the cold start are the next targets: read only what is on screen and
-keep the rest on disk.
+Two thirds of the warm time is the operating system opening 470,000 files, which more
+threads do not speed up. The fix for that, for the cold start of every later open and
+for the memory is the same and is next: cache what the scan computes per file and
+read a file's text only when it is on screen.
 
 How (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): parallel walk and load;
 tokens produced on demand per visible chunk instead of stored; static geometry uploaded
@@ -139,8 +142,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
-- [ ] **Webviews** for extensions (the official Claude Code panel, Git Graph, GitHub
-      pull requests), then tree views, code lenses and hovers on the canvas.
+- [x] **Webviews** for extensions (the official Claude Code panel renders).
+- [ ] Tree views, code lenses and hovers on the canvas; webviews on Linux and macOS.
 - [ ] Format on save; themes and grammars from extensions.
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
