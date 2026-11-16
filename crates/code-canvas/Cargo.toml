@@ -1,0 +1,26 @@
+[package]
+name = "code-canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "See a whole codebase on an infinite, GPU-rendered canvas"
+
+[dependencies]
+canvas-core.workspace = true
+canvas-render.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+pollster.workspace = true
+rfd.workspace = true
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+
+[build-dependencies]
+winresource = "0.1"

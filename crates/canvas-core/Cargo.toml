@@ -1,0 +1,10 @@
+[package]
+name = "canvas-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ignore.workspace = true
+rayon.workspace = true
+log.workspace = true

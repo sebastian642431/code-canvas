@@ -1,0 +1,12 @@
+[package]
+name = "canvas-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+canvas-core.workspace = true
+wgpu.workspace = true
+glyphon.workspace = true
+bytemuck.workspace = true
+log.workspace = true

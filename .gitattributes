@@ -1,0 +1,9 @@
+# Same line endings for everyone, whatever their git settings.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+
+# Never touch these.
+*.ttf binary
+*.ico binary
+*.png binary
+*.rgba binary
