@@ -74,6 +74,8 @@ pub struct UiState {
     pub floating: Vec<Rect>,
     pub claude: ClaudeStatus,
     pub maximized: bool,
+    /// The app icon, shown in the top-left corner of the header.
+    logo: Option<egui::TextureHandle>,
 }
 
 impl Default for UiState {
@@ -91,6 +93,7 @@ impl Default for UiState {
             floating: Vec::new(),
             claude: ClaudeStatus::Checking,
             maximized: false,
+            logo: None,
         }
     }
 }
@@ -377,14 +380,17 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, ac
         let mut right_start = bar.right();
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            ui.add_space(5.0);
-            let b = Vec2::new(34.0, 34.0);
-            if icon_button(ui, icons::PANEL_LEFT, b, st.left.is_some(), HOVER)
-                .on_hover_text("Toggle the left panel (Ctrl+B)")
-                .clicked()
-            {
-                st.toggle_left();
-            }
+            // The app icon sits in the corner, above the left rail.
+            let logo = st.logo.get_or_insert_with(|| {
+                let pixels = include_bytes!("../assets/icon_128.rgba");
+                let image = egui::ColorImage::from_rgba_unmultiplied([128, 128], pixels);
+                ui.ctx().load_texture("logo", image, egui::TextureOptions::LINEAR)
+            });
+            let (slot, _) = ui.allocate_exact_size(Vec2::new(RAIL_W, HEADER_H), Sense::hover());
+            let at = Rect::from_center_size(slot.center(), Vec2::splat(24.0));
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            ui.painter().image(logo.id(), at, uv, Color32::WHITE);
+            ui.add_space(2.0);
             let rescan = ui.add(
                 egui::Button::new(RichText::new(format!("{}  Rescan", icons::REFRESH_CW)).size(13.0).color(TEXT_DIM))
                     .frame(false),
@@ -457,12 +463,6 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, pages: &[Page], active: usize, ac
                     }
                 }
                 ui.add_space(6.0);
-                if icon_button(ui, icons::PANEL_RIGHT, Vec2::new(34.0, 34.0), st.right.is_some(), HOVER)
-                    .on_hover_text("Toggle the right panel")
-                    .clicked()
-                {
-                    st.toggle_right();
-                }
                 right_start = ui.min_rect().left();
             });
         });
@@ -549,6 +549,12 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState) {
             }
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+            if icon_button(ui, icons::PANEL_LEFT, b, false, HOVER)
+                .on_hover_text("Show or hide the left panel (Ctrl+B)")
+                .clicked()
+            {
+                st.toggle_left();
+            }
             if icon_button(ui, icons::CIRCLE_HELP, b, st.left == Some(LeftPanel::Help), HOVER)
                 .on_hover_text("Keyboard and mouse shortcuts")
                 .clicked()
@@ -579,6 +585,14 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState) {
                 }
             }
         }
+        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+            if icon_button(ui, icons::PANEL_RIGHT, b, false, HOVER)
+                .on_hover_text("Show or hide the right panel")
+                .clicked()
+            {
+                st.toggle_right();
+            }
+        });
     });
 }
 
