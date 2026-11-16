@@ -35,7 +35,9 @@ pub const DIR_HEADER: f32 = 24.0;
 /// Gap between siblings.
 pub const GAP: f32 = 16.0;
 pub const MIN_COLS: u32 = 24;
-pub const MAX_COLS: u32 = 100;
+/// Cards grow with their longest line up to this many columns; longer
+/// lines are clipped (soft wrapping is the planned fix for those).
+pub const MAX_COLS: u32 = 160;
 /// Preferred width / height of a directory's content.
 pub const ASPECT: f32 = 1.6;
 /// Lines per column of a folded file. A multiple of

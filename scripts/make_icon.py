@@ -1,7 +1,8 @@
 # Builds every icon asset of the app from one square image:
 #
-#   python scripts/make_icon.py path/to/icon.png     # use this artwork
-#   python scripts/make_icon.py                      # draw the placeholder
+#   python scripts/make_icon.py                      # from assets/icon_source.png
+#   python scripts/make_icon.py path/to/icon.png     # from another image
+#   python scripts/make_icon.py --placeholder        # draw a simple placeholder
 #
 # Outputs, in crates/code-canvas/assets/:
 #   icon.png       256 px   (README, packaging)
@@ -67,19 +68,25 @@ def placeholder():
 
 
 def load(path):
-    """Any image -> square RGBA, padded with transparency if needed."""
+    """Any image -> square RGBA. Transparent margins around the artwork are
+    trimmed (keeping 2%), so the icon is not smaller than its neighbours in
+    the taskbar; a non-square result is padded with transparency."""
     src = Image.open(path).convert("RGBA")
-    side = max(src.size)
+    box = src.getchannel("A").point(lambda a: 255 if a > 8 else 0).getbbox()
+    if box:
+        src = src.crop(box)
+    side = int(max(src.size) * 1.04)
     img = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     img.paste(src, ((side - src.width) // 2, (side - src.height) // 2))
     return img
 
 
-img = load(sys.argv[1]) if len(sys.argv) > 1 else placeholder()
+arg = sys.argv[1] if len(sys.argv) > 1 else OUT + "icon_source.png"
+img = placeholder() if arg == "--placeholder" else load(arg)
 big = img.resize((256, 256), Image.LANCZOS)
 big.save(OUT + "icon.png")
 big.save(OUT + "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 for size in (128, 64):
     with open(OUT + "icon_%d.rgba" % size, "wb") as f:
         f.write(img.resize((size, size), Image.LANCZOS).tobytes())
-print("icon assets written to", OUT, "from", sys.argv[1] if len(sys.argv) > 1 else "the built-in placeholder")
+print("icon assets written to", OUT, "from", arg)

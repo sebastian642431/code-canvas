@@ -105,6 +105,12 @@ times each loading phase.
 
 Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+- [ ] **Editing**: click into a file and type, with undo and save. Needs a real text
+      buffer that keeps each file's own tabs and line endings.
+- [ ] **Diagnostics and formatting**: lint errors on the canvas and in a problems
+      panel, format on save — using the project's own ESLint / Prettier / rustfmt
+      configuration, so results match its CI.
+- [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
       exact provider for the same relations the name-based index gives today.
 - [ ] VS Code **themes and grammars** loaded from `.vsix` files; an extension model for
