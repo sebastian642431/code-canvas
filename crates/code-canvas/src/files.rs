@@ -95,6 +95,31 @@ pub fn copy_into(file: PathBuf, dir: &Path) -> Result<Copying, String> {
     Ok(Copying { target, finished })
 }
 
+fn is_web_link(url: &str) -> bool {
+    let web = url.starts_with("https://") || url.starts_with("http://");
+    web && url.chars().all(|c| c.is_ascii_graphic() && !matches!(c, '"' | '\'' | '`' | '<' | '>' | '^' | '|'))
+}
+
+pub fn open_web_link(url: &str) -> Result<(), String> {
+    if !is_web_link(url) {
+        return Err(format!("\"{url}\" is not a link the browser can be given"));
+    }
+    let mut command = if cfg!(windows) {
+        let mut c = Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler").arg(url);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 pub fn reveal(path: &Path) -> Result<(), String> {
     let mut command = if cfg!(windows) {
         let mut c = Command::new("explorer.exe");
@@ -188,6 +213,16 @@ mod tests {
         assert!(renamed.is_file() && !other.exists());
         assert_eq!(rename(&renamed, "renamed.md").unwrap(), renamed);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_plain_web_links_reach_the_browser() {
+        assert!(is_web_link("https://example.com/a?b=1&c=2#top"));
+        assert!(is_web_link("http://localhost:8080/"));
+        assert!(!is_web_link("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_web_link("https://example.com/\" & calc"));
+        assert!(!is_web_link("https://example.com/a b"));
+        assert!(!is_web_link("javascript:alert(1)"));
     }
 
     #[test]

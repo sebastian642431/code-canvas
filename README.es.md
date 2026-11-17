@@ -16,7 +16,7 @@ muy grandes. Código abierto: cualquiera puede aportar.
 
 - **Lienzo**: carpetas como cajas anidadas, archivos como tarjetas; cinco niveles de
   detalle; carpetas colapsables, archivos ocultables, varias carpetas abiertas a la vez
-  (cada una en su propio lienzo).
+  en el mismo lienzo.
 - **Símbolos**: clic en un nombre y se dibujan curvas a su definición, referencias,
   llamadas entrantes y salientes e implementaciones, con filtros por tipo y la opción
   de mostrar solo los archivos conectados. Funciona al instante con un índice propio
@@ -28,7 +28,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
 - **Archivos**: clic derecho en el explorador para crear, renombrar, borrar (a la
   papelera), copiar la ruta, mostrar en el explorador del sistema o abrir una
-  terminal. Soltá un archivo en la ventana para copiarlo a la carpeta seleccionada.
+  terminal. Soltá un archivo en la ventana para copiarlo a la carpeta seleccionada;
+  si es un video, una imagen o un PDF se abre en el visor al terminar.
+- **Markdown como se lee**: *Preview*, al lado del nombre de un `.md` en el lienzo (o
+  en el menú del explorador), lo muestra renderizado como en GitHub, en el visor, y
+  sigue lo que vas escribiendo. Los enlaces a otros archivos los abren; los de la web
+  van a tu navegador.
 - **Ayudas al escribir**: al tipear una ruta entre comillas se ofrecen los archivos
   y carpetas que hay ahí; en `package.json` y `Cargo.toml` cada dependencia dice si
   existe una versión más nueva.
@@ -55,7 +60,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Claude Code**: la extensión oficial, instalada desde el panel de extensiones; su
   panel se abre a la derecha de la ventana.
 - **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y
-  recuerda carpetas, cámaras y disposición entre aperturas.
+  recuerda carpetas, cámaras y disposición entre aperturas. Cada ícono de las barras
+  se puede arrastrar al otro lado o reordenar (o con clic derecho): el explorador a la
+  derecha, el panel de un asistente a la izquierda, como prefieras.
 
 ## Instalar y abrir
 

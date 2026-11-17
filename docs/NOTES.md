@@ -50,6 +50,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [git.rs](#cratescode-canvassrcgitrs) ·
   [icon_theme.rs](#cratescode-canvassrcicon_themers) ·
   [keys.rs](#cratescode-canvassrckeysrs) ·
+  [markdown.rs](#cratescode-canvassrcmarkdownrs) ·
   [media.rs](#cratescode-canvassrcmediars) ·
   [overlay.rs](#cratescode-canvassrcoverlayrs) ·
   [page.rs](#cratescode-canvassrcpagers) ·
@@ -943,6 +944,31 @@ Details:
 - `Keymap`: a chord means one thing. If two commands list it, the first in
   `COMMANDS` keeps it.
 
+### crates/code-canvas/src/markdown.rs
+
+- A Markdown file is shown rendered in the media viewer's browser view (`page`),
+  with the app's colours. It is not a `media::Kind`: a click on a `.md` file is
+  for editing it, so the preview is asked for (`App::open_preview`: the *Preview*
+  word next to its name on the canvas, the file tree's menu, the palette).
+- **The file is not trusted.** Three things keep a README from doing more than
+  being read:
+  - the page's policy allows no script but the one of the page itself, which
+    carries a nonce made for each render;
+  - markup that acts without a click (`ACTS_ON_ITS_OWN`: `<meta>` refreshes,
+    `<base>`, frames, forms, scripts, styles) is shown as text, while the rest of
+    the HTML GitHub allows (`<details>`, `<img>`, `<kbd>`...) is kept;
+  - a link never navigates the view: `WebViews` hands it to the app
+    (`App::follow_link`), which opens a file of the folder itself and gives a web
+    link to the browser through `files::open_web_link`, without a shell.
+- `<base>` points at the file's folder, so relative images and links resolve as on
+  GitHub. Images load from the folder (the roots the views may read) and from the
+  web.
+- Headings get the anchors GitHub gives them (`slug`, repeats numbered), so a
+  table of contents works.
+- The preview follows the editor: `App::refresh_preview` runs when an edit is sent
+  to the extensions (250 ms after typing stops) and renders again only if the text
+  changed. The page keeps its scroll position across renders in `sessionStorage`.
+
 ### crates/code-canvas/src/media.rs
 
 - Images, video, audio and PDF are shown by the same browser view that shows
@@ -1053,6 +1079,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `search` | `search <text>` | Search in files. |
 | `left` | `left files\|search\|extensions\|problems\|changes\|settings\|help` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
 | `right` | `right symbols\|deps` or `right <view id or extension id>`; `right none` | Open that panel, or that extension's webview, on the side its icon is on. `none` closes the right side. |
+| `preview` | `preview <path>` | Show a Markdown file of the folder rendered, or close it if it is the one shown. `open <path>` shows one from anywhere. |
 | `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
 | `click` | `click <x> <y>` | A click on the canvas, in physical pixels of the window. |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |

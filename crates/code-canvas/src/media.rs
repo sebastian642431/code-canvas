@@ -1,6 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const HANDLE: &str = "media-viewer";
+
+const FILES: &str = "https://ccres.localhost/file/";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -40,7 +42,24 @@ pub fn file_url(path: &Path) -> String {
             out
         })
         .collect();
-    format!("https://ccres.localhost/file/{}", encoded.join("/"))
+    format!("{FILES}{}", encoded.join("/"))
+}
+
+pub fn file_of(url: &str) -> Option<PathBuf> {
+    let encoded = url.strip_prefix(FILES)?.split(['#', '?']).next()?.as_bytes();
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut at = 0;
+    while at < encoded.len() {
+        if encoded[at] == b'%' {
+            let hex = std::str::from_utf8(encoded.get(at + 1..at + 3)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            at += 3;
+        } else {
+            bytes.push(encoded[at]);
+            at += 1;
+        }
+    }
+    Some(PathBuf::from(String::from_utf8(bytes).ok()?))
 }
 
 pub fn page(path: &Path, kind: Kind) -> String {
@@ -101,5 +120,14 @@ mod tests {
         let html = page(Path::new("C:/v/clip one.mp4"), Kind::Video);
         assert!(html.contains(r#"<video id="media" src="https://ccres.localhost/file/C%3A/v/clip%20one.mp4" controls"#));
         assert!(page(Path::new("a.png"), Kind::Image).contains("<img"));
+    }
+
+    #[test]
+    fn a_link_leads_back_to_its_file() {
+        let file = Path::new("C:/My Files/a&b \"x\"/léeme.md");
+        assert_eq!(file_of(&file_url(file)).as_deref(), Some(file));
+        assert_eq!(file_of(&format!("{}#setup", file_url(file))).as_deref(), Some(file));
+        assert_eq!(file_of("https://example.com/file/a.md"), None);
+        assert_eq!(file_of("https://ccres.localhost/file/a%zz.md"), None);
     }
 }

@@ -32,6 +32,7 @@ dirs = "6"
 ureq = "3"
 notify = "8"
 arboard = "3"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 trash = "5"
 # File icon themes are SVG. No text, fonts or embedded images: icons have none.
 resvg = { version = "0.50", default-features = false }

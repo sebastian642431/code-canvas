@@ -49,6 +49,7 @@ pub struct CanvasOverlay {
     pub chip_labels: Vec<OwnedLabel>,
     pub chip_hits: Vec<(Rect, SymRef)>,
     pub toggle_hits: Vec<(Rect, String)>,
+    pub preview_hits: Vec<(Rect, String)>,
 }
 
 fn severity_color(severity: Severity) -> u32 {
@@ -389,8 +390,27 @@ pub fn build(
                     let tw = (n.name.chars().count() as f32 * size * 0.58).min(w_px);
                     if free(Rect::new(left - 2.0, top, tw + 4.0, size * 1.3), &mut placed) {
                         let unsaved = page.editors.get(&n.rel_path).is_some_and(|e| e.dirty);
+                        let shown = if unsaved { format!("● {}", n.name) } else { n.name.clone() };
+                        if crate::markdown::is_markdown(std::path::Path::new(&n.name)) {
+                            let word = "Preview";
+                            let word_w = text.measure(word, size, false);
+                            let after = left + text.measure(&shown, size, false) + 10.0 * s;
+                            let button = Rect::new(after - 3.0 * s, top, word_w + 6.0 * s, size * 1.3);
+                            if button.right() <= tl[0] + w_px && free(button, &mut placed) {
+                                out.labels.push(OwnedLabel {
+                                    text: word.into(),
+                                    left: after,
+                                    top,
+                                    size,
+                                    color: theme::get().accent,
+                                    max_w: word_w + 2.0,
+                                    bold: false,
+                                });
+                                out.preview_hits.push((button, n.rel_path.clone()));
+                            }
+                        }
                         out.labels.push(OwnedLabel {
-                            text: if unsaved { format!("● {}", n.name) } else { n.name.clone() },
+                            text: shown,
                             left,
                             top,
                             size,

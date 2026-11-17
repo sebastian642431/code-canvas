@@ -488,6 +488,10 @@ pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
                 if small_icon(ui, glyph, "Open with the system's program for this file") {
                     actions.push(Action::OpenExternally(path.clone()));
                 }
+                let source = crate::codicons::glyph("go-to-file").unwrap_or(icons::CODE);
+                if crate::markdown::is_markdown(&path) && small_icon(ui, source, "Show the source on the canvas") {
+                    actions.push(Action::ShowSource(path.clone()));
+                }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let label = egui::Label::new(RichText::new(name).size(13.5).color(pal().text)).truncate();

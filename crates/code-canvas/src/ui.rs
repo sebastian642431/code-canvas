@@ -397,6 +397,9 @@ pub enum Action {
     SetCommitAi(crate::commit_ai::Settings),
     SetPrefs(crate::prefs::Prefs),
     OpenMedia(std::path::PathBuf),
+    Preview(String),
+    PreviewSelected,
+    ShowSource(std::path::PathBuf),
     OpenExternally(std::path::PathBuf),
     CheckUpdates,
     InstallUpdate,
@@ -1600,6 +1603,10 @@ fn file_menu(
     }
     menu_gap(ui);
     let mut canvas = None;
+    let markdown = !is_dir && crate::markdown::is_markdown(std::path::Path::new(name));
+    if markdown && menu_row(ui, crate::codicons::glyph("open-preview").unwrap_or(icons::EYE), "Open preview") {
+        canvas = Some(Action::Preview(path.to_string()));
+    }
     if !is_dir && menu_row(ui, icons::WAND_SPARKLES, "Format") {
         canvas = Some(Action::FormatFile(Some(path.to_string())));
     }
@@ -2105,6 +2112,7 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("File: Open Folder…".into(), Action::OpenFolder),
         ("File: Save".into(), Action::SaveFile),
         ("Format Document".into(), Action::FormatFile(None)),
+        ("Markdown: Open Preview".into(), Action::PreviewSelected),
         ("View: Explorer".into(), Action::Show(Panel::Files)),
         ("View: Search".into(), Action::Show(Panel::Search)),
         ("View: Source Control".into(), Action::Show(Panel::Changes)),

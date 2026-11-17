@@ -13,6 +13,7 @@ mod icon;
 mod icon_theme;
 mod icons;
 mod keys;
+mod markdown;
 mod media;
 mod overlay;
 mod page;

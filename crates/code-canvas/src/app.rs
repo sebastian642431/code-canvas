@@ -106,6 +106,8 @@ pub struct App {
     was_shared: bool,
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
+    preview_hits: Vec<(Rect, String)>,
+    preview: Option<String>,
     curves_for: Option<u32>,
     last_frame: Instant,
     frame_ms: f32,
@@ -194,6 +196,8 @@ impl App {
             was_shared: false,
             chip_hits: Vec::new(),
             toggle_hits: Vec::new(),
+            preview_hits: Vec::new(),
+            preview: None,
             curves_for: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
@@ -991,10 +995,64 @@ impl App {
         let Some(kind) = crate::media::kind(path).filter(|_| path.is_file()) else { return false };
         self.webviews.allow_file(path);
         self.webviews.set_html(crate::media::HANDLE, crate::media::page(path, kind));
+        self.preview = None;
         self.ui.media = Some(path.to_path_buf());
         self.ui.show(Panel::Media);
         self.request_redraw();
         true
+    }
+
+    fn markdown_text(&self, path: &Path) -> Option<String> {
+        let edited = self.locate_file(path).and_then(|(i, rel)| self.pages[i].editors.get(&rel).map(|e| e.text()));
+        edited.or_else(|| std::fs::read_to_string(path).ok())
+    }
+
+    fn open_preview(&mut self, path: &Path) -> bool {
+        if !crate::markdown::is_markdown(path) || !path.is_file() {
+            return false;
+        }
+        let Some(text) = self.markdown_text(path) else { return false };
+        self.webviews.allow_file(path);
+        self.webviews.set_html(crate::media::HANDLE, crate::markdown::page(&text, path));
+        self.preview = Some(text);
+        self.ui.media = Some(path.to_path_buf());
+        self.ui.show(Panel::Media);
+        self.request_redraw();
+        true
+    }
+
+    fn toggle_preview(&mut self, path: &Path) {
+        if self.ui.media.as_deref() == Some(path) && self.ui.is_open(&Panel::Media) {
+            self.ui.close_panel(&Panel::Media);
+            self.request_redraw();
+        } else {
+            self.open_preview(path);
+        }
+    }
+
+    fn refresh_preview(&mut self) {
+        let Some(path) = self.ui.media.clone().filter(|_| self.preview.is_some()) else { return };
+        let Some(text) = self.markdown_text(&path) else { return };
+        if self.preview.as_deref() != Some(text.as_str()) {
+            self.webviews.set_html(crate::media::HANDLE, crate::markdown::page(&text, &path));
+            self.preview = Some(text);
+            self.request_redraw();
+        }
+    }
+
+    fn follow_link(&mut self, url: &str) {
+        match crate::media::file_of(url) {
+            Some(file) => {
+                if !self.open_preview(&file) {
+                    self.reveal_file(&file);
+                }
+            }
+            None => {
+                if let Err(why) = crate::files::open_web_link(url) {
+                    self.ext.notice(ext::Level::Warn, "markdown", format!("The link was not opened: {why}."));
+                }
+            }
+        }
     }
 
     fn reveal_file(&mut self, path: &Path) {
@@ -1237,6 +1295,10 @@ impl App {
             self.select_symbol(sym, None, false);
             return;
         }
+        if let Some(path) = self.preview_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, p)| p.clone()) {
+            self.apply(Action::Preview(path));
+            return;
+        }
         if let Some(path) = self.toggle_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, p)| p.clone()) {
             self.apply(Action::ToggleCollapsed(path));
             return;
@@ -1454,8 +1516,22 @@ impl App {
             Action::FrameSelection => self.frame_selection(),
             Action::FlyToSite(site) => self.frame_site(site),
             Action::OpenMedia(path) => {
-                self.open_media(&path);
+                if !self.open_media(&path) {
+                    self.open_preview(&path);
+                }
             }
+            Action::Preview(rel) => {
+                if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&rel)) {
+                    self.toggle_preview(&file);
+                }
+            }
+            Action::PreviewSelected => match self.current_file() {
+                Some(file) if crate::markdown::is_markdown(&file) => {
+                    self.open_preview(&file);
+                }
+                _ => self.ext.notice(ext::Level::Info, "markdown", "Select a Markdown file first.".to_string()),
+            },
+            Action::ShowSource(path) => self.reveal_file(&path),
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
             Action::FlyToPath(path) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
@@ -1982,6 +2058,7 @@ impl App {
                 };
                 self.ui_events.extend(frames);
             }
+            Step::Preview(path) => self.apply(Action::Preview(path)),
             Step::Move(what) => {
                 let mut parts = what.split_whitespace();
                 let panel = parts.next().and_then(|name| {
@@ -2034,6 +2111,7 @@ impl App {
                 if let Some(text) = text {
                     self.ext.file_edited(&path, &text);
                 }
+                self.refresh_preview();
             }
         }
         busy |= self.unsent_edit.is_some();
@@ -2137,6 +2215,9 @@ impl App {
         }
         for key in self.webviews.take_keys() {
             self.page_chord(&key);
+        }
+        for url in self.webviews.take_links() {
+            self.follow_link(&url);
         }
         self.poll_updates();
         for id in std::mem::take(&mut self.versions_due) {
@@ -2554,6 +2635,7 @@ impl App {
         }
         self.chip_hits = std::mem::take(&mut canvas_overlay.chip_hits);
         self.toggle_hits = std::mem::take(&mut canvas_overlay.toggle_hits);
+        self.preview_hits = std::mem::take(&mut canvas_overlay.preview_hits);
         let labels: Vec<Label> = canvas_overlay.labels.iter().map(|l| l.as_label()).collect();
         let chip_labels: Vec<Label> = canvas_overlay.chip_labels.iter().map(|l| l.as_label()).collect();
 

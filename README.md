@@ -17,7 +17,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   detail from "whole repository" down to readable text.
 - Folders collapse (`−` / `+`), single-child chains merge into `a/b/c/`, files and
   folders can be hidden, long files fold into columns.
-- Several folders open at once, each on its own canvas (e.g. a frontend and a backend).
+- Several folders open at once on the same canvas (e.g. a frontend and a backend).
 
 **Symbols — "where is this used?"**
 - Click a name in the code: curves go to its definition, references, incoming and
@@ -40,12 +40,17 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Files panel: tree with checkboxes, filter, click to fly to a file. Right click for
   new file or folder, rename, delete (to the recycle bin), copy path, reveal in the
   file manager, open a terminal there.
-- Drop a file on the window to copy it into the selected folder.
+- Drop a file on the window to copy it into the selected folder; a video, image or
+  PDF opens in the viewer when it has arrived.
 - **Updates**: a newer release is offered in a notice when the app starts and in the
   status bar, next to the version; *Update and restart* downloads it and restarts into
   it. Settings shows the version and has *Check for updates*.
 - **Images, video, audio and PDF**: click one (on the canvas, in the file tree, or a
   link an assistant gives) and it opens in a viewer panel. Windows only for now.
+- **Markdown as it reads**: *Preview*, next to the name of a `.md` file on the canvas
+  (or in the file tree's menu), shows it rendered as GitHub does, in the same viewer,
+  and follows what you type. Links to other files open them; web links go to your
+  browser.
 - An assistant's panel (Claude Code) stays scrolled to what it is writing until you
   scroll up.
 - Several folders open share **one canvas**, next to each other, with one zoom for
@@ -100,6 +105,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 **An app, not a demo**
 - Own title bar and panels, icon rails on both sides, remembers your folders, cameras
   and layout between launches.
+- Every icon of the rails can be dragged to the other side, or reordered (or right
+  click it): the explorer on the right, an assistant's panel on the left, as you like.
 
 ## Install and run
 

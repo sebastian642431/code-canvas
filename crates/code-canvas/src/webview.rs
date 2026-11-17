@@ -231,6 +231,7 @@ mod platform {
         rx: Receiver<(String, String)>,
         shown: Vec<(String, Rect)>,
         keys: Vec<PageKey>,
+        links: Vec<String>,
         follow: bool,
     }
 
@@ -384,6 +385,7 @@ mod platform {
                 rx,
                 shown: Vec::new(),
                 keys: Vec::new(),
+                links: Vec::new(),
                 follow: true,
             }
         }
@@ -485,6 +487,20 @@ mod platform {
                     self.follow
                 ))
                 .with_browser_accelerator_keys(false)
+                .with_navigation_handler({
+                    let (tx, owner) = (self.tx.clone(), handle.to_string());
+                    let own = format!("{ORIGIN}/view/{handle}");
+                    move |url: String| {
+                        let elsewhere = url.split('#').next() != Some(own.as_str());
+                        let web = url.starts_with("https://") || url.starts_with("http://");
+                        if owner != crate::media::HANDLE || !elsewhere || !web {
+                            return true;
+                        }
+                        let _ = tx.send((owner.clone(), serde_json::json!({ "navigate": url }).to_string()));
+                        crate::ext::wake_ui();
+                        false
+                    }
+                })
                 .with_ipc_handler(move |request: Request<String>| {
                     let _ = tx.send((owner.clone(), request.body().clone()));
                     crate::ext::wake_ui();
@@ -528,6 +544,10 @@ mod platform {
                             let _ = view.web.evaluate_script(&script);
                         }
                     }
+                } else if let Some(url) = v.get("navigate").and_then(Value::as_str) {
+                    if handle == crate::media::HANDLE {
+                        self.links.push(url.to_string());
+                    }
                 } else if let Some(message) = v.get("message") {
                     out.push((handle, message.clone()));
                 } else if let Some(k) = v.get("key") {
@@ -547,6 +567,10 @@ mod platform {
 
         pub fn take_keys(&mut self) -> Vec<PageKey> {
             std::mem::take(&mut self.keys)
+        }
+
+        pub fn take_links(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.links)
         }
 
         pub fn focus_page(&self) {
@@ -589,6 +613,9 @@ mod platform {
             Vec::new()
         }
         pub fn take_keys(&mut self) -> Vec<PageKey> {
+            Vec::new()
+        }
+        pub fn take_links(&mut self) -> Vec<String> {
             Vec::new()
         }
         pub fn focus_app(&self) {}
