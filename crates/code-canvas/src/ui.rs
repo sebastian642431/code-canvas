@@ -226,6 +226,7 @@ pub enum FindOp {
 pub struct UiState {
     pub files: bool,
     pub cards: Vec<Panel>,
+    pub cards_reach: f32,
     card_widths: std::collections::HashMap<String, f32>,
     pub explorer_filter: String,
     pub search_query: String,
@@ -282,6 +283,7 @@ impl Default for UiState {
         Self {
             files: true,
             cards: Vec::new(),
+            cards_reach: 0.0,
             card_widths: Default::default(),
             explorer_filter: String::new(),
             search_query: String::new(),
@@ -1043,6 +1045,7 @@ fn cards(
     const UNDER: f32 = 50.0;
     let mut next = canvas.right() - AWAY;
     let height = (canvas.height() - AWAY - UNDER).max(120.0);
+    st.cards_reach = 0.0;
     for panel in st.cards.clone().iter().rev() {
         let key = panel.key();
         let room = next - canvas.left() - AWAY;
@@ -1094,6 +1097,7 @@ fn cards(
             st.close_panel(panel);
         }
         next = rect.left() - BETWEEN;
+        st.cards_reach = canvas.right() - rect.left() + AWAY;
     }
 }
 

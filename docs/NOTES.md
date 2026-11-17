@@ -872,6 +872,35 @@ Graphics and the frame
   number of pixels tall and the world's origin is on a pixel, about the point
   that was being zoomed at. Text drawn between pixels is what shimmers. Below
   six pixels a line nothing is read, and nothing is moved.
+- **The middle of the canvas stays in the middle** when the window or the
+  canvas's part of it changes size (`Camera::keep_middle`). The camera is
+  anchored on the window's middle, which already moves by half the change, so
+  the move of that middle is taken off the move of the pane's middle; adding
+  the whole of it moved the canvas by the full change of size.
+  `Page::pane_viewport` is the window size `pane_center` was measured in, so a
+  session saved between a resize and the next frame is still right.
+- **A web page is a child window, always above what the app draws**, so what
+  floats over one is cut out of it (`ui::note_covers` lists every rectangle of
+  the interface drawn this frame above the canvas, egui's own menus and hints
+  included; `WebViews::show`, `holes_in`, `cut_out` set a window region with
+  those holes). A page wholly covered is hidden. This is the only `unsafe` code
+  of the app (four Win32 calls).
+- The interface font has no arrows: keys are named in words (`Chord::label`:
+  Left, Right, Up, Down) and arrows in text come from the icon font.
+- Deep rows of the explorer keep their names: the indent of a level shrinks
+  from 16 to 6 points so the deepest open row keeps room, then is capped, and a
+  nested row shows its path as a hint (`explorer`).
+- A symbol's tag that would cover the caption of a collapsed folder goes just
+  above or below it (`overlay::build`). Names wider than their card or folder
+  end in an ellipsis (`overlay::fitted`). A card with nothing to show says what
+  it is (`scan::binary_note`, `Pictures::problem`).
+- Line numbers are clipped to the lines each column of a card has
+  (`Renderer::render`, `CodeText::numbers`): the shared block of numbers runs on
+  to the end of its 128 lines, which showed one number too many under short
+  files and thirty after the end of long ones.
+- With no folder open the canvas menu has no folder actions
+  (`CardMenu::nothing_open`), and any command run from the keyboard closes the
+  card menu (`App::run_command`).
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1632,6 +1661,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
+| `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
+| `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
 | `git` | `git stage [path]`, `git unstage [path]`, `git discard [path]`, `git commit <message>` | Source control. Discarding asks first. |
@@ -1937,6 +1968,10 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     from the top right corner, the newest further in, each with a cross and an
     edge that is dragged to make it wider (`card_widths`). A card that does not
     fit waits until one is closed. The canvas goes on under and between them.
+  - Opening a card moves nothing on the canvas; going somewhere does take the
+    cards into account (`App::clear`: fit, a file, a symbol, the caret are
+    framed in what the cards leave free, `UiState::cards_reach`, unless that is
+    less than a third of the canvas).
   - The canvas is drawn on the whole window and the interface over it, so its
     round corners are the ground painted over its square ones (`enclose`,
     `corner`: a fan of triangles from the corner to the arc), with the border

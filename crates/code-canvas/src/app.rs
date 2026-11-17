@@ -1731,8 +1731,17 @@ impl App {
         self.request_redraw();
     }
 
+    fn clear(&self) -> Rect {
+        let taken = if self.ui.bare { 0.0 } else { self.ui.cards_reach * self.scale() };
+        let left = self.canvas.w - taken;
+        match left >= self.canvas.w * 0.35 {
+            true => Rect::new(self.canvas.x, self.canvas.y, left, self.canvas.h),
+            false => self.canvas,
+        }
+    }
+
     fn keep_caret_visible(&mut self) {
-        let area = self.canvas;
+        let area = self.clear();
         let Some((tl, br)) = self.caret_cell() else { return };
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let margin = 24.0;
@@ -2380,7 +2389,7 @@ impl App {
 
     fn frame_node(&mut self, node: usize) {
         self.remember_place();
-        let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
+        let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let Some(n) = r.layout.nodes.get(node) else { return };
@@ -2403,7 +2412,7 @@ impl App {
 
     fn frame_site(&mut self, site: Site) {
         self.remember_place();
-        let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
+        let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let Some((p, exact)) = r.layout.anchor(&site) else { return };
@@ -2433,7 +2442,7 @@ impl App {
                 Some(Rect::new(extent.x + origin[0] - own[0], extent.y + origin[1] - own[1], extent.w, extent.h))
             })
             .reduce(|all, extent| all.union(&extent));
-        let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
+        let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
         if let (Some(everything), Some(page)) = (everything, self.pages.get_mut(self.active)) {
             page.target = Some(Camera::fit(everything, area, vp, 24.0 * s));
             self.request_redraw();
@@ -2442,7 +2451,7 @@ impl App {
 
     fn frame_selection(&mut self) {
         self.remember_place();
-        let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
+        let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let mut bounds: Option<Rect> = None;

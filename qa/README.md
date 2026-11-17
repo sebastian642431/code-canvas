@@ -49,6 +49,11 @@ quit
 | `absent-file` | A file that must not exist when it ends. |
 | `guest-expect-log` | As `expect-log`, for the second instance. |
 
+A line `=== again` starts a part that is run after the app has ended: the app
+is started again with no folders on the data of the first run (what it
+remembered is what is being tested). Its pictures are `again-<name>.png`, and
+`again-expect-log` / `again-forbid-log` check that second log.
+
 In steps and in `expect-file`, `{FIX}` is the folder of the fixtures, `{WORK}`
 the folder of the run, `{REPO}` this repository. In an `agent` step they are
 written with forward slashes, because what follows is JSON.
