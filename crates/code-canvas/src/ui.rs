@@ -2409,7 +2409,9 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
             }
             if let Some(p) = page.filter(|p| p.only_connected && selections > 0) {
                 let n = p.connected_files(&st.filters).len();
-                ui.label(RichText::new(format!("{n} connected files shown")).size(11.0).color(c(theme::get().ui_warn)));
+                let said =
+                    if n == 1 { "1 connected file shown".to_string() } else { format!("{n} connected files shown") };
+                ui.label(RichText::new(said).size(11.0).color(c(theme::get().ui_warn)));
             }
         });
 
