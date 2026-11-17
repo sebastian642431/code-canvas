@@ -55,6 +55,52 @@ pub enum RightPanel {
     Webview,
 }
 
+/// The file icon theme in use (`icon_theme.rs`) and the images of it drawn
+/// so far. Without one, callers draw the app's own glyphs.
+#[derive(Default)]
+struct FileIcons {
+    /// The theme file `theme` was read from, or failed to be.
+    file: Option<std::path::PathBuf>,
+    theme: Option<crate::icon_theme::IconTheme>,
+    textures: std::collections::HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
+}
+
+impl FileIcons {
+    /// Use the theme in `file`; `None` for the app's own glyphs.
+    fn set(&mut self, file: Option<&std::path::Path>) {
+        if self.file.as_deref() == file {
+            return;
+        }
+        self.theme = file.and_then(|f| match crate::icon_theme::IconTheme::load(f) {
+            Ok(theme) => Some(theme),
+            Err(e) => {
+                log::warn!("icon theme {} could not be read: {e}", f.display());
+                None
+            }
+        });
+        self.file = file.map(std::path::Path::to_path_buf);
+        self.textures.clear();
+    }
+
+    /// Paint the icon of a file or folder called `name` in `at`. False when
+    /// the theme has none for it: the caller then draws its own.
+    fn paint(&mut self, ui: &egui::Ui, name: &str, is_dir: bool, open: bool, at: Rect, dim: bool) -> bool {
+        let Some(theme) = &self.theme else { return false };
+        let Some(svg) = (if is_dir { theme.folder(name, open) } else { theme.file(name) }) else { return false };
+        // Twice the size it is shown at: sharp on dense screens too.
+        const PIXELS: u32 = 32;
+        let texture = self.textures.entry(svg.to_path_buf()).or_insert_with(|| {
+            let pixels = crate::icon_theme::rasterize(svg, PIXELS)?;
+            let image = egui::ColorImage::from_rgba_premultiplied([PIXELS as usize; 2], &pixels);
+            Some(ui.ctx().load_texture(format!("file-icon-{}", svg.display()), image, egui::TextureOptions::LINEAR))
+        });
+        let Some(texture) = texture else { return false };
+        let tint = if dim { Color32::from_white_alpha(110) } else { Color32::WHITE };
+        egui::Image::new(&*texture).tint(tint).paint_at(ui, at);
+        true
+    }
+}
+
 /// Something the explorer's menu asks the app to do with a file or folder.
 /// Paths are relative to the open folder, with `/`; `""` is the folder itself.
 pub enum FileOp {
@@ -144,6 +190,8 @@ pub struct UiState {
     pub rebinding: Option<Command>,
     /// The name the explorer is asking for, if it is asking.
     pub naming: Option<Naming>,
+    /// The file icon theme in use.
+    file_icons: FileIcons,
 }
 
 impl Default for UiState {
@@ -171,6 +219,7 @@ impl Default for UiState {
             key_file: Default::default(),
             rebinding: None,
             naming: None,
+            file_icons: FileIcons::default(),
         }
     }
 }
@@ -251,6 +300,8 @@ pub enum Action {
     SetColor(&'static str, u32),
     /// Forget every colour changed by hand.
     ResetColors,
+    /// Use this file icon theme (an id, or `"none"` for the app's own).
+    SetIconTheme(String),
     /// Give a command its own shortcuts back.
     ResetKey(Command),
     /// Leave a command without a shortcut.
@@ -492,6 +543,7 @@ pub fn build(
 ) -> Rect {
     st.floating.clear();
     st.webview_rect = None;
+    st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
     status_bar(ui, st, ext, pages.get(active), info);
     left_rail(ui, st, ext, pages.get(active));
@@ -507,7 +559,7 @@ pub fn build(
             LeftPanel::Changes => git_panel::changes_panel(ui, pages.get_mut(active), actions),
             LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
             LeftPanel::Help => help_panel(ui, &st.keys),
-            LeftPanel::Settings => settings_panel::settings_panel(ui, st, actions),
+            LeftPanel::Settings => settings_panel::settings_panel(ui, st, ext, actions),
         });
     }
     if let Some(panel) = st.right {
@@ -1165,7 +1217,12 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 // Files: a step below folders.
                 c(theme::mix(theme::get().text, theme::get().text_dim, 0.35))
             };
-            if !is_dir {
+            // Its icon: from the icon theme, else (for files) the app's own.
+            let base = name.rsplit_once('/').map_or(name, |(_, base)| base);
+            let icon_at = Rect::from_center_size(Pos2::new(text_x + 7.0, mid), Vec2::splat(16.0));
+            if st.file_icons.paint(ui, base, is_dir, open, icon_at, !on) {
+                text_x += 20.0;
+            } else if !is_dir {
                 let glyph = file_glyph(name);
                 let ic = if on { pal().text_dim } else { pal().text_faint };
                 painter.text(
@@ -1835,6 +1892,7 @@ fn quick_open(
     actions: &mut Vec<Action>,
 ) {
     let Some(q) = &mut st.quick else { return };
+    let file_icons = &mut st.file_icons;
     let mut close = false;
     let screen = ctx.content_rect();
     let width = 560.0f32.min(screen.width() - 40.0).max(240.0);
@@ -1987,14 +2045,18 @@ fn quick_open(
                         if i == q.selected || resp.hovered() {
                             ui.painter().rect_filled(rect, 6.0, if i == q.selected { pal().raised } else { pal().row });
                         }
-                        let glyph = if *is_dir { icons::FOLDER } else { file_glyph(name) };
-                        ui.painter().text(
-                            Pos2::new(rect.left() + 16.0, rect.center().y),
-                            Align2::CENTER_CENTER,
-                            glyph,
-                            FontId::proportional(13.0),
-                            pal().text_dim,
-                        );
+                        let icon_at =
+                            Rect::from_center_size(Pos2::new(rect.left() + 16.0, rect.center().y), Vec2::splat(16.0));
+                        if !file_icons.paint(ui, name, *is_dir, false, icon_at, false) {
+                            let glyph = if *is_dir { icons::FOLDER } else { file_glyph(name) };
+                            ui.painter().text(
+                                icon_at.center(),
+                                Align2::CENTER_CENTER,
+                                glyph,
+                                FontId::proportional(13.0),
+                                pal().text_dim,
+                            );
+                        }
                         let label = if *is_dir { format!("{name}/") } else { name.to_string() };
                         let galley = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), pal().text);
                         let name_w = galley.size().x;

@@ -61,10 +61,15 @@ pub enum Status {
 }
 
 /// The extensions a new installation gets by itself, from Open VSX, as
-/// `(namespace, name)`: the assistant, and formatting and linting that work
-/// without setting anything up.
-pub const DEFAULTS: &[(&str, &str)] =
-    &[("Anthropic", "claude-code"), ("esbenp", "prettier-vscode"), ("dbaeumer", "vscode-eslint")];
+/// `(namespace, name)`: the assistant, formatting and linting that work
+/// without setting anything up, and file icons.
+pub const DEFAULTS: &[(&str, &str)] = &[
+    ("Anthropic", "claude-code"),
+    ("esbenp", "prettier-vscode"),
+    ("dbaeumer", "vscode-eslint"),
+    // File icons for the explorer.
+    ("miguelsolorio", "symbols"),
+];
 
 /// Which of `defaults` are still to be installed. `offered` is the list of
 /// those this installation already got, and is brought up to date with the
@@ -113,6 +118,17 @@ pub struct Installed {
     pub views: Vec<String>,
     /// The places of its own it adds to VS Code's bars, with their views.
     pub containers: Vec<Container>,
+    /// File icon themes it brings.
+    pub icon_themes: Vec<IconThemeDecl>,
+}
+
+/// A file icon theme of a manifest (`contributes.iconThemes`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct IconThemeDecl {
+    pub id: String,
+    pub label: String,
+    /// The theme's JSON file (see `icon_theme.rs`).
+    pub file: PathBuf,
 }
 
 /// A view container of a manifest (`contributes.viewsContainers`): an icon
@@ -594,6 +610,20 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         commands: manifest_commands(&v, &nls),
         views: manifest_views(&v, &nls),
         containers: manifest_containers(&v, &nls),
+        icon_themes: v
+            .pointer("/contributes/iconThemes")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|t| {
+                        let id = t.get("id").and_then(Value::as_str)?;
+                        let file = dir.join(t.get("path").and_then(Value::as_str)?);
+                        let label = t.get("label").map(|l| localized(l, &nls)).filter(|l| !l.is_empty());
+                        Some(IconThemeDecl { id: id.to_string(), label: label.unwrap_or_else(|| id.to_string()), file })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -992,6 +1022,25 @@ impl Extensions {
     /// a view under a condition this app cannot follow).
     pub fn rail_items(&self) -> Vec<RailItem> {
         rail_items_of(&self.installed, &self.webviews, &|key| self.contexts.get(key).cloned())
+    }
+
+    /// The file icon themes of the installed extensions that are switched on.
+    pub fn icon_themes(&self) -> impl Iterator<Item = &IconThemeDecl> {
+        self.installed.iter().filter(|e| e.enabled).flat_map(|e| e.icon_themes.iter())
+    }
+
+    /// The icon theme to use when the user's choice is `wanted`: that theme
+    /// if it is installed, none for `"none"`, and otherwise one that is
+    /// there (Symbols first, the app's default), so that installing an icon
+    /// theme is enough to see it.
+    pub fn icon_theme(&self, wanted: &str) -> Option<&IconThemeDecl> {
+        if wanted == "none" {
+            return None;
+        }
+        self.icon_themes()
+            .find(|t| t.id == wanted)
+            .or_else(|| self.icon_themes().find(|t| t.id == "symbols"))
+            .or_else(|| self.icon_themes().next())
     }
 
     /// Make sure there is a webview entry for the view `key`, so that it can

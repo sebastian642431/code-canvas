@@ -27,8 +27,13 @@ it works, what works today, and what does not yet.
 Extensions with code need **Node.js** on the `PATH`. Extensions run with your
 permissions, exactly as in VS Code: install the ones you trust.
 
-A new installation gets three by itself, once (`ext::DEFAULTS`): Claude Code,
-Prettier and ESLint. Removing one is respected: it does not come back.
+A new installation gets four by itself, once (`ext::DEFAULTS`): Claude Code,
+Prettier, ESLint and the Symbols file icons. Removing one is respected: it does
+not come back.
+
+**File icon themes** work: install one (Symbols, Material Icon Theme) and the
+explorer and the go-to-file list use it. With several, pick one in the settings.
+Themes made of SVG files are read; font icons are not.
 
 ## How it works
 
@@ -91,7 +96,7 @@ is what starts the extension (`onView:<id>`). `when` clauses are evaluated in
 `ext/when.rs` against the context keys extensions set with `setContext`. A container
 that only has tree views gets no icon yet: there would be nothing to show.
 
-Implemented: webview views and panels, documents and their events, configuration, diagnostics, every
+Implemented: file icon themes, webview views and panels, documents and their events, configuration, diagnostics, every
 `languages.register…Provider` (kept by kind; the app uses formatting today, and
 definitions, references and hovers can be requested), commands, workspace edits,
 `workspace.fs`, output channels, status bar items, messages, decorations, extension

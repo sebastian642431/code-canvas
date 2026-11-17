@@ -3,7 +3,7 @@
 //! session:
 //!
 //! ```json
-//! { "theme": "dark", "colors": { "card_border": "#4b5362" } }
+//! { "theme": "dark", "colors": { "card_border": "#4b5362" }, "icons": "symbols" }
 //! ```
 //!
 //! The themes themselves, and the key of every colour, are in
@@ -23,6 +23,11 @@ pub struct ThemeFile {
     pub theme: String,
     /// Colours changed by the user: key → `#rrggbb` or `#rrggbbaa`.
     pub colors: BTreeMap<String, String>,
+    /// The file icon theme: the id an extension gives it (`"symbols"`),
+    /// `"none"` for the app's own glyphs, or empty to use one that is
+    /// installed (see `Extensions::icon_theme`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub icons: String,
 }
 
 impl ThemeFile {

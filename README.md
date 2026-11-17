@@ -172,7 +172,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 - [x] **Webviews** for extensions (the official Claude Code panel renders).
 - [ ] Tree views, code lenses and hovers on the canvas; webviews on Linux and macOS.
-- [ ] Format on save; themes and grammars from extensions.
+- [ ] Colour themes and grammars from extensions (file icon themes work).
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
       exact provider for the same relations the name-based index gives today.

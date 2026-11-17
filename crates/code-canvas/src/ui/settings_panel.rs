@@ -25,7 +25,12 @@ fn group_icon(group: &str) -> &'static str {
     }
 }
 
-pub(super) fn settings_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+pub(super) fn settings_panel(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &crate::ext::Extensions,
+    actions: &mut Vec<Action>,
+) {
     Frame::NONE.inner_margin(Margin { left: 12, right: 10, top: 10, bottom: 6 }).show(ui, |ui| {
         panel_title(ui, "Settings", |_| {});
         ui.add_space(6.0);
@@ -39,6 +44,26 @@ pub(super) fn settings_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut 
                     if check(ui, &mut on, name, true, false).clicked() && *key != base_key {
                         actions.push(Action::SetTheme(key));
                     }
+                }
+            });
+
+            section(ui, icons::FILE, "File icons");
+            well(ui, |ui| {
+                // What is in use: the choice, or the theme found for it.
+                let current = ext.icon_theme(&st.theme.icons).map(|t| t.id.clone());
+                for theme in ext.icon_themes() {
+                    let mut on = current.as_deref() == Some(theme.id.as_str());
+                    if check(ui, &mut on, &theme.label, true, false).clicked() && on {
+                        actions.push(Action::SetIconTheme(theme.id.clone()));
+                    }
+                }
+                let mut own = current.is_none();
+                if check(ui, &mut own, "Built in", true, false).clicked() && own {
+                    actions.push(Action::SetIconTheme("none".to_string()));
+                }
+                if ext.icon_themes().next().is_none() {
+                    let note = "Install an icon theme extension (Symbols, Material Icon Theme) for more.";
+                    ui.label(RichText::new(note).size(11.5).color(pal().text_faint));
                 }
             });
 

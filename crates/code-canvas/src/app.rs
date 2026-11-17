@@ -1504,6 +1504,11 @@ impl App {
                 self.ui.theme.colors.clear();
                 self.theme_changed();
             }
+            Action::SetIconTheme(id) => {
+                self.ui.theme.icons = id;
+                self.theme_dirty = true;
+                self.request_redraw();
+            }
             Action::File(op) => self.file_op(op),
             Action::ResetKey(command) => {
                 self.ui.key_file.reset(command);

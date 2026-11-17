@@ -25,6 +25,7 @@ ureq.workspace = true
 notify.workspace = true
 arboard.workspace = true
 trash.workspace = true
+resvg.workspace = true
 image.workspace = true
 zip.workspace = true
 

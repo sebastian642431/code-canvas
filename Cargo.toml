@@ -33,6 +33,8 @@ ureq = "3"
 notify = "8"
 arboard = "3"
 trash = "5"
+# File icon themes are SVG. No text, fonts or embedded images: icons have none.
+resvg = { version = "0.50", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 wry = "0.57"
 zip = { version = "2", default-features = false, features = ["deflate"] }
