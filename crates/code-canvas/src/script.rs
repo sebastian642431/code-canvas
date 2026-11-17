@@ -35,6 +35,16 @@ pub enum Step {
     Format(String),
     /// `command <id>`: run an extension's command.
     Command(String),
+    /// `resize <width> <height>`: resize the window (physical pixels).
+    Resize(u32, u32),
+    /// `palette <text>`: open the command palette with a filter typed in.
+    Palette(String),
+    /// `edit <path> <line> <column>` (1-based): put the caret in a file.
+    Edit(String),
+    /// `type <text>`: type at the caret.
+    Type(String),
+    /// `key enter|backspace|delete|tab|left|right|up|down|home|end|undo|redo|save|escape`
+    Key(String),
     /// `git stage [path]`, `git unstage [path]`, `git commit <message>`.
     Git(String),
     /// `changed on|off`: show only the files git reports as changed.
@@ -82,6 +92,14 @@ fn parse_step(text: &str) -> Option<Step> {
         "ext-search" => Step::ExtSearch(arg.into()),
         "format" => Step::Format(arg.into()),
         "command" => Step::Command(arg.into()),
+        "resize" => {
+            let mut parts = arg.split_whitespace().map(|n| n.parse::<u32>());
+            Step::Resize(parts.next()?.ok()?, parts.next()?.ok()?)
+        }
+        "palette" => Step::Palette(arg.into()),
+        "edit" => Step::Edit(arg.into()),
+        "type" => Step::Type(arg.into()),
+        "key" => Step::Key(arg.into()),
         "git" => Step::Git(arg.into()),
         "changed" => Step::OnlyChanged(arg == "on"),
         "right" => Step::Right(arg.into()),

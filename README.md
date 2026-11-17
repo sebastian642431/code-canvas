@@ -29,10 +29,26 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   Python, Go, C-family). It is approximate by design; language servers are the plan
   for exact answers (see the roadmap).
 
+**Dependencies**
+- Which file imports which, read from the import statements (JS/TS, C and C++, Rust,
+  Python, Java and Kotlin). Select a file or a folder: curves go to what it depends on
+  and come from what uses it, and a panel lists both.
+- Counts per kind of relationship with switches, and an option to draw every edge.
+  On Chromium: 1.35 million edges found in half a second.
+
 **Finding things**
 - Files panel: tree with checkboxes, filter, click to fly to a file.
 - `Ctrl+P` go to a file or folder; `Ctrl+Shift+F` search text in every file, with the
   hits marked on the canvas.
+
+**Editing**
+- Readable code is an editor: click to place the caret and type. Selection, undo and
+  redo, copy and paste, `Ctrl+S` to save. Each file keeps its own tabs and line endings.
+- Saving formats the file when your settings say so (`editor.formatOnSave`), and
+  problems update while you type.
+- Files changed by another program (an editor, `git checkout`, an AI assistant)
+  are reloaded by themselves.
+- `Ctrl+Shift+P` opens the command palette: the app's commands and every extension's.
 
 **VS Code extensions**
 - Installs the same `.vsix` extensions VS Code uses, from [Open VSX](https://open-vsx.org)
@@ -43,7 +59,9 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   configuration. Each extension gets its icon in the rail, with its commands.
 - Webviews: an extension's own interface opens in the right panel — the official
   Claude Code extension renders there (Windows only for now).
-- Checked so far with ESLint, Prettier, Error Lens and Claude Code. Tree views are
+- Language extensions answer about the code under the pointer (hover) and `F12` goes
+  to a definition. VS Code's own TypeScript extension works: real compiler errors.
+- Checked so far with ESLint, Prettier, Error Lens, Claude Code and TypeScript. Tree views are
   not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
 **Source control**
@@ -63,7 +81,12 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 
 ## Install and run
 
-Windows (per user, no admin rights):
+**Download**: the [releases page](https://github.com/sebastian642431/code-canvas/releases)
+has `code-canvas.exe` for Windows. It is a single file: run it, no installer. Windows
+may warn that it comes from an unknown publisher (the file is not signed yet): "More
+info" → "Run anyway". Extensions also need [Node.js](https://nodejs.org) installed.
+
+From the source, on Windows (per user, no admin rights):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
@@ -88,7 +111,8 @@ Without arguments the previous session is restored. Folders can also be opened w
 | Fly to a file or folder | Double-click, or click it in the files panel |
 | Show everything / go to the selection | `F` or `Home` / `L` |
 | Zoom out to the parent folder | `Backspace` |
-| See where a name is used | Click it (zoomed in to text); click inside a function when zoomed out |
+| Edit a file | Click in its code (zoomed in to text) and type; `Ctrl+S` saves |
+| See where a name is used | `Ctrl`+click it (zoomed in to text); click inside a function when zoomed out |
 | Deselect | Click it again, `Esc` for everything |
 | Go to a file or folder | `Ctrl+P` |
 | Search in files | `Ctrl+Shift+F` |
@@ -137,8 +161,9 @@ times each loading phase.
 
 Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- [ ] **Editing**: click into a file and type, with undo and save. Needs a real text
-      buffer that keeps each file's own tabs and line endings.
+- [x] **Editing**: click into a file and type, with undo and save; format on save;
+      reload when files change on disk; command palette.
+- [ ] Editing: drag to select, multiple cursors, find and replace, completions.
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
@@ -148,12 +173,15 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
       exact provider for the same relations the name-based index gives today.
-- [ ] Dependency edges between files and folders (imports), bundled for collapsed folders.
+- [x] Dependency edges between files (imports), for the selected file or folder.
+- [ ] Dependencies: edges bundled per folder so that all of them can be drawn on a
+      huge repository, arrowheads, backwards edges, arranging by namespace.
 - [x] Git: changed files and lines on the canvas, file timeline.
 - [x] Git: staging, committing and syncing from the source control panel.
 - [ ] Git: the diff itself (removed lines), discarding changes, branches, stashes.
 - [ ] Text read on demand instead of kept in memory (Chromium uses ~4 GB today).
-- [ ] File watching with incremental re-layout; a layout cache for instant re-open.
+- [ ] A scan cache for instant re-open of huge folders; cheaper single-file updates
+      on them (today they rebuild the whole layout).
 - [ ] Faster symbol indexing (parallel, lazy) and memory-mapped sources for 1M+ file monorepos.
 - [ ] Line numbers, a settings panel, configurable skip lists.
 - [ ] Linux / macOS packaging, a web build (WebGPU).

@@ -34,6 +34,10 @@ pub const GIT_ADDED: u32 = 0x3ddc84ff;
 pub const GIT_MODIFIED: u32 = 0x5a96ffff;
 pub const GIT_REMOVED: u32 = 0xf7768eff;
 
+/// Dependency edges: what the selection depends on, and what depends on it.
+pub const DEP_OUT: u32 = 0x2ac3deff;
+pub const DEP_IN: u32 = 0xff79c6ff;
+
 pub const LABEL_DIR: u32 = 0x8b93abff;
 pub const LABEL_FILE: u32 = 0xa9b1d6ff;
 

@@ -22,7 +22,10 @@ pub enum HostEvent {
 
 pub struct Host {
     child: Child,
-    stdin: Option<ChildStdin>,
+    /// Lines for the host. A thread of its own writes them: when the host
+    /// is busy its pipe fills up, and a write would block whoever does it.
+    /// That must never be the UI thread.
+    out: Option<mpsc::Sender<String>>,
     pub rx: Receiver<HostEvent>,
 }
 
@@ -58,7 +61,17 @@ impl Host {
         }
         let mut child =
             node_command().arg(&script).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-        let stdin = child.stdin.take();
+        let stdin: Option<ChildStdin> = child.stdin.take();
+        let (out, lines) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let Some(mut stdin) = stdin else { return };
+            for line in lines {
+                if stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).is_err() {
+                    break;
+                }
+            }
+            // The channel closed (or the host is gone): closing the pipe tells it to stop.
+        });
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let (tx, rx) = mpsc::channel();
@@ -86,22 +99,22 @@ impl Host {
             let _ = tx.send(HostEvent::Exited);
             waker.wake();
         });
-        Ok(Host { child, stdin, rx })
+        Ok(Host { child, out: Some(out), rx })
     }
 
     /// Send one message; false when the host is gone.
     pub fn send(&mut self, message: &Value) -> bool {
-        let Some(stdin) = self.stdin.as_mut() else { return false };
+        let Some(out) = self.out.as_ref() else { return false };
         let mut line = message.to_string();
         line.push('\n');
-        stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).is_ok()
+        out.send(line).is_ok()
     }
 
     /// Ask the host to deactivate its extensions and leave; it is killed if
     /// it does not within a few seconds. Does not block the caller.
     pub fn stop(mut self) {
         self.send(&serde_json::json!({ "type": "shutdown" }));
-        self.stdin = None; // closing the pipe also tells it to stop
+        self.out = None; // the writer ends and closes the pipe, which also tells it to stop
         std::thread::spawn(move || {
             for _ in 0..40 {
                 if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {

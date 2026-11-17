@@ -167,7 +167,21 @@ fn change_row(ui: &mut egui::Ui, change: &FileChange, side: Change, staged: bool
             let op = if staged { GitOp::Unstage(change.path.clone()) } else { GitOp::Stage(change.path.clone()) };
             action = Some(Action::Git(op));
         }
-        right = at.left() - 4.0;
+        right = at.left() - 2.0;
+        if !staged && side != Change::Untracked {
+            let at = Rect::from_center_size(Pos2::new(right - 11.0, mid), Vec2::splat(22.0));
+            let r = ui.interact(at, ui.scope_id().with(("discard", &change.path)), Sense::click());
+            if r.hovered() {
+                ui.painter().rect_filled(at, 5.0, HOVER);
+            }
+            let glyph = crate::codicons::glyph("discard").unwrap_or(icons::ARROW_LEFT);
+            ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), TEXT);
+            if r.on_hover_text("Discard changes").clicked() {
+                action = Some(Action::Git(GitOp::Discard(change.path.clone())));
+            }
+            right = at.left() - 2.0;
+        }
+        right -= 2.0;
     }
     let painter = ui.painter();
     let (dir, name) = change.path.rsplit_once('/').unwrap_or(("", &change.path));
@@ -211,6 +225,10 @@ pub fn changes_panel(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut V
         return;
     };
     let busy = page.git_busy();
+    if page.git_loading() {
+        ui.label(RichText::new("    Reading the repository …").size(11.5).color(TEXT_DIM));
+        return;
+    }
     let Page { git, commit_message, only_changed, git_note, title, .. } = page;
     let Some(g) = git.as_ref() else {
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(TEXT_DIM));
@@ -261,13 +279,29 @@ pub fn changes_panel(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut V
         if g.behind > 0 {
             branch.push_str(&format!("  ↓{}", g.behind));
         }
-        ui.painter().text(
-            Pos2::new(sync_at.left() - 6.0, mid),
-            Align2::RIGHT_CENTER,
-            branch,
-            FontId::proportional(12.0),
-            TEXT_DIM,
+        // The branch, on the right of the row; a click lists the others.
+        let galley = ui.painter().layout_no_wrap(branch.clone(), FontId::proportional(12.0), TEXT_DIM);
+        let at = Rect::from_min_size(
+            Pos2::new(sync_at.left() - 12.0 - galley.size().x, rect.top() + 1.0),
+            Vec2::new(galley.size().x + 8.0, ROW_H - 2.0),
         );
+        let mut inner =
+            ui.new_child(egui::UiBuilder::new().max_rect(at).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        inner
+            .menu_button(RichText::new(branch).size(12.0).color(TEXT_DIM), |ui| {
+                ui.set_min_width(200.0);
+                ui.label(RichText::new("Switch to a branch").size(11.0).color(TEXT_FAINT));
+                for name in &g.branches {
+                    if ui.selectable_label(*name == g.branch, name).clicked() {
+                        if *name != g.branch && !busy {
+                            actions.push(Action::Git(GitOp::Switch(name.clone())));
+                        }
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Branch: click to switch");
 
         // --- message and commit ---------------------------------------------
         group_header(ui, "Changes", None, None);

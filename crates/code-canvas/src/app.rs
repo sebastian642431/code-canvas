@@ -32,6 +32,10 @@ struct Gfx {
     device: wgpu::Device,
     config: wgpu::SurfaceConfiguration,
     surface: wgpu::Surface<'static>,
+    /// The window changed size and the surface has not been told yet. It is
+    /// told once per frame: while an edge is dragged many sizes arrive
+    /// between two frames, and each reconfiguration costs 15-30 ms.
+    resized: bool,
     instance: wgpu::Instance,
     // Dropped last: the surface must go before the window.
     window: Arc<Window>,
@@ -90,6 +94,19 @@ pub struct App {
     last_save: Instant,
     /// Installed VS Code extensions and the process that runs them.
     ext: Extensions,
+    /// When an edit last changed a file: the symbol index is rebuilt once
+    /// the typing pauses.
+    symbols_stale: Option<Instant>,
+    /// An edit the extensions have not been told about yet, and when it
+    /// happened: they get the text after a short pause, not per keystroke.
+    unsent_edit: Option<(PathBuf, Instant)>,
+    /// The code cell the pointer rests on and since when: the language
+    /// extensions are asked about it once it has stayed there a moment.
+    hover_probe: Option<((u32, u32, u32), Instant, bool)>,
+    /// Reports files that change on disk.
+    watcher: crate::watch::Watcher,
+    /// When each page was last rescanned because of such changes.
+    auto_rescan: Option<Instant>,
     /// Browser views showing extensions' webviews.
     webviews: crate::webview::WebViews,
     /// Folders webview pages may load files from (to notice changes).
@@ -152,6 +169,11 @@ impl App {
             session_dirty: false,
             last_save: Instant::now(),
             ext: Extensions::new(session::data_dir(), waker),
+            symbols_stale: None,
+            unsent_edit: None,
+            hover_probe: None,
+            watcher: crate::watch::Watcher::new(),
+            auto_rescan: None,
             webviews: crate::webview::WebViews::new(),
             webview_roots: Vec::new(),
         }
@@ -241,7 +263,7 @@ impl App {
             return;
         }
         log::info!("opening {}", path.display());
-        let page = Page::open(self.next_id, path, saved.as_ref());
+        let page = Page::open(self.next_id, path, saved.as_ref(), true);
         self.next_id += 1;
         self.pages.push(page);
         self.switch_to(self.pages.len() - 1);
@@ -257,6 +279,8 @@ impl App {
     fn switch_to(&mut self, i: usize) {
         if i < self.pages.len() {
             self.active = i;
+            // A folder restored from the last session is read when first shown.
+            self.pages[i].ensure_scanned();
             self.drag = None;
             self.update_title();
             self.request_redraw();
@@ -324,6 +348,7 @@ impl App {
     /// Replace a file's contents on disk (a formatter or a fix produced
     /// them) and show the new contents.
     fn write_file(&mut self, path: &Path, text: &str) {
+        self.watcher.expect(path);
         if let Err(e) = std::fs::write(path, text) {
             log::error!("cannot write {}: {e}", path.display());
             return;
@@ -331,6 +356,17 @@ impl App {
         log::info!("wrote {} ({} bytes)", path.display(), text.len());
         self.ext.file_changed(path);
         if let Some((i, rel)) = self.locate_file(path) {
+            if let Some(page) = self.pages.get_mut(i) {
+                // An open editor without changes of its own takes the new text.
+                if page.editors.get(&rel).is_some_and(|e| !e.dirty) {
+                    let caret = page.editors.remove(&rel).map(|e| e.caret).unwrap_or_default();
+                    if page.editing.as_deref() == Some(rel.as_str()) && page.begin_edit(&rel) {
+                        if let Some(e) = page.editor_mut() {
+                            e.move_to(caret, false);
+                        }
+                    }
+                }
+            }
             if let (Some(g), Some(page)) = (self.gfx.as_mut(), self.pages.get_mut(i)) {
                 g.renderer.text.drop_page(page.id);
                 page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
@@ -338,6 +374,330 @@ impl App {
             }
         }
         self.request_redraw();
+    }
+
+    /// F12: where is the name at the caret (or under the pointer) defined?
+    /// Language extensions answer exactly; without one, the built-in index does.
+    fn go_to_definition(&mut self) {
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(r) = page.ready() else { return };
+        let at = match page.editor() {
+            Some(e) => {
+                r.repo.file_index(&e.rel_path).map(|f| (f as u32, e.caret.line as u32, e.display_col(e.caret) as u32))
+            }
+            None => page.hover_cell,
+        };
+        let Some((file, line, col)) = at else { return };
+        let path = page.root.join(&r.repo.files[file as usize].rel_path);
+        let by_index = r.repo.resolve_at(file, line, col).map(|(sym, _)| r.repo.sym_site(sym));
+        if !self.ext.request_definition(&path, line, col) {
+            if let Some(site) = by_index {
+                self.frame_site(site);
+            }
+        }
+    }
+
+    // ----- changes on disk ---------------------------------------------------
+
+    /// Files changed outside the app: show them as they are now. A few
+    /// files are read again one by one; many, or new and removed ones, mean
+    /// the folder is scanned again.
+    fn on_disk_changes(&mut self, batch: crate::watch::Batch) {
+        const ONE_BY_ONE: usize = 24;
+        log::debug!(
+            "changed on disk: {} files {:?}, git of {} folders",
+            batch.files.len(),
+            batch.files.iter().take(4).collect::<Vec<_>>(),
+            batch.git.len()
+        );
+        let skip = canvas_core::ScanOptions::default().skip_dirs;
+        for root in &batch.git {
+            if let Some(page) = self.pages.iter_mut().find(|p| &p.root == root) {
+                page.refresh_git();
+            }
+        }
+        // Per page: files already on the canvas, and paths that are not.
+        let mut known: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
+        let mut other: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
+        for path in &batch.files {
+            let Some((i, rel)) = self.locate_file(path) else { continue };
+            // Build output and dependencies are not on the canvas.
+            if rel.split('/').any(|part| skip.iter().any(|s| s == part)) {
+                continue;
+            }
+            let on_canvas = self.pages[i].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
+            match (on_canvas, path.is_file()) {
+                (true, true) => known[i].push(rel),
+                (true, false) => other[i].push(rel), // removed
+                (false, true) => other[i].push(rel), // new
+                (false, false) => {}                 // a folder, or already gone
+            }
+        }
+        for i in 0..self.pages.len() {
+            let root = self.pages[i].root.clone();
+            // New paths count only when git would not ignore them.
+            let fresh = if other[i].is_empty() {
+                Vec::new()
+            } else {
+                crate::git::not_ignored(&root, std::mem::take(&mut other[i]))
+            };
+            if known[i].is_empty() && fresh.is_empty() {
+                continue;
+            }
+            self.pages[i].refresh_git();
+            let rescan = !fresh.is_empty() || known[i].len() > ONE_BY_ONE;
+            if rescan {
+                let (big, recent) = (
+                    self.pages[i].ready().is_some_and(|r| r.repo.files.len() > 60_000),
+                    self.auto_rescan.is_some_and(|t| t.elapsed() < Duration::from_secs(4)),
+                );
+                // A huge folder takes seconds to scan: that stays the user's call (F5).
+                if !big && !recent && !self.pages[i].is_loading() && self.pages[i].editors.values().all(|e| !e.dirty) {
+                    log::info!("{}: files were added or removed, scanning again", root.display());
+                    self.auto_rescan = Some(Instant::now());
+                    let s = self.scale();
+                    let p = &mut self.pages[i];
+                    p.restore_camera = p.framed.then_some(Camera { center: p.camera.center, zoom: p.camera.zoom / s });
+                    p.framed = false;
+                    p.editors.clear();
+                    p.editing = None;
+                    p.start_scan();
+                }
+                continue;
+            }
+            for rel in std::mem::take(&mut known[i]) {
+                let page = &mut self.pages[i];
+                // What is being typed here wins over what changed there.
+                if page.editors.get(&rel).is_some_and(|e| e.dirty) {
+                    continue;
+                }
+                let caret = page.editors.remove(&rel).map(|e| e.caret);
+                if let Some(g) = self.gfx.as_mut() {
+                    g.renderer.text.drop_page(page.id);
+                    page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+                }
+                if let (Some(caret), true) = (caret, page.editing.as_deref() == Some(rel.as_str())) {
+                    if page.begin_edit(&rel) {
+                        if let Some(e) = page.editor_mut() {
+                            e.move_to(caret, false);
+                        }
+                    }
+                }
+                self.ext.file_changed(&root.join(&rel));
+            }
+        }
+        self.request_redraw();
+    }
+
+    // ----- editing ---------------------------------------------------------
+
+    /// The text of the file being edited changed: show it.
+    fn after_edit(&mut self) {
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let Some(rel) = page.editing.clone() else { return };
+        if let Some(g) = self.gfx.as_mut() {
+            g.renderer.text.drop_page(page.id);
+            page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
+        }
+        self.symbols_stale = Some(Instant::now());
+        self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
+        self.keep_caret_visible();
+        self.request_redraw();
+    }
+
+    /// Pan just enough for the caret to be on screen.
+    fn keep_caret_visible(&mut self) {
+        let (vp, area) = (self.viewport(), self.canvas);
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let Some(editor) = page.editor() else { return };
+        let (line, col, rel) =
+            (editor.caret.line as u32, editor.display_col(editor.caret) as u32, editor.rel_path.clone());
+        let Some(r) = page.ready() else { return };
+        let node = r.repo.file_index(&rel).and_then(|fi| r.layout.file_node.get(fi).copied());
+        let Some(n) = node.filter(|&n| n != canvas_core::layout::NONE).map(|n| &r.layout.nodes[n as usize]) else {
+            return;
+        };
+        let cell = n.cell_rect(line, col, 1);
+        let view = page.camera.view(vp);
+        let (tl, br) = (view.to_screen([cell.x, cell.y]), view.to_screen([cell.right(), cell.bottom()]));
+        let margin = 24.0;
+        let mut shift = [0.0f32, 0.0f32];
+        if tl[0] < area.x + margin {
+            shift[0] = tl[0] - (area.x + margin);
+        } else if br[0] > area.right() - margin {
+            shift[0] = br[0] - (area.right() - margin);
+        }
+        if tl[1] < area.y + margin {
+            shift[1] = tl[1] - (area.y + margin);
+        } else if br[1] > area.bottom() - margin {
+            shift[1] = br[1] - (area.bottom() - margin);
+        }
+        if shift != [0.0, 0.0] {
+            page.target = None;
+            page.camera.center[0] += shift[0] / page.camera.zoom;
+            page.camera.center[1] += shift[1] / page.camera.zoom;
+        }
+    }
+
+    /// Write the file being edited, then let the extensions format it if
+    /// the settings say so.
+    fn save_edit(&mut self) {
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let Some(rel) = page.editing.clone() else { return };
+        let path = page.root.join(&rel);
+        let Some(editor) = page.editors.get_mut(&rel) else { return };
+        self.watcher.expect(&path);
+        if let Err(e) = std::fs::write(&path, editor.text()) {
+            log::error!("cannot save {}: {e}", path.display());
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Code Canvas")
+                .set_description(format!("{} could not be saved:\n{e}", path.display()))
+                .show();
+            return;
+        }
+        editor.mark_saved();
+        self.unsent_edit = None;
+        log::info!("saved {}", path.display());
+        self.ext.file_changed(&path);
+        if let Some(g) = self.gfx.as_mut() {
+            // From disk again: the symbol index and git see the saved file.
+            g.renderer.text.drop_page(page.id);
+            page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+        }
+        page.refresh_git();
+        self.symbols_stale = None;
+        self.ext.format_on_save(&path);
+        self.request_redraw();
+    }
+
+    /// Files with unsaved edits, over every folder.
+    fn unsaved(&self) -> Vec<(usize, String)> {
+        let dirty = |i: usize, p: &Page| {
+            p.editors.values().filter(|e| e.dirty).map(|e| (i, e.rel_path.clone())).collect::<Vec<_>>()
+        };
+        self.pages.iter().enumerate().flat_map(|(i, p)| dirty(i, p)).collect()
+    }
+
+    /// Before leaving: offer to save what is not saved. False cancels leaving.
+    fn confirm_exit(&mut self) -> bool {
+        let unsaved = self.unsaved();
+        if unsaved.is_empty() {
+            return true;
+        }
+        let names: Vec<&str> = unsaved.iter().take(8).map(|(_, rel)| rel.as_str()).collect();
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Code Canvas")
+            .set_description(format!("Save the changes to {} file(s)?\n\n{}", unsaved.len(), names.join("\n")))
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+        match answer {
+            rfd::MessageDialogResult::Yes => {
+                for (i, rel) in unsaved {
+                    if let Some(page) = self.pages.get_mut(i) {
+                        if let Some(editor) = page.editors.get_mut(&rel) {
+                            match std::fs::write(page.root.join(&rel), editor.text()) {
+                                Ok(()) => editor.mark_saved(),
+                                Err(e) => log::error!("cannot save {rel}: {e}"),
+                            }
+                        }
+                    }
+                }
+                self.unsaved().is_empty()
+            }
+            rfd::MessageDialogResult::No => true,
+            _ => false,
+        }
+    }
+
+    /// Keys while the caret is in a file. True when the key was used.
+    fn edit_key(&mut self, event: &KeyEvent) -> bool {
+        // AltGr reports Ctrl+Alt: that is typing (`@`, `{`, `[` on many layouts), not a shortcut.
+        let cmd = (self.mods.control_key() && !self.mods.alt_key()) || self.mods.super_key();
+        let shift = self.mods.shift_key();
+        let Some(page) = self.pages.get_mut(self.active) else { return false };
+        let Some(editor) = page.editor_mut() else { return false };
+        let mut changed = false;
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                page.editing = None;
+                self.request_redraw();
+                return true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                editor.newline();
+                changed = true;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                editor.backspace();
+                changed = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                editor.delete();
+                changed = true;
+            }
+            Key::Named(NamedKey::Tab) if !cmd => {
+                editor.tab();
+                changed = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) if cmd => editor.word(false, shift),
+            Key::Named(NamedKey::ArrowRight) if cmd => editor.word(true, shift),
+            Key::Named(NamedKey::ArrowLeft) => editor.left(shift),
+            Key::Named(NamedKey::ArrowRight) => editor.right(shift),
+            Key::Named(NamedKey::ArrowUp) => editor.vertical(-1, shift),
+            Key::Named(NamedKey::ArrowDown) => editor.vertical(1, shift),
+            Key::Named(NamedKey::PageUp) => editor.vertical(-20, shift),
+            Key::Named(NamedKey::PageDown) => editor.vertical(20, shift),
+            Key::Named(NamedKey::Home) if cmd => editor.move_to(crate::editor::Pos::default(), shift),
+            Key::Named(NamedKey::End) if cmd => editor.move_to(crate::editor::Pos::new(usize::MAX, usize::MAX), shift),
+            Key::Named(NamedKey::Home) => editor.home(shift),
+            Key::Named(NamedKey::End) => editor.end(shift),
+            Key::Character(c) if cmd => match c.to_lowercase().as_str() {
+                "s" => {
+                    self.save_edit();
+                    return true;
+                }
+                "z" if shift => changed = editor.redo(),
+                "z" => changed = editor.undo(),
+                "y" => changed = editor.redo(),
+                "a" => editor.select_all(),
+                "c" | "x" => {
+                    let text = editor.selected_text();
+                    if !text.is_empty() {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(text);
+                        }
+                        if c.eq_ignore_ascii_case("x") {
+                            editor.backspace();
+                            changed = true;
+                        }
+                    }
+                }
+                "v" => {
+                    if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                        editor.insert(&text);
+                        changed = true;
+                    }
+                }
+                // Other shortcuts (Ctrl+P, Ctrl+O…) keep their meaning.
+                _ => return false,
+            },
+            _ => match event.text.as_deref() {
+                Some(text) if !cmd && !text.chars().any(char::is_control) => {
+                    editor.insert(text);
+                    changed = true;
+                }
+                _ => return false,
+            },
+        }
+        if changed {
+            self.after_edit();
+        } else {
+            self.keep_caret_visible();
+            self.request_redraw();
+        }
+        true
     }
 
     fn reveal_file(&mut self, path: &Path) {
@@ -577,11 +937,57 @@ impl App {
         }
 
         let vp = self.viewport();
+        let (ctrl, shift) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let world = page.camera.view(vp).to_world(pos);
         let hit = r.layout.hit(world);
+        let zoom = page.camera.zoom;
+        let readable = Lod::for_zoom(zoom) == Lod::Text;
+
+        // What is under the pointer, worked out before anything changes.
+        let mut caret_at = None; // (file path, line, display column)
+        let mut picked = None; // a symbol and, when it was a use of it, where
+        if let Some(n) = hit.map(|h| &r.layout.nodes[h]) {
+            if let NodeKind::File(fi) = n.kind {
+                let f = &r.repo.files[fi];
+                if let Some((line, col)) = n.cell_at(world, f.line_count()) {
+                    if readable && !ctrl && f.note.is_none() {
+                        caret_at = Some((f.rel_path.clone(), line as usize, col as usize));
+                    } else if zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
+                        let fi = fi as u32;
+                        let named = readable.then(|| r.repo.resolve_at(fi, line, col)).flatten();
+                        picked = match named {
+                            Some((sym, site)) => Some((sym, (site != r.repo.sym_site(sym)).then_some(site))),
+                            None => r.repo.sym_at(fi, line).map(|sym| (sym, None)),
+                        };
+                    }
+                }
+            }
+        }
+
         page.selected = hit;
+        // Readable code is an editor: a click puts the caret there (Shift
+        // extends the selection, a double click takes the word). Ctrl+click
+        // asks where the name is used, as in VS Code.
+        if let Some((rel, line, col)) = caret_at {
+            if page.begin_edit(&rel) {
+                if let Some(editor) = page.editor_mut() {
+                    let at = editor.pos_at_display(line, col);
+                    if double {
+                        editor.select_word(at);
+                    } else {
+                        editor.move_to(at, shift);
+                    }
+                }
+                self.request_redraw();
+                return;
+            }
+        }
+        // A click anywhere else leaves the editor (what was typed is kept).
+        if !ctrl {
+            page.editing = None;
+        }
         let Some(node) = hit else {
             self.request_redraw();
             return;
@@ -589,24 +995,6 @@ impl App {
         if double {
             self.frame_node(node);
             return;
-        }
-
-        // On code: a click on a name selects that symbol; elsewhere inside a
-        // function it selects the function.
-        let n = &r.layout.nodes[node];
-        let zoom = page.camera.zoom;
-        let mut picked = None;
-        if let NodeKind::File(fi) = n.kind {
-            if zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
-                if let Some((line, col)) = n.cell_at(world, r.repo.files[fi].line_count()) {
-                    let fi = fi as u32;
-                    let named = (Lod::for_zoom(zoom) == Lod::Text).then(|| r.repo.resolve_at(fi, line, col)).flatten();
-                    picked = match named {
-                        Some((sym, site)) => Some((sym, (site != r.repo.sym_site(sym)).then_some(site))),
-                        None => r.repo.sym_at(fi, line).map(|sym| (sym, None)),
-                    };
-                }
-            }
         }
         match picked {
             Some((sym, clicked)) => self.select_symbol(sym, clicked, true),
@@ -623,6 +1011,14 @@ impl App {
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
 
         // Shortcuts that work even while typing in a text field.
+        // Ctrl+Shift+P or F1: the command palette. Ctrl+P: go to a file.
+        let palette = matches!(&event.logical_key, Key::Named(NamedKey::F1))
+            || matches!(&event.logical_key, Key::Character(c) if cmd && shift && c.as_str().eq_ignore_ascii_case("p"));
+        if palette {
+            self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true });
+            self.request_redraw();
+            return;
+        }
         if let Key::Character(c) = &event.logical_key {
             if cmd && c.as_str().eq_ignore_ascii_case("p") {
                 self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true });
@@ -640,6 +1036,11 @@ impl App {
         if typing || self.ui.quick.is_some() {
             return;
         }
+        // The caret is in a file: keys go to the editor first.
+        let formatting = shift && self.mods.alt_key();
+        if !formatting && self.edit_key(event) {
+            return;
+        }
         if let Key::Character(c) = &event.logical_key {
             if shift && self.mods.alt_key() && c.as_str().eq_ignore_ascii_case("f") {
                 self.format_file(None);
@@ -648,6 +1049,7 @@ impl App {
         }
 
         match &event.logical_key {
+            Key::Named(NamedKey::F12) => self.go_to_definition(),
             Key::Named(NamedKey::Tab) if cmd => self.cycle(if shift { -1 } else { 1 }),
             Key::Named(NamedKey::Home) => self.frame_all(),
             Key::Named(NamedKey::F5) => self.rescan(),
@@ -850,7 +1252,28 @@ impl App {
             }
             Action::CloseWindow => self.exit_requested = true,
             Action::FormatFile(rel) => self.format_file(rel),
+            Action::ShowLeft(panel) => {
+                self.ui.show_left(panel);
+                self.request_redraw();
+            }
+            Action::SaveFile => self.save_edit(),
+            Action::RunCommand(id, title) => {
+                self.ext.run_command(&id, &title);
+                self.request_redraw();
+            }
             Action::Git(op) => {
+                // Discarding cannot be undone: ask first.
+                if let crate::git::GitOp::Discard(path) = &op {
+                    let answer = rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Warning)
+                        .set_title("Code Canvas")
+                        .set_description(format!("Discard the changes in {path}?\n\nThis cannot be undone."))
+                        .set_buttons(rfd::MessageButtons::YesNo)
+                        .show();
+                    if answer != rfd::MessageDialogResult::Yes {
+                        return;
+                    }
+                }
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.run_git(op);
                 }
@@ -875,6 +1298,12 @@ impl App {
                     .pick_file();
                 if let Some(file) = picked {
                     self.ext.install_vsix(file);
+                }
+                self.request_redraw();
+            }
+            Action::DepsChanged => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.curves_dirty = true;
                 }
                 self.request_redraw();
             }
@@ -955,6 +1384,64 @@ impl App {
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
             Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
+            Step::Edit(what) => {
+                let mut parts = what.split_whitespace();
+                let rel = parts.next().unwrap_or_default().to_string();
+                let line = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                let col = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).saturating_sub(1);
+                let started = self.pages.get_mut(self.active).is_some_and(|page| {
+                    let ok = page.begin_edit(&rel);
+                    if let (true, Some(e)) = (ok, page.editor_mut()) {
+                        e.move_to(crate::editor::Pos::new(line, col), false);
+                    }
+                    ok
+                });
+                if started {
+                    self.keep_caret_visible();
+                } else {
+                    log::warn!("script: cannot edit '{rel}'");
+                }
+            }
+            Step::Type(text) => {
+                if let Some(e) = self.pages.get_mut(self.active).and_then(|p| p.editor_mut()) {
+                    e.insert(&text);
+                }
+                self.after_edit();
+            }
+            Step::Key(name) => {
+                let mut save = false;
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    if name == "escape" {
+                        page.editing = None;
+                    } else if let Some(e) = page.editor_mut() {
+                        match name.as_str() {
+                            "enter" => e.newline(),
+                            "backspace" => e.backspace(),
+                            "delete" => e.delete(),
+                            "tab" => e.tab(),
+                            "left" => e.left(false),
+                            "right" => e.right(false),
+                            "up" => e.vertical(-1, false),
+                            "down" => e.vertical(1, false),
+                            "home" => e.home(false),
+                            "end" => e.end(false),
+                            "undo" => {
+                                e.undo();
+                            }
+                            "redo" => {
+                                e.redo();
+                            }
+                            "save" => save = true,
+                            other => log::warn!("script: unknown key '{other}'"),
+                        }
+                    }
+                }
+                if save {
+                    self.save_edit();
+                } else {
+                    self.after_edit();
+                }
+            }
             Step::Git(what) => {
                 use crate::git::GitOp;
                 let (verb, arg) = what.split_once(' ').unwrap_or((what.as_str(), ""));
@@ -973,6 +1460,7 @@ impl App {
             }
             Step::Right(which) => match which.as_str() {
                 "symbols" => self.ui.show_right(RightPanel::Symbols),
+                "deps" => self.ui.show_right(RightPanel::Deps),
                 key if !key.is_empty() && key != "none" => {
                     // `right <view id or extension id>`: that extension's webview.
                     let found = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
@@ -993,6 +1481,14 @@ impl App {
             Step::Folders => self.ui.show_left(LeftPanel::Files),
             Step::Zoom(f) => self.apply(Action::ZoomBy(f)),
             Step::Quick(text) => self.ui.quick = Some(QuickOpen { query: text, selected: 0, focus: true }),
+            Step::Resize(w, h) => {
+                if let Some(g) = &self.gfx {
+                    let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+                }
+            }
+            Step::Palette(text) => {
+                self.ui.quick = Some(QuickOpen { query: format!(">{text}"), selected: 0, focus: true })
+            }
             Step::Maximize => self.apply(Action::ToggleMaximize),
             Step::Quit => self.exit_requested = true,
         }
@@ -1007,6 +1503,29 @@ impl App {
     fn poll_background(&mut self) -> bool {
         let mut busy = false;
         let mut changed = false;
+        // Editing leaves the symbol index behind; catch up when typing pauses.
+        if self.symbols_stale.is_some_and(|t| t.elapsed() > Duration::from_millis(700)) {
+            self.symbols_stale = None;
+            for page in &mut self.pages {
+                if let PageState::Ready(r) = &mut page.state {
+                    if !page.editors.is_empty() {
+                        r.repo.reindex_symbols();
+                    }
+                }
+            }
+        }
+        busy |= self.symbols_stale.is_some();
+        // Tell the extensions what was typed, once the typing pauses.
+        if self.unsent_edit.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(250)) {
+            if let Some((path, _)) = self.unsent_edit.take() {
+                let text =
+                    self.locate_file(&path).and_then(|(i, rel)| self.pages[i].editors.get(&rel).map(|e| e.text()));
+                if let Some(text) = text {
+                    self.ext.file_edited(&path, &text);
+                }
+            }
+        }
+        busy |= self.unsent_edit.is_some();
         // Source control: results of `git status` runs.
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
@@ -1030,14 +1549,68 @@ impl App {
             }
             changed |= page.poll_timeline();
         }
+        // What the language extensions know about the code under the pointer.
+        let cell = self
+            .pages
+            .get(self.active)
+            .and_then(|p| p.hover_cell.filter(|_| Lod::for_zoom(p.camera.zoom) == Lod::Text));
+        match (cell, &mut self.hover_probe) {
+            (None, probe) => *probe = None,
+            (Some(c), Some((at, since, asked))) if *at == c => {
+                if !*asked && since.elapsed() > Duration::from_millis(350) {
+                    *asked = true;
+                    let path = self.pages.get(self.active).and_then(|p| {
+                        let r = p.ready()?;
+                        Some(p.root.join(&r.repo.files.get(c.0 as usize)?.rel_path))
+                    });
+                    if let Some(path) = path {
+                        self.ext.request_hover(&path, c.1, c.2);
+                    }
+                }
+                busy |= !*asked;
+            }
+            (Some(c), probe) => {
+                *probe = Some((c, Instant::now(), false));
+                busy = true;
+            }
+        }
+        // Files changed on disk by someone else.
+        let folders: Vec<PathBuf> = self.pages.iter().filter(|p| !p.is_waiting()).map(|p| p.root.clone()).collect();
+        self.watcher.set_folders(&folders);
+        if let Some(batch) = self.watcher.poll() {
+            self.on_disk_changes(batch);
+            changed = true;
+        }
+        busy |= self.watcher.busy();
         // Extensions: their workspace is the set of open folders.
-        self.ext.set_folders(self.pages.iter().map(|p| p.root.clone()).collect());
+        self.ext.set_folders(self.pages.iter().filter(|p| !p.is_waiting()).map(|p| p.root.clone()).collect());
         let (events, ext_changed) = self.ext.poll();
         changed |= ext_changed;
         for event in events {
             match event {
                 ext::Event::Write { path, text } => self.write_file(&path, &text),
                 ext::Event::Reveal(path) => self.reveal_file(&path),
+                ext::Event::GoTo { path, line, col, len } => {
+                    if let Some((i, rel)) = self.locate_file(&path) {
+                        self.switch_to(i);
+                        let file = self.pages[i].ready().and_then(|r| r.repo.file_index(&rel));
+                        match file {
+                            Some(file) => {
+                                let site = Site {
+                                    file: file as u32,
+                                    line,
+                                    col: col.min(u16::MAX as u32) as u16,
+                                    len: len.min(400) as u16,
+                                };
+                                self.frame_site(site);
+                                if let Some(page) = self.pages.get_mut(i) {
+                                    page.search = Some(crate::page::SearchResults::single(site));
+                                }
+                            }
+                            None => log::info!("definition in {} is not on the canvas", path.display()),
+                        }
+                    }
+                }
                 ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
                 ext::Event::WebviewClosed(handle) => self.webviews.close(&handle),
@@ -1076,6 +1649,7 @@ impl App {
                 g.renderer.text.drop_page(page.id);
                 page.state = PageState::Ready(Box::new(Ready {
                     repo: loaded.repo,
+                    deps: loaded.deps,
                     layout: loaded.layout,
                     gpu,
                     tokens: Default::default(),
@@ -1101,6 +1675,7 @@ impl App {
             );
         };
         match &page.state {
+            PageState::Waiting => (format!("{} has not been read yet", page.root.display()), None),
             PageState::Loading { .. } => (format!("Scanning {} …", page.root.display()), None),
             PageState::Failed(e) => (e.clone(), None),
             PageState::Ready(r) => {
@@ -1114,6 +1689,11 @@ impl App {
                         r.load_ms
                     )
                 };
+                if let Some(editor) = page.editor() {
+                    let state = if editor.dirty { "  ·  not saved (Ctrl+S)" } else { "" };
+                    let place = format!("Ln {}, Col {}", editor.caret.line + 1, editor.display_col(editor.caret) + 1);
+                    return (format!("Editing {}  ·  {place}{state}  ·  Esc to leave", editor.rel_path), None);
+                }
                 let Some(n) = page.hover.or(page.selected).and_then(|i| r.layout.nodes.get(i)) else {
                     return (overview(), None);
                 };
@@ -1133,6 +1713,14 @@ impl App {
                         });
                         if let Some(d) = problem {
                             return (status, Some((d.title(), d.message.clone())));
+                        }
+                        let known = page.hover_cell.filter(|_| on_canvas).and_then(|(_, line, col)| {
+                            let h = self.ext.hover.as_ref()?;
+                            let here = h.line == line && h.col == col && !h.text.is_empty();
+                            (here && h.path == page.root.join(&f.rel_path)).then(|| crate::ui::hover_text(&h.text))
+                        });
+                        if let Some(tip) = known {
+                            return (status, Some(tip));
                         }
                         let tip = on_canvas.then(|| match (sym, page.hover_cell) {
                             (Some(sym), Some((_, line, _))) => (
@@ -1162,8 +1750,15 @@ impl App {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
-        if self.gfx.is_none() {
-            return;
+        let Some(g) = self.gfx.as_mut() else { return };
+        // The latest size, applied once however many arrived since the last frame.
+        if std::mem::take(&mut g.resized) {
+            let t = Instant::now();
+            g.surface.configure(&g.device, &g.config);
+            let ms = t.elapsed().as_secs_f32() * 1000.0;
+            if ms > 40.0 {
+                log::debug!("configuring the surface took {ms:.1} ms");
+            }
         }
         let s = self.scale();
         let vp = self.viewport();
@@ -1205,7 +1800,12 @@ impl App {
                     Some((entry.handle.clone()?, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
                 });
             let g = self.gfx.as_ref().unwrap();
+            let t = Instant::now();
             self.webviews.show(&g.window, shown.as_ref().map(|(h, r)| (h.as_str(), *r)));
+            let ms = t.elapsed().as_secs_f32() * 1000.0;
+            if ms > 8.0 {
+                log::debug!("placing the webview took {ms:.1} ms");
+            }
         }
         let area = self.canvas;
 
@@ -1247,8 +1847,13 @@ impl App {
             let g = self.gfx.as_mut().unwrap();
             match self.pages.get_mut(self.active) {
                 Some(page) => {
+                    // The selected node's dependency edges are curves too.
+                    if page.curves_node != page.selected {
+                        page.curves_node = page.selected;
+                        page.curves_dirty = true;
+                    }
                     if page.curves_dirty || self.curves_for != Some(page.id) {
-                        let curves = overlay::build_curves(page, &filters, s);
+                        let curves = overlay::build_curves(page, &filters, &self.ui.deps, s);
                         g.renderer.set_curves(&g.device, &g.queue, &curves);
                         page.curves_dirty = false;
                         self.curves_for = Some(page.id);
@@ -1278,12 +1883,19 @@ impl App {
                 g.egui_renderer.update_texture(&g.device, &g.queue, *id, delta);
             }
         }
-        let frame = match g.surface.get_current_texture() {
+        let t_acquire = Instant::now();
+        let acquired = g.surface.get_current_texture();
+        let acquire_ms = t_acquire.elapsed().as_secs_f32() * 1000.0;
+        if acquire_ms > 40.0 {
+            log::debug!("acquiring the frame took {acquire_ms:.1} ms");
+        }
+        let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
-            wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                g.surface.configure(&g.device, &g.config);
-                f
-            }
+            // Still usable (the window is being resized and the size event has
+            // not arrived yet). It must NOT be reconfigured here: configuring
+            // a surface while one of its textures is held is an error that
+            // takes the app down. The resize event reconfigures it.
+            wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 g.window.request_redraw();
                 return;
@@ -1381,7 +1993,12 @@ impl App {
         let render_ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.frame_ms = self.frame_ms * 0.8 + (build_ms + render_ms) * 0.2;
         g.window.pre_present_notify();
+        let t_present = Instant::now();
         g.queue.present(frame);
+        let present_ms = t_present.elapsed().as_secs_f32() * 1000.0;
+        if present_ms > 40.0 {
+            log::debug!("presenting took {present_ms:.1} ms (build {build_ms:.1}, render {render_ms:.1})");
+        }
 
         if let Some(b) = self.bench.as_mut() {
             b.record(dt * 1000.0, build_ms + render_ms);
@@ -1439,22 +2056,44 @@ impl ApplicationHandler for App {
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
-            event_loop.owned_display_handle(),
-        )));
-        let surface = instance.create_surface(window.clone()).expect("create surface");
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .expect("no suitable GPU adapter");
+        // Which graphics API to draw with. On Windows Direct3D 12 comes first:
+        // resizing its swap chain is cheap (Vulkan's is rebuilt, 15-30 ms per
+        // size), and with a browser view in the window (extensions' webviews)
+        // Vulkan stalls for half a second per frame while the window changes
+        // size. `CODE_CANVAS_BACKEND=vulkan|dx12|metal|gl` overrides the choice.
+        let connect = |backends: wgpu::Backends| {
+            let mut descriptor =
+                wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
+            descriptor.backends = backends;
+            let instance = wgpu::Instance::new(descriptor);
+            let surface = instance.create_surface(window.clone()).ok()?;
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            }))
+            .ok()?;
+            Some((instance, surface, adapter))
+        };
+        let wanted = match std::env::var("CODE_CANVAS_BACKEND").unwrap_or_default().to_lowercase().as_str() {
+            "vulkan" => wgpu::Backends::VULKAN,
+            "dx12" => wgpu::Backends::DX12,
+            "metal" => wgpu::Backends::METAL,
+            "gl" => wgpu::Backends::GL,
+            _ if cfg!(windows) => wgpu::Backends::DX12,
+            _ => wgpu::Backends::all(),
+        };
+        let (instance, surface, adapter) =
+            connect(wanted).or_else(|| connect(wgpu::Backends::all())).expect("no suitable GPU adapter");
         let info = adapter.get_info();
         log::info!("GPU: {} ({:?})", info.name, info.backend);
         let (device, queue) = pollster::block_on(
             adapter.request_device(&wgpu::DeviceDescriptor { label: Some("code-canvas"), ..Default::default() }),
         )
         .expect("request device");
+        // By default such an error ends the program. Here it costs a frame at
+        // most, so it is written to the log and the app goes on.
+        device.on_uncaptured_error(Arc::new(|e| log::error!("GPU error: {e}")));
 
         let size = window.inner_size();
         let mut config = surface
@@ -1491,11 +2130,29 @@ impl ApplicationHandler for App {
             log::info!("benchmark mode: present {:?}, display {:?} Hz", config.present_mode, hz);
         }
         self.canvas = Rect::new(0.0, 0.0, config.width as f32, config.height as f32);
-        self.gfx =
-            Some(Gfx { renderer, egui_renderer, egui_state, egui, queue, device, config, surface, instance, window });
+        self.gfx = Some(Gfx {
+            renderer,
+            egui_renderer,
+            egui_state,
+            egui,
+            queue,
+            device,
+            config,
+            surface,
+            resized: false,
+            instance,
+            window,
+        });
 
+        // Only the folder that will be on screen is read now; the others
+        // wait until they are shown (a huge one would take seconds and
+        // every core, for a canvas nobody is looking at).
         for (path, saved) in std::mem::take(&mut self.initial) {
-            self.open_folder(path, saved);
+            let path = canvas_core::scan::clean_path(path.canonicalize().unwrap_or(path));
+            if !self.pages.iter().any(|p| p.root == path) {
+                self.pages.push(Page::open(self.next_id, path, saved.as_ref(), false));
+                self.next_id += 1;
+            }
         }
         if !self.pages.is_empty() {
             self.switch_to(self.initial_active.min(self.pages.len() - 1));
@@ -1539,18 +2196,27 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::CloseRequested => {
-                self.save_session();
-                event_loop.exit();
+                if self.confirm_exit() {
+                    self.save_session();
+                    event_loop.exit();
+                }
             }
             WindowEvent::Resized(size) => {
                 if let Some(g) = &mut self.gfx {
                     g.config.width = size.width.max(1);
                     g.config.height = size.height.max(1);
-                    g.surface.configure(&g.device, &g.config);
+                    g.resized = true;
                     g.window.request_redraw();
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => {
+                let t = Instant::now();
+                self.redraw();
+                let ms = t.elapsed().as_secs_f32() * 1000.0;
+                if ms > 25.0 {
+                    log::debug!("slow frame: {ms:.1} ms");
+                }
+            }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.on_key(&event),
             WindowEvent::DroppedFile(path) => {
@@ -1641,6 +2307,10 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.exit_requested {
+            if !self.confirm_exit() {
+                self.exit_requested = false;
+                return;
+            }
             self.save_session();
             event_loop.exit();
             return;

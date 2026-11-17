@@ -91,8 +91,8 @@ Not yet — these are the next pieces, in order:
 
 1. **Tree views and view containers**: the lists extensions add to the side bar.
 2. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
-3. **Editing**: typing in a card. Extensions that react to keystrokes (completion,
-   on-type formatting) wait for this; so does showing the diffs Claude Code proposes.
+3. Completions and other features that react to keystrokes (editing itself exists:
+   extensions see what is typed after a short pause); showing proposed diffs.
 4. Webviews on Linux and macOS; `when` clauses (which of an extension's views to show);
    webview state kept across restarts.
 5. Terminals, debugging, notebooks, source control providers, authentication.
@@ -101,6 +101,7 @@ Not yet — these are the next pieces, in order:
 
 | Extension | State |
 |---|---|
+| TypeScript (`vscode.typescript-language-features`, VS Code's own) | works: compiler errors, hover, go to definition (`F12`) |
 | ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
 | Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |

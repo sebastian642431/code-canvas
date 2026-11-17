@@ -1192,6 +1192,23 @@ function displayColumn(text, character, tab) {
   }
   return col;
 }
+/** The character at display column `col` of a line (the inverse of displayColumn). */
+function characterAt(text, col, tab) {
+  let at = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xdc00 && code <= 0xdfff) continue;
+    const w = code === 9 ? tab - (at % tab) : 1;
+    if (at + w > col) return i;
+    at += w;
+  }
+  return text.length;
+}
+/** A position the app gave as line + display column, as a document position. */
+function positionAt(doc, line, col) {
+  return new Position(line, characterAt(doc.lineAt(line).text, col, state.tabWidth));
+}
+
 function flushDiagnostics() {
   diagnosticsTimer = null;
   const uris = [...dirtyDiagnostics.values()];
@@ -1322,7 +1339,7 @@ function openDocument(file, focus) {
     doc._editor = new TextEditor(doc);
     documents.set(key, doc);
     appPaths.set(key, file);
-    const tab = { label: path.basename(file), input: new TabInputText(uri), isActive: false, isDirty: false, isPinned: false, isPreview: false, group: null };
+    const tab = { label: path.basename(file), input: new TabInputText(uri), isActive: false, isDirty: false, isPinned: false, isPreview: false, get group() { return tabGroup(); } };
     doc._tab = tab;
     tabs.push(tab);
     activateByEvent('onLanguage:' + doc.languageId);
@@ -1365,13 +1382,33 @@ function reloadDocument(file) {
   } catch {
     return closeDocument(file);
   }
-  if (text === doc.getText()) return;
+  if (text === doc.getText()) {
+    // Typed here and now saved: same text, but no longer dirty.
+    if (doc.isDirty) {
+      doc.isDirty = false;
+      events.saveDoc.fire(doc);
+    }
+    return;
+  }
+  doc.isDirty = false;
   const whole = new Range(0, 0, doc.lineCount, 0);
   const rangeLength = doc.getText().length;
   doc._setText(text);
   doc.version++;
   events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [{ range: whole, rangeOffset: 0, rangeLength, text }] });
   events.saveDoc.fire(doc);
+}
+
+/** The user is typing: the document's text is what the app holds, not the disk's. */
+function editDocument(file, text) {
+  const doc = documents.get(fileKey(file)) || openDocument(file, true);
+  if (!doc || text === doc.getText()) return;
+  const whole = new Range(0, 0, doc.lineCount, 0);
+  const rangeLength = doc.getText().length;
+  doc._setText(text);
+  doc.version++;
+  doc.isDirty = true;
+  events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [{ range: whole, rangeOffset: 0, rangeLength, text }] });
 }
 
 // ------------------------------------------------------------- the vscode API
@@ -2067,7 +2104,12 @@ function plainLocations(result) {
   return list
     .map((l) => (l.targetUri ? { uri: l.targetUri, range: l.targetSelectionRange || l.targetRange } : l))
     .filter((l) => l && l.uri && l.range)
-    .map((l) => ({ path: appPath(l.uri), ...plainRange(l.range) }));
+    .map((l) => {
+      // Display columns, so the app can point at the place without the file's text.
+      const doc = documents.get(uriKey(l.uri)) || loadDocument(l.uri, true);
+      const col = (p) => (doc ? displayColumn(doc.lineAt(p.line).text, p.character, state.tabWidth) : p.character);
+      return { path: appPath(l.uri), ...plainRange(l.range), col: col(l.range.start), endCol: col(l.range.end) };
+    });
 }
 function plainHover(h) {
   if (!h) return '';
@@ -2076,12 +2118,17 @@ function plainHover(h) {
 }
 
 const requests = {
-  async format({ path: file }) {
+  async format({ path: file, onSave }) {
     const doc = openDocument(file, true);
     if (!doc) throw new Error('cannot read the file');
-    const candidates = providersFor('DocumentFormattingEdit', doc);
-    if (candidates.length === 0) throw new Error(`no installed extension formats ${doc.languageId} files`);
     const cfg = getConfiguration('editor', doc);
+    // Saving formats only when the user's settings say so (`editor.formatOnSave`).
+    if (onSave && !cfg.get('formatOnSave', false)) return { changed: false, skipped: true };
+    const candidates = providersFor('DocumentFormattingEdit', doc);
+    if (candidates.length === 0) {
+      if (onSave) return { changed: false, skipped: true };
+      throw new Error(`no installed extension formats ${doc.languageId} files`);
+    }
     const wanted = String(cfg.get('defaultFormatter') || '').toLowerCase();
     const chosen = candidates.find((p) => p.extension === wanted) || candidates[0];
     const options = { tabSize: cfg.get('tabSize', 4), insertSpaces: cfg.get('insertSpaces', true) };
@@ -2090,10 +2137,10 @@ const requests = {
     const text = applyEdits(doc, edits);
     return { changed: text !== doc.getText(), text, extension: chosen.extension };
   },
-  async locations({ path: file, line, character, kind }) {
+  async locations({ path: file, line, col, kind }) {
     const doc = openDocument(file, false);
     if (!doc) return { items: [] };
-    const position = new Position(line, character);
+    const position = positionAt(doc, line, col);
     const method = { Definition: 'provideDefinition', Reference: 'provideReferences', Implementation: 'provideImplementation', TypeDefinition: 'provideTypeDefinition', Declaration: 'provideDeclaration' }[kind];
     for (const p of providersFor(kind, doc)) {
       const args = kind === 'Reference' ? [doc, position, { includeDeclaration: true }, noToken] : [doc, position, noToken];
@@ -2102,11 +2149,12 @@ const requests = {
     }
     return { items: [] };
   },
-  async hover({ path: file, line, character }) {
+  async hover({ path: file, line, col }) {
     const doc = openDocument(file, false);
     if (!doc) return { text: '' };
+    const position = positionAt(doc, line, col);
     for (const p of providersFor('Hover', doc)) {
-      const text = plainHover(await scope.run(p.extension, () => p.provider.provideHover(doc, new Position(line, character), noToken)));
+      const text = plainHover(await scope.run(p.extension, () => p.provider.provideHover(doc, position, noToken)));
       if (text) return { text, extension: p.extension };
     }
     return { text: '' };
@@ -2184,6 +2232,9 @@ async function handle(msg) {
       break;
     case 'changed':
       reloadDocument(msg.path);
+      break;
+    case 'edit':
+      editDocument(msg.path, msg.text);
       break;
     case 'messageReply': {
       // The user picked one of a message's choices (or dismissed it: no action).

@@ -11,7 +11,7 @@ use canvas_render::{push_curve, theme, CurveVertex, Label, RectInstance, View};
 
 use crate::ext::{Extensions, Severity};
 use crate::git::{Change, HunkKind};
-use crate::page::{Page, PageState, RelFilters, Selection};
+use crate::page::{DepFilters, Page, PageState, Ready, RelFilters, Selection};
 
 const MAX_WORLD_LABELS: usize = 600;
 const MAX_CHIPS: usize = 260;
@@ -77,9 +77,67 @@ fn rel_color(kind: RelKind) -> u32 {
 
 /// Rebuild the relation curves of a page and update each selection's
 /// "outside the canvas" count.
-pub fn build_curves(page: &mut Page, filters: &RelFilters, scale: f32) -> Vec<CurveVertex> {
+/// Most dependency curves drawn for one selection, and for "every edge".
+const MAX_DEP_CURVES: usize = 4000;
+const MAX_ALL_EDGES: usize = 40_000;
+
+/// Curves for the dependencies of `node` (a file, or everything under a
+/// folder): what it imports in one colour, what imports it in another. Each
+/// starts at the line of the import. Returns `(drawn, total)`.
+fn dep_curves(out: &mut Vec<CurveVertex>, r: &Ready, node: usize, deps: &DepFilters, scale: f32) -> (usize, usize) {
+    let Some(n) = r.layout.nodes.get(node) else { return (0, 0) };
+    let range = node as u32..n.subtree_end;
+    // A file hidden inside a collapsed folder counts as being where that folder is.
+    let inside = |f: u32| r.layout.file_anchor.get(f as usize).is_some_and(|a| range.contains(a));
+    let anchor = |file: u32, line: u32| r.layout.anchor(&Site { file, line, col: 0, len: 0 }).map(|(p, _)| p);
+    let mut files: Vec<u32> = Vec::new();
+    match n.kind {
+        NodeKind::File(fi) => files.push(fi as u32),
+        NodeKind::Dir => {
+            // What is drawn under the folder, or all its files when it is collapsed.
+            let all = (0..r.repo.files.len() as u32).filter(|f| inside(*f));
+            files.extend(all);
+        }
+    }
+    let (mut drawn, mut total) = (0, 0);
+    for &f in &files {
+        let outgoing = r.deps.outgoing(f).iter().filter(|e| !inside(e.to)).map(|e| (e, true));
+        let incoming = r.deps.incoming(f).filter(|e| !inside(e.from)).map(|e| (e, false));
+        for (e, out_edge) in outgoing.chain(incoming) {
+            if !deps.kinds[e.kind.index()] {
+                continue;
+            }
+            total += 1;
+            if drawn >= MAX_DEP_CURVES {
+                continue;
+            }
+            let (Some(a), Some(b)) = (anchor(e.from, e.line), anchor(e.to, 0)) else { continue };
+            let color = with_alpha(if out_edge { theme::DEP_OUT } else { theme::DEP_IN }, 0.7);
+            push_curve(out, a, b, color, 1.25 * scale);
+            drawn += 1;
+        }
+    }
+    (drawn, total)
+}
+
+pub fn build_curves(page: &mut Page, filters: &RelFilters, deps: &DepFilters, scale: f32) -> Vec<CurveVertex> {
     let mut out = Vec::new();
     let PageState::Ready(r) = &page.state else { return out };
+    // Every edge, faint, under everything else (a sample of them in a huge repository).
+    if deps.all {
+        let step = r.deps.edges.len().div_ceil(MAX_ALL_EDGES).max(1);
+        for e in r.deps.edges.iter().step_by(step).filter(|e| deps.kinds[e.kind.index()]) {
+            let a = r.layout.anchor(&Site { file: e.from, line: e.line, col: 0, len: 0 });
+            let b = r.layout.anchor(&Site { file: e.to, line: 0, col: 0, len: 0 });
+            if let (Some((a, _)), Some((b, _))) = (a, b) {
+                push_curve(&mut out, a, b, with_alpha(theme::DEP_OUT, 0.16), scale);
+            }
+        }
+    }
+    page.dep_edges = match (deps.selected, page.selected) {
+        (true, Some(node)) => dep_curves(&mut out, r, node, deps, scale),
+        _ => (0, 0),
+    };
     for sel in &mut page.selections {
         sel.outside = 0;
         let def = r.repo.sym_site(sel.sym);
@@ -361,12 +419,14 @@ pub fn build(
                     let top = tl[1] - lab_px + (lab_px - size * 1.3) * 0.5;
                     let tw = (n.name.chars().count() as f32 * size * 0.58).min(w_px);
                     if free(Rect::new(left - 2.0, top, tw + 4.0, size * 1.3), &mut placed) {
+                        // A dot marks a file with changes that are not saved yet.
+                        let unsaved = page.editors.get(&n.rel_path).is_some_and(|e| e.dirty);
                         out.labels.push(OwnedLabel {
-                            text: n.name.clone(),
+                            text: if unsaved { format!("● {}", n.name) } else { n.name.clone() },
                             left,
                             top,
                             size,
-                            color: theme::LABEL_FILE,
+                            color: if unsaved { theme::UI_TEXT } else { theme::LABEL_FILE },
                             max_w: w_px,
                             bold: false,
                         });
@@ -398,6 +458,35 @@ pub fn build(
     }
 
     let readable = z * LINE_H >= 2.5;
+
+    // --- the file being edited: its line, selection and caret ------------------
+    if let Some(editor) = page.editor() {
+        let node =
+            repo.file_index(&editor.rel_path).and_then(|fi| layout.file_node.get(fi).copied()).filter(|&n| n != NONE);
+        if let Some(n) = node.map(|n| &layout.nodes[n as usize]) {
+            let caret = editor.caret;
+            let width = repo.file_index(&editor.rel_path).map_or(1, |fi| repo.files[fi].max_cols.max(1));
+            out.under.push(RectInstance::new(n.cell_rect(caret.line as u32, 0, width), 0xffffff0a, 0, 0.0, 0.0));
+            if let Some((a, b)) = editor.selection() {
+                for line in a.line..=b.line {
+                    let from = if line == a.line { editor.display_col(a) } else { 0 };
+                    let to = if line == b.line {
+                        editor.display_col(b)
+                    } else {
+                        // Up to the end of the line, plus one cell for the line break.
+                        editor.display_col(crate::editor::Pos::new(line, usize::MAX)) + 1
+                    };
+                    let cell = n.cell_rect(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
+                    if cell.intersects(&world) {
+                        out.under.push(RectInstance::new(cell, 0x5a96ff59, 0, 0.0, 0.0));
+                    }
+                }
+            }
+            let cell = n.cell_rect(caret.line as u32, editor.display_col(caret) as u32, 1);
+            let w = (2.0 * s / z).max(0.6);
+            out.over.push(RectInstance::new(Rect::new(cell.x - w * 0.5, cell.y, w, cell.h), 0xffffffff, 0, 0.0, 0.0));
+        }
+    }
 
     // --- source control: what changed since the last commit -------------------
     // A coloured strip along the card's left side (and a dot from far away);

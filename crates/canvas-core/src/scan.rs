@@ -171,6 +171,20 @@ impl Repo {
         self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(rel_path))).ok()
     }
 
+    /// Show `source` as the contents of file `index` without touching the
+    /// disk: an edit that is not saved yet. The symbol index is left as it
+    /// was (rebuilding it per keystroke would be slow); call
+    /// [`Repo::reindex_symbols`] when the typing pauses.
+    pub fn replace_source(&mut self, index: usize, source: &str, opts: &ScanOptions) {
+        let rel = self.files[index].rel_path.clone();
+        self.files[index] = build_file(rel, source, opts);
+        self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
+    }
+
+    pub fn reindex_symbols(&mut self) {
+        self.symbols = crate::refs::SymbolIndex::build(&self.files);
+    }
+
     /// Read one file again (it changed on disk) and refresh what is derived
     /// from the files: line totals and the symbol index.
     pub fn reload_file(&mut self, index: usize, opts: &ScanOptions) {
@@ -271,8 +285,15 @@ fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOption
     if bytes[..bytes.len().min(8000)].contains(&0) {
         return SourceFile::placeholder(rel_path, "binary".into());
     }
-    let raw = String::from_utf8_lossy(&bytes);
-    let (mut text, mut line_starts, max_cols) = normalise(&raw);
+    let file = build_file(rel_path, &String::from_utf8_lossy(&bytes), opts);
+    lap(3, &mut t);
+    file
+}
+
+/// Normalise and analyse a file's contents.
+fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
+    let mut t = Instant::now();
+    let (mut text, mut line_starts, max_cols) = normalise(raw);
     let mut note = None;
     if line_starts.len() > opts.max_lines {
         note = Some(format!("truncated at {} of {} lines", opts.max_lines, line_starts.len()));
@@ -284,7 +305,6 @@ fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOption
     let lang = Lang::from_path(&rel_path);
     let analysis = syntax::analyze(&text, &line_starts, lang, crate::symbols::Dialect::from_path(&rel_path));
     text.shrink_to_fit();
-    lap(3, &mut t);
     SourceFile { name: file_name(&rel_path), rel_path, lang, text, line_starts, analysis, max_cols, note }
 }
 
@@ -379,6 +399,11 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.to_string_lossy().into_owned());
 
+    // Two cores stay free: a scan of a huge folder must not starve the
+    // window that is showing its progress (or anything else on the machine).
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_sub(2).max(1);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(workers).thread_name(|i| format!("scan {i}")).build();
+
     // 1. Discover paths (fast, single-threaded, sorted for a stable layout).
     let skip = opts.skip_dirs.clone();
     let walker = ignore::WalkBuilder::new(&root)
@@ -389,6 +414,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
         .filter_entry(move |e| {
             !(e.file_type().is_some_and(|t| t.is_dir()) && skip.iter().any(|s| e.file_name() == s.as_str()))
         })
+        .threads(workers)
         .build_parallel();
 
     let shared = Mutex::new(Vec::<Found>::new());
@@ -405,16 +431,22 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
     let walk_ms = started.elapsed().as_millis();
     let t_load = Instant::now();
     // 2. Read + tokenise in parallel, keeping the original order.
-    let files: Vec<SourceFile> = paths
-        .par_iter()
-        .map(|(path, rel, size)| {
-            let f = load_file(path, rel.clone(), *size, opts);
-            if let Some(p) = &progress {
-                p.loaded.fetch_add(1, Ordering::Relaxed);
-            }
-            f
-        })
-        .collect();
+    let load = || -> Vec<SourceFile> {
+        paths
+            .par_iter()
+            .map(|(path, rel, size)| {
+                let f = load_file(path, rel.clone(), *size, opts);
+                if let Some(p) = &progress {
+                    p.loaded.fetch_add(1, Ordering::Relaxed);
+                }
+                f
+            })
+            .collect()
+    };
+    let files = match &pool {
+        Ok(pool) => pool.install(load),
+        Err(_) => load(),
+    };
 
     let load_ms = t_load.elapsed().as_millis();
     let t_tree = Instant::now();

@@ -112,6 +112,16 @@ This is name-based and approximate. The `Relation` / `Site` types are deliberate
 independent of how they were found, so a language-server client can provide exact
 results later without touching the canvas or the panels.
 
+## Dependencies between files (`canvas-core::deps`)
+
+`deps::analyze(repo)` reads the import statements of every file (ES imports and
+`require`, `#include`, Rust `mod` / `use`, Python and Java imports) and resolves them
+to files of the repository, in parallel: Chromium's 1.35 million edges take half a
+second. The result is a sorted edge list with O(1) `outgoing(file)` / `incoming(file)`.
+The app draws the edges of the selected node as curves (the same pipeline as symbol
+relations) and lists them in the dependencies panel. It is import-based and
+approximate: no build system is consulted.
+
 ## Layout filter
 
 `LayoutFilter { collapsed, hidden, only_files }` decides what is on the canvas.
@@ -141,8 +151,29 @@ for huge repositories); cameras and selections survive by path.
   sides), changed lines, the latest commits and the timeline of the selected file,
   plus what the source control panel does (stage, unstage, commit, sync).
 - `webview.rs` shows extensions' webviews in a child browser view.
+- `editor.rs` is the text being edited (the file as it is on disk, with its own tabs
+  and line endings), the caret, selection and undo. After each edit the file's card
+  is rebuilt from that text; the layout only when its size changes.
+- `watch.rs` reports files that change on disk; a few are reloaded one by one, new or
+  removed files mean a rescan (left to the user for huge folders).
 - `session.rs` persists folders, cameras, collapsed/hidden paths and panel state.
 - `script.rs` drives the app from `CODE_CANVAS_SCRIPT` (see below).
+
+## Windows, resizing and the graphics API
+
+On Windows the app draws with Direct3D 12 (`CODE_CANVAS_BACKEND=vulkan|dx12|gl`
+overrides it). Measured while the window is resized hundreds of times: Vulkan rebuilds
+its swap chain for every size (15-30 ms) and, with a browser view in the window (an
+extension's webview), stalls for half a second per frame waiting for an image;
+Direct3D 12 does neither. Two rules in the frame loop come from the same work:
+
+- A size change is only recorded; the surface is reconfigured once, at the start of
+  the next frame, however many sizes arrived in between.
+- A surface is never reconfigured while one of its textures is held (wgpu treats
+  that as a fatal error).
+
+`resize <w> <h>` in a script resizes the window from inside the app; resizing it from
+another process, as a user's drag does, is what found these problems.
 
 ## Measuring
 
@@ -164,7 +195,8 @@ CODE_CANVAS_DATA_DIR=/tmp/cc-test CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800
 Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <text>`,
 `left files|search|extensions|problems|changes|<publisher.name>|help|none`,
 `right symbols|<extension id>|none`, `folders`, `collapse-all`, `expand-all`, `connected on|off`,
-`changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `git stage|unstage [path]`, `git commit <message>`,
+`changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `palette <text>`, `edit <path> <line> <column>`, `type <text>`,
+`key enter|backspace|undo|redo|save|…`, `git stage|unstage [path]`, `git commit <message>`,
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
-`maximize`, `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
+`resize <width> <height>`, `maximize`, `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.

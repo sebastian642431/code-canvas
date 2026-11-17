@@ -21,8 +21,15 @@ muy grandes. Código abierto: cualquiera puede aportar.
   llamadas entrantes y salientes e implementaciones, con filtros por tipo y la opción
   de mostrar solo los archivos conectados. Funciona al instante con un índice propio
   por nombres (aproximado); los *language servers* darán resultados exactos.
+- **Dependencias**: qué archivo importa a cuál, leído de los `import`. Al seleccionar
+  un archivo o una carpeta salen curvas hacia lo que usa y desde lo que lo usa, con un
+  panel que lista ambas cosas.
 - **Buscar**: explorador con casillas y filtro, `Ctrl+P` para ir a un archivo,
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
+- **Edición**: el código legible es un editor: clic y a escribir, con deshacer,
+  copiar y pegar y `Ctrl+S`. Formatea al guardar si tu configuración lo pide, los
+  problemas se actualizan mientras escribís y los archivos cambiados por otro programa
+  se recargan solos. `Ctrl+Shift+P` abre la paleta de comandos.
 - **Extensiones de VS Code**: instala las mismas extensiones `.vsix` desde
   [Open VSX](https://open-vsx.org) y las ejecuta sin modificar. Los linters marcan los
   errores sobre el código y en un panel de problemas; `Shift+Alt+F` formatea con la
@@ -40,7 +47,13 @@ muy grandes. Código abierto: cualquiera puede aportar.
 
 ## Instalar y abrir
 
-En Windows, para tu usuario (sin permisos de administrador):
+**Descargar**: en la [página de versiones](https://github.com/sebastian642431/code-canvas/releases)
+está `code-canvas.exe` para Windows. Es un solo archivo: se ejecuta, sin instalador.
+Windows puede avisar que es de un editor desconocido (todavía no está firmado): "Más
+información" → "Ejecutar de todas formas". Las extensiones necesitan además
+[Node.js](https://nodejs.org).
+
+Desde el código, en Windows, para tu usuario (sin permisos de administrador):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1

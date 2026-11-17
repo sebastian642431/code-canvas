@@ -10,6 +10,7 @@ mod app;
 mod bench;
 mod camera;
 mod codicons;
+mod editor;
 mod ext;
 mod git;
 mod icon;
@@ -19,6 +20,7 @@ mod page;
 mod script;
 mod session;
 mod ui;
+mod watch;
 mod webview;
 
 use std::io::Write;

@@ -11,11 +11,13 @@ use canvas_core::{Layout, LayoutFilter, RelKind, Relations, Repo, ScanOptions, S
 use canvas_render::{Renderer, SceneData, SceneGpu};
 
 use crate::camera::Camera;
+use crate::editor::Editor;
 use crate::git::{Commit, GitState};
 use crate::session::PageSession;
 
 pub struct Loaded {
     pub repo: Repo,
+    pub deps: canvas_core::deps::Deps,
     pub layout: Layout,
     pub scene: SceneData,
     pub total_ms: u128,
@@ -38,6 +40,8 @@ pub struct TreeRow {
 
 pub struct Ready {
     pub repo: Repo,
+    /// Which file imports which, from the import statements.
+    pub deps: canvas_core::deps::Deps,
     pub layout: Layout,
     pub gpu: SceneGpu,
     pub tokens: TokenCache,
@@ -47,7 +51,14 @@ pub struct Ready {
 }
 
 pub enum PageState {
-    Loading { progress: Arc<ScanProgress>, rx: Receiver<Loaded>, started: Instant },
+    /// Opened but not read yet: a folder restored from the last session
+    /// that has not been shown. It is scanned when the user goes to it.
+    Waiting,
+    Loading {
+        progress: Arc<ScanProgress>,
+        rx: Receiver<Loaded>,
+        started: Instant,
+    },
     Ready(Box<Ready>),
     Failed(String),
 }
@@ -69,6 +80,23 @@ pub struct Selection {
 }
 
 /// Which relation kinds are drawn, and how strongly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+/// What to draw of the dependencies between files.
+pub struct DepFilters {
+    /// Edges of the selected file or folder.
+    pub selected: bool,
+    /// Every edge of the repository, faint.
+    pub all: bool,
+    /// Per `DepKind::index()`.
+    pub kinds: [bool; 5],
+}
+
+impl Default for DepFilters {
+    fn default() -> Self {
+        DepFilters { selected: true, all: false, kinds: [true; 5] }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RelFilters {
     pub enabled: [bool; 5],
@@ -119,6 +147,15 @@ pub struct Page {
     git_rx: Option<Receiver<Option<GitState>>>,
     /// Show only the changed files on the canvas.
     pub only_changed: bool,
+    /// Files with edits in memory, by path. They stay here until saved,
+    /// so leaving a file does not lose what was typed.
+    pub editors: std::collections::HashMap<String, Editor>,
+    /// The file the caret is in.
+    pub editing: Option<String>,
+    /// The node whose dependency edges are in the curves on the GPU.
+    pub curves_node: Option<usize>,
+    /// `(drawn, total)` dependency edges of the selection, for the panel.
+    pub dep_edges: (usize, usize),
     /// The commit message being written in the source control panel.
     pub commit_message: String,
     /// A git command started from the panel is running.
@@ -128,6 +165,13 @@ pub struct Page {
     /// History of the selected file.
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
+}
+
+impl SearchResults {
+    /// One place to mark on the canvas (where a definition was found).
+    pub fn single(site: Site) -> Self {
+        SearchResults { query: String::new(), hits: vec![site], truncated: false, ms: 0.0 }
+    }
 }
 
 /// The commits that touched one file, newest first.
@@ -140,7 +184,9 @@ pub struct Timeline {
 }
 
 impl Page {
-    pub fn open(id: u32, root: PathBuf, saved: Option<&PageSession>) -> Page {
+    /// Open `root`. With `scan` false it only takes its place in the list
+    /// and is read when first shown ([`Page::ensure_scanned`]).
+    pub fn open(id: u32, root: PathBuf, saved: Option<&PageSession>, scan: bool) -> Page {
         let title = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -166,6 +212,10 @@ impl Page {
             git: None,
             git_rx: None,
             only_changed: false,
+            editors: Default::default(),
+            editing: None,
+            curves_node: None,
+            dep_edges: (0, 0),
             commit_message: String::new(),
             git_op: None,
             git_note: None,
@@ -178,8 +228,28 @@ impl Page {
             page.tree_open = s.tree_open.iter().cloned().collect();
             page.restore_camera = s.camera.map(|(center, zoom)| Camera { center, zoom });
         }
-        page.start_scan();
+        if scan {
+            page.start_scan();
+        } else {
+            page.state = PageState::Waiting;
+        }
         page
+    }
+
+    /// Start reading the folder if that has not happened yet.
+    pub fn ensure_scanned(&mut self) {
+        if matches!(self.state, PageState::Waiting) {
+            self.start_scan();
+        }
+    }
+
+    pub fn is_waiting(&self) -> bool {
+        matches!(self.state, PageState::Waiting)
+    }
+
+    /// Git is being asked and has not answered yet.
+    pub fn git_loading(&self) -> bool {
+        self.git_rx.is_some() && self.git.is_none()
     }
 
     pub fn to_session(&self, scale: f32) -> PageSession {
@@ -202,10 +272,62 @@ impl Page {
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::git::load(&root));
+            let state = crate::git::load(&root);
+            match &state {
+                Some(g) => log::debug!("git: {} changes on {} in {} ms", g.changes.len(), g.branch, g.ms),
+                None => log::debug!("git: {} is not in a repository", root.display()),
+            }
+            let _ = tx.send(state);
             crate::ext::wake_ui();
         });
         self.git_rx = Some(rx);
+    }
+
+    /// The editor of the file the caret is in.
+    pub fn editor(&self) -> Option<&Editor> {
+        self.editors.get(self.editing.as_deref()?)
+    }
+
+    pub fn editor_mut(&mut self) -> Option<&mut Editor> {
+        self.editors.get_mut(self.editing.as_deref()?)
+    }
+
+    /// Put the caret in `rel_path`, reading the file as it is on disk the
+    /// first time. False when it cannot be edited (unreadable, not text).
+    pub fn begin_edit(&mut self, rel_path: &str) -> bool {
+        if !self.editors.contains_key(rel_path) {
+            let Ok(bytes) = std::fs::read(self.root.join(rel_path)) else { return false };
+            // Only text that survives a round trip: nothing is lost on save.
+            let Ok(source) = String::from_utf8(bytes) else { return false };
+            if source.contains('\0') {
+                return false;
+            }
+            self.editors.insert(rel_path.to_string(), Editor::open(rel_path.to_string(), &source));
+        }
+        self.editing = Some(rel_path.to_string());
+        true
+    }
+
+    /// Show what the editor of `rel_path` holds: the card follows every
+    /// keystroke. The caller drops this page's cached text first.
+    pub fn show_edit(&mut self, rel_path: &str, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
+        let Some(source) = self.editors.get(rel_path).map(|e| e.display_source()) else { return };
+        let PageState::Ready(r) = &mut self.state else { return };
+        let Some(index) = r.repo.file_index(rel_path) else { return };
+        let before = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
+        r.repo.replace_source(index, &source, &ScanOptions::default());
+        r.tokens = Default::default();
+        let after = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
+        // Symbols of this file moved: selections pointing at them are stale.
+        if !self.selections.is_empty() {
+            self.selections.clear();
+            self.curves_dirty = true;
+        }
+        self.search = None;
+        // The card only changes size when a line is added, removed or outgrows it.
+        if before != after {
+            self.relayout(renderer, device, filters);
+        }
     }
 
     pub fn git_busy(&self) -> bool {
@@ -240,6 +362,7 @@ impl Page {
                 self.git_note = Some((true, line));
             }
             (crate::git::GitOp::Sync, Ok(_)) => self.git_note = Some((true, "Synced with the remote.".into())),
+            (crate::git::GitOp::Switch(branch), Ok(_)) => self.git_note = Some((true, format!("On branch {branch}."))),
             (_, Ok(_)) => {}
             (_, Err(e)) => self.git_note = Some((false, e)),
         }
@@ -313,6 +436,16 @@ impl Page {
             .spawn(move || {
                 let t = Instant::now();
                 let repo = scan::scan(&root, &ScanOptions::default(), Some(p));
+                let deps = canvas_core::deps::analyze(&repo);
+                log::info!(
+                    "dependencies of '{}': {} edges between {} pairs of files in {} ms ({} unresolved, {} external)",
+                    repo.name,
+                    deps.edges.len(),
+                    deps.pairs(),
+                    deps.ms,
+                    deps.unresolved,
+                    deps.external
+                );
                 let layout = Layout::build_filtered(&repo, &filter);
                 let scene = SceneData::build(&repo, &layout);
                 let total_ms = t.elapsed().as_millis();
@@ -326,7 +459,7 @@ impl Page {
                     repo.timings.index_ms,
                     total_ms
                 );
-                let _ = tx.send(Loaded { repo, layout, scene, total_ms });
+                let _ = tx.send(Loaded { repo, deps, layout, scene, total_ms });
             })
             .expect("spawn scan thread");
         self.state = PageState::Loading { progress, rx, started: Instant::now() };

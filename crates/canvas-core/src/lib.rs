@@ -10,6 +10,7 @@
 //! code is drawn at roughly a 10px font.
 
 pub mod cache;
+pub mod deps;
 pub mod geom;
 pub mod layout;
 pub mod refs;

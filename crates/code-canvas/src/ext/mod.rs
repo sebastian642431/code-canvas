@@ -239,6 +239,22 @@ pub enum Event {
     WebviewClosed(String),
     /// Bring this webview (by key) in front of the user.
     ShowWebview(String),
+    /// Go to this place in a file (a definition that was asked for).
+    GoTo {
+        path: PathBuf,
+        line: u32,
+        col: u32,
+        len: u32,
+    },
+}
+
+/// What a language extension says about the code under the pointer.
+pub struct Hover {
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+    /// Markdown as the extension gave it; empty when it had nothing to say.
+    pub text: String,
 }
 
 /// A webview an extension offers: a view it registered (shown when the user
@@ -260,11 +276,14 @@ enum Job {
 }
 
 enum Pending {
-    Format(PathBuf),
+    /// A file being formatted; `true` when it is part of saving (quiet).
+    Format(PathBuf, bool),
     /// A command, by its title.
     Command(String),
     /// A webview view being filled, by key.
     Webview(String),
+    Hover(PathBuf, u32, u32),
+    Definition(PathBuf),
 }
 
 /// Documents kept open in the host at most (least recently seen go first).
@@ -290,6 +309,8 @@ pub struct Extensions {
     /// Status bar items extensions are showing, `(id, text)`.
     pub status_items: Vec<(String, String)>,
     pub webviews: Vec<WebviewEntry>,
+    /// The latest answer to [`Extensions::request_hover`].
+    pub hover: Option<Hover>,
     /// Webviews that went away with their host; reported by `poll`.
     dropped_webviews: Vec<String>,
     pub host_running: bool,
@@ -451,6 +472,7 @@ impl Extensions {
             log: VecDeque::new(),
             status_items: Vec::new(),
             webviews: Vec::new(),
+            hover: None,
             dropped_webviews: Vec::new(),
             host_running: false,
             dir,
@@ -682,6 +704,15 @@ impl Extensions {
         }
     }
 
+    /// The user is typing in `path`: `text` is what the file holds now,
+    /// not saved yet. Linters check it as it is typed.
+    pub fn file_edited(&mut self, path: &Path, text: &str) {
+        if !self.open.iter().any(|p| p == path) {
+            self.open.push(path.to_path_buf());
+        }
+        self.send(json!({ "type": "edit", "path": path, "text": text }));
+    }
+
     /// The file's contents changed on disk.
     pub fn file_changed(&mut self, path: &Path) {
         self.send(json!({ "type": "changed", "path": path }));
@@ -707,8 +738,22 @@ impl Extensions {
         self.focused = Some(path.to_path_buf());
         let id = self.next_request;
         self.next_request += 1;
-        self.pending.insert(id, Pending::Format(path.to_path_buf()));
+        self.pending.insert(id, Pending::Format(path.to_path_buf(), false));
         self.send(json!({ "type": "request", "id": id, "method": "format", "params": { "path": path } }));
+    }
+
+    /// The file was just saved: format it if the settings ask for that
+    /// (`editor.formatOnSave`). Says nothing unless it changes the file.
+    pub fn format_on_save(&mut self, path: &Path) {
+        if self.host.is_none() {
+            return;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.insert(id, Pending::Format(path.to_path_buf(), true));
+        self.send(
+            json!({ "type": "request", "id": id, "method": "format", "params": { "path": path, "onSave": true } }),
+        );
     }
 
     /// Answer the question in notice `index`: one of its actions, or
@@ -721,6 +766,32 @@ impl Extensions {
         if let Some(id) = notice.reply_to {
             self.send(json!({ "type": "messageReply", "id": id, "action": action }));
         }
+    }
+
+    /// Ask the language extensions about the code at `(line, display column)`
+    /// of `path`. The answer lands in [`Extensions::hover`].
+    pub fn request_hover(&mut self, path: &Path, line: u32, col: u32) {
+        if self.host.is_none() {
+            return;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.insert(id, Pending::Hover(path.to_path_buf(), line, col));
+        self.send(json!({ "type": "request", "id": id, "method": "hover", "params": { "path": path, "line": line, "col": col } }));
+    }
+
+    /// Ask where the name at that place is defined; the answer comes back
+    /// as [`Event::GoTo`]. False when no extension is running to ask.
+    pub fn request_definition(&mut self, path: &Path, line: u32, col: u32) -> bool {
+        if self.host.is_none() {
+            return false;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.insert(id, Pending::Definition(path.to_path_buf()));
+        let params = json!({ "path": path, "line": line, "col": col, "kind": "Definition" });
+        self.send(json!({ "type": "request", "id": id, "method": "locations", "params": params }));
+        true
     }
 
     /// Folder the installed extensions live in.
@@ -991,8 +1062,8 @@ impl Extensions {
             "openExternal" => self.log_line(&format!("[host] link not opened: {}", s("url"))),
             "reply" => {
                 let id = m.get("id").and_then(Value::as_u64).unwrap_or(0);
-                let path = match self.pending.remove(&id) {
-                    Some(Pending::Format(path)) => path,
+                let (path, quiet) = match self.pending.remove(&id) {
+                    Some(Pending::Format(path, quiet)) => (path, quiet),
                     Some(Pending::Webview(key)) => {
                         let handle = m.pointer("/result/handle").and_then(Value::as_str).map(str::to_string);
                         let error = m.get("error").and_then(Value::as_str).unwrap_or("it gave no page").to_string();
@@ -1009,6 +1080,39 @@ impl Extensions {
                         }
                         return;
                     }
+                    Some(Pending::Hover(path, line, col)) => {
+                        let text = m.pointer("/result/text").and_then(Value::as_str).unwrap_or_default().to_string();
+                        self.hover = Some(Hover { path, line, col, text });
+                        return;
+                    }
+                    Some(Pending::Definition(from)) => {
+                        let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
+                        match m.pointer("/result/items/0") {
+                            Some(first) => {
+                                let len = if n(first, "endLine") == n(first, "line") {
+                                    n(first, "endCol").saturating_sub(n(first, "col"))
+                                } else {
+                                    1
+                                };
+                                events.push(Event::GoTo {
+                                    path: PathBuf::from(first.get("path").and_then(Value::as_str).unwrap_or_default()),
+                                    line: n(first, "line"),
+                                    col: n(first, "col"),
+                                    len: len.max(1),
+                                });
+                            }
+                            None => {
+                                let name =
+                                    from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                self.notice(
+                                    Level::Info,
+                                    "Go to definition",
+                                    format!("no extension knows a definition for that name in {name}"),
+                                );
+                            }
+                        }
+                        return;
+                    }
                     Some(Pending::Command(title)) => {
                         match m.get("error").and_then(Value::as_str) {
                             Some(error) => self.notice(Level::Warn, &title, error.to_string()),
@@ -1021,6 +1125,15 @@ impl Extensions {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 if let Some(error) = m.get("error").and_then(Value::as_str) {
                     self.notice(Level::Warn, "Format", format!("{name}: {error}"));
+                    return;
+                }
+                if quiet {
+                    let result = m.get("result").cloned().unwrap_or(Value::Null);
+                    if let (Some(true), Some(text)) =
+                        (result.get("changed").and_then(Value::as_bool), result.get("text").and_then(Value::as_str))
+                    {
+                        events.push(Event::Write { path, text: text.to_string() });
+                    }
                     return;
                 }
                 let result = m.get("result").cloned().unwrap_or(Value::Null);

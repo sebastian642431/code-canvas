@@ -82,6 +82,8 @@ pub struct GitState {
     pub behind: u32,
     /// The latest commits of the branch, newest first.
     pub graph: Vec<GraphCommit>,
+    /// Local branches.
+    pub branches: Vec<String>,
     /// Sorted by path.
     pub changes: Vec<FileChange>,
     /// More changes existed than are kept.
@@ -110,6 +112,10 @@ pub enum GitOp {
     CommitAll(String),
     /// Pull (fast-forward only) and push.
     Sync,
+    /// Throw away the changes of a tracked file (back to the last commit).
+    Discard(String),
+    /// Switch to another branch.
+    Switch(String),
 }
 
 /// Run `op` in `root`. The error is what git printed.
@@ -122,6 +128,8 @@ pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
         GitOp::Commit(message) => vec![vec!["commit", "-m", message]],
         GitOp::CommitAll(message) => vec![vec!["add", "-A", "--", "."], vec!["commit", "-m", message]],
         GitOp::Sync => vec![vec!["pull", "--ff-only"], vec!["push"]],
+        GitOp::Discard(path) => vec![vec!["checkout", "HEAD", "--", path]],
+        GitOp::Switch(branch) => vec![vec!["switch", branch]],
     };
     let mut last = String::new();
     for args in steps {
@@ -143,7 +151,9 @@ const MAX_CHANGES: usize = 5000;
 /// `git -C root`, without a console window.
 fn command(root: &Path) -> Command {
     let mut c = Command::new("git");
-    c.arg("-C").arg(root).args(["-c", "core.quotepath=off"]);
+    // No optional locks: reading the status must not rewrite `.git/index`,
+    // or the file watcher would see a change and ask for the status again.
+    c.env("GIT_OPTIONAL_LOCKS", "0").arg("-C").arg(root).args(["-c", "core.quotepath=off"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -154,24 +164,42 @@ fn command(root: &Path) -> Command {
 }
 
 fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let out = command(root).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    out.status.success().then_some(out.stdout)
+    let out = command(root).args(args).stdin(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        log::debug!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        return None;
+    }
+    Some(out.stdout)
 }
 
 /// `None` when `root` is not inside a git repository (or git is missing).
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    let status = git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."])?;
+    // The reads do not depend on each other: run them side by side (starting
+    // git costs more than what it then does, on Windows above all).
+    let (status, prefix, diff, log, list) = std::thread::scope(|s| {
+        let status =
+            s.spawn(|| git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."]));
+        let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
+        let diff =
+            s.spawn(|| git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]));
+        let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
+        let list = s.spawn(|| git(root, &["branch", "--format=%(refname:short)"]));
+        let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
+        (done(status), done(prefix), done(diff), done(log), done(list))
+    });
+    let status = status?;
     // Paths in the status are relative to the repository, not to `root`.
-    let prefix = git(root, &["rev-parse", "--show-prefix"])
-        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
-        .unwrap_or_default();
+    let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
     let mut state = parse_status(&String::from_utf8_lossy(&status), &prefix);
-    if let Some(diff) = git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]) {
+    if let Some(diff) = diff {
         apply_diff(&mut state, &String::from_utf8_lossy(&diff));
     }
-    if let Some(log) = git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]) {
+    if let Some(log) = log {
         state.graph = parse_graph(&String::from_utf8_lossy(&log));
+    }
+    if let Some(list) = list {
+        state.branches = String::from_utf8_lossy(&list).lines().map(str::to_string).filter(|b| !b.is_empty()).collect();
     }
     state.ms = started.elapsed().as_millis() as u32;
     Some(state)
@@ -269,6 +297,29 @@ fn apply_diff(state: &mut GitState, diff: &str) {
             });
         }
     }
+}
+
+/// Of `paths` (relative to `root`), those git does not ignore. Outside a
+/// repository nothing is ignored.
+pub fn not_ignored(root: &Path, paths: Vec<String>) -> Vec<String> {
+    use std::io::Write;
+    let mut c = command(root);
+    c.args(["check-ignore", "--stdin", "-z"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let Ok(mut child) = c.spawn() else { return paths };
+    if let Some(mut stdin) = child.stdin.take() {
+        for p in &paths {
+            let _ = stdin.write_all(p.as_bytes());
+            let _ = stdin.write_all(b"\0");
+        }
+    }
+    let Ok(out) = child.wait_with_output() else { return paths };
+    // 0: some are ignored (listed), 1: none is; anything else: not a repository.
+    if !matches!(out.status.code(), Some(0) | Some(1)) {
+        return paths;
+    }
+    let listed = String::from_utf8_lossy(&out.stdout);
+    let ignored: std::collections::HashSet<&str> = listed.split('\0').filter(|s| !s.is_empty()).collect();
+    paths.into_iter().filter(|p| !ignored.contains(p.as_str())).collect()
 }
 
 /// One commit of a file's history.
@@ -393,6 +444,23 @@ mod tests {
         assert_eq!(ago(3600), "1 hour ago");
         assert_eq!(ago(3 * 86400), "3 days ago");
         assert_eq!(ago(800 * 86400), "2 years ago");
+    }
+
+    /// `GIT_LOAD_TEST=<folder> cargo test -p code-canvas load_a_real -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn load_a_real_repository() {
+        let root = std::env::var("GIT_LOAD_TEST").expect("set GIT_LOAD_TEST to a folder");
+        let state = load(Path::new(&root)).expect("a repository");
+        println!(
+            "{} on {}: {} changes, {} commits, {:?}, {} ms",
+            root,
+            state.branch,
+            state.changes.len(),
+            state.graph.len(),
+            state.branches,
+            state.ms
+        );
     }
 
     #[test]

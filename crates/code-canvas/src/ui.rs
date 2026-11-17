@@ -22,6 +22,7 @@ use crate::ext::Extensions;
 use crate::icons;
 use crate::page::{build_tree, Page, PageState, RelFilters};
 
+mod deps_panel;
 mod ext_panels;
 mod git_panel;
 
@@ -43,6 +44,8 @@ pub enum LeftPanel {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RightPanel {
     Symbols,
+    /// Dependencies between files: what imports what.
+    Deps,
     /// An extension's webview (`UiState::webview`).
     Webview,
 }
@@ -69,6 +72,8 @@ pub struct UiState {
     pub maximized: bool,
     /// The app icon, shown in the top-left corner of the header.
     logo: Option<egui::TextureHandle>,
+    /// What to draw of the dependencies between files.
+    pub deps: crate::page::DepFilters,
     /// Key of the webview shown by [`RightPanel::Webview`].
     pub webview: String,
     /// Where that webview's page goes this frame, in points.
@@ -94,6 +99,7 @@ impl Default for UiState {
             maximized: false,
             logo: None,
             extension: String::new(),
+            deps: Default::default(),
             webview: String::new(),
             webview_rect: None,
             ext_icons: Default::default(),
@@ -155,6 +161,14 @@ pub enum Action {
     /// Format a file of the active page with the installed formatter:
     /// the given path, else the file under the pointer or the selected one.
     FormatFile(Option<String>),
+    /// Open a left panel.
+    ShowLeft(LeftPanel),
+    /// Save the file being edited.
+    SaveFile,
+    /// Run an extension's command: `(id, title)`.
+    RunCommand(String, String),
+    /// What to draw of the dependencies changed.
+    DepsChanged,
     /// A source control command on the active page.
     Git(crate::git::GitOp),
     /// Ask git again what changed in the active page.
@@ -377,6 +391,7 @@ pub fn build(
         let p = egui::Panel::right("right").resizable(true).default_size(340.0).size_range(260.0..=600.0);
         card_panel(ui, p, |ui| match panel {
             RightPanel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
+            RightPanel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
             RightPanel::Webview => ext_panels::webview_panel(ui, st, ext),
         });
     }
@@ -386,7 +401,7 @@ pub fn build(
     center_message(ui, canvas, pages.get(active));
     toolbar(&ctx, st, canvas, info, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
-    quick_open(&ctx, st, canvas, pages.get(active), actions);
+    quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
     canvas
 }
@@ -621,7 +636,10 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
     egui::Panel::right("rail_right").frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
         let b = Vec2::splat(34.0);
-        for (panel, glyph, tip) in [(RightPanel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names")] {
+        for (panel, glyph, tip) in [
+            (RightPanel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names"),
+            (RightPanel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which"),
+        ] {
             if icon_button(ui, glyph, b, st.right == Some(panel), HOVER).on_hover_text(tip).clicked() {
                 if st.right == Some(panel) {
                     st.right = None;
@@ -1286,6 +1304,7 @@ fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>) {
                 TEXT,
             )),
             PageState::Failed(e) => Some((e.clone(), c(theme::UI_WARN))),
+            PageState::Waiting => Some((format!("{} will be read when it is shown", p.title), TEXT_DIM)),
             PageState::Ready(_) => None,
         },
     };
@@ -1383,7 +1402,44 @@ fn quick_score(path: &str, query: &str) -> Option<i32> {
     None
 }
 
-fn quick_open(ctx: &egui::Context, st: &mut UiState, canvas: Rect, page: Option<&Page>, actions: &mut Vec<Action>) {
+/// Everything the command palette offers: the app's own commands, then
+/// those of the extensions that are running.
+fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
+    let mut out: Vec<(String, Action)> = vec![
+        ("File: Open Folder…".into(), Action::OpenFolder),
+        ("File: Save".into(), Action::SaveFile),
+        ("Format Document".into(), Action::FormatFile(None)),
+        ("View: Explorer".into(), Action::ShowLeft(LeftPanel::Files)),
+        ("View: Search".into(), Action::ShowLeft(LeftPanel::Search)),
+        ("View: Source Control".into(), Action::ShowLeft(LeftPanel::Changes)),
+        ("View: Extensions".into(), Action::ShowLeft(LeftPanel::Extensions)),
+        ("View: Problems".into(), Action::ShowLeft(LeftPanel::Problems)),
+        ("View: Keyboard Shortcuts".into(), Action::ShowLeft(LeftPanel::Help)),
+        ("View: Show the Whole Canvas".into(), Action::Fit),
+        ("View: Go to the Selection".into(), Action::FrameSelection),
+        ("View: Reload the Folder from Disk".into(), Action::Rescan),
+        ("Canvas: Collapse All Folders".into(), Action::CollapseAll),
+        ("Canvas: Expand All Folders".into(), Action::ExpandAll),
+        ("Canvas: Show All Hidden Files".into(), Action::ShowAll),
+        ("Source Control: Refresh".into(), Action::RefreshGit),
+        ("Source Control: Show Only Changed Files".into(), Action::SetOnlyChanged(true)),
+        ("Source Control: Show All Files".into(), Action::SetOnlyChanged(false)),
+        ("Extensions: Install from VSIX…".into(), Action::InstallVsix),
+    ];
+    for e in ext.installed.iter().filter(|e| e.enabled && e.has_code) {
+        out.extend(e.commands.iter().map(|(id, title)| (title.clone(), Action::RunCommand(id.clone(), title.clone()))));
+    }
+    out
+}
+
+fn quick_open(
+    ctx: &egui::Context,
+    st: &mut UiState,
+    canvas: Rect,
+    page: Option<&Page>,
+    ext: &Extensions,
+    actions: &mut Vec<Action>,
+) {
     let Some(q) = &mut st.quick else { return };
     let mut close = false;
     let screen = ctx.content_rect();
@@ -1398,13 +1454,94 @@ fn quick_open(ctx: &egui::Context, st: &mut UiState, canvas: Rect, page: Option<
                 .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    let edit = search_field(ui, &mut q.query, "Go to a file or folder by name", icons::SEARCH);
+                    let edit = search_field(
+                        ui,
+                        &mut q.query,
+                        "Go to a file or folder by name   ·   > for commands",
+                        icons::SEARCH,
+                    );
                     if q.focus {
                         edit.request_focus();
+                        // Opened as the command palette (`>`): the caret goes after it.
+                        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
+                            let end = egui::text::CCursor::new(q.query.chars().count());
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                            state.store(ui.ctx(), edit.id);
+                        }
                         q.focus = false;
                     }
                     if edit.changed() {
                         q.selected = 0;
+                    }
+
+                    // `>` turns the box into the command palette, as in VS Code.
+                    if let Some(filter) = q.query.strip_prefix('>') {
+                        let filter = filter.trim().to_lowercase();
+                        let mut rows: Vec<(i32, String, Action)> = palette_commands(ext)
+                            .into_iter()
+                            .filter_map(|(label, action)| {
+                                let score = if filter.is_empty() {
+                                    Some(0)
+                                } else {
+                                    quick_score(&label.to_lowercase(), &filter)
+                                };
+                                score.map(|s| (s, label, action))
+                            })
+                            .collect();
+                        if !filter.is_empty() {
+                            rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                        }
+                        rows.truncate(14);
+                        let (up, down, enter, esc) = ui.input(|i| {
+                            (
+                                i.key_pressed(egui::Key::ArrowUp),
+                                i.key_pressed(egui::Key::ArrowDown),
+                                i.key_pressed(egui::Key::Enter),
+                                i.key_pressed(egui::Key::Escape),
+                            )
+                        });
+                        if down && !rows.is_empty() {
+                            q.selected = (q.selected + 1) % rows.len();
+                        }
+                        if up && !rows.is_empty() {
+                            q.selected = (q.selected + rows.len() - 1) % rows.len();
+                        }
+                        q.selected = q.selected.min(rows.len().saturating_sub(1));
+                        let mut chosen = None;
+                        ui.add_space(4.0);
+                        for (i, (_, label, _)) in rows.iter().enumerate() {
+                            let (rect, resp) =
+                                ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                            if i == q.selected || resp.hovered() {
+                                let fill = if i == q.selected { RAISED } else { Color32::from_rgb(20, 22, 27) };
+                                ui.painter().rect_filled(rect, 6.0, fill);
+                            }
+                            let clip = rect.shrink2(Vec2::new(12.0, 0.0));
+                            ui.painter().with_clip_rect(clip).text(
+                                clip.left_center(),
+                                Align2::LEFT_CENTER,
+                                label,
+                                FontId::proportional(13.0),
+                                TEXT,
+                            );
+                            if resp.clicked() {
+                                chosen = Some(i);
+                            }
+                        }
+                        if rows.is_empty() {
+                            ui.label(RichText::new("No matching commands").color(TEXT_DIM));
+                        }
+                        if enter && !rows.is_empty() {
+                            chosen = chosen.or(Some(q.selected));
+                        }
+                        if let Some(i) = chosen {
+                            actions.push(rows.swap_remove(i).2);
+                            close = true;
+                        }
+                        if esc || (edit.lost_focus() && !enter && !ui.rect_contains_pointer(ui.min_rect())) {
+                            close = true;
+                        }
+                        return;
                     }
 
                     let query = q.query.trim().to_lowercase();
@@ -1510,6 +1647,19 @@ fn quick_open(ctx: &egui::Context, st: &mut UiState, canvas: Rect, page: Option<
     }
 }
 
+/// A hover from a language extension (Markdown) as the two parts of the
+/// canvas tooltip: the first code line as the title, the rest below it.
+pub fn hover_text(markdown: &str) -> (String, String) {
+    let mut lines = markdown
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim_start().starts_with("```") && !l.trim().is_empty())
+        .map(|l| l.chars().take(140).collect::<String>());
+    let title = lines.next().unwrap_or_default();
+    let rest: Vec<String> = lines.take(12).collect();
+    (title, rest.join("\n"))
+}
+
 fn tooltip(ctx: &egui::Context, canvas: Rect, info: &FrameInfo) {
     let Some((title, detail)) = &info.tooltip else { return };
     let Some(pointer) = ctx.input(|i| i.pointer.latest_pos()) else { return };
@@ -1539,6 +1689,15 @@ fn tooltip(ctx: &egui::Context, canvas: Rect, info: &FrameInfo) {
 #[cfg(test)]
 mod tests {
     use super::quick_score;
+
+    #[test]
+    fn hover_markdown_becomes_a_tooltip() {
+        let md = "```typescript\nfunction add(a: number, b: number): number\n```\n\nAdds two numbers.\n\n*@param* `a`";
+        let (title, rest) = super::hover_text(md);
+        assert_eq!(title, "function add(a: number, b: number): number");
+        assert_eq!(rest, "Adds two numbers.\n*@param* `a`");
+        assert_eq!(super::hover_text(""), (String::new(), String::new()));
+    }
 
     #[test]
     fn quick_open_ranking() {
