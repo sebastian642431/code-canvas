@@ -81,6 +81,13 @@ extension set, `/file/<path>` a file under the extensions folder or an open fold
 ones are set exactly, the rest are guessed from their name. Messages travel as JSON:
 page → app → host → extension, and back.
 
+Which icons the right rail has comes from the manifests, as in VS Code: each view
+container an extension declares (`contributes.viewsContainers`) gets one as soon as
+the extension is installed, if it has a webview view whose `when` holds. Opening it
+is what starts the extension (`onView:<id>`). `when` clauses are evaluated in
+`ext/when.rs` against the context keys extensions set with `setContext`. A container
+that only has tree views gets no icon yet: there would be nothing to show.
+
 Implemented: webview views and panels, documents and their events, configuration, diagnostics, every
 `languages.register…Provider` (kept by kind; the app uses formatting today, and
 definitions, references and hovers can be requested), commands, workspace edits,
@@ -89,12 +96,14 @@ storage, activation events, and the classes and enums extensions construct.
 
 Not yet — these are the next pieces, in order:
 
-1. **Tree views and view containers**: the lists extensions add to the side bar.
+1. **Tree views**: the lists extensions add to the side bar (their containers are
+   read already, and get an icon once they have something that can be shown).
 2. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
 3. Completions and other features that react to keystrokes (editing itself exists:
    extensions see what is typed after a short pause); showing proposed diffs.
-4. Webviews on Linux and macOS; `when` clauses (which of an extension's views to show);
-   webview state kept across restarts.
+4. Webviews on Linux and macOS; `when` clauses for menus and commands (views have
+   them); the containers' own icons when they are image files; webview state kept
+   across restarts.
 5. Terminals, debugging, notebooks, source control providers, authentication.
 
 ### Checked with real extensions

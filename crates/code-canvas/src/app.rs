@@ -1642,8 +1642,10 @@ impl App {
                 "deps" => self.ui.show_right(RightPanel::Deps),
                 key if !key.is_empty() && key != "none" => {
                     // `right <view id or extension id>`: that extension's webview.
-                    let found = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
-                    match found.map(|w| w.key.clone()) {
+                    let items = self.ext.rail_items();
+                    let found = items.iter().find(|w| w.view == key || w.extension == key).map(|w| w.view.clone());
+                    let open = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
+                    match found.or(open.map(|w| w.key.clone())) {
                         Some(k) => {
                             self.ui.webview = k;
                             self.ui.right = Some(RightPanel::Webview);

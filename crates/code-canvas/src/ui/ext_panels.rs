@@ -434,7 +434,7 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
                 well(ui, |ui| {
                     ui.label(RichText::new(e.views.join("  ·  ")).size(12.0).color(pal().text));
                     ui.label(
-                        RichText::new("Shown by VS Code in the side bar. Code Canvas cannot show an extension's own views and webviews yet.")
+                        RichText::new("Its pages open from the right rail. Lists (tree views) cannot be shown yet.")
                             .size(11.5)
                             .color(pal().text_faint),
                     );
@@ -451,13 +451,21 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
                     ui.painter().rect_filled(rect, 6.0, pal().row);
                 }
                 let clip = rect.shrink2(Vec2::new(8.0, 0.0));
-                ui.painter().with_clip_rect(clip).text(clip.left_center(), Align2::LEFT_CENTER, title, FontId::proportional(12.5), pal().text);
+                ui.painter().with_clip_rect(clip).text(
+                    clip.left_center(),
+                    Align2::LEFT_CENTER,
+                    title,
+                    FontId::proportional(12.5),
+                    pal().text,
+                );
                 if resp.on_hover_text(id).clicked() {
                     run = Some((id.clone(), title.clone()));
                 }
             }
             if e.commands.is_empty() {
-                ui.label(RichText::new("    It has no commands: it works on its own.").size(11.5).color(pal().text_faint));
+                ui.label(
+                    RichText::new("    It has no commands: it works on its own.").size(11.5).color(pal().text_faint),
+                );
             }
         });
     });
@@ -473,6 +481,8 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
 /// browser view the app places over this panel; here its place is reserved
 /// and the extension is asked to fill it the first time.
 pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
+    // A view of a manifest whose extension has not started has no entry yet.
+    ext.ensure_view(&st.webview);
     let Some(entry) = ext.webviews.iter().find(|w| w.key == st.webview) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
             ui.label(
@@ -481,11 +491,17 @@ pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) 
         });
         return;
     };
-    let (key, waiting) = (entry.key.clone(), entry.handle.is_none());
+    let (key, waiting, failed) = (entry.key.clone(), entry.handle.is_none(), entry.failed);
     let rect = ui.available_rect_before_wrap().shrink(1.0);
     ui.allocate_rect(rect, Sense::hover());
     if !crate::webview::AVAILABLE {
         let text = "Webviews are only available on Windows for now.";
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
+    } else if failed {
+        let text = format!("{} did not start. The message is in the log.", entry.title);
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
+    } else if waiting && !ext.host_running {
+        let text = "Open a folder to start the extensions.";
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
     } else if waiting {
         let text = format!("Starting {} …", entry.title);

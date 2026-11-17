@@ -7,6 +7,7 @@
 
 pub mod host;
 pub mod market;
+pub mod when;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -80,6 +81,43 @@ pub struct Installed {
     pub commands: Vec<(String, String)>,
     /// Names of the views it adds to VS Code's side bar.
     pub views: Vec<String>,
+    /// The places of its own it adds to VS Code's bars, with their views.
+    pub containers: Vec<Container>,
+}
+
+/// A view container of a manifest (`contributes.viewsContainers`): an icon
+/// in one of VS Code's bars that opens the views declared for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Container {
+    pub id: String,
+    pub title: String,
+    /// Its icon when the manifest names a codicon (`$(github)` → `github`).
+    /// Otherwise it is an image file, and the extension's icon stands in.
+    pub codicon: Option<String>,
+    pub views: Vec<ViewDecl>,
+}
+
+/// A view of a manifest (`contributes.views`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewDecl {
+    pub id: String,
+    pub name: String,
+    /// A page of the extension's own (`"type": "webview"`). The others are
+    /// trees, which the app cannot show yet.
+    pub webview: bool,
+    /// The condition for it to be shown (see `when.rs`); empty for always.
+    pub when: String,
+}
+
+/// An icon for the rail: something of an extension that can be opened.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailItem {
+    /// The webview it opens: a key of [`Extensions::webviews`], which
+    /// [`Extensions::ensure_view`] creates if the extension has not yet.
+    pub view: String,
+    pub extension: String,
+    pub title: String,
+    pub codicon: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
@@ -267,6 +305,8 @@ pub struct WebviewEntry {
     /// Set once the extension has been asked to fill it.
     pub handle: Option<String>,
     resolving: bool,
+    /// The extension was asked and gave no page: it is not asked again.
+    pub failed: bool,
 }
 
 enum Job {
@@ -309,6 +349,9 @@ pub struct Extensions {
     /// Status bar items extensions are showing, `(id, text)`.
     pub status_items: Vec<(String, String)>,
     pub webviews: Vec<WebviewEntry>,
+    /// Context keys the extensions set (`setContext`): what `when` clauses
+    /// are evaluated against.
+    pub contexts: HashMap<String, Value>,
     /// The latest answer to [`Extensions::request_hover`].
     pub hover: Option<Hover>,
     /// Webviews that went away with their host; reported by `poll`.
@@ -411,6 +454,78 @@ fn manifest_views(v: &Value, nls: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The view containers of a manifest with the views declared for each.
+/// Views a manifest adds to VS Code's own containers (the explorer, source
+/// control) are not here: those places are not an extension's.
+fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
+    let text = |item: &Value, key: &str| item.get(key).map(|t| localized(t, nls)).unwrap_or_default();
+    let Some(Value::Object(bars)) = v.pointer("/contributes/viewsContainers") else { return Vec::new() };
+    let mut out = Vec::new();
+    for item in bars.values().filter_map(Value::as_array).flatten() {
+        let id = text(item, "id");
+        if id.is_empty() {
+            continue;
+        }
+        let icon = item.get("icon").and_then(Value::as_str).unwrap_or_default();
+        let codicon = icon.strip_prefix("$(").and_then(|i| i.strip_suffix(')')).map(str::to_string);
+        let views = v
+            .pointer("/contributes/views")
+            .and_then(|views| views.get(&id))
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|view| {
+                        let id = text(view, "id");
+                        (!id.is_empty()).then(|| ViewDecl {
+                            id,
+                            name: text(view, "name"),
+                            webview: view.get("type").and_then(Value::as_str) == Some("webview"),
+                            when: view.get("when").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(Container { id, title: text(item, "title"), codicon, views });
+    }
+    out
+}
+
+/// See [`Extensions::rail_items`]. `context` gives the value of a context key.
+fn rail_items_of(
+    installed: &[Installed],
+    webviews: &[WebviewEntry],
+    context: &dyn Fn(&str) -> Option<Value>,
+) -> Vec<RailItem> {
+    let mut out = Vec::new();
+    for e in installed.iter().filter(|e| e.enabled && e.has_code) {
+        let before = out.len();
+        for container in &e.containers {
+            let shown = container.views.iter().find(|v| v.webview && when::eval(&v.when, context));
+            if let Some(view) = shown {
+                let title = [&container.title, &view.name, &e.display_name].into_iter().find(|t| !t.is_empty());
+                out.push(RailItem {
+                    view: view.id.clone(),
+                    extension: e.id.clone(),
+                    title: title.cloned().unwrap_or_default(),
+                    codicon: container.codicon.clone(),
+                });
+            }
+        }
+        if out.len() == before {
+            if let Some(w) = webviews.iter().find(|w| w.extension == e.id) {
+                out.push(RailItem {
+                    view: w.key.clone(),
+                    extension: e.id.clone(),
+                    title: w.title.clone(),
+                    codicon: None,
+                });
+            }
+        }
+    }
+    out
+}
+
 fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
     let read = |name: &str| -> Option<Value> {
         serde_json::from_str(std::fs::read_to_string(dir.join(name)).ok()?.trim_start_matches('\u{feff}')).ok()
@@ -446,6 +561,7 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         icon: v.get("icon").and_then(Value::as_str).map(|i| dir.join(i)).filter(|p| p.is_file()),
         commands: manifest_commands(&v, &nls),
         views: manifest_views(&v, &nls),
+        containers: manifest_containers(&v, &nls),
     })
 }
 
@@ -472,6 +588,7 @@ impl Extensions {
             log: VecDeque::new(),
             status_items: Vec::new(),
             webviews: Vec::new(),
+            contexts: HashMap::new(),
             hover: None,
             dropped_webviews: Vec::new(),
             host_running: false,
@@ -613,6 +730,7 @@ impl Extensions {
         self.pending.clear();
         self.status_items.clear();
         self.dropped_webviews.extend(self.webviews.drain(..).filter_map(|w| w.handle));
+        self.contexts.clear();
         self.decorations.clear();
         if !self.diagnostics.is_empty() {
             self.diagnostics.clear();
@@ -802,9 +920,49 @@ impl Extensions {
     }
 
     /// Ask the extension to fill the webview view `key` (once).
+    /// What the rail shows for extensions: one icon for each container of a
+    /// manifest that has a webview view to show right now. They are there
+    /// from the moment the extension is installed, as in VS Code: opening
+    /// one is what starts the extension.
+    ///
+    /// An extension none of whose containers gives an icon still gets one
+    /// for a webview it has open or registered (a panel it opened itself, or
+    /// a view under a condition this app cannot follow).
+    pub fn rail_items(&self) -> Vec<RailItem> {
+        rail_items_of(&self.installed, &self.webviews, &|key| self.contexts.get(key).cloned())
+    }
+
+    /// Make sure there is a webview entry for the view `key`, so that it can
+    /// be shown: a view of a manifest has none until its extension starts
+    /// and registers it. False when no installed extension declares it.
+    pub fn ensure_view(&mut self, key: &str) -> bool {
+        if self.webviews.iter().any(|w| w.key == key) {
+            return true;
+        }
+        let declared = self.installed.iter().filter(|e| e.enabled && e.has_code).find_map(|e| {
+            let container = e.containers.iter().find(|c| c.views.iter().any(|v| v.webview && v.id == key))?;
+            let view = container.views.iter().find(|v| v.id == key)?;
+            let title = [&container.title, &view.name, &e.display_name].into_iter().find(|t| !t.is_empty())?;
+            Some((e.id.clone(), title.clone()))
+        });
+        let Some((extension, title)) = declared else { return false };
+        self.webviews.push(WebviewEntry {
+            key: key.to_string(),
+            extension,
+            title,
+            handle: None,
+            resolving: false,
+            failed: false,
+        });
+        true
+    }
+
     pub fn resolve_webview(&mut self, key: &str) {
+        if self.host.is_none() {
+            return; // nothing to ask yet; the panel says so
+        }
         let Some(entry) = self.webviews.iter_mut().find(|w| w.key == key) else { return };
-        if entry.handle.is_some() || entry.resolving {
+        if entry.handle.is_some() || entry.resolving || entry.failed {
             return;
         }
         entry.resolving = true;
@@ -966,6 +1124,13 @@ impl Extensions {
                 }
                 self.revision += 1;
             }
+            "context" => {
+                let key = s("key");
+                match m.get("value") {
+                    None | Some(Value::Null) => self.contexts.remove(&key),
+                    Some(value) => self.contexts.insert(key, value.clone()),
+                };
+            }
             "webviewView" => {
                 let key = s("view");
                 if !self.webviews.iter().any(|w| w.key == key) {
@@ -975,6 +1140,7 @@ impl Extensions {
                         title: s("title"),
                         handle: None,
                         resolving: false,
+                        failed: false,
                     });
                 }
             }
@@ -988,6 +1154,7 @@ impl Extensions {
                         title: s("title"),
                         handle: Some(handle.clone()),
                         resolving: false,
+                        failed: false,
                     }),
                 }
                 if m.get("reveal").and_then(Value::as_bool).unwrap_or(false) {
@@ -1074,7 +1241,10 @@ impl Extensions {
                             entry.resolving = false;
                             match handle {
                                 Some(h) => entry.handle = Some(h),
-                                None => failed = Some(entry.title.clone()),
+                                None => {
+                                    entry.failed = true;
+                                    failed = Some(entry.title.clone());
+                                }
                             }
                         }
                         if let Some(title) = failed {
@@ -1307,6 +1477,129 @@ mod tests {
         );
         assert_eq!(manifest_views(&manifest, &nls), vec!["Pull Requests", "Issues"]);
         assert!(manifest_commands(&json!({}), &nls).is_empty());
+    }
+
+    #[test]
+    fn containers_of_a_manifest() {
+        let nls = json!({ "box.title": "My Box" });
+        let manifest = json!({ "contributes": {
+            "viewsContainers": {
+                "activitybar": [
+                    { "id": "box", "title": "%box.title%", "icon": "media/box.svg" },
+                    { "id": "prs", "title": "Pull Requests", "icon": "$(github)" }
+                ],
+                "secondarySidebar": [{ "id": "side", "title": "Side", "icon": "media/side.svg" }]
+            },
+            "views": {
+                "box": [
+                    { "id": "box.page", "name": "Page", "type": "webview", "when": "box.ready" },
+                    { "id": "box.tree", "name": "Tree" }
+                ],
+                "prs": [{ "id": "prs.list", "name": "List" }],
+                "explorer": [{ "id": "x.outline", "name": "Outline" }]
+            }
+        }});
+        let containers = manifest_containers(&manifest, &nls);
+        let by_id = |id: &str| containers.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(containers.len(), 3);
+        assert_eq!(by_id("box").title, "My Box");
+        assert_eq!(by_id("box").codicon, None);
+        assert_eq!(by_id("prs").codicon.as_deref(), Some("github"));
+        let page = &by_id("box").views[0];
+        assert!(page.webview && page.when == "box.ready" && page.id == "box.page");
+        assert!(!by_id("box").views[1].webview);
+        // Declared without views: it has none, and nothing breaks.
+        assert!(by_id("side").views.is_empty());
+        assert!(manifest_containers(&json!({}), &nls).is_empty());
+    }
+
+    /// An installed extension, from the manifest it would have on disk.
+    fn installed_with(name: &str, manifest: Value) -> Installed {
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-rail-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut manifest = manifest;
+        manifest["publisher"] = json!("test");
+        manifest["name"] = json!(name);
+        manifest["main"] = json!("./main.js");
+        std::fs::write(dir.join("package.json"), manifest.to_string()).unwrap();
+        let read = read_installed(&dir, &HashSet::new()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        read
+    }
+
+    #[test]
+    fn the_rail_follows_manifests_and_context() {
+        let boxed = installed_with(
+            "box",
+            json!({ "contributes": {
+                "viewsContainers": { "activitybar": [
+                    { "id": "a", "title": "Box", "icon": "$(github)" },
+                    { "id": "b", "title": "Box, elsewhere", "icon": "b.svg" },
+                    { "id": "trees", "title": "Only trees", "icon": "t.svg" }
+                ] },
+                "views": {
+                    "a": [{ "id": "box.a", "name": "A", "type": "webview", "when": "box.narrow" }],
+                    "b": [{ "id": "box.b", "name": "B", "type": "webview", "when": "!box.narrow" }],
+                    "trees": [{ "id": "box.tree", "name": "Tree" }]
+                }
+            }}),
+        );
+        let plain = installed_with("plain", json!({}));
+        let installed = vec![boxed, plain];
+        let views = |context: Value, webviews: &[WebviewEntry]| -> Vec<String> {
+            rail_items_of(&installed, webviews, &|key| context.get(key).cloned()).into_iter().map(|i| i.view).collect()
+        };
+
+        // Straight after installing, nothing running: the manifest is enough,
+        // and of the two places for the same view only one is shown. The
+        // container that only has trees is not: there is nothing to open.
+        assert_eq!(views(json!({}), &[]), vec!["box.b"]);
+        assert_eq!(views(json!({ "box.narrow": true }), &[]), vec!["box.a"]);
+
+        // An extension that declares nothing still gets an icon for a page
+        // it opened itself.
+        let panel = WebviewEntry {
+            key: "panel-1".into(),
+            extension: "test.plain".into(),
+            title: "Graph".into(),
+            handle: Some("panel-1".into()),
+            resolving: false,
+            failed: false,
+        };
+        assert_eq!(views(json!({}), std::slice::from_ref(&panel)), vec!["box.b", "panel-1"]);
+
+        let item = rail_items_of(&installed, &[], &|_| None).remove(0);
+        assert_eq!((item.title.as_str(), item.codicon, item.extension.as_str()), ("Box, elsewhere", None, "test.box"));
+
+        // Switched off: no icon.
+        let mut off = installed;
+        off[0].enabled = false;
+        assert!(rail_items_of(&off, &[], &|_| None).is_empty());
+    }
+
+    /// `EXT_RAIL_TEST=<extensions folder> cargo test -p code-canvas rail_of_a_real -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn rail_of_a_real_extensions_folder() {
+        let dir = PathBuf::from(std::env::var("EXT_RAIL_TEST").expect("set EXT_RAIL_TEST to an extensions folder"));
+        let installed: Vec<Installed> =
+            market::installed_dirs(&dir).iter().filter_map(|d| read_installed(d, &HashSet::new())).collect();
+        println!("{} extensions", installed.len());
+        for (label, context) in
+            [("nothing set", json!({})), ("narrow host", json!({ "claude-code:doesNotSupportSecondarySidebar": true }))]
+        {
+            println!("-- {label}");
+            for item in rail_items_of(&installed, &[], &|key| context.get(key).cloned()) {
+                println!("   {:38} {:34} {:?} {:?}", item.extension, item.view, item.title, item.codicon);
+            }
+        }
+        for e in &installed {
+            let trees: Vec<&str> =
+                e.containers.iter().filter(|c| !c.views.iter().any(|v| v.webview)).map(|c| c.title.as_str()).collect();
+            if !trees.is_empty() {
+                println!("   (no icon, only trees) {}: {trees:?}", e.id);
+            }
+        }
     }
 
     #[test]

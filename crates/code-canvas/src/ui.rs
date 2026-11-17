@@ -748,41 +748,37 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
                 }
             }
         }
-        // Extensions' own interfaces (webviews): one icon per extension.
-        let mut seen: Vec<&str> = Vec::new();
-        for w in &ext.webviews {
-            if seen.contains(&w.extension.as_str()) {
-                continue;
-            }
-            seen.push(&w.extension);
-            let active = st.right == Some(RightPanel::Webview) && st.webview == w.key;
+        // Extensions' own interfaces: what their manifests put in the bars.
+        for w in &ext.rail_items() {
+            let active = st.right == Some(RightPanel::Webview) && st.webview == w.view;
             let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
             if active {
                 ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().raised);
             } else if resp.hovered() {
                 ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
             }
+            let glyph = |ui: &egui::Ui, glyph: &str| {
+                let color = if active || resp.hovered() { pal().text } else { pal().text_dim };
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
+            };
+            // The container's own icon when it is one of VS Code's; else the
+            // extension's picture stands in for its image file.
             let installed = ext.installed.iter().find(|e| e.id == w.extension);
-            match installed.and_then(|e| ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e)) {
-                Some(texture) => {
-                    let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
-                    egui::Image::new(&texture).corner_radius(4).paint_at(ui, at);
-                }
-                None => {
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        icons::PUZZLE,
-                        FontId::proportional(17.0),
-                        pal().text_dim,
-                    );
-                }
+            match w.codicon.as_deref().and_then(crate::codicons::glyph) {
+                Some(codicon) => glyph(ui, codicon),
+                None => match installed.and_then(|e| ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e)) {
+                    Some(texture) => {
+                        let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
+                        egui::Image::new(&texture).corner_radius(4).paint_at(ui, at);
+                    }
+                    None => glyph(ui, icons::PUZZLE),
+                },
             }
             if resp.on_hover_text(&w.title).clicked() {
                 if active {
                     st.right = None;
                 } else {
-                    st.webview = w.key.clone();
+                    st.webview = w.view.clone();
                     st.right = Some(RightPanel::Webview);
                 }
             }

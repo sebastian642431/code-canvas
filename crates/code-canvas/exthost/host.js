@@ -1843,7 +1843,13 @@ const commands = permissive('commands', {
         return Promise.reject(e);
       }
     }
-    if (id === 'setContext') return Promise.resolve();
+    if (id === 'setContext') {
+      // Context keys decide which of an extension's views are shown (the
+      // `when` of each view): the app keeps them.
+      const [key, value] = args;
+      if (typeof key === 'string') send({ type: 'context', key, value: value === undefined ? null : value });
+      return Promise.resolve();
+    }
     return activateByEvent('onCommand:' + id).then(() => {
       const late = state.commands.get(id);
       if (late) return scope.run(late.extension, () => late.handler.apply(late.thisArg, args));
@@ -2088,6 +2094,17 @@ function wantsEvent(ext, event) {
   }
   return list.includes(event);
 }
+/** Start the extension that contributes `view` (`onView:<id>`, which VS Code
+ * implies for every view of a manifest), and wait for it. */
+function activateForView(view) {
+  const pending = [activateByEvent('onView:' + view)];
+  for (const ext of state.extensions.values()) {
+    const views = (ext.manifest.contributes && ext.manifest.contributes.views) || {};
+    const mine = Object.values(views).some((list) => Array.isArray(list) && list.some((v) => v && v.id === view));
+    if (mine && ext.manifest.main) pending.push(ext.activation || activate(ext));
+  }
+  return Promise.all(pending);
+}
 function activateByEvent(event) {
   const pending = [];
   for (const ext of state.extensions.values()) if (ext.manifest.main && !ext.activation && wantsEvent(ext, event)) pending.push(activate(ext));
@@ -2167,6 +2184,9 @@ const requests = {
   },
   /// The app is about to show a webview view: let its extension fill it.
   async resolveWebview({ view }) {
+    // Nobody registered the view yet when its extension has not started:
+    // showing a view is what starts it.
+    if (!webviewProviders.has(view)) await activateForView(view);
     const entry = webviewProviders.get(view);
     if (!entry) throw new Error(`no extension provides the view ${view}`);
     const w = createWebview(entry.extension, {});
