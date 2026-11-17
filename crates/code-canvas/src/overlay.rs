@@ -294,6 +294,7 @@ pub fn build(
     world.y += area.y / z;
     world.h = area.h / z;
 
+    let mut captions: Vec<Rect> = Vec::new();
     let mut placed: Vec<Rect> = Vec::new();
     let free = |r: Rect, placed: &mut Vec<Rect>| {
         if placed.iter().any(|p| p.intersects(&r)) {
@@ -328,10 +329,14 @@ pub fn build(
                             bold: true,
                         });
                         out.toggle_hits.push((hit, n.rel_path.clone()));
+                        let mut caption = hit;
                         if two_lines {
                             let sub = format!("{} files · {} lines", n.files, n.lines);
                             let sub_size = (size * 0.72).max(10.0 * s).round();
                             let sw = text.measure(&sub, sub_size, false).min(w_px - 8.0 * s);
+                            let wide = tw.max(sw) + 12.0 * s;
+                            let tall = top + size * 1.45 + sub_size * 1.3 + 3.0 * s - caption.y;
+                            caption = Rect::new(c[0] - wide * 0.5, caption.y, wide, tall);
                             out.labels.push(OwnedLabel {
                                 text: sub,
                                 left: c[0] - sw * 0.5,
@@ -342,6 +347,7 @@ pub fn build(
                                 bold: false,
                             });
                         }
+                        captions.push(caption);
                     }
                 }
             }
@@ -752,7 +758,11 @@ pub fn build(
             continue;
         }
         let w = text.measure(&chip.text, size, chip.bold) + 12.0 * s;
-        let rect = Rect::new(p[0] - 2.0 * s, p[1] - h - LINE_H * z * 0.5 + 1.0, w, h);
+        let mut rect = Rect::new(p[0] - 2.0 * s, p[1] - h - LINE_H * z * 0.5 + 1.0, w, h);
+        if let Some(caption) = captions.iter().find(|caption| caption.intersects(&rect)) {
+            let (above, below) = (caption.y - h - 2.0 * s, caption.bottom() + 2.0 * s);
+            rect.y = if rect.y - above <= below - rect.y { above } else { below };
+        }
         if placed.iter().any(|q| q.intersects(&rect)) {
             continue;
         }
