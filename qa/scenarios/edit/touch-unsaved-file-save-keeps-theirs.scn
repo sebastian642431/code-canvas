@@ -1,0 +1,25 @@
+title: A file with unsaved text that another program changes is not overwritten silently by save: the app asks, and Take theirs leaves what the other wrote and nothing unsaved
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+forbid-log: WARN.*script
+expect-file: edit-odd/a.txt :: (?-i)THEIRS
+
+wait 3000
+goto a.txt
+wait 800
+edit a.txt 1 1
+type MINE
+touch a.txt THEIRS
+wait 2500
+mark both-changed
+wait 400
+key save
+wait 800
+mark asked-which-one
+wait 400
+answer Take theirs
+wait 1200
+mark theirs-on-the-card
+wait 400
+quit

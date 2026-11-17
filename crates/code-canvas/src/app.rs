@@ -642,7 +642,11 @@ impl App {
                 let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                 let what = if p.is_dir() { "the folder and everything in it" } else { "the file" };
                 let bin = if cfg!(windows) { "the Recycle Bin" } else { "the trash" };
-                let text = format!("It moves {what} to {bin}, where it can be brought back from.");
+                let inside = format!("{path}/");
+                let page = &self.pages[self.active];
+                let unsaved = page.unsaved().any(|e| e.rel_path == path || e.rel_path.starts_with(&inside));
+                let lost = if unsaved { " What is not saved in it is lost." } else { "" };
+                let text = format!("It moves {what} to {bin}, where it can be brought back from.{lost}");
                 let about = ui::Asked::Delete { folder: root.clone(), path: path.clone() };
                 let mut ask = ui::Ask::new(about, &format!("Delete {name}?"), text)
                     .choice("Delete", ui::ChoiceLook::Danger, ui::Answer::Yes)
@@ -1030,7 +1034,17 @@ impl App {
                     self.pictures.forget(path);
                     known[i].push(rel)
                 }
-                (true, false) => other[i].push(rel),
+                (true, false) => {
+                    let page = &self.pages[i];
+                    let unsaved = page.editors.get(&rel).is_some_and(|e| e.dirty);
+                    if unsaved && self.changed_under.insert((page.id, rel.clone())) {
+                        let text = format!(
+                            "{rel} was deleted by another program while it has changes not saved here. Saving will write it again."
+                        );
+                        self.ext.notice(ext::Level::Warn, "Files", text);
+                    }
+                    other[i].push(rel)
+                }
                 (false, true) => other[i].push(rel),
                 (false, false) => {}
             }
@@ -1711,14 +1725,67 @@ impl App {
 
     fn save_these(&mut self, files: Vec<(usize, String)>, format: bool) {
         let mut saved = false;
+        let mut held: Option<(usize, String)> = None;
         for (index, rel) in files {
+            let own = self.pages.get(index).filter(|page| page.shared.is_none()).map(|page| page.id);
+            if own.is_some_and(|id| self.changed_under.contains(&(id, rel.clone()))) {
+                held = held.or(Some((index, rel)));
+                continue;
+            }
             saved |= self.save_file(index, &rel, format);
+        }
+        if let Some((index, rel)) = held {
+            self.ask_overwrite(index, &rel);
         }
         if saved {
             self.unsent_edit = None;
             self.symbols_stale = None;
         }
         self.request_redraw();
+    }
+
+    fn ask_overwrite(&mut self, index: usize, rel: &str) {
+        let Some(page) = self.pages.get(index) else { return };
+        let there = page.root.join(rel).is_file();
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        let (title, text, theirs) = match there {
+            true => (
+                format!("{name} was changed by another program"),
+                "It has changes you have not saved, and the file on disk is not the one you opened any more. Saving yours replaces what the other program wrote.",
+                "Take theirs",
+            ),
+            false => (
+                format!("{name} was deleted by another program"),
+                "It has changes you have not saved. Saving yours writes the file again.",
+                "Leave it deleted",
+            ),
+        };
+        let about = ui::Asked::Overwrite { folder: page.root.clone(), path: rel.to_string() };
+        let mut ask = ui::Ask::new(about, &title, text.to_string())
+            .choice("Save mine", ui::ChoiceLook::Danger, ui::Answer::Yes)
+            .choice(theirs, ui::ChoiceLook::Plain, ui::Answer::Other)
+            .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+        ask.items = vec![rel.to_string()];
+        self.ui.ask = Some(ask);
+        self.request_redraw();
+    }
+
+    fn settle_changed_under(&mut self) {
+        let mut again = Vec::new();
+        self.changed_under.retain(|(id, rel)| {
+            let Some(page) = self.pages.iter().find(|page| page.id == *id) else { return false };
+            match page.editors.get(rel) {
+                Some(editor) if editor.dirty => true,
+                Some(_) => {
+                    again.push(page.root.join(rel));
+                    false
+                }
+                None => false,
+            }
+        });
+        if !again.is_empty() {
+            self.on_disk_changes(crate::watch::Batch { files: again, git: Vec::new() });
+        }
     }
 
     fn drop_edits(&mut self, index: usize, only: Option<&str>) {
@@ -1781,8 +1848,30 @@ impl App {
         match (about, answer) {
             (ui::Asked::Delete { folder: root, path }, ui::Answer::Yes) => {
                 let done = crate::files::inside(&root, &path).and_then(|p| crate::files::recycle(&p));
-                if let Err(why) = done {
-                    self.ext.notice(ext::Level::Error, "files", why);
+                match done {
+                    Ok(()) => {
+                        if let Some(page) = self.pages.iter_mut().find(|page| page.root == root) {
+                            let inside = format!("{path}/");
+                            let gone = |rel: &str| rel == path || rel.starts_with(&inside);
+                            page.editors.retain(|rel, _| !gone(rel));
+                            if page.editing.as_deref().is_some_and(gone) {
+                                page.editing = None;
+                            }
+                            page.preview_unsaved();
+                        }
+                    }
+                    Err(why) => self.ext.notice(ext::Level::Error, "files", why),
+                }
+            }
+            (ui::Asked::Overwrite { folder, path }, ui::Answer::Yes | ui::Answer::Other) => {
+                let Some(index) = self.pages.iter().position(|page| page.root == folder) else { return };
+                self.changed_under.remove(&(self.pages[index].id, path.clone()));
+                if answer == ui::Answer::Yes {
+                    self.save_these(vec![(index, path)], true);
+                } else if let Some(editor) = self.pages[index].editors.get_mut(&path) {
+                    editor.mark_saved();
+                    let file = self.pages[index].root.join(&path);
+                    self.on_disk_changes(crate::watch::Batch { files: vec![file], git: Vec::new() });
                 }
             }
             (ui::Asked::Git { folder, op }, ui::Answer::Yes) => {
@@ -1812,17 +1901,8 @@ impl App {
                 self.ui.share.open = true;
             }
             (ui::Asked::Exit, ui::Answer::Yes) => {
-                for (i, rel) in self.unsaved() {
-                    let Some(page) = self.pages.get_mut(i) else { continue };
-                    let Some(editor) = page.editors.get_mut(&rel) else { continue };
-                    match std::fs::write(page.root.join(&rel), editor.text()) {
-                        Ok(()) => editor.mark_saved(),
-                        Err(e) => {
-                            let text = format!("{rel} could not be saved: {e}");
-                            self.ext.notice(ext::Level::Error, "Files", text);
-                        }
-                    }
-                }
+                let unsaved = self.unsaved();
+                self.save_these(unsaved, false);
                 self.exit_requested = self.unsaved().is_empty();
                 if !self.exit_requested {
                     self.restart_as = None;
@@ -3592,6 +3672,9 @@ impl App {
         busy |= self.poll_share();
         if !self.rescan_later.is_empty() {
             self.rescan_what_waited();
+        }
+        if !self.changed_under.is_empty() {
+            self.settle_changed_under();
         }
         busy |= self.poll_agents();
         if self.claude_offer_due.is_some_and(|due| due <= Instant::now()) {

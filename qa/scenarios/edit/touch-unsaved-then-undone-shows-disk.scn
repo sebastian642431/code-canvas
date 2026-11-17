@@ -1,0 +1,26 @@
+title: After an outside change arrives during unsaved typing and the typing is undone, the clean file is the one on disk (a later edit and save keeps the outside line)
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/b.txt :: (?-i)THEIRS
+
+wait 3000
+goto b.txt
+wait 800
+edit b.txt 1 1
+type MINE
+touch b.txt THEIRS
+wait 2500
+key undo
+wait 800
+mark clean-but-stale
+wait 400
+key escape
+wait 400
+edit b.txt 2 1
+type Z
+key save
+wait 800
+mark saved
+wait 400
+quit

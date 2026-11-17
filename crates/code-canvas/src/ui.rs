@@ -3122,6 +3122,7 @@ pub enum Asked {
     Delete { folder: std::path::PathBuf, path: String },
     Git { folder: std::path::PathBuf, op: crate::git::GitOp },
     Close { folder: std::path::PathBuf, forget: bool },
+    Overwrite { folder: std::path::PathBuf, path: String },
     Share { join: bool },
     Exit,
 }

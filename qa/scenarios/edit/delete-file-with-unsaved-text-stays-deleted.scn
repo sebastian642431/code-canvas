@@ -1,0 +1,24 @@
+title: A file deleted while it has unsaved text stays deleted: closing does not ask to save it and Save and close does not write it back
+folders: edit-odd
+limit: 50
+absent-file: edit-odd/a.txt
+expect-file: edit-odd/b.txt :: (?-i)\Afirst of b
+
+wait 3000
+left files
+goto a.txt
+wait 800
+edit a.txt 1 1
+type MINE
+delete a.txt
+wait 600
+answer Delete
+wait 3500
+mark deleted
+wait 400
+quit
+wait 1000
+mark closing
+wait 400
+answer Save and close
+wait 800

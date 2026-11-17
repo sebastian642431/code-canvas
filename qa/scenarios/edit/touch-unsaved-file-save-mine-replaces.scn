@@ -1,0 +1,28 @@
+title: A file with unsaved text that another program changes: Save mine writes what is on the card, and Cancel before it writes nothing
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+forbid-log: WARN.*script
+expect-file: edit-odd/a.txt :: (?-i)\AMINE
+expect-log: saved .*a\.txt
+
+wait 3000
+goto a.txt
+wait 800
+edit a.txt 1 1
+type MINE
+touch a.txt THEIRS
+wait 2500
+key save
+wait 800
+answer Cancel
+wait 600
+mark cancelled-still-unsaved
+wait 400
+key save
+wait 800
+answer Save mine
+wait 1200
+mark mine-saved
+wait 400
+quit
