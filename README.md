@@ -81,6 +81,12 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   moves the canvas.
 - `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
   and Shift+Enter walk them, and with the pencil one or all can be replaced.
+- **Any path opens on the canvas**: a file an assistant names in its panel, a
+  definition in another file, a link in a Markdown file. One that is not in an open
+  folder gets its own card next to them, and the canvas goes to the line asked for.
+- **Back and forward**: the arrows of the toolbar, `Ctrl+Z` / `Ctrl+Y` (while no
+  file is being typed in) or `Alt+←` / `Alt+→` go back to where the canvas was
+  before it last jumped, and forward again.
 - Saving formats the file (with Prettier where it is installed; turn it off with
   `editor.formatOnSave`), and problems update while you type. Rust is checked by
   rust-analyzer and TypeScript by VS Code's own extension: the app offers to
@@ -231,7 +237,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       reload when files change on disk; command palette.
 - [x] A hand to look and a pencil to edit; what is typed shown before it is saved;
       drag to select; find and replace in a file.
-- [x] The canvas travels to what an assistant or another program changes.
+- [x] The canvas travels to what an assistant or another program changes; any path
+      opens on the canvas, also outside the open folders; back and forward.
 - [ ] Editing: multiple cursors, completions from language servers.
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See

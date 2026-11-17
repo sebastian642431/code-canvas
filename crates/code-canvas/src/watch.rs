@@ -10,7 +10,7 @@ const SETTLE: Duration = Duration::from_millis(350);
 pub struct Watcher {
     inner: Option<RecommendedWatcher>,
     rx: Receiver<PathBuf>,
-    watched: Vec<PathBuf>,
+    watched: Vec<(PathBuf, bool)>,
     pending: HashMap<PathBuf, Instant>,
     own: HashMap<PathBuf, Instant>,
 }
@@ -40,16 +40,17 @@ impl Watcher {
         Watcher { inner: inner.ok(), rx, watched: Vec::new(), pending: HashMap::new(), own: HashMap::new() }
     }
 
-    pub fn set_folders(&mut self, folders: &[PathBuf]) {
+    pub fn set_folders(&mut self, folders: &[(PathBuf, bool)]) {
         if folders == self.watched.as_slice() {
             return;
         }
         let Some(w) = self.inner.as_mut() else { return };
-        for old in self.watched.iter().filter(|o| !folders.contains(o)) {
+        for (old, _) in self.watched.iter().filter(|o| !folders.contains(o)) {
             let _ = w.unwatch(old);
         }
-        for new in folders.iter().filter(|n| !self.watched.contains(n)) {
-            if let Err(e) = w.watch(new, RecursiveMode::Recursive) {
+        for (new, deep) in folders.iter().filter(|n| !self.watched.contains(n)) {
+            let mode = if *deep { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+            if let Err(e) = w.watch(new, mode) {
                 log::warn!("cannot watch {}: {e}", new.display());
             }
         }
@@ -78,7 +79,7 @@ impl Watcher {
             if self.own.contains_key(&path) {
                 continue;
             }
-            let Some(root) = self.watched.iter().find(|r| path.starts_with(r)) else { continue };
+            let Some((root, _)) = self.watched.iter().find(|(r, _)| path.starts_with(r)) else { continue };
             let inside_git = path.strip_prefix(root).is_ok_and(|rel| rel.components().any(|c| c.as_os_str() == ".git"));
             if inside_git {
                 if path.extension().is_none_or(|e| e != "lock") && !batch.git.contains(root) {

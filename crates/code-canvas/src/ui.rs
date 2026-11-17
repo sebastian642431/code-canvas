@@ -228,6 +228,7 @@ pub struct UiState {
     pub update: crate::update::State,
     pub completion: Option<CompletionView>,
     pub find: Option<Find>,
+    pub can_go: (bool, bool),
     pub commit_ai: crate::commit_ai::Settings,
     file_icons: FileIcons,
 }
@@ -267,6 +268,7 @@ impl Default for UiState {
             update: Default::default(),
             completion: None,
             find: None,
+            can_go: (false, false),
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
@@ -431,6 +433,8 @@ pub enum Action {
     AcceptCompletion(usize),
     SetOnlyChanged(bool),
     Find(FindOp),
+    Back,
+    Forward,
     SetDiff(crate::page::DiffView),
     InstallVsix,
     SetTheme(&'static str),
@@ -1816,6 +1820,8 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                 ("Show everything", key(Command::ShowAll)),
                 ("Go to the selection", key(Command::GoToSelection)),
                 ("Zoom out to the parent folder", key(Command::ZoomToParent)),
+                ("Back to where the canvas was", key(Command::Back)),
+                ("Forward again", key(Command::Forward)),
                 ("Collapse / expand a folder", fixed("Click − / + next to its name")),
             ],
         ),
@@ -2132,6 +2138,26 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let b = Vec2::splat(30.0);
                         let edit = st.prefs.edit;
+                        let ways = [
+                            (icons::ARROW_LEFT, st.can_go.0, Command::Back, "Back to where the canvas was", Action::Back),
+                            (icons::ARROW_RIGHT, st.can_go.1, Command::Forward, "Forward again", Action::Forward),
+                        ];
+                        for (glyph, can, command, tip, action) in ways {
+                            let button = icon_button(ui, glyph, b, false, if can { pal().hover } else { pal().card });
+                            if !can {
+                                let at = button.rect.center();
+                                let faint = FontId::proportional(17.0);
+                                ui.painter().circle_filled(at, 11.0, pal().card);
+                                ui.painter().text(at, Align2::CENTER_CENTER, glyph, faint, pal().text_faint);
+                            }
+                            if button.on_hover_text(st.keys.hint(tip, command)).clicked() && can {
+                                actions.push(action);
+                            }
+                        }
+                        ui.add_space(4.0);
+                        let (gap, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
+                        ui.painter().rect_filled(gap, 0.0, pal().border);
+                        ui.add_space(4.0);
                         let tools = [
                             (icons::HAND, false, Command::MoveTool, "Move: drag to travel, click a name to see where it is used. Nothing gets edited"),
                             (icons::PENCIL, true, Command::EditTool, "Edit: click in the code to put the caret there and type"),

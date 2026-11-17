@@ -56,6 +56,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Seguir a la IA**: cuando un asistente u otro programa cambia un archivo, el lienzo
   viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
 - **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el lápiz, arrastrar selecciona.
+- **Cualquier ruta se abre en el lienzo**: la que nombra un asistente, una definición, un
+  enlace. Si el archivo no está en una carpeta abierta, aparece como una tarjeta más.
+- **Atrás y adelante**: las flechas de la barra, `Ctrl+Z` / `Ctrl+Y` o `Alt+←` / `Alt+→`
+  vuelven a donde estaba el lienzo antes del último salto.
 - **Ver qué cambió dentro de cada archivo** (Control de código fuente): lo que se quitó
   en rojo arriba de lo que lo reemplazó, o lo que era y lo que es **lado a lado** en dos
   columnas de la misma tarjeta, con las líneas sin cambios plegadas, para que un archivo

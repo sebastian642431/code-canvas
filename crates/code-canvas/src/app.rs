@@ -87,6 +87,16 @@ const CHECKERS: [(&[&str], &str, &str, &str); 2] = [
 const INSTALL_IT: &str = "Install it";
 const NEVER: &str = "Do not ask again";
 
+struct Place {
+    page: u32,
+    anchor: String,
+    offset: [f32; 2],
+    zoom: f32,
+    selected: Option<String>,
+}
+
+const PLACES_KEPT: usize = 200;
+
 struct Completion {
     start: usize,
     items: Vec<crate::paths::Candidate>,
@@ -158,6 +168,11 @@ pub struct App {
     checkers_offered: HashSet<&'static str>,
     following: Option<(usize, String, u32, Instant)>,
     text_checked: Instant,
+    show_when_read: Option<(PathBuf, Option<(u32, u32, u32)>)>,
+    back: Vec<Place>,
+    forward: Vec<Place>,
+    moved_by_itself: bool,
+    last_move_by_itself: bool,
 }
 
 impl App {
@@ -259,6 +274,11 @@ impl App {
             checkers_offered: HashSet::new(),
             following: None,
             text_checked: Instant::now(),
+            show_when_read: None,
+            back: Vec::new(),
+            forward: Vec::new(),
+            moved_by_itself: false,
+            last_move_by_itself: false,
         }
     }
 
@@ -397,8 +417,8 @@ impl App {
         }
         let (window, window_pos, maximized) = (self.window_size, self.window_pos, self.start_maximized);
         session::save(&Session {
-            pages: self.pages.iter().map(|p| p.to_session(s, self.viewport())).collect(),
-            active: self.active,
+            pages: self.pages.iter().filter(|p| !p.only).map(|p| p.to_session(s, self.viewport())).collect(),
+            active: self.pages.iter().take(self.active).filter(|p| !p.only).count(),
             left_open: self.ui.left.is_some(),
             right_open: self.ui.right.is_some(),
             left_last: self.ui.last_left.key(),
@@ -633,11 +653,81 @@ impl App {
 
     fn locate_file(&self, path: &Path) -> Option<(usize, String)> {
         let key = ext::path_key(&path.to_string_lossy());
-        self.pages.iter().enumerate().find_map(|(i, p)| {
+        let inside = self.pages.iter().enumerate().filter_map(|(i, p)| {
             let mut root = ext::path_key(&p.root.to_string_lossy());
             root.push('/');
             key.starts_with(&root).then(|| (i, path.to_string_lossy().replace('\\', "/")[root.len()..].to_string()))
-        })
+        });
+        let on_canvas = |(i, rel): &(usize, String)| {
+            self.pages[*i].ready().is_some_and(|r| r.layout.node_for_path(&r.repo, rel).is_some())
+        };
+        inside.clone().find(on_canvas).or_else(|| inside.clone().next())
+    }
+
+    fn show_path(&mut self, path: &Path, at: Option<(u32, u32, u32)>) {
+        let path = canvas_core::scan::clean_path(path.to_path_buf());
+        let found = self.locate_file(&path);
+        let shown = found.as_ref().is_some_and(|(i, rel)| {
+            self.pages[*i].ready().is_some_and(|r| r.layout.node_for_path(&r.repo, rel).is_some())
+        });
+        if let (true, Some((i, rel))) = (shown, &found) {
+            self.switch_to(*i);
+            self.show_when_read = None;
+            let file = self.pages[*i].ready().and_then(|r| r.repo.file_index(rel));
+            match (at, file) {
+                (Some((line, col, len)), Some(file)) => {
+                    let line = self.pages[*i].row_of(rel, line);
+                    let (col, len) = (col.min(u16::MAX as u32) as u16, len.clamp(1, 400) as u16);
+                    let site = Site { file: file as u32, line, col, len };
+                    self.frame_site(site);
+                    self.pages[*i].search = Some(crate::page::SearchResults::single(site));
+                }
+                _ => self.apply(Action::FlyToPath(rel.clone())),
+            }
+            return;
+        }
+        if !path.exists() {
+            let text = format!("{} is not there any more.", path.display());
+            return self.ext.notice(ext::Level::Warn, "Files", text);
+        }
+        if path.is_dir() {
+            return self.open_folder(path, None);
+        }
+        let waiting = found.as_ref().is_some_and(|(i, _)| self.pages[*i].ready().is_none());
+        match found {
+            Some((i, _)) if waiting => self.pages[i].ensure_scanned(),
+            Some((i, rel)) => {
+                let (s, vp) = (self.scale(), self.viewport());
+                let page = &mut self.pages[i];
+                if page.extra.contains(&rel) {
+                    let text = format!("{rel} is hidden on the canvas: tick it in the explorer to see it.");
+                    return self.ext.notice(ext::Level::Info, "Files", text);
+                }
+                page.extra.push(rel);
+                page.restore_camera = page.portable_camera(s, vp);
+                page.framed = false;
+                page.start_scan();
+            }
+            None => {
+                let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else { return };
+                let name = name.to_string_lossy().into_owned();
+                match self.pages.iter().position(|p| p.only && p.root == folder) {
+                    Some(i) => {
+                        self.pages[i].extra.push(name);
+                        self.pages[i].start_scan();
+                        self.switch_to(i);
+                    }
+                    None => {
+                        log::info!("showing {} from outside the open folders", path.display());
+                        self.pages.push(Page::of_files(self.next_id, folder.to_path_buf(), vec![name]));
+                        self.next_id += 1;
+                        self.switch_to(self.pages.len() - 1);
+                    }
+                }
+            }
+        }
+        self.show_when_read = Some((path, at));
+        self.request_redraw();
     }
 
     fn write_file(&mut self, path: &Path, text: &str) {
@@ -720,6 +810,9 @@ impl App {
             }
         }
         for i in 0..self.pages.len() {
+            if self.pages[i].only {
+                other[i].clear();
+            }
             let root = self.pages[i].root.clone();
             let fresh = if other[i].is_empty() {
                 Vec::new()
@@ -954,7 +1047,9 @@ impl App {
             current: Some(find.at),
         });
         if let (true, Some(site)) = (travel, current) {
+            self.moved_by_itself = true;
             self.frame_site(site);
+            self.moved_by_itself = false;
         }
         self.request_redraw();
     }
@@ -1006,7 +1101,9 @@ impl App {
             row -= rows.min(row);
         }
         if let (Some(file), true) = (file, index == self.active) {
+            self.moved_by_itself = true;
             self.frame_site(Site { file: file as u32, line: row, col: 0, len: 0 });
+            self.moved_by_itself = false;
         }
         false
     }
@@ -1388,12 +1485,8 @@ impl App {
     }
 
     fn reveal_file(&mut self, path: &Path) {
-        if self.open_media(path) {
-            return;
-        }
-        if let Some((i, rel)) = self.locate_file(path) {
-            self.switch_to(i);
-            self.apply(Action::FlyToPath(rel));
+        if !self.open_media(path) {
+            self.show_path(path, None);
         }
     }
 
@@ -1452,7 +1545,64 @@ impl App {
         self.ext.show_documents(&visible, focus.as_deref());
     }
 
+    fn place_now(&self) -> Option<Place> {
+        let page = self.pages.get(self.active)?;
+        let r = page.ready()?;
+        let camera = page.target.unwrap_or(page.camera);
+        let middle = camera.view(self.viewport()).to_world(self.canvas.center());
+        let node = &r.layout.nodes[r.layout.hit(middle).unwrap_or(0)];
+        let selected = page.selected.and_then(|n| r.layout.nodes.get(n)).map(|n| n.rel_path.clone());
+        Some(Place {
+            page: page.id,
+            anchor: node.rel_path.clone(),
+            offset: [camera.center[0] - node.rect.x, camera.center[1] - node.rect.y],
+            zoom: camera.zoom,
+            selected,
+        })
+    }
+
+    fn remember_place(&mut self) {
+        let Some(now) = self.place_now() else { return };
+        let by_itself = self.moved_by_itself;
+        let same = self.back.last().is_some_and(|last| {
+            let near = (last.offset[0] - now.offset[0]).abs() + (last.offset[1] - now.offset[1]).abs() < 4.0 / now.zoom;
+            last.page == now.page && last.anchor == now.anchor && near && (last.zoom / now.zoom - 1.0).abs() < 0.02
+        });
+        if same || (by_itself && self.last_move_by_itself) {
+            return;
+        }
+        self.last_move_by_itself = by_itself;
+        self.back.push(now);
+        self.forward.clear();
+        if self.back.len() > PLACES_KEPT {
+            self.back.remove(0);
+        }
+    }
+
+    fn travel(&mut self, back: bool) {
+        let gone = if back { self.back.pop() } else { self.forward.pop() };
+        let (Some(place), Some(here)) = (gone, self.place_now()) else { return };
+        if back {
+            self.forward.push(here);
+        } else {
+            self.back.push(here);
+        }
+        self.last_move_by_itself = false;
+        let Some(index) = self.pages.iter().position(|p| p.id == place.page) else { return self.travel(back) };
+        self.switch_to(index);
+        let page = &mut self.pages[index];
+        let Some(r) = page.ready() else { return };
+        let at = |path: &str| r.layout.node_for_path(&r.repo, path);
+        let node = &r.layout.nodes[at(&place.anchor).unwrap_or(0)];
+        let center = [node.rect.x + place.offset[0], node.rect.y + place.offset[1]];
+        let selected = place.selected.as_deref().and_then(at);
+        page.target = Some(Camera { center, zoom: place.zoom });
+        page.selected = selected;
+        self.request_redraw();
+    }
+
     fn frame_node(&mut self, node: usize) {
+        self.remember_place();
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
@@ -1475,6 +1625,7 @@ impl App {
     }
 
     fn frame_site(&mut self, site: Site) {
+        self.remember_place();
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
@@ -1493,6 +1644,7 @@ impl App {
         if !self.shares_canvas() {
             return self.frame_all();
         }
+        self.remember_place();
         let origins = self.origins();
         let own = origins[self.active.min(origins.len() - 1)];
         let everything = self
@@ -1512,6 +1664,7 @@ impl App {
     }
 
     fn frame_selection(&mut self) {
+        self.remember_place();
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
@@ -1786,6 +1939,8 @@ impl App {
             }
             Command::SearchInFiles => self.ui.show(Panel::Search),
             Command::Find => self.find(ui::FindOp::Open),
+            Command::Back => self.travel(true),
+            Command::Forward => self.travel(false),
             Command::Settings => self.ui.settings.show(None),
             Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
@@ -1877,10 +2032,10 @@ impl App {
             Action::ShowSource(path) => self.reveal_file(&path),
             Action::OpenIgnored(rel) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&rel)) {
-                    if !self.open_media(&file) && !self.open_preview(&file) {
-                        if let Err(why) = crate::files::reveal(&file) {
-                            self.ext.notice(ext::Level::Warn, "files", format!("It could not be shown: {why}."));
-                        }
+                    if !file.is_dir() {
+                        self.reveal_file(&file);
+                    } else if let Err(why) = crate::files::reveal(&file) {
+                        self.ext.notice(ext::Level::Warn, "files", format!("It could not be shown: {why}."));
                     }
                 }
             }
@@ -2128,6 +2283,8 @@ impl App {
                 }
             }
             Action::Find(op) => self.find(op),
+            Action::Back => self.travel(true),
+            Action::Forward => self.travel(false),
             Action::SetDiff(view) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.set_diff(view);
@@ -2447,6 +2604,8 @@ impl App {
             }
             Step::Preview(path) => self.apply(Action::Preview(path)),
             Step::Page(script) => self.webviews.run(&script),
+            Step::Back => self.travel(true),
+            Step::Forward => self.travel(false),
             Step::Diff(what) => {
                 let mut view = self.pages.get(self.active).map(|page| page.diff).unwrap_or_default();
                 match what.split_once(' ').unwrap_or((what.as_str(), "")) {
@@ -2636,42 +2795,23 @@ impl App {
                 busy = true;
             }
         }
-        let folders: Vec<PathBuf> = self.pages.iter().filter(|p| !p.is_waiting()).map(|p| p.root.clone()).collect();
+        let folders: Vec<(PathBuf, bool)> =
+            self.pages.iter().filter(|p| !p.is_waiting()).map(|p| (p.root.clone(), !p.only)).collect();
         self.watcher.set_folders(&folders);
         if let Some(batch) = self.watcher.poll() {
             self.on_disk_changes(batch);
             changed = true;
         }
         busy |= self.watcher.busy();
-        self.ext.set_folders(self.pages.iter().filter(|p| !p.is_waiting()).map(|p| p.root.clone()).collect());
+        let worked_in = self.pages.iter().filter(|p| !p.is_waiting() && !p.only);
+        self.ext.set_folders(worked_in.map(|p| p.root.clone()).collect());
         let (events, ext_changed) = self.ext.poll();
         changed |= ext_changed;
         for event in events {
             match event {
                 ext::Event::Write { path, text } => self.write_file(&path, &text),
                 ext::Event::Reveal(path) => self.reveal_file(&path),
-                ext::Event::GoTo { path, line, col, len } => {
-                    if let Some((i, rel)) = self.locate_file(&path) {
-                        self.switch_to(i);
-                        let file = self.pages[i].ready().and_then(|r| r.repo.file_index(&rel));
-                        let line = self.pages[i].row_of(&rel, line);
-                        match file {
-                            Some(file) => {
-                                let site = Site {
-                                    file: file as u32,
-                                    line,
-                                    col: col.min(u16::MAX as u32) as u16,
-                                    len: len.min(400) as u16,
-                                };
-                                self.frame_site(site);
-                                if let Some(page) = self.pages.get_mut(i) {
-                                    page.search = Some(crate::page::SearchResults::single(site));
-                                }
-                            }
-                            None => log::info!("definition in {} is not on the canvas", path.display()),
-                        }
-                    }
-                }
+                ext::Event::GoTo { path, line, col, len } => self.show_path(&path, Some((line, col, len))),
                 ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
                 ext::Event::WebviewClosed(handle) => {
@@ -2785,6 +2925,12 @@ impl App {
         }
         if changed {
             g.window.request_redraw();
+        }
+        if let Some((path, at)) = self.show_when_read.take().filter(|_| !made.is_empty() || changed) {
+            match self.locate_file(&path).map(|(i, _)| self.pages[i].ready().is_some()) {
+                Some(false) => self.show_when_read = Some((path, at)),
+                _ => self.show_path(&path, at),
+            }
         }
         for (index, rel) in made {
             let lines = self.pages[index]
@@ -3050,6 +3196,7 @@ impl App {
             let mut raw = g.egui_state.take_egui_input(&g.window);
             raw.events.extend(self.ui_events.pop_front().unwrap_or_default());
             self.ui.update = self.updater.state();
+            self.ui.can_go = (!self.back.is_empty(), !self.forward.is_empty());
             let info = FrameInfo { stats: &self.stats, frame_ms: self.frame_ms, zoom, tooltip, status };
             let mut canvas = egui::Rect::NOTHING;
             let (ui_state, pages, active, ext) = (&mut self.ui, &mut self.pages, self.active, &mut self.ext);

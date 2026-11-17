@@ -17,6 +17,8 @@ pub struct ScanOptions {
     pub skip_files: Vec<String>,
     pub cache: Option<PathBuf>,
     pub reuse: bool,
+    pub only: bool,
+    pub extra: Vec<String>,
 }
 
 impl Default for ScanOptions {
@@ -46,6 +48,8 @@ impl Default for ScanOptions {
             .collect(),
             cache: None,
             reuse: true,
+            only: false,
+            extra: Vec::new(),
         }
     }
 }
@@ -642,8 +646,18 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
 
     let shared = Mutex::new(Vec::<Found>::new());
     let mut builder = Collector { root: &root, opts, progress: progress.as_deref(), shared: &shared };
-    walker.visit(&mut builder);
+    if !opts.only {
+        walker.visit(&mut builder);
+    }
     let mut paths = shared.into_inner().unwrap();
+    for rel in &opts.extra {
+        let path = root.join(rel);
+        let Some(known) = std::fs::metadata(&path).ok().filter(|m| m.is_file()) else { continue };
+        if paths.iter().all(|found| found.1 != *rel) {
+            let changed = known.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+            paths.push((path, rel.clone(), Some(known.len()), changed.map(|since| since.as_nanos() as u64)));
+        }
+    }
     paths.sort_unstable_by(|a, b| Path::new(&a.1).cmp(Path::new(&b.1)));
     if paths.len() > opts.max_files {
         log::warn!("file limit {} reached, the rest is skipped", opts.max_files);

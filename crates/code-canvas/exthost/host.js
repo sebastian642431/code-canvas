@@ -525,7 +525,16 @@ class TextEditor {
   insertSnippet() {
     return Promise.resolve(false);
   }
-  revealRange() {}
+  revealRange(range) {
+    const doc = this.document;
+    const start = range && range.start;
+    if (!start || !doc || doc.uri.scheme !== 'file') return;
+    const text = start.line < doc.lineCount ? doc.lineAt(start.line).text : '';
+    const col = displayColumn(text, start.character, state.tabWidth);
+    const same = range.end && range.end.line === start.line;
+    const len = same ? Math.max(1, displayColumn(text, range.end.character, state.tabWidth) - col) : 1;
+    send({ type: 'reveal', path: appPath(doc.uri), line: start.line, col, len });
+  }
   show() {}
   hide() {}
 }
@@ -1746,11 +1755,17 @@ const window = permissive('window', {
   showOpenDialog: () => Promise.resolve(undefined),
   showSaveDialog: () => Promise.resolve(undefined),
   showWorkspaceFolderPick: () => Promise.resolve(state.folders[0]),
-  showTextDocument(target) {
+  showTextDocument(target, options) {
     const uri = target instanceof Uri ? target : target && target.uri;
-    if (uri) send({ type: 'reveal', path: appPath(uri) });
-    const doc = uri && documents.get(uriKey(uri));
-    return Promise.resolve(doc ? doc._editor : undefined);
+    if (!uri) return Promise.resolve(undefined);
+    const given = target instanceof Uri ? null : target;
+    const doc = documents.get(uriKey(uri)) || given || (uri.scheme === 'file' ? loadDocument(uri, true) : null);
+    if (uri.scheme === 'file') send({ type: 'reveal', path: appPath(uri) });
+    if (!doc) return Promise.resolve(undefined);
+    if (!doc._editor) doc._editor = new TextEditor(doc);
+    const chosen = options && options.selection;
+    if (chosen && chosen.start) doc._editor.revealRange(chosen);
+    return Promise.resolve(doc._editor);
   },
   createOutputChannel,
   createStatusBarItem,

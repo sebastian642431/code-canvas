@@ -144,6 +144,8 @@ pub struct Page {
     pub read_again: bool,
     pub warm_at: usize,
     pub warm_batch: usize,
+    pub only: bool,
+    pub extra: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -292,6 +294,8 @@ impl Page {
             read_again: false,
             warm_at: 0,
             warm_batch: 256,
+            only: false,
+            extra: Vec::new(),
         };
         if let Some(s) = saved {
             page.filter.collapsed = s.collapsed.iter().cloned().collect();
@@ -304,6 +308,13 @@ impl Page {
         } else {
             page.state = PageState::Waiting;
         }
+        page
+    }
+
+    pub fn of_files(id: u32, root: PathBuf, files: Vec<String>) -> Page {
+        let mut page = Page::open(id, root, None, false);
+        (page.only, page.extra) = (true, files);
+        page.start_scan();
         page
     }
 
@@ -774,11 +785,13 @@ impl Page {
         let filter = LayoutFilter { only_files: None, ..self.filter.clone() };
         let reuse = !std::mem::take(&mut self.read_again);
         (self.warm_at, self.warm_batch) = (0, 256);
+        let (only, extra) = (self.only, self.extra.clone());
         std::thread::Builder::new()
             .name(format!("scan {}", self.title))
             .spawn(move || {
                 let t = Instant::now();
-                let options = ScanOptions { cache: scan_cache(&root), reuse, ..Default::default() };
+                let cache = scan_cache(&root).filter(|_| !only);
+                let options = ScanOptions { cache, reuse, only, extra, ..Default::default() };
                 let mut repo = scan::scan(&root, &options, Some(p));
                 let (deps, per_file) = canvas_core::deps::analyze_keeping(&repo);
                 if let Err(why) = canvas_core::store::keep(&mut repo, &per_file, &options) {

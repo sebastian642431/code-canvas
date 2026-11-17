@@ -598,6 +598,39 @@ Behaviour
 
 ### crates/code-canvas/src/app.rs
 
+Showing a path
+
+- `App::show_path` is the one way a path reaches the canvas, whoever names it (an
+  extension's `showTextDocument`, a definition, a link, a row of the explorer). A
+  file on a canvas is travelled to, and to the line when one comes with it. A file
+  inside an open folder that has no card (git ignores it) is added to that
+  folder's `Page::extra` and the folder is scanned again. A file outside every
+  open folder gets a page of its own kind: `Page::of_files`, rooted at the file's
+  folder but with only the files asked for (`ScanOptions::only`), so naming one
+  file of a home directory does not read the home directory.
+- Such a page is not a place of work: it is not kept in the session, its folder
+  is watched without its subfolders, new files in it are not news, extensions are
+  not told about it and its scan is not kept on disk.
+- `show_when_read`: the path waits here while the folder it is in is being read,
+  and is shown when the scan arrives (`poll_pages`).
+- The host answers `showTextDocument` with an editor even for a file the canvas
+  has not opened, because extensions go on to call `revealRange` on it; that call
+  is what carries the line.
+
+Back and forward
+
+- A `Place` is not a camera: it is the node under the middle of the canvas, where
+  the camera was from that node's corner, and what was selected. After files grow
+  or the layout changes the node is somewhere else and the place still means the
+  same code.
+- `remember_place` is called by whatever makes the canvas jump (`frame_node`,
+  `frame_site`, `frame_selection`, `frame_every_folder`), never by panning or
+  zooming by hand. Jumps the app makes by itself (following an outside change,
+  walking the matches of a search) are remembered once in a row, or they would
+  bury the place the user was at.
+- `Ctrl+Z` and `Ctrl+Y` are these two only while no file has the caret: the editor
+  takes them first for its own undo and redo.
+
 The frame and the resize rules are in "The app" and "Windows, resizing and the
 graphics API" in [ARCHITECTURE.md](ARCHITECTURE.md). What follows adds to them.
 
@@ -1308,6 +1341,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `edit` | `edit <path> <line> <column>` | Put the caret in a file; line and column are 1-based. |
 | `type` | `type <text>` | Type at the caret. |
 | `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
+| `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |

@@ -76,4 +76,5 @@ pub const ARROW_UP_DOWN: &str = "\u{e380}";
 pub const REPEAT_2: &str = "\u{e415}";
 pub const BOOK_MARKED: &str = "\u{e3f5}";
 pub const PENCIL: &str = "\u{e1f8}";
+pub const ARROW_RIGHT: &str = "\u{e04d}";
 pub const SAVE: &str = "\u{e150}";

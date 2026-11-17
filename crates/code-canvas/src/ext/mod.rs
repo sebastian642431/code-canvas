@@ -1302,7 +1302,14 @@ impl Extensions {
                 }
             }
             "write" => events.push(Event::Write { path: PathBuf::from(s("path")), text: s("text") }),
-            "reveal" => events.push(Event::Reveal(PathBuf::from(s("path")))),
+            "reveal" => {
+                let n = |key: &str| m.get(key).and_then(Value::as_u64).map(|n| n as u32);
+                let path = PathBuf::from(s("path"));
+                events.push(match n("line") {
+                    Some(line) => Event::GoTo { path, line, col: n("col").unwrap_or(0), len: n("len").unwrap_or(1) },
+                    None => Event::Reveal(path),
+                });
+            }
             "openExternal" => self.log_line(&format!("[host] link not opened: {}", s("url"))),
             "reply" => {
                 let id = m.get("id").and_then(Value::as_u64).unwrap_or(0);

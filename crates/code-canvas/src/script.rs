@@ -44,6 +44,8 @@ pub enum Step {
     Tool(String),
     Touch(String),
     Page(String),
+    Back,
+    Forward,
     Diff(String),
     Find(String),
     Quit,
@@ -103,6 +105,8 @@ fn parse_step(text: &str) -> Option<Step> {
         "tool" => Step::Tool(arg.into()),
         "touch" => Step::Touch(arg.into()),
         "page" => Step::Page(arg.into()),
+        "back" => Step::Back,
+        "forward" => Step::Forward,
         "diff" => Step::Diff(arg.into()),
         "find" => Step::Find(arg.into()),
         "drag" => {
