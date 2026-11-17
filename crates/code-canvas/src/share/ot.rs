@@ -62,14 +62,18 @@ impl TextOp {
         if was.contains(&'\n') && is.contains(&'\n') {
             let by_lines =
                 similar::TextDiff::configure().timeout(std::time::Duration::from_millis(250)).diff_lines(old, new);
+            let (mut gone, mut come): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
             for change in by_lines.iter_all_changes() {
-                let length = change.value().chars().count();
                 match change.tag() {
-                    similar::ChangeTag::Equal => op.retain(length),
-                    similar::ChangeTag::Delete => op.delete(length),
-                    similar::ChangeTag::Insert => op.insert(change.value()),
+                    similar::ChangeTag::Equal => {
+                        op.lines(&mut gone, &mut come);
+                        op.retain(change.value().chars().count());
+                    }
+                    similar::ChangeTag::Delete => gone.push(change.value()),
+                    similar::ChangeTag::Insert => come.push(change.value()),
                 }
             }
+            op.lines(&mut gone, &mut come);
             return op;
         }
         op.retain(head);
@@ -77,6 +81,30 @@ impl TextOp {
         op.delete(was.len());
         op.retain(tail);
         op
+    }
+
+    fn lines(&mut self, gone: &mut Vec<&str>, come: &mut Vec<&str>) {
+        if gone.len() == come.len() {
+            for (was, is) in gone.iter().zip(come.iter()) {
+                let (a, b): (Vec<char>, Vec<char>) = (was.chars().collect(), is.chars().collect());
+                let most = a.len().min(b.len());
+                let head = (0..most).take_while(|i| a[*i] == b[*i]).count();
+                let tail = (0..most - head).take_while(|i| a[a.len() - 1 - i] == b[b.len() - 1 - i]).count();
+                self.retain(head);
+                self.insert(&b[head..b.len() - tail].iter().collect::<String>());
+                self.delete(a.len() - head - tail);
+                self.retain(tail);
+            }
+        } else {
+            for was in gone.iter() {
+                self.delete(was.chars().count());
+            }
+            for is in come.iter() {
+                self.insert(is);
+            }
+        }
+        gone.clear();
+        come.clear();
     }
 
     pub fn apply(&self, text: &str) -> Option<String> {
@@ -98,6 +126,27 @@ impl TextOp {
             }
         }
         chars.next().is_none().then_some(out)
+    }
+
+    pub fn splices(&self) -> Vec<(usize, usize, String)> {
+        let mut all: Vec<(usize, usize, String)> = Vec::new();
+        let mut open: Option<(usize, usize, String)> = None;
+        let mut old = 0;
+        for part in &self.parts {
+            match part {
+                Part::Retain(n) => {
+                    all.extend(open.take());
+                    old += n;
+                }
+                Part::Insert(text) => open.get_or_insert((old, old, String::new())).2.push_str(text),
+                Part::Delete(n) => {
+                    open.get_or_insert((old, old, String::new())).1 += n;
+                    old += n;
+                }
+            }
+        }
+        all.extend(open);
+        all
     }
 
     pub fn place(&self, at: usize) -> usize {

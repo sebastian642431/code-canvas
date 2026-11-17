@@ -271,18 +271,27 @@ impl App {
         if !host {
             for i in (0..self.pages.len()).rev() {
                 if self.pages[i].shared.is_some() {
+                    crate::page::forget_scan(&self.pages[i].root);
                     self.close_page(i);
                 }
             }
             if let Some(dir) = dir {
+                self.workspace.retain(|known| !known.path.starts_with(&dir));
                 let _ = std::fs::remove_dir_all(dir);
+                self.save_session();
             }
         }
         match why {
             Some(why) if connected => {
                 self.ext.notice(ext::Level::Info, "Sharing", format!("The session is over: {why}."))
             }
-            Some(why) => self.ext.notice(ext::Level::Warn, "Sharing", format!("It did not connect: {why}.")),
+            Some(why) => {
+                let why = match why.as_str() {
+                    "the connection was closed" => "the invitation is not of a session that is open now",
+                    other => other,
+                };
+                self.ext.notice(ext::Level::Warn, "Sharing", format!("It did not connect: {why}."))
+            }
             None => {}
         }
         self.request_redraw();
@@ -635,7 +644,9 @@ impl App {
                 if let Some(index) = self.share_page(id) {
                     let root = self.pages[index].root.clone();
                     self.pages[index].shared = None;
+                    crate::page::forget_scan(&root);
                     self.close_page(index);
+                    self.workspace.retain(|known| known.path != root);
                     let _ = std::fs::remove_dir_all(root);
                 }
             }
@@ -798,7 +809,7 @@ impl App {
         if self.sharing.session.is_none() {
             return false;
         }
-        let seen = self.share_seen_now();
+        let seen = self.share_seen_now().filter(Seen::sane);
         let due = seen.is_some() && seen != self.sharing.said && self.sharing.said_at.elapsed() >= SEEN_EVERY;
         if let (true, Some(seen), Some(session)) = (due, seen, self.sharing.session.as_mut()) {
             session.see(seen.clone());

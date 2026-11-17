@@ -158,7 +158,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   canvas. Nothing is installed or signed into: the two apps talk to each other
   directly, sealed with the key that is in the invitation.
 - What anyone types shows for everyone as it is typed, two people in the same
-  file included. What another program changes on your disk (an assistant, a
+  file included; undo takes back your own typing, not theirs. What another program changes on your disk (an assistant, a
   formatter, git) reaches them as well.
 - **To look or to edit**: each one who joins only looks until you let them edit,
   one by one or everyone by default. A reader's keys change nothing. `Ctrl+S` of

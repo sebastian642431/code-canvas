@@ -201,6 +201,12 @@ fn scans_folder() -> PathBuf {
     crate::session::data_dir().join("scans")
 }
 
+pub fn forget_scan(root: &std::path::Path) {
+    if let Some(kept) = scan_cache(root) {
+        let _ = std::fs::remove_file(kept);
+    }
+}
+
 fn scan_cache(root: &std::path::Path) -> Option<PathBuf> {
     if std::env::var_os("CODE_CANVAS_NO_CACHE").is_some() {
         return None;

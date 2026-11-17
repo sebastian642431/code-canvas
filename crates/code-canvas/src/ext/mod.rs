@@ -902,7 +902,6 @@ impl Extensions {
                     "tabWidth": canvas_core::TAB_WIDTH,
                     "storageDir": self.data_dir.join("extension-storage"),
                     "settingsFile": self.data_dir.join("settings.json"),
-                    "vscodeSettingsFile": dirs::config_dir().map(|d| d.join("Code").join("User").join("settings.json")),
                     "folders": self.folders,
                     "extensions": extensions,
                 }));

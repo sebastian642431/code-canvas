@@ -791,9 +791,40 @@ Graphics and the frame
 - Discarding drops the unsaved edits of the files git will put back, not of new
   files git does not know (`drop_edits`), and not before knowing git is free.
 - **A batch of the watcher is not dropped** when the folder cannot be read again
-  right now (something not saved, a scan just done): its files are reloaded one
-  by one and the scan waits (`rescan_later`). A file changed on disk while it
-  has unsaved changes says so once (`changed_under`).
+  right now (a scan just done, one still running): its files are reloaded one
+  by one and the scan waits (`rescan_later`). Text that is not saved does not
+  hold a scan back any more: the scan keeps those editors (`rescan_quietly`)
+  and `poll_pages` puts their text on the new cards. It used to wait for a
+  save, so with one file unsaved, or with a guest typing, new and deleted files
+  were never seen.
+- **What another program writes into a file with unsaved text joins that text**
+  (`Editor::take_in`): the editor remembers the text the file had
+  (`Editor::on_disk`), what the program did is the edit from that to what is on
+  disk now, and it is passed over what was typed here the way an edit of
+  someone else in a shared session is (`TextOp::transform`). So an assistant
+  can work on the file you are typing in, and a guest's save cannot erase what
+  a program wrote at the host. It says so once per file and the file stays
+  unsaved. After it, undo never calls the text clean (`saved_at` is none): what
+  it would go back to is not what the file has.
+  - Only when that cannot be done (the file was deleted, or is not text any
+    more) is the file marked (`changed_under`) and saving asks
+    (`ask_overwrite`: Save mine, Leave it deleted or Take theirs, Cancel).
+    `settle_changed_under` reads such a file again once nothing is unsaved in
+    it.
+  - A file deleted from the app drops its unsaved text with it: closing the
+    folder must not write it back.
+- **Undo takes back what was done here.** An edit that comes from elsewhere
+  (`Editor::apply_remote`: someone in the session, a program on disk) is not a
+  step of undo. It is applied one changed place at a time (`TextOp::splices`),
+  and each step of undo that is after or before that place is moved to where
+  its text is now (`keep_history`). A step whose own text the edit went into
+  cannot be told apart from it any more: that step and the older ones are let
+  go. More than 64 places at once are applied as one, for speed. Redo is
+  emptied by any edit from elsewhere.
+- An edit between two texts that changes as many lines as it removes pairs them
+  (`TextOp::lines`): each line keeps what is the same at its start and end, so
+  a caret in a line that Replace all touched stays in its line instead of going
+  to the end of everything that was replaced.
 - Going to a file the canvas has but is not showing (only changed files, only
   connected ones, a commit) shows everything again; it does not scan.
 - git is run with `--literal-pathspecs` (a path like `app/[slug]/page.tsx` is
@@ -807,6 +838,15 @@ Graphics and the frame
   long it took to read are the hint of that text; what a frame cost is the hint
   of the version. Numbers that are there to be looked up are not there to be
   read all day.
+- **Nothing of VS Code's own is read.** The app does not need VS Code installed
+  and does not look at its settings, its extensions or its sign-ins: settings
+  are `<data dir>/settings.json` and a folder's `.vscode/settings.json` (a file
+  of the project, which extensions expect there). It once took the user's VS
+  Code settings as defaults; an app of its own does not. There is no account in
+  the app either: an extension's `authentication` and `secrets` give nothing,
+  the commit message is written by the `claude` or `codex` the person has
+  installed and signed into, and an assistant's extension uses that person's
+  own sign-in on their computer.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1687,7 +1727,7 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   (a reader's, or a bug) is answered with the whole file and a new `epoch`,
   under which the old messages still on their way are ignored.
 - An edit that arrives goes into the editor of the file (`Editor::apply_remote`:
-  the caret keeps its text, and it is one more step of undo). At the host an
+  the caret keeps its text, and it is not a step of undo). At the host an
   editor is made for it if there is none: what a guest types is *not saved* at
   the host until someone saves, which is `Msg::Save` from a guest. At a guest
   with no editor the kept text is written to the file and the watcher shows it;

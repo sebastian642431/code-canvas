@@ -31,6 +31,7 @@ pub struct Editor {
     undo: Vec<Change>,
     redo: Vec<Change>,
     saved_at: Option<usize>,
+    on_disk: String,
     pub dirty: bool,
     pub rev: u64,
 }
@@ -57,6 +58,7 @@ impl Editor {
         let lines: Vec<String> = body.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect();
         Editor {
             rel_path,
+            on_disk: lines.join("\n"),
             lines,
             eol,
             final_newline,
@@ -193,24 +195,76 @@ impl Editor {
     }
 
     pub fn apply_remote(&mut self, op: &crate::share::ot::TextOp) -> Option<(u32, u32)> {
+        const ONE_BY_ONE: usize = 64;
         let was = self.display_source();
-        let is: Vec<char> = op.apply(&was)?.chars().collect();
-        let was: Vec<char> = was.chars().collect();
-        let most = was.len().min(is.len());
-        let head = (0..most).take_while(|i| was[*i] == is[*i]).count();
-        let tail = (0..most - head).take_while(|i| was[was.len() - 1 - i] == is[is.len() - 1 - i]).count();
-        if head + tail == was.len() && was.len() == is.len() {
+        let is = op.apply(&was)?;
+        if is == was {
             return Some((self.caret.line as u32, 0));
         }
         let (caret, anchor, goal) = (self.offset_of(self.caret), self.anchor.map(|a| self.offset_of(a)), self.goal);
-        let (from, to) = (self.pos_of(head), self.pos_of(was.len() - tail));
-        let put: String = is[head..is.len() - tail].iter().collect();
-        self.replace(from, to, &put);
-        let last = self.pos_of(is.len() - tail).line;
+        let mut places = op.splices();
+        if places.len() > ONE_BY_ONE {
+            let (was, is): (Vec<char>, Vec<char>) = (was.chars().collect(), is.chars().collect());
+            let most = was.len().min(is.len());
+            let head = (0..most).take_while(|i| was[*i] == is[*i]).count();
+            let tail = (0..most - head).take_while(|i| was[was.len() - 1 - i] == is[is.len() - 1 - i]).count();
+            places = vec![(head, was.len() - tail, is[head..is.len() - tail].iter().collect())];
+        }
+        let (start, end) = (places.first()?.0, places.last()?.1);
+        self.redo.clear();
+        for (from, to, put) in places.iter().rev() {
+            let (from, to) = (self.pos_of(*from), self.pos_of(*to));
+            self.keep_history(from, to, put);
+            self.splice(from, to, put);
+        }
+        self.saved_at = None;
+        self.touch();
+        let (first, stop) = (self.pos_of(start).line, self.pos_of(op.place(end)));
+        let last = if stop.col == 0 && stop.line > first { stop.line - 1 } else { stop.line };
         self.caret = self.pos_of(op.place(caret));
         self.anchor = anchor.map(|a| self.pos_of(op.place(a)));
         self.goal = goal;
-        Some((from.line as u32, (last - from.line + 1) as u32))
+        Some((first as u32, (last.max(first) - first + 1) as u32))
+    }
+
+    fn moved(at: Pos, to: Pos, end: Pos) -> Pos {
+        match at.line == to.line {
+            true => Pos::new(end.line, end.col + at.col - to.col),
+            false => Pos::new(at.line + end.line - to.line, at.col),
+        }
+    }
+
+    fn keep_history(&mut self, mut from: Pos, mut to: Pos, put: &str) {
+        let mut lost = 0;
+        for i in (0..self.undo.len()).rev() {
+            let change = &mut self.undo[i];
+            let end = Self::end_of(change.at, &change.inserted);
+            if to <= change.at {
+                change.at = Self::moved(change.at, to, Self::end_of(from, put));
+            } else if from >= end {
+                let back = Self::end_of(change.at, &change.removed);
+                (from, to) = (Self::moved(from, end, back), Self::moved(to, end, back));
+            } else {
+                lost = i + 1;
+                break;
+            }
+        }
+        self.undo.drain(..lost);
+    }
+
+    pub fn take_in(&mut self, disk: &str) -> Option<(u32, u32)> {
+        use crate::share::ot::TextOp;
+        if disk == self.on_disk {
+            return Some((self.caret.line as u32, 0));
+        }
+        let theirs = TextOp::between(&self.on_disk, disk);
+        let mine = TextOp::between(&self.on_disk, &self.display_source());
+        let (theirs, _) = TextOp::transform(&theirs, &mine)?;
+        let lines = self.apply_remote(&theirs)?;
+        self.on_disk = disk.to_string();
+        self.saved_at = None;
+        self.dirty = true;
+        Some(lines)
     }
 
     pub fn become_text(&mut self, body: &str) {
@@ -230,8 +284,8 @@ impl Editor {
     pub fn undo(&mut self) -> bool {
         let Some(change) = self.undo.pop() else { return false };
         self.splice(change.at, Self::end_of(change.at, &change.inserted), &change.removed);
-        self.caret = change.caret_before;
-        self.anchor = change.anchor_before;
+        self.caret = self.clamp(change.caret_before);
+        self.anchor = change.anchor_before.map(|anchor| self.clamp(anchor));
         self.goal = None;
         self.redo.push(change);
         self.touch();
@@ -430,6 +484,7 @@ impl Editor {
 
     pub fn mark_saved(&mut self) {
         self.saved_at = Some(self.undo.len());
+        self.on_disk = self.display_source();
         self.dirty = false;
     }
 }
@@ -502,6 +557,44 @@ mod tests {
         assert_eq!(e.display_source(), "all new\ntext");
         assert!(e.undo());
         assert_eq!(e.display_source(), "// theirs\nfn main() {\n    run(now);\n    stop();\n}");
+    }
+
+    #[test]
+    fn what_another_program_wrote_joins_what_is_not_saved() {
+        let mut e = Editor::open("a.txt".into(), "one\ntwo\nthree\n");
+        at(&mut e, 1, 3);
+        e.insert(" mine");
+        assert_eq!(e.take_in("zero\none\ntwo\nthree\nfour"), Some((0, 5)));
+        assert_eq!(e.display_source(), "zero\none\ntwo mine\nthree\nfour");
+        assert_eq!(e.caret, Pos::new(2, 8), "the caret stays after what was typed");
+        assert!(e.dirty);
+        assert!(e.undo());
+        assert_eq!(
+            e.display_source(),
+            "zero
+one
+two
+three
+four",
+            "undo takes back what was typed here, not what came"
+        );
+        assert!(e.dirty, "the text is the file's again, but nothing here knows that for sure until it is saved");
+        assert!(!e.undo());
+        e.mark_saved();
+        assert_eq!(e.take_in(&e.display_source()), Some((e.caret.line as u32, 0)), "nothing new on disk");
+        assert!(!e.dirty);
+    }
+
+    #[test]
+    fn every_line_changed_at_once_leaves_the_caret_on_its_line() {
+        use crate::share::ot::TextOp;
+        let before = "line 01\nline 02\nline 03\nline 04";
+        let mut e = Editor::open("a.txt".into(), before);
+        at(&mut e, 2, 7);
+        let all = TextOp::between(before, "row 01\nrow 02\nrow 03\nrow 04");
+        assert!(e.apply_remote(&all).is_some());
+        assert_eq!(e.caret, Pos::new(2, 6));
+        assert_eq!(e.line(2), "row 03");
     }
 
     #[test]

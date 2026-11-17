@@ -197,6 +197,7 @@ pub struct App {
     auto_rescan: Option<Instant>,
     rescan_later: HashSet<u32>,
     changed_under: HashSet<(u32, String)>,
+    merged_in: HashSet<(u32, String)>,
     webviews: crate::webview::WebViews,
     webview_roots: Vec<PathBuf>,
     copies: Vec<crate::files::Copying>,
@@ -317,6 +318,7 @@ impl App {
             auto_rescan: None,
             rescan_later: HashSet::new(),
             changed_under: HashSet::new(),
+            merged_in: HashSet::new(),
             webviews: {
                 let mut webviews = crate::webview::WebViews::new();
                 webviews.set_follow(follow_chat);
@@ -1075,6 +1077,31 @@ impl App {
             for rel in std::mem::take(&mut known[i]) {
                 let page = &mut self.pages[i];
                 if page.editors.get(&rel).is_some_and(|e| e.dirty) {
+                    let theirs = std::fs::read_to_string(root.join(&rel)).ok().map(|text| crate::share::body(&text));
+                    let merged = theirs.and_then(|text| page.editors.get_mut(&rel)?.take_in(&text));
+                    if let Some((first, count)) = merged {
+                        if let Some(g) = self.gfx.as_mut() {
+                            g.renderer.text.drop_page(page.id);
+                            page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
+                        }
+                        page.want_head(&rel);
+                        page.preview_unsaved();
+                        if count > 0 {
+                            page.touch(&rel, vec![(first, count)]);
+                        }
+                        if i == self.active && page.editing.as_deref() == Some(rel.as_str()) {
+                            self.completion = None;
+                        }
+                        self.symbols_stale = Some(Instant::now());
+                        self.unsent_edit = Some((root.join(&rel), Instant::now()));
+                        if count > 0 && self.merged_in.insert((page.id, rel.clone())) {
+                            let text = format!(
+                                "{rel} was changed by another program while it has changes not saved here: what it wrote is in the text now, with yours, and the file is still not saved."
+                            );
+                            self.ext.notice(ext::Level::Info, "Files", text);
+                        }
+                        continue;
+                    }
                     if self.changed_under.insert((page.id, rel.clone())) {
                         let text = format!(
                             "{rel} was changed by another program while it has changes not saved here. Saving will replace what that program wrote."
@@ -1138,7 +1165,7 @@ impl App {
         if big {
             return true;
         }
-        if recent || page.is_loading() || page.editors.values().any(|e| e.dirty) {
+        if recent || page.is_loading() {
             return false;
         }
         log::info!("{}: files were added or removed, scanning again", page.root.display());
@@ -1147,8 +1174,10 @@ impl App {
         let p = &mut self.pages[i];
         p.restore_camera = p.portable_camera(s, vp);
         p.framed = false;
-        p.editors.clear();
-        p.editing = None;
+        p.editors.retain(|_, editor| editor.dirty);
+        if p.editing.as_ref().is_some_and(|rel| !p.editors.contains_key(rel)) {
+            p.editing = None;
+        }
         p.reveal = reveal;
         p.start_scan();
         true
@@ -1699,6 +1728,7 @@ impl App {
         }
         editor.mark_saved();
         self.changed_under.remove(&(page.id, rel.to_string()));
+        self.merged_in.remove(&(page.id, rel.to_string()));
         log::info!("saved {}", path.display());
         if let (Some(folder), Some(session)) = (page.shared, self.sharing.session.as_mut()) {
             session.saved(folder, rel);
@@ -3877,6 +3907,14 @@ impl App {
                     tree: Vec::new(),
                     tree_dirty: true,
                 }));
+                let kept: Vec<String> = page.editors.keys().cloned().collect();
+                for rel in &kept {
+                    page.show_edit(rel, &g.renderer, &g.device, &self.ui.filters);
+                }
+                let there = |rel: &String| page.ready().is_some_and(|r| r.repo.file_index(rel).is_some());
+                if page.editing.as_ref().is_some_and(|rel| !there(rel)) {
+                    page.editing = None;
+                }
                 page.curves_dirty = true;
                 changed = true;
                 self.versions_due.push(page.id);
