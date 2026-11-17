@@ -317,27 +317,6 @@ const HEADER_H: f32 = 40.0;
 const RAIL_W: f32 = 44.0;
 const GAP: i8 = 6;
 
-const PANE_GAP: f32 = 8.0;
-
-pub fn pane_count(single: bool, folders: usize) -> usize {
-    if single {
-        1
-    } else {
-        folders.max(1)
-    }
-}
-
-pub fn pane_rects(canvas: egui::Rect, count: usize, gap: f32) -> Vec<egui::Rect> {
-    let count = count.max(1);
-    let width = ((canvas.width() - gap * (count - 1) as f32) / count as f32).max(1.0);
-    (0..count)
-        .map(|i| {
-            let left = canvas.left() + i as f32 * (width + gap);
-            egui::Rect::from_min_size(Pos2::new(left, canvas.top()), Vec2::new(width, canvas.height()))
-        })
-        .collect()
-}
-
 pub fn style(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
     ctx.add_font(FontInsert {
@@ -516,19 +495,8 @@ pub fn build(
 
     let canvas = ui.available_rect_before_wrap();
     let ctx = ui.ctx().clone();
-    let panes = pane_rects(canvas, pane_count(st.single, pages.len()), PANE_GAP);
-    if panes.len() > 1 {
-        for (i, pane) in panes.iter().enumerate() {
-            center_message(ui, *pane, pages.get(i), &st.keys);
-            let color = if i == active { pal().border_strong } else { pal().border };
-            let frame = egui::Stroke::new(1.0, color);
-            ui.painter().rect_stroke(pane.shrink(0.5), 6.0, frame, egui::StrokeKind::Inside);
-        }
-    } else {
-        center_message(ui, canvas, pages.get(active), &st.keys);
-    }
-    let active_pane = if panes.len() > 1 { panes.get(active).copied().unwrap_or(canvas) } else { canvas };
-    toolbar(&ctx, st, active_pane, info, actions);
+    center_message(ui, canvas, pages.get(active), &st.keys);
+    toolbar(&ctx, st, canvas, info, actions);
     completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
@@ -1049,7 +1017,8 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
                 if small_icon(ui, icons::PLUS, &st.keys.hint("Open a folder in a new canvas", Command::OpenFolder)) {
                     actions.push(Action::OpenFolder);
                 }
-                let split = if st.single { "Show every open folder side by side" } else { "Show one folder at a time" };
+                let split =
+                    if st.single { "Show every open folder on the canvas" } else { "Show one folder at a time" };
                 if pages.len() > 1
                     && small_icon(ui, icons::LAYOUT_GRID, &st.keys.hint(split, Command::ToggleSideBySide))
                 {
@@ -1547,7 +1516,7 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                 ("Close the canvas", key(Command::CloseFolder)),
                 ("Reload from disk", key(Command::Rescan)),
                 ("Toggle the left panel", key(Command::ToggleLeftPanel)),
-                ("Folders side by side, or one at a time", key(Command::ToggleSideBySide)),
+                ("Every folder on the canvas, or one at a time", key(Command::ToggleSideBySide)),
                 ("Settings", key(Command::Settings)),
             ],
         ),
@@ -1885,7 +1854,7 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("Code Canvas: Check for Updates".into(), Action::CheckUpdates),
         (format!("Code Canvas: About (version {})", crate::update::current()), Action::ShowLeft(LeftPanel::Settings)),
         ("Preferences: Colour Theme".into(), Action::ShowLeft(LeftPanel::Settings)),
-        ("View: Folders Side by Side, or One at a Time".into(), Action::ToggleSideBySide),
+        ("View: Every Folder on the Canvas, or One at a Time".into(), Action::ToggleSideBySide),
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),
         ("View: Reload the Folder from Disk".into(), Action::Rescan),

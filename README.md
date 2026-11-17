@@ -48,8 +48,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   link an assistant gives) and it opens in a viewer panel. Windows only for now.
 - An assistant's panel (Claude Code) stays scrolled to what it is writing until you
   scroll up.
-- Several folders open are shown **side by side**, each in its own pane with its own
-  zoom; click one to work in it. `Ctrl+E` (or the grid icon) goes back to one at a time.
+- Several folders open share **one canvas**, next to each other, with one zoom for
+  all; click one to work in it. `Ctrl+E` (or the grid icon) goes back to one at a time.
 - `Ctrl+P` go to a file or folder; `Ctrl+Shift+F` search text in every file, with the
   hits marked on the canvas.
 

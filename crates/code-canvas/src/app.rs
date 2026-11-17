@@ -113,7 +113,7 @@ pub struct App {
     ui: UiState,
     canvas: Rect,
     canvas_full: Rect,
-    pane_count: usize,
+    was_shared: bool,
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
     curves_for: Option<u32>,
@@ -201,7 +201,7 @@ impl App {
             ui,
             canvas: Rect::new(0.0, 0.0, 1.0, 1.0),
             canvas_full: Rect::new(0.0, 0.0, 1.0, 1.0),
-            pane_count: 1,
+            was_shared: false,
             chip_hits: Vec::new(),
             toggle_hits: Vec::new(),
             curves_for: None,
@@ -264,28 +264,65 @@ impl App {
         }
     }
 
-    fn panes(&self) -> Vec<(usize, Rect)> {
-        let count = ui::pane_count(self.ui.single, self.pages.len());
-        if count <= 1 {
-            return vec![(self.active, self.canvas_full)];
-        }
-        let c = self.canvas_full;
-        let whole = egui::Rect::from_min_size(egui::pos2(c.x, c.y), egui::vec2(c.w, c.h));
-        ui::pane_rects(whole, count, 8.0 * self.scale())
-            .into_iter()
-            .map(|r| Rect::new(r.left(), r.top(), r.width(), r.height()))
-            .enumerate()
-            .collect()
+    fn shares_canvas(&self) -> bool {
+        !self.ui.single && self.pages.len() > 1
     }
 
-    fn focus_pane_at(&mut self, p: [f32; 2]) {
-        let over = self.panes().into_iter().find(|(_, rect)| rect.contains(p));
-        if let Some((i, rect)) = over {
+    fn shown(&self) -> Vec<usize> {
+        if self.shares_canvas() {
+            (0..self.pages.len()).collect()
+        } else {
+            vec![self.active]
+        }
+    }
+
+    fn origins(&self) -> Vec<[f32; 2]> {
+        let extents: Vec<Option<Rect>> = self.pages.iter().map(|page| page.extent).collect();
+        crate::camera::origins(&extents)
+    }
+
+    fn follow_active_camera(&mut self) {
+        if !self.shares_canvas() {
+            return;
+        }
+        let origins = self.origins();
+        let Some(leader) = self.pages.get(self.active).map(|page| page.camera) else { return };
+        let own = origins[self.active];
+        for (i, page) in self.pages.iter_mut().enumerate() {
             if i != self.active {
-                self.switch_to(i);
-                self.canvas = rect;
-                self.session_dirty = true;
+                page.camera = leader.seen_from(own, origins[i]);
+                page.target = None;
             }
+        }
+    }
+
+    fn focus_folder_at(&mut self, p: [f32; 2]) {
+        if !self.shares_canvas() || !self.canvas_full.contains(p) {
+            return;
+        }
+        self.follow_active_camera();
+        let vp = self.viewport();
+        let over = self
+            .pages
+            .iter()
+            .position(|page| page.extent.is_some_and(|extent| extent.contains(page.camera.view(vp).to_world(p))));
+        if let Some(i) = over.filter(|i| *i != self.active) {
+            self.switch_to(i);
+            self.session_dirty = true;
+        }
+    }
+
+    fn show_folder(&mut self, i: usize) {
+        self.switch_to(i);
+        if !self.shares_canvas() {
+            return;
+        }
+        let vp = self.viewport();
+        let out_of_sight = self.pages.get(self.active).is_some_and(|page| {
+            page.extent.is_some_and(|extent| !extent.intersects(&page.camera.view(vp).world_rect()))
+        });
+        if out_of_sight {
+            self.frame_all();
         }
     }
 
@@ -499,6 +536,14 @@ impl App {
 
     fn switch_to(&mut self, i: usize) {
         if i < self.pages.len() {
+            if i != self.active && self.shares_canvas() {
+                self.follow_active_camera();
+                let origins = self.origins();
+                let flying_to = self.pages.get_mut(self.active).and_then(|page| page.target.take());
+                if let Some(target) = flying_to {
+                    self.pages[i].target = Some(target.seen_from(origins[self.active], origins[i]));
+                }
+            }
             self.active = i;
             self.pages[i].ensure_scanned();
             self.drag = None;
@@ -528,7 +573,7 @@ impl App {
     fn cycle(&mut self, delta: isize) {
         let n = self.pages.len() as isize;
         if n > 0 {
-            self.switch_to(((self.active as isize + delta).rem_euclid(n)) as usize);
+            self.show_folder(((self.active as isize + delta).rem_euclid(n)) as usize);
         }
     }
 
@@ -1058,6 +1103,28 @@ impl App {
         self.frame_node(0);
     }
 
+    fn frame_every_folder(&mut self) {
+        if !self.shares_canvas() {
+            return self.frame_all();
+        }
+        let origins = self.origins();
+        let own = origins[self.active.min(origins.len() - 1)];
+        let everything = self
+            .pages
+            .iter()
+            .zip(&origins)
+            .filter_map(|(page, origin)| {
+                let extent = page.extent?;
+                Some(Rect::new(extent.x + origin[0] - own[0], extent.y + origin[1] - own[1], extent.w, extent.h))
+            })
+            .reduce(|all, extent| all.union(&extent));
+        let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
+        if let (Some(everything), Some(page)) = (everything, self.pages.get_mut(self.active)) {
+            page.target = Some(Camera::fit(everything, area, vp, 24.0 * s));
+            self.request_redraw();
+        }
+    }
+
     fn frame_selection(&mut self) {
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
@@ -1325,7 +1392,7 @@ impl App {
             Command::NextFolder => self.cycle(1),
             Command::PreviousFolder => self.cycle(-1),
             Command::Rescan => self.rescan(),
-            Command::ShowAll => self.frame_all(),
+            Command::ShowAll => self.frame_every_folder(),
             Command::GoToSelection => self.frame_selection(),
             Command::ZoomToParent => self.zoom_to_parent(),
             Command::ZoomIn => self.zoom_center(1.25),
@@ -1386,11 +1453,11 @@ impl App {
             self.session_dirty = true;
         }
         match action {
-            Action::SwitchTab(i) => self.switch_to(i),
+            Action::SwitchTab(i) => self.show_folder(i),
             Action::CloseTab(i) => self.close_page(i),
             Action::OpenFolder => self.pick_folder(),
             Action::Rescan => self.rescan(),
-            Action::Fit => self.frame_all(),
+            Action::Fit => self.frame_every_folder(),
             Action::ZoomBy(f) => self.zoom_center(f),
             Action::FrameSelection => self.frame_selection(),
             Action::FlyToSite(site) => self.frame_site(site),
@@ -1852,7 +1919,7 @@ impl App {
             Step::CollapseAll => self.apply(Action::CollapseAll),
             Step::ExpandAll => self.apply(Action::ExpandAll),
             Step::Connected(on) => self.apply(Action::SetOnlyConnected(on)),
-            Step::Tab(n) => self.switch_to(n.saturating_sub(1)),
+            Step::Tab(n) => self.show_folder(n.saturating_sub(1)),
             Step::Folders => {
                 self.ui.show_left(LeftPanel::Files);
                 self.ui.open_folder_menu = true;
@@ -1881,6 +1948,14 @@ impl App {
                 self.ui.quick = Some(QuickOpen { query: format!(">{text}"), selected: 0, focus: true })
             }
             Step::Maximize => self.apply(Action::ToggleMaximize),
+            Step::Click(x, y) => {
+                self.cursor = [x, y];
+                self.focus_folder_at(self.cursor);
+                if !self.over_ui(self.cursor) {
+                    self.on_canvas_click(self.cursor);
+                }
+                self.update_hover();
+            }
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -2312,22 +2387,21 @@ impl App {
         for a in actions {
             self.apply(a);
         }
-        let panes = self.panes();
-        if panes.len() != self.pane_count {
-            self.pane_count = panes.len();
-            let first_frame = self.pages.iter().all(|p| !p.framed);
-            for page in &mut self.pages {
-                if !first_frame {
+        let shared = self.shares_canvas();
+        if shared != self.was_shared {
+            self.was_shared = shared;
+            if !shared {
+                let active = self.active;
+                for page in self.pages.iter_mut().enumerate().filter(|(i, _)| *i != active).map(|(_, page)| page) {
                     page.restore_camera = None;
+                    page.framed = false;
+                    page.target = None;
+                    page.pane_center = None;
                 }
-                page.framed = false;
-                page.target = None;
-                page.pane_center = None;
             }
         }
-        if let Some((_, rect)) = panes.iter().find(|(i, _)| *i == self.active) {
-            self.canvas = *rect;
-        }
+        self.canvas = self.canvas_full;
+        let shown = self.shown();
         {
             let shown =
                 (self.ui.right == Some(RightPanel::Webview)).then_some(()).and(self.ui.webview_rect).and_then(|r| {
@@ -2355,16 +2429,20 @@ impl App {
         let area = self.canvas;
 
         let mut animating = false;
-        for (i, area) in panes.iter().copied() {
+        for i in shown.iter().copied() {
             let active = i == self.active;
             let Some(page) = self.pages.get_mut(i) else { continue };
             page.ensure_scanned();
             if let PageState::Ready(r) = &page.state {
+                page.extent = Some(r.layout.bounds);
                 if !page.framed {
-                    page.camera = match page.restore_camera.take() {
-                        Some(c) => Page::place_camera(c, s, vp, area.center()),
-                        None => Camera::fit(r.layout.bounds, area, vp, 24.0 * s),
-                    };
+                    let restored = page.restore_camera.take();
+                    if active || !shared {
+                        page.camera = match restored {
+                            Some(c) => Page::place_camera(c, s, vp, area.center()),
+                            None => Camera::fit(r.layout.bounds, area, vp, 24.0 * s),
+                        };
+                    }
                     page.framed = true;
                     page.pane_center = Some(area.center());
                 }
@@ -2393,6 +2471,7 @@ impl App {
                 }
             }
         }
+        self.follow_active_camera();
         if animating {
             self.update_hover();
         }
@@ -2479,11 +2558,12 @@ impl App {
         };
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let side_by_side = panes.len() > 1;
+        let side_by_side = shown.len() > 1;
         let edges = |r: Rect| [r.x, r.y, r.right(), r.bottom()];
         let mut first = true;
         let mut others_pending = false;
-        for (i, pane) in panes.iter().copied().filter(|(i, _)| *i != self.active) {
+        let pane = area;
+        for i in shown.iter().copied().filter(|i| *i != self.active) {
             let Some(page) = self.pages.get_mut(i) else { continue };
             let view = page.camera.view(vp);
             let over = overlay::build(page, view, pane, s, &filters, &self.ext, &mut g.renderer.text);
@@ -2836,7 +2916,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => {
                     self.webviews.focus_app();
-                    self.focus_pane_at(self.cursor);
+                    self.focus_folder_at(self.cursor);
                     if self.drag.is_none() && !self.over_ui(self.cursor) {
                         self.drag = Some(Drag { last: self.cursor, start: self.cursor, moved: false, button });
                     }
@@ -2855,7 +2935,7 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                self.focus_pane_at(self.cursor);
+                self.focus_folder_at(self.cursor);
                 if self.over_ui(self.cursor) {
                     return;
                 }
@@ -2874,7 +2954,7 @@ impl ApplicationHandler for App {
                 self.request_redraw();
             }
             WindowEvent::PinchGesture { delta, .. } => {
-                self.focus_pane_at(self.cursor);
+                self.focus_folder_at(self.cursor);
                 if self.over_ui(self.cursor) {
                     return;
                 }

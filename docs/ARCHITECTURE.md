@@ -199,7 +199,8 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 `key enter|backspace|undo|redo|save|…`, `git stage|unstage [path]`, `git commit <message>`,
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
 `answer <choice>` (press that button of a notice that asks),
-`resize <width> <height>`, `open <path>` (media viewer), `updates`, `maximize`, `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
+`resize <width> <height>`, `open <path>` (media viewer), `updates`, `maximize`,
+`click <x> <y>` (a click on the canvas, in physical pixels of the window), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.
 
 To see the result, `scripts/screenshot.ps1` (Windows) starts such an instance and

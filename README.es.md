@@ -34,8 +34,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
   existe una versión más nueva.
 - **Actualizaciones**: al abrir, si hay una versión más nueva la ofrece en un aviso y
   la instala sola. El panel del asistente sigue lo que va escribiendo hasta que subís.
-- **Varias carpetas a la vez**: se muestran lado a lado, cada una en su panel y con
-  su propio zoom; `Ctrl+E` vuelve a una sola por vez.
+- **Varias carpetas a la vez**: comparten un solo lienzo, una al lado de la otra y con
+  el mismo zoom; `Ctrl+E` vuelve a una sola por vez.
 - **Edición**: el código legible es un editor: clic y a escribir, con deshacer,
   copiar y pegar y `Ctrl+S`. Formatea al guardar (se apaga con `editor.formatOnSave`), los
   problemas se actualizan mientras escribís y los archivos cambiados por otro programa

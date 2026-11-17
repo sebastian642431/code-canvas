@@ -90,7 +90,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     info(
         Command::ToggleSideBySide,
         "toggleSideBySide",
-        "Folders side by side, or one at a time",
+        "Every folder on the canvas, or one at a time",
         "Folders",
         Scope::Window,
         &["ctrl+e"],

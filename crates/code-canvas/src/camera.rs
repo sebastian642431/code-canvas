@@ -16,7 +16,34 @@ impl Default for Camera {
     }
 }
 
+pub fn origins(extents: &[Option<Rect>]) -> Vec<[f32; 2]> {
+    let widest = extents.iter().flatten().map(|extent| extent.w).fold(0.0f32, f32::max);
+    let gap = (widest * 0.06).max(240.0);
+    let mut left = 0.0;
+    extents
+        .iter()
+        .map(|extent| match extent {
+            Some(extent) => {
+                let origin = [left - extent.x, -extent.y];
+                left += extent.w + gap;
+                origin
+            }
+            None => [left, 0.0],
+        })
+        .collect()
+}
+
 impl Camera {
+    pub fn seen_from(&self, own_origin: [f32; 2], other_origin: [f32; 2]) -> Camera {
+        Camera {
+            center: [
+                self.center[0] + own_origin[0] - other_origin[0],
+                self.center[1] + own_origin[1] - other_origin[1],
+            ],
+            zoom: self.zoom,
+        }
+    }
+
     pub fn view(&self, viewport: [f32; 2]) -> View {
         View {
             offset: [self.center[0] - viewport[0] * 0.5 / self.zoom, self.center[1] - viewport[1] * 0.5 / self.zoom],
@@ -79,6 +106,31 @@ mod tests {
         c.zoom_at(p, vp, 2.5);
         let after = c.view(vp).to_world(p);
         assert!((before[0] - after[0]).abs() < 1e-3 && (before[1] - after[1]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn folders_sit_side_by_side_without_overlapping() {
+        let extents = [Some(Rect::new(10.0, 20.0, 1000.0, 500.0)), None, Some(Rect::new(-5.0, 0.0, 4000.0, 900.0))];
+        let at = origins(&extents);
+        let placed = |i: usize| {
+            let extent = extents[i].unwrap();
+            Rect::new(extent.x + at[i][0], extent.y + at[i][1], extent.w, extent.h)
+        };
+        let (first, last) = (placed(0), placed(2));
+        assert_eq!([first.x, first.y, last.y], [0.0, 0.0, 0.0]);
+        assert_eq!(last.x, first.right() + 240.0);
+        assert!(!first.intersects(&last));
+    }
+
+    #[test]
+    fn a_point_is_at_the_same_place_for_every_folder() {
+        let vp = [800.0, 600.0];
+        let (own, other) = ([0.0, 0.0], [1240.0, -30.0]);
+        let leader = Camera { center: [300.0, 200.0], zoom: 0.5 };
+        let follower = leader.seen_from(own, other);
+        let on_screen = leader.view(vp).to_screen([1500.0 - own[0], 100.0 - own[1]]);
+        let same_point = follower.view(vp).to_screen([1500.0 - other[0], 100.0 - other[1]]);
+        assert!((on_screen[0] - same_point[0]).abs() < 1e-3 && (on_screen[1] - same_point[1]).abs() < 1e-3);
     }
 
     #[test]
