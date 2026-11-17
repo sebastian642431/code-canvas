@@ -117,6 +117,10 @@ struct Completion {
     selected: usize,
 }
 
+fn can_show(size: winit::dpi::PhysicalSize<u32>) -> bool {
+    size.width >= 320 && size.height >= 200
+}
+
 fn word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -2027,6 +2031,24 @@ impl App {
         self.request_redraw();
     }
 
+    fn exact_uses(&mut self, page: u32, of: (u32, u32), places: Vec<(PathBuf, u32, u32)>) {
+        let Some(index) = self.pages.iter().position(|p| p.id == page) else { return };
+        let mut root = ext::path_key(&self.pages[index].root.to_string_lossy());
+        root.push('/');
+        let inside = |path: &PathBuf| {
+            let text = path.to_string_lossy().replace('\\', "/");
+            ext::path_key(&text).starts_with(&root).then(|| text[root.len()..].to_string())
+        };
+        let places: Vec<(String, u32, u32)> =
+            places.iter().filter_map(|(path, line, col)| Some((inside(path)?, *line, *col))).collect();
+        if self.pages[index].exact_uses(of, &places) {
+            if index == self.active && self.pages[index].only_connected {
+                self.relayout();
+            }
+            self.request_redraw();
+        }
+    }
+
     fn clear_symbols(&mut self) {
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let had = !page.selections.is_empty();
@@ -3085,6 +3107,11 @@ impl App {
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
+            for sym in std::mem::take(&mut page.want_exact) {
+                if let Some((path, line, col)) = page.use_site(sym) {
+                    self.ext.request_uses(&path, line, col, page.id, (sym.file, sym.index));
+                }
+            }
             if let Some((fine, said)) = page.git_said.take() {
                 let level = if fine { ext::Level::Info } else { ext::Level::Warn };
                 self.ext.notice(level, "Source Control", said);
@@ -3159,6 +3186,7 @@ impl App {
                 ext::Event::Reveal(path) => self.reveal_file(&path),
                 ext::Event::GoTo { path, line, col, len } => self.show_path(&path, Some((line, col, len))),
                 ext::Event::Suggestions(found) => self.offer_code(found),
+                ext::Event::Uses { page, of, places } => self.exact_uses(page, of, places),
                 ext::Event::ExtraEdits { path, edits } => self.extra_edits(&path, edits),
                 ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
@@ -3519,6 +3547,9 @@ impl App {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         let Some(g) = self.gfx.as_mut() else { return };
+        if g.window.is_minimized() == Some(true) || !can_show(g.window.inner_size()) {
+            return;
+        }
         if std::mem::take(&mut g.resized) {
             let t = Instant::now();
             g.surface.configure(&g.device, &g.config);
@@ -4092,9 +4123,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Resized(size) => {
-                if let Some(g) = &mut self.gfx {
-                    g.config.width = size.width.max(1);
-                    g.config.height = size.height.max(1);
+                if let Some(g) = self.gfx.as_mut().filter(|_| can_show(size)) {
+                    g.config.width = size.width;
+                    g.config.height = size.height;
                     g.resized = true;
                     g.window.request_redraw();
                 }
@@ -4256,7 +4287,9 @@ impl ApplicationHandler for App {
             (true, t) => Some(t.map_or(tick, |t| t.min(tick))),
             (false, t) => t,
         };
-        if loading {
+        let shown =
+            self.gfx.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && can_show(g.window.inner_size()));
+        if loading && shown {
             self.request_redraw();
         }
         event_loop.set_control_flow(match wake {

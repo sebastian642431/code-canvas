@@ -715,6 +715,13 @@ Graphics and the frame
     when they are next shown: their cameras were looking at the active one.
 - When the canvas's part of the window moves (a panel opens), what was in the
   middle of it stays in the middle (`Page::pane_center`).
+- **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
+  not as nothing, and it stays that size for a few frames after it is restored.
+  One frame of the interface that small left the side panels at their narrowest
+  for good, which is what "the canvas shrinks every time I minimise" was.
+  `can_show` is the one test: `Resized` ignores a size that fails it (the surface
+  keeps its last good size), `redraw` returns, and `about_to_wait` stops asking
+  for frames, which would otherwise come back at once and spin a core.
 - A file dropped on the window is copied on a thread (`files::copy_into`);
   `App::poll_copies` hears when it is done. A copy that git ignores is not on the
   canvas, so `App::show_dropped` says so, and opens it in the viewer when it is
@@ -1318,6 +1325,18 @@ Details:
   (`Editor::edit_before`), where they cannot move what was just typed sideways.
   The host keeps the items of the last `complete` only (`offered`), by a serial
   the app gives back: an older list answers with nothing.
+- **Exact uses.** `Page::toggle_symbol` selects with the relations the names give
+  and leaves the symbol in `want_exact`; the app asks the host where it is used
+  (`locations`, kind `Reference`, at the definition) and `Page::exact_uses` gives
+  the answer to `Repo::refine`: references and incoming calls not confirmed go,
+  confirmed places the names missed are added (a call if the token there is one),
+  and `Relations::exact` says so in the panel. Definitions, outgoing calls and
+  implementations stay as guessed. No answer, or an empty one (no extension for
+  the language, or one still starting), leaves the guess. Places come in lines of
+  the file and go through `row_of` for a card that shows a diff.
+- A file that changes on disk does not drop the selection any more:
+  `Page::reload_file` selects the same names again (`select_again`: same file,
+  nearest line), which also asks for their exact uses again.
 - The file being edited is never shown as a diff: its caret is in file lines.
   `diff_due` notices that the edited file changed and asks for a new pass.
 - `Diffed::plain` is the file's real text as the canvas would show it, kept to

@@ -111,6 +111,7 @@ pub struct Page {
     pub filter: LayoutFilter,
     pub tree_open: HashSet<String>,
     pub selections: Vec<Selection>,
+    pub want_exact: Vec<SymRef>,
     pub only_connected: bool,
     pub curves_dirty: bool,
     pub search: Option<SearchResults>,
@@ -288,6 +289,7 @@ impl Page {
             filter: LayoutFilter::default(),
             tree_open: HashSet::new(),
             selections: Vec::new(),
+            want_exact: Vec::new(),
             only_connected: false,
             curves_dirty: true,
             search: None,
@@ -1057,12 +1059,13 @@ impl Page {
     ) -> bool {
         self.diffs.remove(rel_path);
         self.diff_stale = true;
+        let selected = self.selected_names();
         let PageState::Ready(r) = &mut self.state else { return false };
         let Some(index) = r.repo.file_index(rel_path) else { return false };
         r.repo.reload_file(index, &ScanOptions::default());
         r.tokens = Default::default();
-        self.selections.clear();
         self.search = None;
+        self.select_again(selected);
         self.relayout(renderer, device, filters);
         true
     }
@@ -1083,6 +1086,58 @@ impl Page {
             if rel.truncated { " (truncated)" } else { "" }
         );
         self.selections.push(Selection { sym, rel, outside: 0 });
+        self.want_exact.push(sym);
+        true
+    }
+
+    pub fn use_site(&self, sym: SymRef) -> Option<(PathBuf, u32, u32)> {
+        let r = self.ready()?;
+        let site = r.repo.sym_site(sym);
+        let rel = &r.repo.files.get(sym.file as usize)?.rel_path;
+        Some((self.root.join(rel), self.line_of(rel, site.line)?, site.col as u32))
+    }
+
+    fn selected_names(&self) -> Vec<(String, String, u32)> {
+        let Some(r) = self.ready() else { return Vec::new() };
+        let named = |s: &Selection| {
+            let rel = r.repo.files[s.sym.file as usize].rel_path.clone();
+            (rel, r.repo.sym_name(s.sym).to_string(), r.repo.sym_site(s.sym).line)
+        };
+        self.selections.iter().map(named).collect()
+    }
+
+    fn select_again(&mut self, names: Vec<(String, String, u32)>) {
+        self.selections.clear();
+        self.want_exact.clear();
+        for (rel, name, line) in names {
+            let found = self.ready().and_then(|r| {
+                let file = r.repo.file_index(&rel)? as u32;
+                let here = r.repo.symbols.defs(&name).iter().copied().filter(|sym| sym.file == file);
+                here.min_by_key(|sym| r.repo.sym_site(*sym).line.abs_diff(line))
+            });
+            if let Some(sym) = found {
+                self.toggle_symbol(sym, None);
+            }
+        }
+        self.curves_dirty = true;
+    }
+
+    pub fn exact_uses(&mut self, of: (u32, u32), places: &[(String, u32, u32)]) -> bool {
+        let sym = SymRef { file: of.0, index: of.1 };
+        let Some(at) = self.selections.iter().position(|s| s.sym == sym) else { return false };
+        let PageState::Ready(r) = &self.state else { return false };
+        let uses: Vec<(u32, u32, u16)> = places
+            .iter()
+            .filter_map(|(rel, line, col)| {
+                let row = self.diffs.get(rel).map_or(*line, |shown| shown.row(*line));
+                Some((r.repo.file_index(rel)? as u32, row, (*col).min(u16::MAX as u32) as u16))
+            })
+            .collect();
+        if uses.is_empty() {
+            return false;
+        }
+        r.repo.refine(&mut self.selections[at].rel, &uses);
+        self.curves_dirty = true;
         true
     }
 }

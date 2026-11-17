@@ -26,8 +26,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Filters per kind with opacity; **show only connected files** re-lays the canvas out
   with just the files involved.
 - Works instantly with a built-in name-based index (Rust, TypeScript/JavaScript,
-  Python, Go, C-family). It is approximate by design; language servers are the plan
-  for exact answers (see the roadmap).
+  Python, Go, C-family), approximate by design. With the language's extension
+  installed (rust-analyzer, TypeScript…) the uses of the selected name become the
+  exact ones a moment later: the guesses that were another thing with the same
+  name go, the uses the names missed come.
 
 **Dependencies**
 - Which file imports which, read from the import statements (JS/TS, C and C++, Rust,
@@ -264,8 +266,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Tree views and code lenses on the canvas; webviews on Linux and macOS.
 - [ ] Colour themes and grammars from extensions (file icon themes work).
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
-- [ ] **Language servers** as an exact provider for the same relations (definitions,
-      references, calls) the name-based index gives today.
+- [x] **Language servers** give the exact uses of the selected name (references and
+      incoming calls) in place of the ones guessed by name.
+- [ ] The same for outgoing calls and implementations.
 - [x] Dependency edges between files (imports), for the selected file or folder.
 - [ ] Dependencies: edges bundled per folder so that all of them can be drawn on a
       huge repository, arrowheads, backwards edges, arranging by namespace.

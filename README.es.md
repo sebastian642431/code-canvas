@@ -20,7 +20,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Símbolos**: clic en un nombre y se dibujan curvas a su definición, referencias,
   llamadas entrantes y salientes e implementaciones, con filtros por tipo y la opción
   de mostrar solo los archivos conectados. Funciona al instante con un índice propio
-  por nombres (aproximado); los *language servers* darán resultados exactos.
+  por nombres (aproximado); con la extensión del lenguaje instalada (rust-analyzer,
+  TypeScript…) los usos del nombre elegido pasan a ser los exactos.
 - **Dependencias**: qué archivo importa a cuál, leído de los `import`. Al seleccionar
   un archivo o una carpeta salen curvas hacia lo que usa y desde lo que lo usa, con un
   panel que lista ambas cosas.

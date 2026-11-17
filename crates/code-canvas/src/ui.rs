@@ -2052,7 +2052,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!(
-                        "{} symbols indexed by name. Results are approximate until a language server is connected.",
+                        "{} symbols indexed by name. With the language's extension installed (rust-analyzer, TypeScript…) the uses of a name are the exact ones.",
                         r.repo.symbols.count
                     ))
                     .size(11.0)
@@ -2145,7 +2145,10 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                                 .color(pal().text_dim),
                         );
                     }
-                    let mut note = format!("searched in {:.0} ms", sel.rel.search_ms);
+                    let mut note = match sel.rel.exact {
+                        true => "uses as the language's extension knows them".to_string(),
+                        false => format!("by name · searched in {:.0} ms", sel.rel.search_ms),
+                    };
                     if sel.rel.truncated {
                         note.push_str(" · results truncated");
                     }

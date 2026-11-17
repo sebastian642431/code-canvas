@@ -73,6 +73,7 @@ pub struct Relations {
     pub items: Vec<Relation>,
     pub truncated: bool,
     pub search_ms: f32,
+    pub exact: bool,
 }
 
 impl Relations {
@@ -577,7 +578,41 @@ impl Repo {
             }
         }
 
-        Relations { target, items, truncated, search_ms: started.elapsed().as_secs_f32() * 1000.0 }
+        Relations { target, items, truncated, search_ms: started.elapsed().as_secs_f32() * 1000.0, exact: false }
+    }
+
+    pub fn refine(&self, rel: &mut Relations, uses: &[(u32, u32, u16)]) {
+        let def = self.sym_site(rel.target);
+        let wanted: HashSet<(u32, u32, u16)> = uses.iter().copied().collect();
+        let place = |site: &Site| (site.file, site.line, site.col);
+        let used = |r: &Relation| !matches!(r.kind, RelKind::Reference | RelKind::IncomingCall);
+        rel.items.retain(|r| used(r) || wanted.contains(&place(&r.from)));
+        let known: HashSet<(u32, u32, u16)> = rel.items.iter().filter(|r| !used(r)).map(|r| place(&r.from)).collect();
+        let mut missing: Vec<(u32, u32, u16)> =
+            wanted.into_iter().filter(|at| !known.contains(at) && *at != place(&def)).collect();
+        missing.sort_unstable();
+        let mut tokens: Option<((u32, usize), Tokens)> = None;
+        for (file, line, col) in missing {
+            let Some(f) = self.files.get(file as usize).filter(|f| (line as usize) < f.line_count()) else { continue };
+            if rel.items.len() >= MAX_PER_KIND * 2 {
+                rel.truncated = true;
+                break;
+            }
+            let chunk = line as usize / CHUNK_LINES;
+            if tokens.as_ref().map(|t| t.0) != Some((file, chunk)) {
+                tokens = Some(((file, chunk), f.tokenize_chunk(chunk)));
+            }
+            let toks = tokens.as_ref().unwrap().1.line(line as usize - chunk * CHUNK_LINES);
+            let call = toks.iter().position(|t| t.col == col).is_some_and(|k| is_call(&f.text(), toks, k));
+            let enclosing = symbol_at_line(&f.analysis.symbols, line).map(|index| SymRef { file, index: index as u32 });
+            rel.items.push(Relation {
+                kind: if call { RelKind::IncomingCall } else { RelKind::Reference },
+                from: Site { file, line, col, len: def.len },
+                to: def,
+                other: enclosing.filter(|sym| *sym != rel.target || line != def.line),
+            });
+        }
+        rel.exact = true;
     }
 }
 
@@ -601,6 +636,40 @@ mod tests {
 
     fn file(repo: &Repo, name: &str) -> u32 {
         repo.files.iter().position(|f| f.rel_path == name).unwrap() as u32
+    }
+
+    #[test]
+    fn exact_uses_drop_the_guesses_and_add_what_was_missed() {
+        let repo = repo(&[
+            ("a.rs", "pub fn run() -> u32 {\n    1\n}\n\nfn first() {\n    run();\n}\n"),
+            ("b.rs", "fn other() {\n    let run = 2;\n    let again = run;\n    crate::a::run();\n}\n"),
+        ]);
+        let a = repo.file_index("a.rs").unwrap() as u32;
+        let b = repo.file_index("b.rs").unwrap() as u32;
+        let run = repo.symbols.defs("run")[0];
+        let mut rel = repo.relations(run, None);
+        let guessed = rel.items.iter().filter(|r| r.from.file == b).count();
+        assert!(guessed >= 2, "by name, the local of b.rs looks like a use: {guessed}");
+        assert!(!rel.exact);
+        repo.refine(&mut rel, &[(a, 0, 7), (a, 5, 4), (b, 3, 14)]);
+        assert!(rel.exact);
+        let uses: Vec<_> = rel
+            .items
+            .iter()
+            .filter(|r| r.kind != RelKind::Definition)
+            .map(|r| (r.from.file, r.from.line, r.kind))
+            .collect();
+        assert_eq!(uses.len(), 2, "{uses:?}");
+        assert!(uses.contains(&(a, 5, RelKind::IncomingCall)));
+        assert!(uses.contains(&(b, 3, RelKind::IncomingCall)));
+        let mut rel = repo.relations(run, None);
+        rel.items.retain(|r| r.kind == RelKind::Definition);
+        repo.refine(&mut rel, &[(b, 3, 14), (b, 99, 0)]);
+        assert_eq!(rel.count(RelKind::IncomingCall), 1, "a use the names missed is added, one past the file is not");
+        assert_eq!(
+            rel.items.last().unwrap().other.map(|sym| repo.sym_name(sym).to_string()),
+            Some("other".to_string())
+        );
     }
 
     #[test]

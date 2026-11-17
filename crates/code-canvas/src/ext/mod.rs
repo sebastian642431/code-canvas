@@ -274,6 +274,7 @@ pub enum Event {
     ShowWebview(String),
     GoTo { path: PathBuf, line: u32, col: u32, len: u32 },
     Suggestions(Suggestions),
+    Uses { page: u32, of: (u32, u32), places: Vec<(PathBuf, u32, u32)> },
     ExtraEdits { path: PathBuf, edits: Vec<ExtraEdit> },
 }
 
@@ -373,6 +374,7 @@ enum Pending {
     Hover(PathBuf, u32, u32),
     Definition(PathBuf),
     Complete(PathBuf, u32, u32),
+    Uses(u32, (u32, u32)),
     CompletionExtra(PathBuf),
 }
 
@@ -1031,6 +1033,17 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": id, "method": "completionExtra", "params": params }));
     }
 
+    pub fn request_uses(&mut self, path: &Path, line: u32, col: u32, page: u32, of: (u32, u32)) {
+        if self.host.is_none() {
+            return;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.insert(id, Pending::Uses(page, of));
+        let params = json!({ "path": path, "line": line, "col": col, "kind": "Reference" });
+        self.send(json!({ "type": "request", "id": id, "method": "locations", "params": params }));
+    }
+
     pub fn request_definition(&mut self, path: &Path, line: u32, col: u32) -> bool {
         if self.host.is_none() {
             return false;
@@ -1430,6 +1443,19 @@ impl Extensions {
                     Some(Pending::Hover(path, line, col)) => {
                         let text = m.pointer("/result/text").and_then(Value::as_str).unwrap_or_default().to_string();
                         self.hover = Some(Hover { path, line, col, text });
+                        return;
+                    }
+                    Some(Pending::Uses(page, of)) => {
+                        let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
+                        let items = m.pointer("/result/items").and_then(Value::as_array).map(Vec::as_slice);
+                        let places: Vec<(PathBuf, u32, u32)> = items
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|v| Some((PathBuf::from(v.get("path")?.as_str()?), n(v, "line"), n(v, "col"))))
+                            .collect();
+                        if !places.is_empty() {
+                            events.push(Event::Uses { page, of, places });
+                        }
                         return;
                     }
                     Some(Pending::Complete(path, line, col)) => {
