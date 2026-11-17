@@ -86,7 +86,7 @@ impl SettingsView {
 const HEAD: f32 = 46.0;
 const NAV: f32 = 190.0;
 
-const EDITING: [(&str, &str); 3] = [
+const EDITING: [(&str, &str); 4] = [
     (
         "Show newer versions of dependencies",
         "In package.json and Cargo.toml. Asks npm and crates.io: only package names are sent.",
@@ -95,6 +95,10 @@ const EDITING: [(&str, &str); 3] = [
     (
         "Follow what an assistant is writing",
         "Its panel stays scrolled to the end while it answers. Scroll up to stop following.",
+    ),
+    (
+        "Travel to what is changed from outside",
+        "When an assistant or another program changes a file, the canvas goes to the lines that changed and lights them. Moving the canvas yourself holds it for a moment; it never moves while you edit.",
     ),
 ];
 
@@ -299,6 +303,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.check_versions, EDITING[0]);
             option(ui, f, &mut next.complete_paths, EDITING[1]);
             option(ui, f, &mut next.follow_chat, EDITING[2]);
+            option(ui, f, &mut next.follow_changes, EDITING[3]);
         });
     }
     if next != st.prefs {

@@ -11,9 +11,24 @@ const WIN = process.platform === 'win32';
 const VSCODE_VERSION = '1.105.0';
 
 const rawWrite = process.stdout.write.bind(process.stdout);
-function send(msg) {
-  rawWrite(JSON.stringify(msg) + '\n');
+let appGoneAt = 0;
+function appGone() {
+  if (!appGoneAt) {
+    appGoneAt = Date.now();
+    shutdown();
+  } else if (Date.now() - appGoneAt > 3000) {
+    process.exit(0);
+  }
 }
+function send(msg) {
+  if (appGoneAt) return appGone();
+  try {
+    rawWrite(JSON.stringify(msg) + '\n');
+  } catch (_) {
+    appGone();
+  }
+}
+process.stdout.on('error', appGone);
 function log(level, source, text) {
   send({ type: 'log', level, source, text: String(text).replace(/\s+$/, '') });
 }
@@ -615,6 +630,13 @@ class MarkdownString {
   }
 }
 
+class Hover {
+  constructor(contents, range) {
+    this.contents = Array.isArray(contents) ? contents : contents ? [contents] : [];
+    this.range = range;
+  }
+}
+
 class SnippetString {
   constructor(value) {
     this.value = value || '';
@@ -749,7 +771,7 @@ const classes = {
   DiagnosticRelatedInformation: record('DiagnosticRelatedInformation', ['location', 'message']),
   CodeAction: record('CodeAction', ['title', 'kind']),
   CodeLens: record('CodeLens', ['range', 'command']),
-  Hover: record('Hover', ['contents', 'range']),
+  Hover,
   CompletionItem: record('CompletionItem', ['label', 'kind']),
   CompletionList: record('CompletionList', ['items', 'isIncomplete']),
   InlineCompletionItem: record('InlineCompletionItem', ['insertText', 'range', 'command']),
@@ -1327,6 +1349,20 @@ function closeDocument(file) {
   events.visibleEditors.fire([...documents.values()].map((d) => d._editor));
 }
 
+function contentChange(doc, text) {
+  const old = doc.getText();
+  const most = Math.min(old.length, text.length);
+  let start = 0;
+  while (start < most && old.charCodeAt(start) === text.charCodeAt(start)) start++;
+  let tail = 0;
+  while (tail < most - start && old.charCodeAt(old.length - 1 - tail) === text.charCodeAt(text.length - 1 - tail)) tail++;
+  const splits = (s, i) => i > 0 && i < s.length && ((s.charCodeAt(i - 1) === 13 && s.charCodeAt(i) === 10) || (s.charCodeAt(i) & 0xfc00) === 0xdc00);
+  while (start > 0 && (splits(old, start) || splits(text, start))) start--;
+  while (tail > 0 && (splits(old, old.length - tail) || splits(text, text.length - tail))) tail--;
+  const end = old.length - tail;
+  return { range: new Range(doc.positionAt(start), doc.positionAt(end)), rangeOffset: start, rangeLength: end - start, text: text.slice(start, text.length - tail) };
+}
+
 function reloadDocument(file) {
   const doc = documents.get(fileKey(file));
   if (!doc) return;
@@ -1344,23 +1380,21 @@ function reloadDocument(file) {
     return;
   }
   doc.isDirty = false;
-  const whole = new Range(0, 0, doc.lineCount, 0);
-  const rangeLength = doc.getText().length;
+  const change = contentChange(doc, text);
   doc._setText(text);
   doc.version++;
-  events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [{ range: whole, rangeOffset: 0, rangeLength, text }] });
+  events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [change] });
   events.saveDoc.fire(doc);
 }
 
 function editDocument(file, text) {
   const doc = documents.get(fileKey(file)) || openDocument(file, true);
   if (!doc || text === doc.getText()) return;
-  const whole = new Range(0, 0, doc.lineCount, 0);
-  const rangeLength = doc.getText().length;
+  const change = contentChange(doc, text);
   doc._setText(text);
   doc.version++;
   doc.isDirty = true;
-  events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [{ range: whole, rangeOffset: 0, rangeLength, text }] });
+  events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [change] });
 }
 
 const disposableStub = () => new Disposable(() => {});
@@ -1462,6 +1496,7 @@ function createWebviewPanel(viewType, title, _show, options) {
       w.closed.fire();
     },
   };
+  webviews.get(w.handle).panel = panel;
   send({ type: 'webviewPanel', handle: w.handle, extension, title: name, reveal: true });
   return panel;
 }
@@ -1524,11 +1559,43 @@ function createOutputChannel(name) {
 
 let statusSeq = 0;
 function createStatusBarItem(a, b, c) {
-  const item = { id: typeof a === 'string' ? a : `status.${++statusSeq}`, alignment: typeof a === 'number' ? a : b, priority: typeof a === 'number' ? b : c, text: '', tooltip: undefined, command: undefined, name: undefined, color: undefined, backgroundColor: undefined, accessibilityInformation: undefined };
+  const item = { id: typeof a === 'string' ? a : `status.${++statusSeq}`, alignment: typeof a === 'number' ? a : b, priority: typeof a === 'number' ? b : c, command: undefined, name: undefined, color: undefined, backgroundColor: undefined, accessibilityInformation: undefined };
   const extension = currentId() || '';
   const plain = (v) => (v && typeof v === 'object' ? v.value || '' : v || '');
-  item.show = () => send({ type: 'status', extension, id: item.id, visible: true, text: String(item.text || ''), tooltip: String(plain(item.tooltip)) });
-  item.hide = () => send({ type: 'status', extension, id: item.id, visible: false, text: '', tooltip: '' });
+  const shown = { text: '', tooltip: undefined };
+  let visible = false;
+  let queued = false;
+  let sent = '';
+  const push = () => {
+    queued = false;
+    if (!visible) return;
+    const message = { type: 'status', extension, id: item.id, visible: true, text: String(shown.text || ''), tooltip: String(plain(shown.tooltip)) };
+    const key = JSON.stringify(message);
+    if (key !== sent) send(message);
+    sent = key;
+  };
+  for (const key of ['text', 'tooltip']) {
+    Object.defineProperty(item, key, {
+      enumerable: true,
+      get: () => shown[key],
+      set(value) {
+        shown[key] = value;
+        if (visible && !queued) {
+          queued = true;
+          queueMicrotask(push);
+        }
+      },
+    });
+  }
+  item.show = () => {
+    visible = true;
+    push();
+  };
+  item.hide = () => {
+    visible = false;
+    sent = '';
+    send({ type: 'status', extension, id: item.id, visible: false, text: '', tooltip: '' });
+  };
   item.dispose = item.hide;
   return item;
 }
@@ -2179,6 +2246,11 @@ async function handle(msg) {
     case 'close':
       closeDocument(msg.path);
       break;
+    case 'closeWebview': {
+      const shown = webviews.get(msg.handle);
+      if (shown && shown.panel) scope.run(shown.extension, () => shown.panel.dispose());
+      break;
+    }
     case 'changed':
       reloadDocument(msg.path);
       break;
@@ -2232,7 +2304,10 @@ function setFolders(list) {
   if (before.length && (added.length || removed.length)) events.folders.fire({ added, removed });
 }
 
+let stopping = false;
 async function shutdown() {
+  if (stopping) return;
+  stopping = true;
   const stops = [];
   for (const ext of state.extensions.values()) {
     if (!ext.isActive) continue;
@@ -2273,4 +2348,12 @@ process.stdin.on('data', (chunk) => {
     else queue = queue.then(run);
   }
 });
-process.stdin.on('end', () => shutdown());
+process.stdin.on('end', appGone);
+const startedBy = process.ppid;
+setInterval(() => {
+  try {
+    process.kill(startedBy, 0);
+  } catch (_) {
+    appGone();
+  }
+}, 3000).unref();

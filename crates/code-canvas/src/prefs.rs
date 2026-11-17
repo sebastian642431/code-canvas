@@ -7,11 +7,22 @@ pub struct Prefs {
     pub complete_paths: bool,
     pub check_updates: bool,
     pub follow_chat: bool,
+    pub follow_changes: bool,
+    pub edit: bool,
+    pub unwanted: Vec<String>,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { check_versions: true, complete_paths: true, check_updates: true, follow_chat: true }
+        Prefs {
+            check_versions: true,
+            complete_paths: true,
+            check_updates: true,
+            follow_chat: true,
+            follow_changes: true,
+            edit: false,
+            unwanted: Vec::new(),
+        }
     }
 }
 

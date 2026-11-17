@@ -119,18 +119,27 @@ Not yet — these are the next pieces, in order:
 | Extension | State |
 |---|---|
 | TypeScript (`vscode.typescript-language-features`, VS Code's own) | works: compiler errors, hover, go to definition (`F12`) |
+| rust-analyzer (`rust-lang.rust-analyzer`) | works: syntax errors while typing, `cargo check` problems on save, hover, go to definition. Its tree view, inlay hints and code lenses are not drawn |
 | ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
 | Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
 | Version Lens (`pflannery.vscode-versionlens`) | starts; shows nothing until code lenses are drawn |
 | Pretty TypeScript Errors (`yoavbls.pretty-ts-errors`) | starts; needs hovers and a TypeScript language server |
-| Claude Code (`Anthropic.claude-code`) | its panel opens and renders, signed in; sending a message has not been tested yet |
+| Claude Code (`Anthropic.claude-code`) | its panel and its list of sessions open and render, signed in; a session opened from the list, or a new one, is a tab that can be closed; sending a message has not been tested yet |
 | Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview panel — not tried since webviews landed |
 | GitHub Pull Requests | starts; its interface is tree views and webviews |
 
 Other extensions have not been tried yet. Language servers shipped as extensions
-(rust-analyzer and the like) use the same client library as ESLint, which works, but
-each one should be checked before it is listed here.
+use the same client library as ESLint and rust-analyzer, which work, but each one
+should be checked before it is listed here.
+
+The first time a Rust, TypeScript or JavaScript file is edited and nothing
+installed checks that language, the app offers the extension that does
+(`CHECKERS` in `app.rs`): rust-analyzer, or VS Code's TypeScript extension.
+
+**Tabs.** What VS Code opens as an editor tab (a webview panel) opens in the side
+panel under a strip of tabs, with one more icon of the extension in the bar and
+the number of tabs on it. Closing a tab closes the panel for the extension too.
 
 ## Testing the host
 

@@ -8,7 +8,7 @@ use crate::icons;
 use crate::page::Page;
 use canvas_render::theme;
 
-fn change_color(change: Change) -> Color32 {
+pub(super) fn change_color(change: Change) -> Color32 {
     c(match change {
         Change::Added | Change::Untracked => theme::get().git_added,
         Change::Deleted | Change::Conflicted => theme::get().git_removed,
@@ -181,6 +181,10 @@ fn change_row(
         color,
     );
     let mut right = rect.right() - 32.0;
+    if change.unsaved && !staged {
+        ui.painter().circle_filled(Pos2::new(right + 2.0, mid), 3.2, pal().text);
+        right -= 12.0;
+    }
     let mut action = None;
     if hovered {
         let path = &change.path;
@@ -224,7 +228,8 @@ fn change_row(
     if action.is_none() && resp.clicked() && !deleted {
         action = Some(Action::FlyToPath(change.path.clone()));
     }
-    resp.on_hover_text(format!("{} · {}", change.path, side.label()));
+    let unsaved = if change.unsaved && !staged { " · not saved yet (staging or committing it saves it)" } else { "" };
+    resp.on_hover_text(format!("{} · {}{unsaved}", change.path, side.label()));
     action
 }
 

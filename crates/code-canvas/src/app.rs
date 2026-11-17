@@ -75,6 +75,18 @@ fn key_name(key: &Key) -> Option<String> {
     Some(name.to_string())
 }
 
+const CHECKERS: [(&[&str], &str, &str, &str); 2] = [
+    (&["rs"], "Rust", "rust-lang.rust-analyzer", "rust-analyzer"),
+    (
+        &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+        "TypeScript and JavaScript",
+        "vscode.typescript-language-features",
+        "VS Code's TypeScript extension",
+    ),
+];
+const INSTALL_IT: &str = "Install it";
+const NEVER: &str = "Do not ask again";
+
 struct Completion {
     start: usize,
     items: Vec<crate::paths::Candidate>,
@@ -140,6 +152,8 @@ pub struct App {
     versions_told: HashSet<PathBuf>,
     theme_revision: u64,
     theme_dirty: bool,
+    last_input: Instant,
+    checkers_offered: HashSet<&'static str>,
 }
 
 impl App {
@@ -236,6 +250,8 @@ impl App {
             versions_told: HashSet::new(),
             theme_revision: canvas_render::theme::revision(),
             theme_dirty: false,
+            last_input: Instant::now(),
+            checkers_offered: HashSet::new(),
         }
     }
 
@@ -679,6 +695,7 @@ impl App {
         }
         let mut known: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         let mut other: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
+        let mut seen: Option<(usize, String, u32)> = None;
         for path in &batch.files {
             let Some((i, rel)) = self.locate_file(path) else { continue };
             if rel.split('/').any(|part| skip.iter().any(|s| s == part)) {
@@ -718,6 +735,7 @@ impl App {
                     p.framed = false;
                     p.editors.clear();
                     p.editing = None;
+                    p.reveal = fresh.iter().find(|rel| root.join(rel).is_file()).cloned();
                     p.start_scan();
                 }
                 continue;
@@ -728,9 +746,22 @@ impl App {
                     continue;
                 }
                 let caret = page.editors.remove(&rel).map(|e| e.caret);
+                let text_of = |page: &Page| {
+                    let r = page.ready()?;
+                    Some(r.repo.files[r.repo.file_index(&rel)?].text.clone())
+                };
+                let before = text_of(page);
                 if let Some(g) = self.gfx.as_mut() {
                     g.renderer.text.drop_page(page.id);
                     page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+                }
+                if let (Some(before), Some(after)) = (before, text_of(page)) {
+                    let (hunks, _, _) = crate::git::compare(&before, &after);
+                    let lines: Vec<(u32, u32)> = hunks.iter().map(|h| (h.line, h.count.max(1))).collect();
+                    if let Some(&(first, _)) = lines.first() {
+                        page.touch(&rel, lines);
+                        seen = Some((i, rel.clone(), first));
+                    }
                 }
                 if rel.ends_with("package.json") || rel.ends_with("Cargo.toml") {
                     self.versions_due.push(page.id);
@@ -745,7 +776,42 @@ impl App {
                 self.ext.file_changed(&root.join(&rel));
             }
         }
+        if let Some((index, rel, line)) = seen {
+            self.follow_change(index, &rel, line);
+        }
         self.request_redraw();
+    }
+
+    fn offer_checker(&mut self, rel: &str) {
+        let kind = Path::new(rel).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let Some((_, language, id, name)) = CHECKERS.iter().find(|(kinds, ..)| kinds.contains(&kind.as_str())) else {
+            return;
+        };
+        let known = self.ext.is_installed(id) || self.ui.prefs.unwanted.iter().any(|u| u == id);
+        if known || !self.checkers_offered.insert(id) {
+            return;
+        }
+        let text =
+            format!("Nothing checks {language} while you type yet. {name} underlines mistakes as they are written.");
+        self.ext.ask("Extensions", text, &[INSTALL_IT, "Not now", NEVER], &format!("checker:{id}"));
+    }
+
+    fn follow_change(&mut self, index: usize, rel: &str, line: u32) {
+        let idle = self.drag.is_none() && self.last_input.elapsed() > Duration::from_millis(1500);
+        let editing = self.pages.get(self.active).is_some_and(|p| p.editing.is_some());
+        if !self.ui.prefs.follow_changes || !idle || editing {
+            return;
+        }
+        if index != self.active {
+            if !self.shares_canvas() {
+                return;
+            }
+            self.switch_to(index);
+        }
+        let file = self.pages.get(index).and_then(|p| p.ready()).and_then(|r| r.repo.file_index(rel));
+        if let Some(file) = file {
+            self.frame_site(Site { file: file as u32, line, col: 0, len: 0 });
+        }
     }
 
     fn after_edit(&mut self) {
@@ -755,8 +821,10 @@ impl App {
             g.renderer.text.drop_page(page.id);
             page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
         }
+        page.want_head(&rel);
         self.symbols_stale = Some(Instant::now());
         self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
+        self.offer_checker(&rel);
         self.keep_caret_visible();
         self.request_redraw();
     }
@@ -824,11 +892,10 @@ impl App {
         }
     }
 
-    fn save_edit(&mut self) {
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        let Some(rel) = page.editing.clone() else { return };
-        let path = page.root.join(&rel);
-        let Some(editor) = page.editors.get_mut(&rel) else { return };
+    fn save_file(&mut self, index: usize, rel: &str, format: bool) -> bool {
+        let Some(page) = self.pages.get_mut(index) else { return false };
+        let path = page.root.join(rel);
+        let Some(editor) = page.editors.get_mut(rel) else { return false };
         self.watcher.expect(&path);
         if let Err(e) = std::fs::write(&path, editor.text()) {
             log::error!("cannot save {}: {e}", path.display());
@@ -837,20 +904,60 @@ impl App {
                 .set_title("Code Canvas")
                 .set_description(format!("{} could not be saved:\n{e}", path.display()))
                 .show();
-            return;
+            return false;
         }
         editor.mark_saved();
-        self.unsent_edit = None;
         log::info!("saved {}", path.display());
         self.ext.file_changed(&path);
         if let Some(g) = self.gfx.as_mut() {
             g.renderer.text.drop_page(page.id);
-            page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+            page.reload_file(rel, &g.renderer, &g.device, &self.ui.filters);
         }
         page.refresh_git();
-        self.symbols_stale = None;
-        self.ext.format_on_save(&path);
+        if format {
+            self.ext.format_on_save(&path);
+        }
+        true
+    }
+
+    fn save_edit(&mut self) {
+        let unsaved = match self.pages.get(self.active).and_then(|p| p.editing.clone()) {
+            Some(rel) => vec![(self.active, rel)],
+            None => self.unsaved(),
+        };
+        self.save_these(unsaved, true);
+    }
+
+    fn save_these(&mut self, files: Vec<(usize, String)>, format: bool) {
+        let mut saved = false;
+        for (index, rel) in files {
+            saved |= self.save_file(index, &rel, format);
+        }
+        if saved {
+            self.unsent_edit = None;
+            self.symbols_stale = None;
+        }
         self.request_redraw();
+    }
+
+    fn drop_edits(&mut self, index: usize, only: Option<&str>) {
+        let Some(page) = self.pages.get_mut(index) else { return };
+        let dropped: Vec<String> =
+            page.unsaved().map(|e| e.rel_path.clone()).filter(|rel| only.is_none_or(|one| one == rel)).collect();
+        for rel in &dropped {
+            page.editors.remove(rel);
+            if page.editing.as_deref() == Some(rel.as_str()) {
+                page.editing = None;
+            }
+            if let Some(g) = self.gfx.as_mut() {
+                g.renderer.text.drop_page(page.id);
+                page.reload_file(rel, &g.renderer, &g.device, &self.ui.filters);
+            }
+        }
+        if !dropped.is_empty() {
+            page.preview_unsaved();
+            self.unsent_edit = None;
+        }
     }
 
     fn unsaved(&self) -> Vec<(usize, String)> {
@@ -1096,7 +1203,11 @@ impl App {
         };
         match path {
             Some(path) => self.ext.format(&path),
-            None => log::info!("format: point at a file or select one first"),
+            None => self.ext.notice(
+                ext::Level::Info,
+                "Format",
+                "Select a file first: click its card, or its name in the explorer.".to_string(),
+            ),
         }
         self.request_redraw();
     }
@@ -1321,6 +1432,7 @@ impl App {
 
         let vp = self.viewport();
         let (ctrl, shift) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
+        let can_edit = self.ui.prefs.edit;
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let world = page.camera.view(vp).to_world(pos);
@@ -1334,7 +1446,7 @@ impl App {
             if let NodeKind::File(fi) = n.kind {
                 let f = &r.repo.files[fi];
                 if let Some((line, col)) = n.cell_at(world, f.line_count()) {
-                    if readable && !ctrl && f.note.is_none() {
+                    if readable && !ctrl && can_edit && f.note.is_none() {
                         caret_at = Some((f.rel_path.clone(), line as usize, col as usize));
                     } else if zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
                         let fi = fi as u32;
@@ -1466,6 +1578,11 @@ impl App {
             Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::FormatFile => self.format_file(None),
+            Command::Save => self.save_edit(),
+            Command::MoveTool | Command::EditTool => {
+                let edit = command == Command::EditTool;
+                self.apply(Action::SetPrefs(crate::prefs::Prefs { edit, ..self.ui.prefs.clone() }));
+            }
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
             Command::CloseFolder => self.close_page(self.active),
@@ -1731,6 +1848,18 @@ impl App {
                         return;
                     }
                 }
+                use crate::git::GitOp;
+                let active = self.active;
+                let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
+                match &op {
+                    GitOp::Stage(path) => {
+                        self.save_these(unsaved.into_iter().filter(|(_, rel)| rel == path).collect(), false)
+                    }
+                    GitOp::StageAll | GitOp::Stash | GitOp::Commit { all: true, .. } => self.save_these(unsaved, false),
+                    GitOp::Discard(path) => self.drop_edits(active, Some(path)),
+                    GitOp::DiscardAll => self.drop_edits(active, None),
+                    _ => {}
+                }
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.run_git(op);
                 }
@@ -1761,6 +1890,12 @@ impl App {
                 let versions = prefs.check_versions != self.ui.prefs.check_versions;
                 self.webviews.set_follow(prefs.follow_chat);
                 self.updater.set_enabled(prefs.check_updates);
+                if !prefs.edit {
+                    for page in &mut self.pages {
+                        page.editing = None;
+                    }
+                    self.completion = None;
+                }
                 self.ui.prefs = prefs;
                 if versions {
                     self.versions_due = self.pages.iter().map(|p| p.id).collect();
@@ -1959,6 +2094,8 @@ impl App {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     if name == "escape" {
                         page.editing = None;
+                    } else if name == "save" {
+                        save = true;
                     } else if let Some(e) = page.editor_mut() {
                         match name.as_str() {
                             "enter" => e.newline(),
@@ -1977,7 +2114,6 @@ impl App {
                             "redo" => {
                                 e.redo();
                             }
-                            "save" => save = true,
                             other => log::warn!("script: unknown key '{other}'"),
                         }
                     }
@@ -2091,6 +2227,25 @@ impl App {
                 self.ui_events.extend(frames);
             }
             Step::Preview(path) => self.apply(Action::Preview(path)),
+            Step::Page(script) => self.webviews.run(&script),
+            Step::Tool(which) => {
+                let edit = which == "edit";
+                self.apply(Action::SetPrefs(crate::prefs::Prefs { edit, ..self.ui.prefs.clone() }));
+            }
+            Step::Touch(what) => {
+                let (rel, text) = what.split_once(' ').unwrap_or((what.as_str(), ""));
+                let file = self.pages.get(self.active).map(|page| page.root.join(rel));
+                let written = file.as_ref().map(|file| {
+                    let mut all = std::fs::read_to_string(file).unwrap_or_default();
+                    all.push_str(&text.replace("\\n", "\n"));
+                    all.push('\n');
+                    std::fs::write(file, all)
+                });
+                if !matches!(written, Some(Ok(()))) {
+                    log::warn!("script: cannot append to '{rel}'");
+                }
+                self.last_input = Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or(self.last_input);
+            }
             Step::Drop(path) => self.drop_file(PathBuf::from(path)),
             Step::Mark(name) => {
                 let name: String =
@@ -2154,6 +2309,9 @@ impl App {
                 if let Some(text) = text {
                     self.ext.file_edited(&path, &text);
                 }
+                if let Some((i, _)) = self.locate_file(&path) {
+                    self.pages[i].preview_unsaved();
+                }
                 self.refresh_preview();
             }
         }
@@ -2162,6 +2320,14 @@ impl App {
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
             changed |= page.poll_message();
+            if page.poll_heads() {
+                page.preview_unsaved();
+                changed = true;
+            }
+            let shown = page.touched.len();
+            page.touched.retain(|t| t.strength() > 0.0);
+            changed |= shown != page.touched.len();
+            busy |= !page.touched.is_empty();
             if page.poll_git() {
                 changed = true;
                 git_relayout |= i == self.active && page.only_changed;
@@ -2241,7 +2407,22 @@ impl App {
                 }
                 ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
-                ext::Event::WebviewClosed(handle) => self.webviews.close(&handle),
+                ext::Event::WebviewClosed(handle) => {
+                    self.webviews.close(&handle);
+                    for side in Side::BOTH {
+                        let Some(Panel::Webview(view)) = self.ui.open(side).cloned() else { continue };
+                        if view.starts_with(ext::TABS) && self.ext.shown(&view).is_none() {
+                            let extension = &view[ext::TABS.len()..];
+                            let other = self.ext.rail_items().into_iter().find(|item| item.extension == extension);
+                            match other {
+                                Some(item) if self.ui.side_of(&Panel::Webview(item.view.clone())) == side => {
+                                    self.ui.show(Panel::Webview(item.view))
+                                }
+                                _ => self.ui.close(side),
+                            }
+                        }
+                    }
+                }
                 ext::Event::ShowWebview(key) => {
                     self.ui.show(Panel::Webview(key));
                 }
@@ -2281,7 +2462,8 @@ impl App {
     fn poll_pages(&mut self) {
         let Some(g) = &mut self.gfx else { return };
         let mut changed = false;
-        for page in &mut self.pages {
+        let mut made: Vec<(usize, String)> = Vec::new();
+        for (index, page) in self.pages.iter_mut().enumerate() {
             if let Some(loaded) = page.poll() {
                 let gpu = g.renderer.create_scene(&g.device, &loaded.repo.name, loaded.scene);
                 g.renderer.text.drop_page(page.id);
@@ -2298,10 +2480,21 @@ impl App {
                 page.curves_dirty = true;
                 changed = true;
                 self.versions_due.push(page.id);
+                made.extend(page.reveal.take().map(|rel| (index, rel)));
             }
         }
         if changed {
             g.window.request_redraw();
+        }
+        for (index, rel) in made {
+            let lines = self.pages[index]
+                .ready()
+                .and_then(|r| Some(r.repo.files[r.repo.file_index(&rel)?].line_count() as u32))
+                .unwrap_or(0);
+            if lines > 0 {
+                self.pages[index].touch(&rel, vec![(0, lines)]);
+                self.follow_change(index, &rel, 0);
+            }
         }
     }
 
@@ -2336,6 +2529,19 @@ impl App {
             None => {}
         }
         for (about, choice) in self.ext.take_answers() {
+            if let Some(id) = about.strip_prefix("checker:") {
+                match (choice.as_str(), id.split_once('.')) {
+                    (INSTALL_IT, Some((namespace, name))) => self.ext.install(namespace, name),
+                    (NEVER, _) => {
+                        let mut prefs = self.ui.prefs.clone();
+                        prefs.unwanted.push(id.to_string());
+                        self.apply(Action::SetPrefs(prefs));
+                    }
+                    _ => {}
+                }
+                self.request_redraw();
+                continue;
+            }
             if about != "update" {
                 continue;
             }
@@ -2584,7 +2790,7 @@ impl App {
                 .filter_map(|(panel, r)| {
                     let handle = match panel {
                         Panel::Media => self.ui.media.as_ref().map(|_| crate::media::HANDLE.to_string())?,
-                        Panel::Webview(view) => self.ext.webviews.iter().find(|w| w.key == *view)?.handle.clone()?,
+                        Panel::Webview(view) => self.ext.shown(view)?.handle.clone()?,
                         _ => return None,
                     };
                     Some((handle, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
@@ -2643,6 +2849,7 @@ impl App {
                     animating = true;
                 }
             }
+            animating |= page.touched.iter().any(|t| t.strength() < 1.0);
         }
         self.follow_active_camera();
         if animating {
@@ -2880,6 +3087,9 @@ impl ApplicationHandler for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {}
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(g) = &self.gfx {
+            g.window.set_visible(false);
+        }
         self.ext.shutdown();
     }
 
@@ -3065,7 +3275,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
-            WindowEvent::KeyboardInput { event, .. } => self.on_key(&event),
+            WindowEvent::KeyboardInput { event, .. } => {
+                self.last_input = Instant::now();
+                self.on_key(&event)
+            }
             WindowEvent::DroppedFile(path) => {
                 if path.is_dir() {
                     self.open_folder(path, None);
@@ -3101,6 +3314,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => {
+                    self.last_input = Instant::now();
                     self.webviews.focus_app();
                     self.focus_folder_at(self.cursor);
                     if self.drag.is_none() && !self.over_ui(self.cursor) {
@@ -3125,6 +3339,7 @@ impl ApplicationHandler for App {
                 if self.over_ui(self.cursor) {
                     return;
                 }
+                self.last_input = Instant::now();
                 let steps = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,

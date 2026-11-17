@@ -771,7 +771,7 @@ fn status_bar(
     actions: &mut Vec<Action>,
 ) {
     let mut panel_to_show = None;
-    let (mut update_now, mut settings) = (false, false);
+    let (mut update_now, mut settings, mut save) = (false, false, false);
     egui::Panel::bottom("status").frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
         ui,
         |ui| {
@@ -789,6 +789,17 @@ fn status_bar(
                     if label.on_hover_text("Source control").clicked() {
                         panel_to_show = Some(Panel::Changes);
                     }
+                    ui.add_space(10.0);
+                }
+                let unsaved = page.map_or(0, |p| p.unsaved().count());
+                if unsaved > 0 {
+                    let (dot, _) = ui.allocate_exact_size(Vec2::new(8.0, 12.0), Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 3.2, pal().text);
+                    let text = format!("{unsaved} not saved");
+                    let label =
+                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                    let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
+                    save = label.on_hover_text(tip).clicked();
                     ui.add_space(10.0);
                 }
                 ui.label(RichText::new(&info.status).size(12.0).color(pal().text_dim));
@@ -854,6 +865,9 @@ fn status_bar(
     }
     if update_now {
         actions.push(Action::InstallUpdate);
+    }
+    if save {
+        actions.push(Action::SaveFile);
     }
 }
 
@@ -971,6 +985,9 @@ fn rail_badge(ui: &egui::Ui, ext: &Extensions, page: Option<&Page>, panel: &Pane
             if changed > 0 {
                 count_badge(ui, icon, changed);
             }
+        }
+        Panel::Webview(view) if view.starts_with(crate::ext::TABS) => {
+            count_badge(ui, icon, ext.tabs_of(&view[crate::ext::TABS.len()..]).count());
         }
         _ => {}
     }
@@ -1412,12 +1429,19 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 painter.text(cb.center(), Align2::CENTER_CENTER, icons::CHECK, FontId::proportional(11.0), pal().text);
             }
             let mut text_x = x0 + 42.0;
-            let color = if !on {
-                pal().text_faint
-            } else if is_dir {
-                pal().text
-            } else {
-                c(theme::mix(theme::get().text, theme::get().text_dim, 0.35))
+            let change = page.git.as_ref().filter(|_| !is_dir && !ignored).and_then(|git| git.change(path));
+            let unsaved = !is_dir && page.editors.get(path).is_some_and(|e| e.dirty);
+            let inside = is_dir && !ignored && page.changed_dirs.contains(path);
+            let tint = match (change, inside) {
+                (Some(change), _) => Some(git_panel::change_color(change.change)),
+                (None, true) => Some(c(theme::get().git_modified)),
+                (None, false) => None,
+            };
+            let color = match (on, tint) {
+                (false, _) => pal().text_faint,
+                (true, Some(tint)) => tint.lerp_to_gamma(pal().text, if is_dir { 0.5 } else { 0.25 }),
+                (true, None) if is_dir => pal().text,
+                (true, None) => c(theme::mix(theme::get().text, theme::get().text_dim, 0.35)),
             };
             let base = name.rsplit_once('/').map_or(name, |(_, base)| base);
             let icon_at = Rect::from_center_size(Pos2::new(text_x + 7.0, mid), Vec2::splat(16.0));
@@ -1435,7 +1459,19 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 );
                 text_x += 20.0;
             }
-            let right_pad = if is_dir && !ignored { 44.0 } else { 10.0 };
+            let mut right_pad = if is_dir && !ignored { 44.0 } else { 10.0 };
+            if let (Some(change), Some(tint)) = (change, tint) {
+                let at = Pos2::new(rect.right() - 14.0, mid);
+                painter.text(at, Align2::RIGHT_CENTER, change.change.letter(), FontId::monospace(11.5), tint);
+                right_pad += 16.0;
+            } else if let (true, Some(tint)) = (inside, tint) {
+                painter.circle_filled(Pos2::new(rect.right() - right_pad - 2.0, mid), 2.5, tint);
+                right_pad += 10.0;
+            }
+            if unsaved {
+                painter.circle_filled(Pos2::new(rect.right() - right_pad - 4.0, mid), 3.2, pal().text);
+                right_pad += 14.0;
+            }
             let room = rect.right() - right_pad - text_x;
             text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
             if is_dir && !ignored {
@@ -1471,6 +1507,11 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, state, actions));
             if ignored {
                 resp.on_hover_text("Git ignores it, so it is not on the canvas");
+            } else if let Some(change) = change {
+                let state = if unsaved { ", not saved yet" } else { "" };
+                resp.on_hover_text(format!("{path} · {}{state}", change.change.label()));
+            } else if unsaved {
+                resp.on_hover_text(format!("{path} · not saved yet"));
             }
         }
     });
@@ -1755,10 +1796,19 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
         (
             "Symbols",
             vec![
-                ("See where a name is used", fixed("Click it (zoomed in to text)")),
+                ("See where a name is used", fixed("Click it (zoomed in to text; Ctrl+click while editing)")),
                 ("Select a function", fixed("Click inside it")),
                 ("Deselect", fixed("Click it again, or Esc for all")),
                 ("Go to the definition", key(Command::GoToDefinition)),
+            ],
+        ),
+        (
+            "Editing",
+            vec![
+                ("Move around without editing (the hand)", key(Command::MoveTool)),
+                ("Edit: a click puts the caret (the pencil)", key(Command::EditTool)),
+                ("Save", key(Command::Save)),
+                ("Stop typing in a file", fixed("Esc")),
             ],
         ),
         (
@@ -2053,6 +2103,25 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let b = Vec2::splat(30.0);
+                        let edit = st.prefs.edit;
+                        let tools = [
+                            (icons::HAND, false, Command::MoveTool, "Move: drag to travel, click a name to see where it is used. Nothing gets edited"),
+                            (icons::PENCIL, true, Command::EditTool, "Edit: click in the code to put the caret there and type"),
+                        ];
+                        for (glyph, edits, command, tip) in tools {
+                            let button = icon_button(ui, glyph, b, edit == edits, pal().hover);
+                            if edit && edits {
+                                let at = button.rect.center();
+                                ui.painter().text(at, Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), pal().accent);
+                            }
+                            if button.on_hover_text(st.keys.hint(tip, command)).clicked() && edit != edits {
+                                actions.push(Action::SetPrefs(crate::prefs::Prefs { edit: edits, ..st.prefs.clone() }));
+                            }
+                        }
+                        ui.add_space(4.0);
+                        let (sep, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
+                        ui.painter().rect_filled(sep, 0.0, pal().border);
+                        ui.add_space(4.0);
                         if icon_button(ui, icons::SCAN, b, false, pal().hover)
                             .on_hover_text("Show the whole canvas (F)")
                             .clicked()
@@ -2130,7 +2199,7 @@ fn quick_score(path: &str, query: &str) -> Option<i32> {
 fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
     let mut out: Vec<(String, Action)> = vec![
         ("File: Open Folder…".into(), Action::OpenFolder),
-        ("File: Save".into(), Action::SaveFile),
+        ("File: Save (the file being edited, or every unsaved file)".into(), Action::SaveFile),
         ("Format Document".into(), Action::FormatFile(None)),
         ("Markdown: Open Preview".into(), Action::PreviewSelected),
         ("View: Explorer".into(), Action::Show(Panel::Files)),

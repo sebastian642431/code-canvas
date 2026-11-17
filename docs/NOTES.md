@@ -488,6 +488,20 @@ Behaviour
 - Webview pages are served by the app from `RESOURCE_ORIGIN`
   (`https://ccres.localhost`); the host only owns the object the extension talks
   to.
+- `contentChange`: a change event carries the smallest span that was replaced
+  (common start and end trimmed, never cutting a `\r\n` or a surrogate pair). A
+  change whose range reaches past the end of the document is dropped in silence
+  by language servers (rust-analyzer does), and nothing typed would be checked.
+- **When the app is gone the host must stop writing.** `appGone` is reached by a
+  closed stdin, a failed write, an error on stdout or the parent process no
+  longer existing (`startedBy`, looked at every 3 s: a killed app does not always
+  close the pipe). From then on `send` writes nothing, the extensions are asked
+  to stop, and a `send` more than 3 s later ends the process on the spot. Before
+  this, an extension that kept logging into the broken pipe had every failed
+  write reported as an error, which was written to the same pipe: a loop that
+  starves the timers, so the host stayed behind using a whole core.
+- `closeWebview` disposes a webview panel as VS Code does when its tab is closed:
+  the extension hears `onDidDispose` and stops what it started for it.
 
 ### crates/code-canvas/src/main.rs
 
@@ -756,6 +770,9 @@ Camera
 - `Editor::tab` indents in the file's own style: a tab in a file indented with
   tabs, spaces to the next step otherwise. `Editor::home` goes to the first
   non-blank character, then to the very start.
+- `Editor::dirty` is exact: `saved_at` is how deep the undo history was when the
+  text was read or saved, so undoing back to it is "no changes" again. Typing
+  after undoing past that point makes the saved text unreachable (`None`).
 
 ### crates/code-canvas/src/ext/host.rs
 
@@ -766,6 +783,11 @@ Camera
   what tells the host to stop. `Host::stop` asks the host to deactivate its
   extensions and leave, kills it if it has not within a few seconds, and does not
   block the caller.
+- **Leaving the app waits for the host** (`Host::stop_and_wait`, from
+  `Extensions::shutdown`): a thread that waits is gone the moment the process
+  ends, the request to stop may not even have been written, and whatever the host
+  started (language servers, an assistant's processes) would be left running. The
+  window is hidden first, so the wait of at most three seconds is not seen.
 - `kill_tree` kills the host and whatever it started (language servers).
 - `HOST_JS` is embedded with `include_str!`, so an installed app needs no extra
   files; `Host::start` writes it to disk and runs it.
@@ -787,6 +809,16 @@ Camera
   empty query lists the most downloaded.
 
 ### crates/code-canvas/src/ext/mod.rs
+
+Tabs
+
+- A webview *panel* is VS Code's editor tab. An extension that also has views of
+  its own (Claude Code: the chat, the list of sessions) gets one more icon,
+  `tabs:<extension id>`, whose panel shows the panels it has opened as tabs
+  (`Extensions::tabs_of`, `shown`, `front_tab`); closing one tells the host
+  (`close_tab`). An extension with no views keeps its single panel as before.
+- Two icons of one extension with the same title get their view's name added
+  (`view_words`), so the tooltips tell them apart.
 
 Default extensions
 
@@ -894,6 +926,13 @@ Details:
 
 ### crates/code-canvas/src/git.rs
 
+- `compare` gives the hunks `git diff -U0` would, from two texts in memory, with
+  the same meaning of `Hunk::line` as `apply_diff`. Line endings are not a
+  difference. It gives up refining after 60 ms on huge inputs.
+- `head_text` is the file as committed (`HEAD:./path`, relative to the folder);
+  `None` for a file git does not have yet.
+- `FileChange::unsaved`: the entry describes text that is typed but not on disk
+  (see `Page::preview_unsaved`).
 - Everything runs the user's `git`, off the UI thread. A folder outside a
   repository, or a missing git, simply means no changes (`load` returns `None`).
 - **`GIT_OPTIONAL_LOCKS=0` in `command` is load-bearing.** Reading the status must
@@ -1009,6 +1048,11 @@ Details:
 
 ### crates/code-canvas/src/overlay.rs
 
+- Changed lines are washed in their git colour over the whole line, and from far
+  away the wash is stronger and at least a pixel and a half tall: a changed file
+  is seen on the map of the whole folder. `Touch` (a file just changed from
+  outside) lights its lines in the accent colour and fades in `Touch::SHOWN`
+  seconds.
 - `SYMBOL_HOVER_MIN_PX` = 0.6: symbols react to the pointer once a line is at
   least that many pixels tall.
 - `MAX_DEP_CURVES` = 4000: most dependency curves drawn for one selection, and for
@@ -1034,6 +1078,16 @@ Details:
 
 ### crates/code-canvas/src/page.rs
 
+- **Source control shows what is typed, not only what is saved.**
+  `Page::preview_unsaved` replaces the entry of every unsaved file in
+  `GitState::changes` with one made from its text against `HEAD` (`heads`, read
+  once per file by `want_head`, thrown away whenever git is asked again because
+  `HEAD` may have moved). `previewed` keeps what git itself said for those paths,
+  to put it back when the file is saved, discarded or undone to no changes. A
+  file whose text equals `HEAD` leaves the list even if the disk still differs.
+- `changed_dirs`: every folder above a changed file, for the explorer's colours.
+- `reveal`: a file that appeared on disk; when the scan it caused is done the
+  canvas goes to it.
 - `PageState::Waiting`: opened but not read, a folder restored from the last
   session that has not been shown. `Page::ensure_scanned` reads it when the user
   goes to it.
@@ -1086,6 +1140,9 @@ Details:
 | `complete_paths` | Offer file and folder names while a path is typed in a string (`paths.rs`). |
 | `check_updates` | Look for a newer release when the app starts (`update.rs`). |
 | `follow_chat` | Keep an assistant's panel scrolled to what it is writing, until the user scrolls up (`webview.rs`). |
+| `follow_changes` | Travel to the lines a file changed from outside (an assistant, another editor) has new, and light them (`App::follow_change`). |
+| `edit` | The tool of the toolbar: `false` is the hand (clicks select, nothing is edited), `true` the pencil (a click in readable code puts the caret there). |
+| `unwanted` | Extensions offered for a language and answered "Do not ask again" (`App::offer_checker`). |
 
 ### crates/code-canvas/src/script.rs
 
@@ -1128,7 +1185,10 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `palette` | `palette <text>` | Open the command palette with a filter typed in. |
 | `edit` | `edit <path> <line> <column>` | Put the caret in a file; line and column are 1-based. |
 | `type` | `type <text>` | Type at the caret. |
-| `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. |
+| `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
+| `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
+| `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
+| `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
 | `git` | `git stage [path]`, `git unstage [path]`, `git commit <message>` | Source control. |
 | `install` | `install <publisher.name>` | Install an extension from Open VSX. |
 | `ext-search` | `ext-search <text>` | Search the extension registry. |
@@ -1284,6 +1344,11 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### crates/code-canvas/src/watch.rs
 
+- What a batch does to the canvas is in `App::on_disk_changes`. A file changed
+  from outside is compared with what the canvas had (`git::compare`), its new
+  lines are lit (`Page::touch`) and, with `follow_changes`, the canvas travels to
+  the first of them: never while a file is being edited, a drag is going on or
+  within a second and a half of the user's last key or click (`App::last_input`).
 - The operating system reports changes per path. `Watcher::poll` hands them over
   in batches once things have been quiet for `SETTLE` = 350 ms, already split into
   `Batch::files` and `Batch::git` (roots whose `.git` changed: status and history

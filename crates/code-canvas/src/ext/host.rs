@@ -98,18 +98,20 @@ impl Host {
         out.send(line).is_ok()
     }
 
-    pub fn stop(mut self) {
+    pub fn stop(self) {
+        std::thread::spawn(move || self.stop_and_wait(40));
+    }
+
+    pub fn stop_and_wait(mut self, tenths: u32) {
         self.send(&serde_json::json!({ "type": "shutdown" }));
         self.out = None;
-        std::thread::spawn(move || {
-            for _ in 0..40 {
-                if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+        for _ in 0..tenths {
+            if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {
+                return;
             }
-            kill_tree(&mut self.child);
-        });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        kill_tree(&mut self.child);
     }
 }
 

@@ -514,8 +514,12 @@ pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
 }
 
 pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, view: &str) {
-    ext.ensure_view(view);
-    let Some(entry) = ext.webviews.iter().find(|w| w.key == view) else {
+    if let Some(extension) = view.strip_prefix(crate::ext::TABS) {
+        tab_strip(ui, ext, extension);
+    } else {
+        ext.ensure_view(view);
+    }
+    let Some(entry) = ext.shown(view) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
             ui.label(
                 RichText::new("This view is gone: its extension is not running.").size(12.0).color(pal().text_dim),
@@ -541,6 +545,67 @@ pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, 
         ext.resolve_webview(&key);
     }
     st.page_places.push((Panel::Webview(view.to_string()), rect));
+}
+
+fn tab_strip(ui: &mut egui::Ui, ext: &mut Extensions, extension: &str) {
+    let front = ext.shown(&format!("{}{extension}", crate::ext::TABS)).map(|w| w.key.clone());
+    let tabs: Vec<(String, String)> = ext.tabs_of(extension).map(|w| (w.key.clone(), w.title.clone())).collect();
+    let (mut show, mut close) = (None, None);
+    Frame::NONE.inner_margin(Margin { left: 6, right: 6, top: 6, bottom: 4 }).show(ui, |ui| {
+        egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (key, title) in &tabs {
+                    let active = front.as_ref() == Some(key);
+                    let font = FontId::proportional(12.0);
+                    let color = if active { pal().text } else { pal().text_dim };
+                    let short: String = if title.chars().count() > 26 {
+                        title.chars().take(25).chain(std::iter::once('…')).collect()
+                    } else {
+                        title.clone()
+                    };
+                    let galley = ui.painter().layout_no_wrap(short, font, color);
+                    let size = Vec2::new(galley.size().x + 38.0, 26.0);
+                    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+                    let hovered = ui.rect_contains_pointer(rect);
+                    let fill = match (active, hovered) {
+                        (true, _) => pal().raised,
+                        (false, true) => pal().row,
+                        (false, false) => pal().well,
+                    };
+                    ui.painter().rect_filled(rect, 6.0, fill);
+                    let mid = rect.center().y;
+                    ui.painter().galley(Pos2::new(rect.left() + 10.0, mid - galley.size().y * 0.5), galley, color);
+                    let cross = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(18.0));
+                    let closing = ui.interact(cross, ui.scope_id().with(("close tab", key)), Sense::click());
+                    if closing.hovered() {
+                        ui.painter().rect_filled(cross, 4.0, pal().hover);
+                    }
+                    if active || hovered {
+                        let tint = if closing.hovered() { pal().text } else { pal().text_dim };
+                        ui.painter().text(
+                            cross.center(),
+                            Align2::CENTER_CENTER,
+                            icons::X,
+                            FontId::proportional(12.0),
+                            tint,
+                        );
+                    }
+                    if closing.on_hover_text("Close").clicked() {
+                        close = Some(key.clone());
+                    } else if resp.on_hover_text(title).clicked() {
+                        show = Some(key.clone());
+                    }
+                }
+            });
+        });
+    });
+    if let Some(key) = show {
+        ext.show_tab(extension, &key);
+    }
+    if let Some(key) = close {
+        ext.close_tab(&key);
+    }
 }
 
 pub fn notices(ctx: &egui::Context, st: &mut UiState, canvas: Rect, ext: &mut Extensions) {

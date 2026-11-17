@@ -498,31 +498,57 @@ pub fn build(
                 let side = 7.0 * s / z;
                 let dot = Rect::new(n.rect.x - side * 0.5, n.rect.y - side * 0.5, side, side);
                 out.over.push(RectInstance::new(dot, color, 0, 3.5 * s, 0.0));
-                continue;
             }
             let lines = repo.files[fi].line_count() as u32;
             let bar = (2.5 * s / z).min(CARD_PAD * 0.6);
+            let wash = if readable { 0.16 } else { 0.55 };
+            let seen = world.expand(CARD_PAD);
             for h in &change.hunks {
-                let (c, first, count) = match h.kind {
-                    HunkKind::Added => (theme::get().git_added, h.line, h.count),
-                    HunkKind::Modified => (theme::get().git_modified, h.line, h.count),
-                    HunkKind::Removed => (theme::get().git_removed, h.line, 0),
-                };
-                if first > lines {
+                if h.line > lines || out.under.len() >= MAX_MARKERS {
                     continue;
                 }
-                for line in first..(first + count.max(1)).min(lines.max(first + 1)) {
-                    let cell = n.cell_rect(line.min(lines.saturating_sub(1)), 0, 1);
-                    if !cell.intersects(&world.expand(CARD_PAD)) {
+                if h.kind == HunkKind::Removed {
+                    let cell = n.cell_rect(h.line.min(lines.saturating_sub(1)), 0, 1);
+                    if readable && cell.intersects(&seen) {
+                        let y = if h.line >= lines { cell.bottom() } else { cell.y };
+                        let tick = Rect::new(cell.x - CARD_PAD * 0.9, y - bar * 0.5, CARD_PAD * 0.8, bar);
+                        out.over.push(RectInstance::new(tick, theme::get().git_removed, 0, 0.0, 0.0));
+                    }
+                    continue;
+                }
+                let c = if h.kind == HunkKind::Added { theme::get().git_added } else { theme::get().git_modified };
+                for mut rect in n.line_rects(h.line..(h.line + h.count).min(lines)) {
+                    if !rect.intersects(&seen) {
                         continue;
                     }
-                    let rect = if count == 0 {
-                        let y = if line >= lines { cell.bottom() } else { cell.y };
-                        Rect::new(cell.x - CARD_PAD * 0.9, y - bar * 0.5, CARD_PAD * 0.8, bar)
-                    } else {
-                        Rect::new(cell.x - CARD_PAD * 0.75, cell.y, bar, cell.h)
-                    };
-                    out.over.push(RectInstance::new(rect, c, 0, 0.0, 0.0));
+                    rect.h = rect.h.max(1.5 / z);
+                    out.under.push(RectInstance::new(rect, with_alpha(c, wash), 0, 0.0, 0.0));
+                    if readable {
+                        let edge = Rect::new(rect.x - CARD_PAD * 0.75, rect.y, bar, rect.h);
+                        out.over.push(RectInstance::new(edge, c, 0, 0.0, 0.0));
+                    }
+                }
+            }
+        }
+    }
+
+    for touch in &page.touched {
+        let strength = touch.strength();
+        let Some(fi) = repo.file_index(&touch.path) else { continue };
+        let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
+            continue;
+        };
+        if strength <= 0.0 || !n.rect.intersects(&world) {
+            continue;
+        }
+        let lines = repo.files[fi].line_count() as u32;
+        let glow = theme::get().accent;
+        out.over.push(RectInstance::new(n.rect.expand(2.0 / z), 0, with_alpha(glow, strength), 3.0, 2.0));
+        for &(first, count) in touch.lines.iter().take(200) {
+            for mut rect in n.line_rects(first.min(lines)..(first + count).min(lines)) {
+                if rect.intersects(&world) {
+                    rect.h = rect.h.max(2.0 / z);
+                    out.under.push(RectInstance::new(rect, with_alpha(glow, 0.3 * strength), 0, 0.0, 0.0));
                 }
             }
         }

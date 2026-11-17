@@ -46,10 +46,16 @@ muy grandes. Código abierto: cualquiera puede aportar.
   nunca más grande que la pantalla.
 - **Varias carpetas a la vez**: comparten un solo lienzo, una al lado de la otra y con
   el mismo zoom; `Ctrl+E` vuelve a una sola por vez.
-- **Edición**: el código legible es un editor: clic y a escribir, con deshacer,
-  copiar y pegar y `Ctrl+S`. Formatea al guardar (se apaga con `editor.formatOnSave`), los
-  problemas se actualizan mientras escribís y los archivos cambiados por otro programa
-  se recargan solos. `Ctrl+Shift+P` abre la paleta de comandos.
+- **Mirar o editar**: la barra de abajo tiene dos herramientas. Con la **mano** (`H`)
+  solo se recorre el lienzo: nada se modifica por accidente. Con el **lápiz** (`E`) el
+  código legible es un editor: clic y a escribir, con deshacer, copiar y pegar y `Ctrl+S`.
+- **Lo que escribís se ve al instante**, antes de guardar: un punto en el nombre del
+  archivo, sus líneas cambiadas coloreadas y el archivo en Control de código fuente.
+  Formatea al guardar (se apaga con `editor.formatOnSave`) y los problemas se actualizan
+  mientras escribís (Rust con rust-analyzer, que la app ofrece instalar).
+- **Seguir a la IA**: cuando un asistente u otro programa cambia un archivo, el lienzo
+  viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
+  `Ctrl+Shift+P` abre la paleta de comandos.
 - **Extensiones de VS Code**: instala las mismas extensiones `.vsix` desde
   [Open VSX](https://open-vsx.org) y las ejecuta sin modificar. Los linters marcan los
   errores sobre el código y en un panel de problemas; `Shift+Alt+F` formatea con la

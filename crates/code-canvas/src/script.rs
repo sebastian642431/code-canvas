@@ -40,6 +40,9 @@ pub enum Step {
     Drop(String),
     Preview(String),
     Ui(String),
+    Tool(String),
+    Touch(String),
+    Page(String),
     Quit,
 }
 
@@ -94,6 +97,9 @@ fn parse_step(text: &str) -> Option<Step> {
         "drop" => Step::Drop(arg.into()),
         "preview" => Step::Preview(arg.into()),
         "ui" => Step::Ui(arg.into()),
+        "tool" => Step::Tool(arg.into()),
+        "touch" => Step::Touch(arg.into()),
+        "page" => Step::Page(arg.into()),
         "click" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             Step::Click(parts.next()?.ok()?, parts.next()?.ok()?)

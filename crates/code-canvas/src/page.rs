@@ -10,7 +10,7 @@ use canvas_render::{Renderer, SceneData, SceneGpu};
 
 use crate::camera::Camera;
 use crate::editor::Editor;
-use crate::git::{Commit, GitState};
+use crate::git::{Change, Commit, FileChange, GitState};
 use crate::session::PageSession;
 
 pub struct Loaded {
@@ -126,6 +126,30 @@ pub struct Page {
     message_rx: Option<Receiver<Result<String, String>>>,
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
+    heads: HashMap<String, Option<String>>,
+    heads_asked: HashSet<String>,
+    heads_round: u32,
+    heads_tx: mpsc::Sender<(u32, String, Option<String>)>,
+    heads_rx: Receiver<(u32, String, Option<String>)>,
+    previewed: Vec<(String, Option<FileChange>)>,
+    pub changed_dirs: HashSet<String>,
+    pub touched: Vec<Touch>,
+    pub reveal: Option<String>,
+}
+
+pub struct Touch {
+    pub path: String,
+    pub lines: Vec<(u32, u32)>,
+    pub at: Instant,
+}
+
+impl Touch {
+    pub const SHOWN: f32 = 6.0;
+
+    pub fn strength(&self) -> f32 {
+        let age = self.at.elapsed().as_secs_f32();
+        ((Self::SHOWN - age) / (Self::SHOWN * 0.5)).clamp(0.0, 1.0)
+    }
 }
 
 impl SearchResults {
@@ -147,6 +171,7 @@ impl Page {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        let (heads_tx, heads_rx) = mpsc::channel();
         let mut page = Page {
             id,
             root,
@@ -180,6 +205,15 @@ impl Page {
             message_rx: None,
             timeline: Timeline::default(),
             timeline_rx: None,
+            heads: HashMap::new(),
+            heads_asked: HashSet::new(),
+            heads_round: 0,
+            heads_tx,
+            heads_rx,
+            previewed: Vec::new(),
+            changed_dirs: HashSet::new(),
+            touched: Vec::new(),
+            reveal: None,
         };
         if let Some(s) = saved {
             page.filter.collapsed = s.collapsed.iter().cloned().collect();
@@ -258,6 +292,106 @@ impl Page {
             crate::ext::wake_ui();
         });
         self.git_rx = Some(rx);
+        self.heads.clear();
+        self.heads_asked.clear();
+        self.heads_round += 1;
+        let unsaved: Vec<String> = self.editors.values().filter(|e| e.dirty).map(|e| e.rel_path.clone()).collect();
+        for rel in unsaved {
+            self.want_head(&rel);
+        }
+    }
+
+    pub fn want_head(&mut self, rel_path: &str) {
+        if !self.heads_asked.insert(rel_path.to_string()) {
+            return;
+        }
+        let (root, rel, round, tx) = (self.root.clone(), rel_path.to_string(), self.heads_round, self.heads_tx.clone());
+        std::thread::spawn(move || {
+            let text = crate::git::head_text(&root, &rel);
+            let _ = tx.send((round, rel, text));
+            crate::ext::wake_ui();
+        });
+    }
+
+    pub fn poll_heads(&mut self) -> bool {
+        let mut arrived = false;
+        while let Ok((round, rel, text)) = self.heads_rx.try_recv() {
+            if round == self.heads_round {
+                self.heads.insert(rel, text);
+                arrived = true;
+            }
+        }
+        arrived
+    }
+
+    pub fn unsaved(&self) -> impl Iterator<Item = &Editor> {
+        self.editors.values().filter(|e| e.dirty)
+    }
+
+    pub fn preview_unsaved(&mut self) {
+        let Some(git) = self.git.as_mut() else { return };
+        let place = |changes: &[FileChange], path: &str| {
+            changes.binary_search_by(|c| std::path::Path::new(&c.path).cmp(std::path::Path::new(path)))
+        };
+        for (path, original) in std::mem::take(&mut self.previewed) {
+            match (place(&git.changes, &path), original) {
+                (Ok(at), Some(original)) => git.changes[at] = original,
+                (Ok(at), None) => {
+                    git.changes.remove(at);
+                }
+                (Err(at), Some(original)) => git.changes.insert(at, original),
+                (Err(_), None) => {}
+            }
+        }
+        for editor in self.editors.values().filter(|e| e.dirty) {
+            let Some(head) = self.heads.get(&editor.rel_path) else { continue };
+            let at = place(&git.changes, &editor.rel_path);
+            let original = at.ok().map(|i| git.changes[i].clone());
+            let shown = match (head, &original) {
+                (None, Some(known)) => Some(FileChange { unsaved: true, ..known.clone() }),
+                (None, None) => continue,
+                (Some(head), _) => {
+                    let (hunks, insertions, deletions) = crate::git::compare(head, &editor.text());
+                    let staged = original.as_ref().and_then(|o| o.staged);
+                    let differs = !hunks.is_empty();
+                    (differs || staged.is_some()).then(|| FileChange {
+                        path: editor.rel_path.clone(),
+                        change: original.as_ref().map_or(Change::Modified, |o| o.change),
+                        staged,
+                        unstaged: differs
+                            .then(|| original.as_ref().and_then(|o| o.unstaged).unwrap_or(Change::Modified)),
+                        hunks,
+                        insertions,
+                        deletions,
+                        unsaved: true,
+                    })
+                }
+            };
+            match (at, shown) {
+                (Ok(i), Some(shown)) => git.changes[i] = shown,
+                (Ok(i), None) => {
+                    git.changes.remove(i);
+                }
+                (Err(i), Some(shown)) => git.changes.insert(i, shown),
+                (Err(_), None) => continue,
+            }
+            self.previewed.push((editor.rel_path.clone(), original));
+        }
+        self.changed_dirs.clear();
+        for change in &git.changes {
+            let mut path = change.path.as_str();
+            while let Some((parent, _)) = path.rsplit_once('/') {
+                if !self.changed_dirs.insert(parent.to_string()) {
+                    break;
+                }
+                path = parent;
+            }
+        }
+    }
+
+    pub fn touch(&mut self, rel_path: &str, lines: Vec<(u32, u32)>) {
+        self.touched.retain(|t| t.path != rel_path);
+        self.touched.push(Touch { path: rel_path.to_string(), lines, at: Instant::now() });
     }
 
     pub fn editor(&self) -> Option<&Editor> {
@@ -378,6 +512,9 @@ impl Page {
             Ok(state) => {
                 self.git = state;
                 self.git_rx = None;
+                self.previewed.clear();
+                self.changed_dirs.clear();
+                self.preview_unsaved();
                 if let PageState::Ready(r) = &mut self.state {
                     r.tree_dirty = true;
                 }

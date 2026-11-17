@@ -124,6 +124,20 @@ pub struct RailItem {
     pub extension: String,
     pub title: String,
     pub codicon: Option<String>,
+    pub tabs: usize,
+}
+
+fn view_words(id: &str) -> String {
+    let mut words = String::new();
+    let mut previous_lower = false;
+    for ch in id.chars() {
+        if ch.is_uppercase() && previous_lower {
+            words.push(' ');
+        }
+        previous_lower = ch.is_lowercase();
+        words.extend(ch.to_lowercase());
+    }
+    words
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
@@ -275,7 +289,10 @@ pub struct WebviewEntry {
     pub handle: Option<String>,
     resolving: bool,
     pub failed: bool,
+    pub tab: bool,
 }
+
+pub const TABS: &str = "tabs:";
 
 enum Job {
     Node(Result<String, String>),
@@ -303,6 +320,7 @@ pub struct Extensions {
     pub market_error: String,
     pub installing: HashSet<String>,
     pub diagnostics: HashMap<String, FileDiagnostics>,
+    front_tab: HashMap<String, String>,
     pub revision: u64,
     pub decorations: HashMap<String, FileDecorations>,
     pub notices: Vec<Notice>,
@@ -458,8 +476,25 @@ fn rail_items_of(
                     extension: e.id.clone(),
                     title: title.cloned().unwrap_or_default(),
                     codicon: container.codicon.clone(),
+                    tabs: 0,
                 });
             }
+        }
+        let same_title = out.len() > before + 1 && out[before + 1..].iter().all(|item| item.title == out[before].title);
+        if same_title {
+            for item in &mut out[before..] {
+                item.title = format!("{} · {}", item.title, view_words(&item.view));
+            }
+        }
+        let tabs = webviews.iter().filter(|w| w.tab && w.extension == e.id).count();
+        if out.len() > before && tabs > 0 {
+            out.push(RailItem {
+                view: format!("{TABS}{}", e.id),
+                extension: e.id.clone(),
+                title: format!("{} · what is open ({tabs})", e.display_name),
+                codicon: None,
+                tabs,
+            });
         }
         if out.len() == before {
             if let Some(w) = webviews.iter().find(|w| w.extension == e.id) {
@@ -468,6 +503,7 @@ fn rail_items_of(
                     extension: e.id.clone(),
                     title: w.title.clone(),
                     codicon: None,
+                    tabs: 0,
                 });
             }
         }
@@ -545,6 +581,7 @@ impl Extensions {
             market_error: String::new(),
             installing: HashSet::new(),
             diagnostics: HashMap::new(),
+            front_tab: HashMap::new(),
             revision: 0,
             decorations: HashMap::new(),
             notices: Vec::new(),
@@ -953,8 +990,40 @@ impl Extensions {
             handle: None,
             resolving: false,
             failed: false,
+            tab: false,
         });
         true
+    }
+
+    fn has_own_views(&self, extension: &str) -> bool {
+        let installed = self.installed.iter().find(|e| e.id == extension);
+        installed.is_some_and(|e| e.containers.iter().any(|c| c.views.iter().any(|v| v.webview)))
+    }
+
+    pub fn panel_key(&self, handle: &str) -> String {
+        match self.webviews.iter().find(|w| w.tab && w.key == handle) {
+            Some(w) if self.has_own_views(&w.extension) => format!("{TABS}{}", w.extension),
+            _ => handle.to_string(),
+        }
+    }
+
+    pub fn tabs_of<'a>(&'a self, extension: &'a str) -> impl Iterator<Item = &'a WebviewEntry> + 'a {
+        self.webviews.iter().filter(move |w| w.tab && w.extension == extension)
+    }
+
+    pub fn shown(&self, view: &str) -> Option<&WebviewEntry> {
+        let Some(extension) = view.strip_prefix(TABS) else { return self.webviews.iter().find(|w| w.key == view) };
+        let front = self.front_tab.get(extension);
+        let tabs = self.webviews.iter().filter(|w| w.tab && w.extension == extension);
+        tabs.clone().find(|w| Some(&w.key) == front).or_else(|| tabs.last())
+    }
+
+    pub fn show_tab(&mut self, extension: &str, handle: &str) {
+        self.front_tab.insert(extension.to_string(), handle.to_string());
+    }
+
+    pub fn close_tab(&mut self, handle: &str) {
+        self.send(json!({ "type": "closeWebview", "handle": handle }));
     }
 
     pub fn resolve_webview(&mut self, key: &str) {
@@ -988,6 +1057,9 @@ impl Extensions {
     }
 
     pub fn shutdown(&mut self) {
+        if let Some(host) = self.host.take() {
+            host.stop_and_wait(30);
+        }
         self.stop_host();
     }
 
@@ -1141,6 +1213,7 @@ impl Extensions {
                         handle: None,
                         resolving: false,
                         failed: false,
+                        tab: false,
                     });
                 }
             }
@@ -1155,10 +1228,12 @@ impl Extensions {
                         handle: Some(handle.clone()),
                         resolving: false,
                         failed: false,
+                        tab: true,
                     }),
                 }
                 if m.get("reveal").and_then(Value::as_bool).unwrap_or(false) {
-                    events.push(Event::ShowWebview(handle));
+                    self.front_tab.insert(s("extension"), handle.clone());
+                    events.push(Event::ShowWebview(self.panel_key(&handle)));
                 }
             }
             "webviewHtml" => events.push(Event::WebviewHtml { handle: s("handle"), html: s("html") }),
@@ -1169,6 +1244,7 @@ impl Extensions {
             "webviewClosed" => {
                 let handle = s("handle");
                 self.webviews.retain(|w| w.handle.as_deref() != Some(handle.as_str()));
+                self.front_tab.retain(|_, front| *front != handle);
                 events.push(Event::WebviewClosed(handle));
             }
             "decorations" => {
@@ -1584,6 +1660,7 @@ mod tests {
             handle: Some("panel-1".into()),
             resolving: false,
             failed: false,
+            tab: true,
         };
         assert_eq!(views(json!({}), std::slice::from_ref(&panel)), vec!["box.b", "panel-1"]);
 

@@ -59,6 +59,38 @@ pub struct FileChange {
     pub hunks: Vec<Hunk>,
     pub insertions: u32,
     pub deletions: u32,
+    pub unsaved: bool,
+}
+
+pub fn head_text(root: &Path, rel_path: &str) -> Option<String> {
+    let spec = format!("HEAD:./{rel_path}");
+    git(root, &["show", &spec]).and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+pub fn compare(old: &str, new: &str) -> (Vec<Hunk>, u32, u32) {
+    use similar::DiffOp;
+    let (before, after): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let deadline = Instant::now() + std::time::Duration::from_millis(60);
+    let ops = similar::capture_diff_slices_deadline(similar::Algorithm::Myers, &before, &after, Some(deadline));
+    let mut hunks = Vec::new();
+    let (mut insertions, mut deletions) = (0, 0);
+    for op in ops {
+        let (line, removed, added) = match op {
+            DiffOp::Equal { .. } => continue,
+            DiffOp::Insert { new_index, new_len, .. } => (new_index, 0, new_len),
+            DiffOp::Delete { old_len, new_index, .. } => (new_index, old_len, 0),
+            DiffOp::Replace { old_len, new_index, new_len, .. } => (new_index, old_len, new_len),
+        };
+        insertions += added as u32;
+        deletions += removed as u32;
+        let kind = match (removed, added) {
+            (_, 0) => HunkKind::Removed,
+            (0, _) => HunkKind::Added,
+            _ => HunkKind::Modified,
+        };
+        hunks.push(Hunk { line: line as u32, count: added as u32, kind });
+    }
+    (hunks, insertions, deletions)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -73,6 +105,13 @@ pub struct GitState {
     pub ignored: Vec<String>,
     pub truncated: bool,
     pub ms: u32,
+}
+
+impl GitState {
+    pub fn change(&self, rel_path: &str) -> Option<&FileChange> {
+        let at = self.changes.binary_search_by(|c| Path::new(&c.path).cmp(Path::new(rel_path))).ok()?;
+        self.changes.get(at)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,6 +349,7 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
             hunks: Vec::new(),
             insertions: 0,
             deletions: 0,
+            unsaved: false,
         });
     }
     state.changes.sort_by(|a, b| Path::new(&a.path).cmp(Path::new(&b.path)));
@@ -442,6 +482,23 @@ mod tests {
         assert_eq!(parse_ignored("clip.mp4\0target/\0docs/shot.png\0"), ["clip.mp4", "target/", "docs/shot.png"]);
         assert!(parse_ignored("").is_empty());
         assert_eq!(parse_ignored(&"a\0".repeat(MAX_IGNORED + 50)).len(), MAX_IGNORED);
+    }
+
+    #[test]
+    fn a_text_against_another_gives_the_hunks_git_would() {
+        let old = "one\ntwo\nthree\nfour\nfive\nsix\n";
+        let new = "one\nTWO\nthree\nfive\nsix\nseven\neight\r\n";
+        let (hunks, insertions, deletions) = compare(old, new);
+        assert_eq!(
+            hunks,
+            vec![
+                Hunk { line: 1, count: 1, kind: HunkKind::Modified },
+                Hunk { line: 3, count: 0, kind: HunkKind::Removed },
+                Hunk { line: 5, count: 2, kind: HunkKind::Added },
+            ]
+        );
+        assert_eq!((insertions, deletions), (3, 2));
+        assert!(compare("a\r\nb\r\n", "a\nb").0.is_empty(), "line endings are not a change");
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub struct Editor {
     goal: Option<usize>,
     undo: Vec<Change>,
     redo: Vec<Change>,
+    saved_at: Option<usize>,
     pub dirty: bool,
 }
 
@@ -57,6 +58,7 @@ impl Editor {
             goal: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            saved_at: Some(0),
             dirty: false,
         }
     }
@@ -152,9 +154,16 @@ impl Editor {
         self.caret = self.splice(start, end, &change.inserted);
         self.anchor = None;
         self.goal = None;
+        if self.saved_at.is_some_and(|depth| depth > self.undo.len()) {
+            self.saved_at = None;
+        }
         self.undo.push(change);
         self.redo.clear();
-        self.dirty = true;
+        self.touch();
+    }
+
+    fn touch(&mut self) {
+        self.dirty = self.saved_at != Some(self.undo.len());
     }
 
     fn end_of(at: Pos, text: &str) -> Pos {
@@ -171,7 +180,7 @@ impl Editor {
         self.anchor = change.anchor_before;
         self.goal = None;
         self.redo.push(change);
-        self.dirty = true;
+        self.touch();
         true
     }
 
@@ -181,7 +190,7 @@ impl Editor {
         self.anchor = None;
         self.goal = None;
         self.undo.push(change);
-        self.dirty = true;
+        self.touch();
         true
     }
 
@@ -353,6 +362,7 @@ impl Editor {
     }
 
     pub fn mark_saved(&mut self) {
+        self.saved_at = Some(self.undo.len());
         self.dirty = false;
     }
 }
@@ -392,9 +402,18 @@ mod tests {
         assert_eq!(e.text(), "fn main() {\n}\n");
         assert_eq!(e.caret, Pos::new(0, 11));
         assert!(!e.undo());
+        assert!(!e.dirty, "undone back to what was read");
         assert!(e.redo());
         assert!(e.redo());
         assert_eq!(e.text(), "fn main() {\n    let x = 1;\n}\n");
+        e.mark_saved();
+        assert!(!e.dirty);
+        assert!(e.undo());
+        assert!(e.dirty, "one step before what was saved");
+        e.insert("y");
+        assert!(e.undo());
+        assert!(e.redo());
+        assert!(e.dirty, "the saved text cannot be reached again");
     }
 
     #[test]

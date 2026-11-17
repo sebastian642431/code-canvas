@@ -205,6 +205,9 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 points: what a button, a menu or a drag of an icon gets),
 `move <panel> left|right [panel to sit before]` (an icon to the other bar),
 `preview <path>` (a Markdown file rendered), `drop <path>` (a file dropped on the window),
+`tool move|edit` (the hand or the pencil), `touch <path> <text>` (a line appended to a file behind
+the app's back, as another program would), `page <javascript>` (a line of script run in the
+webview on screen),
 `mark <name>` (leaves an empty file `marks/<name>` in the data directory: a sign for whoever watches the
 instance, see below), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.

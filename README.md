@@ -64,12 +64,22 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   hits marked on the canvas.
 
 **Editing**
-- Readable code is an editor: click to place the caret and type. Selection, undo and
-  redo, copy and paste, `Ctrl+S` to save. Each file keeps its own tabs and line endings.
+- The toolbar has two tools. With the **hand** (`H`) the canvas is only looked at:
+  drags travel, clicks select, nothing can be changed by accident. With the
+  **pencil** (`E`) readable code is an editor: click to place the caret and type.
+  Selection, undo and redo, copy and paste, `Ctrl+S` to save. Each file keeps its
+  own tabs and line endings.
+- What is typed shows at once, before saving: a dot on the file's name (on its
+  card, in the explorer, in the status bar), its changed lines washed in colour,
+  and the file listed in Source Control. Staging or committing it saves it.
 - Saving formats the file (with Prettier where it is installed; turn it off with
-  `editor.formatOnSave`), and problems update while you type.
+  `editor.formatOnSave`), and problems update while you type. Rust is checked by
+  rust-analyzer and TypeScript by VS Code's own extension: the app offers to
+  install them the first time such a file is edited.
 - Files changed by another program (an editor, `git checkout`, an AI assistant)
-  are reloaded by themselves.
+  are reloaded by themselves, and the canvas **travels to the lines that changed**
+  and lights them, so what an assistant is touching is seen as it happens. Moving
+  the canvas yourself holds it; it can be switched off in the settings.
 - While a path is typed inside quotes (`"./`, `"../`, `"src/`), the files and folders
   that are there are offered under the caret: arrows, then Enter or Tab.
 - In `package.json` and `Cargo.toml`, each dependency says whether a newer version
