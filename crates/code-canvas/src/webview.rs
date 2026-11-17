@@ -3,6 +3,15 @@ use serde_json::Value;
 pub type PageMessage = (String, Value);
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct PageWheel {
+    pub page: String,
+    pub moved: [f32; 2],
+    pub at: [f32; 2],
+    pub ctrl: bool,
+    pub shift: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct PageKey {
     pub key: String,
     pub ctrl: bool,
@@ -206,7 +215,7 @@ mod platform {
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows};
 
-    use super::{theme_json, PageKey, PageMessage, INIT_JS};
+    use super::{theme_json, PageKey, PageMessage, PageWheel, INIT_JS};
 
     const ORIGIN: &str = "https://ccres.localhost";
 
@@ -231,6 +240,7 @@ mod platform {
         rx: Receiver<(String, String)>,
         shown: Vec<(String, Rect)>,
         keys: Vec<PageKey>,
+        wheels: Vec<PageWheel>,
         links: Vec<String>,
         follow: bool,
     }
@@ -385,6 +395,7 @@ mod platform {
                 rx,
                 shown: Vec::new(),
                 keys: Vec::new(),
+                wheels: Vec::new(),
                 links: Vec::new(),
                 follow: true,
             }
@@ -562,6 +573,16 @@ mod platform {
                     if handle == crate::media::HANDLE {
                         self.links.push(url.to_string());
                     }
+                } else if let Some(w) = v.get("wheel") {
+                    let number = |v: Option<&Value>| v.and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                    let flag = |name: &str| w.get(name).and_then(Value::as_bool).unwrap_or(false);
+                    self.wheels.push(PageWheel {
+                        page: handle,
+                        moved: [number(w.get("x")), number(w.get("y"))],
+                        at: [number(w.pointer("/at/0")), number(w.pointer("/at/1"))],
+                        ctrl: flag("ctrl"),
+                        shift: flag("shift"),
+                    });
                 } else if let Some(message) = v.get("message") {
                     out.push((handle, message.clone()));
                 } else if let Some(k) = v.get("key") {
@@ -581,6 +602,10 @@ mod platform {
 
         pub fn take_keys(&mut self) -> Vec<PageKey> {
             std::mem::take(&mut self.keys)
+        }
+
+        pub fn take_wheels(&mut self) -> Vec<PageWheel> {
+            std::mem::take(&mut self.wheels)
         }
 
         pub fn take_links(&mut self) -> Vec<String> {
@@ -609,7 +634,7 @@ mod platform {
     use canvas_core::Rect;
     use serde_json::Value;
 
-    use super::{PageKey, PageMessage};
+    use super::{PageKey, PageMessage, PageWheel};
 
     pub struct WebViews;
 
@@ -629,6 +654,9 @@ mod platform {
             Vec::new()
         }
         pub fn take_keys(&mut self) -> Vec<PageKey> {
+            Vec::new()
+        }
+        pub fn take_wheels(&mut self) -> Vec<PageWheel> {
             Vec::new()
         }
         pub fn take_links(&mut self) -> Vec<String> {

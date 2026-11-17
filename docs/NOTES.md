@@ -733,6 +733,14 @@ Graphics and the frame
 - A description under an option of the settings wraps at the width of its box
   (`settings::option`): in a row laid out sideways a label does not wrap by
   itself, and one long sentence pushed every box of the page out of the window.
+- **The wheel moves the canvas, it does not zoom it**: up and down, sideways with
+  Shift (down is to the right of the folder, as in any editor), and it zooms with
+  Ctrl, at the pointer. A touchpad's two fingers come as the same event with both
+  directions and move the canvas as they go; its pinch zooms. `WHEEL_NOTCH` is
+  how far one notch of a mouse goes.
+- Over a video playing in its card the wheel belongs to the page of the player,
+  not to the window: the page sends it on (`media::WHEEL`, `PageWheel`) and
+  `App::wheel` does with it what it does with the window's own.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest

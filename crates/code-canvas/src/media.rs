@@ -5,6 +5,15 @@ pub const PLAYER: &str = "canvas-player";
 
 const FILES: &str = "https://ccres.localhost/file/";
 
+const WHEEL: &str = r#"
+<script>
+  window.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const wheel = { x: e.deltaX, y: e.deltaY, at: [e.clientX, e.clientY], ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey };
+    window.ipc.postMessage(JSON.stringify({ wheel }));
+  }, { passive: false, capture: true });
+</script>"#;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Image,
@@ -77,8 +86,8 @@ pub fn page(path: &Path, kind: Kind) -> String {
   img.addEventListener('click', () => document.body.classList.toggle('actual'));
 </script>"#
         ),
-        Kind::Video => format!(r#"<video id="media" src="{url}" controls autoplay preload="metadata"></video>"#),
-        Kind::Audio => format!(r#"<audio id="media" src="{url}" controls autoplay preload="metadata"></audio>"#),
+        Kind::Video => format!(r#"<video id="media" src="{url}" controls autoplay preload="metadata"></video>{WHEEL}"#),
+        Kind::Audio => format!(r#"<audio id="media" src="{url}" controls autoplay preload="metadata"></audio>{WHEEL}"#),
         Kind::Pdf => format!(r#"<iframe id="media" class="page" src="{url}"></iframe>"#),
     };
     format!(

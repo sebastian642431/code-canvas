@@ -1887,7 +1887,9 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
         (
             "Canvas",
             vec![
-                ("Zoom", format!("Mouse wheel, {} / {}", keys.label(Command::ZoomIn), keys.label(Command::ZoomOut))),
+                ("Zoom", format!("Ctrl + wheel, {} / {}", keys.label(Command::ZoomIn), keys.label(Command::ZoomOut))),
+                ("Up and down", fixed("Wheel")),
+                ("Left and right", fixed("Shift + wheel")),
                 ("Pan", fixed("Drag, arrow keys")),
                 ("Fly to a file or folder", fixed("Double-click")),
                 ("Show everything", key(Command::ShowAll)),

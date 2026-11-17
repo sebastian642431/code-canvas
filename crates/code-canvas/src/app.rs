@@ -130,6 +130,8 @@ fn theme_of_extension(ext: &Extensions, key: &str) -> Option<canvas_render::them
 
 type Awaited = (PathBuf, Option<(u32, u32, u32)>);
 
+const WHEEL_NOTCH: f32 = 110.0;
+
 fn can_show(size: winit::dpi::PhysicalSize<u32>) -> bool {
     size.width >= 320 && size.height >= 200
 }
@@ -1413,6 +1415,23 @@ impl App {
                 self.after_edit();
             }
         }
+    }
+
+    fn wheel(&mut self, moved: [f32; 2], at: [f32; 2], zooming: bool, sideways: bool) {
+        let (vp, notch) = (self.viewport(), WHEEL_NOTCH * self.scale());
+        let [across, along] = moved;
+        self.share_let_go();
+        if let Some(page) = self.pages.get_mut(self.active) {
+            page.target = None;
+            match (zooming, sideways) {
+                (true, _) => page.camera.zoom_at(at, vp, 1.2f32.powf(along / notch)),
+                (false, true) => page.camera.pan_pixels(if along != 0.0 { along } else { across }, 0.0),
+                (false, false) => page.camera.pan_pixels(across, along),
+            }
+        }
+        self.session_dirty = true;
+        self.update_hover();
+        self.request_redraw();
     }
 
     fn keep_caret_visible(&mut self) {
@@ -3364,6 +3383,13 @@ impl App {
         for key in self.webviews.take_keys() {
             self.page_chord(&key);
         }
+        for wheel in self.webviews.take_wheels() {
+            let Some(place) = self.player_place().filter(|_| wheel.page == crate::media::PLAYER) else { continue };
+            let turned = self.scale() * WHEEL_NOTCH / 100.0;
+            let moved = [-wheel.moved[0] * turned, -wheel.moved[1] * turned];
+            let at = [place.x + wheel.at[0] * self.scale(), place.y + wheel.at[1] * self.scale()];
+            self.wheel(moved, at, wheel.ctrl, wheel.shift);
+        }
         for url in self.webviews.take_links() {
             self.follow_link(&url);
         }
@@ -4362,20 +4388,13 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.last_input = Instant::now();
-                let steps = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,
+                let notch = WHEEL_NOTCH * self.scale();
+                let moved = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => [x * notch, y * notch],
+                    MouseScrollDelta::PixelDelta(p) => [p.x as f32, p.y as f32],
                 };
-                let vp = self.viewport();
-                let cursor = self.cursor;
-                self.share_let_go();
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.target = None;
-                    page.camera.zoom_at(cursor, vp, 1.2f32.powf(steps));
-                }
-                self.session_dirty = true;
-                self.update_hover();
-                self.request_redraw();
+                let (zooming, sideways) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
+                self.wheel(moved, self.cursor, zooming, sideways);
             }
             WindowEvent::PinchGesture { delta, .. } => {
                 self.focus_folder_at(self.cursor);
