@@ -7,12 +7,13 @@ const KEPT: usize = 96;
 const AT_ONCE: usize = 3;
 const MAX_BYTES: u64 = 64 << 20;
 
-type Read = (PathBuf, Option<(egui::ColorImage, [u32; 2])>);
+type Picture = Result<(egui::ColorImage, [u32; 2]), &'static str>;
+type Read = (PathBuf, Picture);
 
 enum Slot {
     Reading,
     Shown { texture: egui::TextureHandle, size: [u32; 2], used: u64 },
-    Failed,
+    Failed(&'static str),
 }
 
 pub struct Pictures {
@@ -22,15 +23,22 @@ pub struct Pictures {
     frame: u64,
 }
 
-fn read(path: &Path) -> Option<(egui::ColorImage, [u32; 2])> {
-    if std::fs::metadata(path).ok()?.len() > MAX_BYTES {
-        return None;
+fn read(path: &Path) -> Picture {
+    match std::fs::metadata(path).map(|file| file.len()) {
+        Ok(0) => return Err("empty"),
+        Ok(bytes) if bytes > MAX_BYTES => return Err("too big to show here"),
+        Ok(_) => {}
+        Err(_) => return Err("cannot be read"),
     }
-    let whole = image::open(path).ok()?;
+    let whole = image::open(path).map_err(|why| match why {
+        image::ImageError::Unsupported(_) => "a kind of picture that cannot be shown here",
+        image::ImageError::IoError(_) => "cannot be read",
+        _ => "not a picture, or a damaged one",
+    })?;
     let size = [whole.width(), whole.height()];
     let shown = if size[0].max(size[1]) > SIDE { whole.thumbnail(SIDE, SIDE) } else { whole }.to_rgba8();
     let pixels = [shown.width() as usize, shown.height() as usize];
-    Some((egui::ColorImage::from_rgba_unmultiplied(pixels, shown.as_raw()), size))
+    Ok((egui::ColorImage::from_rgba_unmultiplied(pixels, shown.as_raw()), size))
 }
 
 impl Pictures {
@@ -43,12 +51,12 @@ impl Pictures {
         self.frame += 1;
         while let Ok((path, read)) = self.rx.try_recv() {
             let slot = match read {
-                Some((image, size)) => {
+                Ok((image, size)) => {
                     let name = path.to_string_lossy().into_owned();
                     let texture = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
                     Slot::Shown { texture, size, used: self.frame }
                 }
-                None => Slot::Failed,
+                Err(why) => Slot::Failed(why),
             };
             self.slots.insert(path, slot);
         }
@@ -82,6 +90,13 @@ impl Pictures {
             });
         }
         None
+    }
+
+    pub fn problem(&self, path: &Path) -> Option<&'static str> {
+        match self.slots.get(path) {
+            Some(Slot::Failed(why)) => Some(why),
+            _ => None,
+        }
     }
 
     pub fn forget(&mut self, path: &Path) {

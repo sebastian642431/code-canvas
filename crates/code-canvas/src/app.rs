@@ -4432,7 +4432,8 @@ impl App {
                         self.curves_for = Some(page.id);
                     }
                     let view = page.camera.view(vp);
-                    canvas_overlay = overlay::build(page, view, area, s, &filters, &self.ext, &mut g.renderer.text);
+                    let (ext, pictures) = (&self.ext, &self.pictures);
+                    canvas_overlay = overlay::build(page, view, area, s, &filters, ext, pictures, &mut g.renderer.text);
                 }
                 None => {
                     if self.curves_for.take().is_some() {
@@ -4505,7 +4506,8 @@ impl App {
         for i in shown.iter().copied().filter(|i| *i != self.active) {
             let Some(page) = self.pages.get_mut(i) else { continue };
             let view = page.camera.view(vp);
-            let over = overlay::build(page, view, pane, s, &filters, &self.ext, &mut g.renderer.text);
+            let (ext, pictures) = (&self.ext, &self.pictures);
+            let over = overlay::build(page, view, pane, s, &filters, ext, pictures, &mut g.renderer.text);
             let labels: Vec<Label> = over.labels.iter().map(|l| l.as_label()).collect();
             let chip_labels: Vec<Label> = over.chip_labels.iter().map(|l| l.as_label()).collect();
             let id = page.id;

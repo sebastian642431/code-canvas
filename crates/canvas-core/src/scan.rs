@@ -547,13 +547,24 @@ fn read_sized(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn binary_note(size: Option<u64>) -> String {
+    match size {
+        None => "binary".to_string(),
+        Some(1) => "binary, 1 byte".to_string(),
+        Some(bytes) if bytes < 10_000 => format!("binary, {bytes} bytes"),
+        Some(bytes) if bytes < 10_000_000 => format!("binary, {} KB", bytes / 1024),
+        Some(bytes) => format!("binary, {} MB", bytes / (1024 * 1024)),
+    }
+}
+
 fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOptions) -> SourceFile {
     let mut t = Instant::now();
     if let Some(what) = media_kind(&rel_path) {
         return SourceFile::media(rel_path, what);
     }
     if is_binary_name(&rel_path) {
-        return SourceFile::placeholder(rel_path, "binary".into());
+        let size = size.or_else(|| std::fs::metadata(path).ok().map(|m| m.len()));
+        return SourceFile::placeholder(rel_path, binary_note(size));
     }
     let size = match size.map(Ok).unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len())) {
         Ok(size) => size,
@@ -569,7 +580,7 @@ fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOption
     };
     lap(1, &mut t);
     if bytes[..bytes.len().min(8000)].contains(&0) {
-        return SourceFile::placeholder(rel_path, "binary".into());
+        return SourceFile::placeholder(rel_path, binary_note(Some(size)));
     }
     let file = build_file(rel_path, &String::from_utf8_lossy(&bytes), opts);
     lap(3, &mut t);
@@ -827,6 +838,15 @@ mod tests {
         assert_eq!(t, "a   b\nxy");
         assert_eq!(starts, vec![0, 6]);
         assert_eq!(cols, 5);
+    }
+
+    #[test]
+    fn a_binary_file_says_how_big_it_is() {
+        assert_eq!(binary_note(None), "binary");
+        assert_eq!(binary_note(Some(1)), "binary, 1 byte");
+        assert_eq!(binary_note(Some(2048)), "binary, 2048 bytes");
+        assert_eq!(binary_note(Some(250_000)), "binary, 244 KB");
+        assert_eq!(binary_note(Some(64 << 20)), "binary, 64 MB");
     }
 
     #[test]

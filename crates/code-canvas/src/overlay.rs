@@ -275,6 +275,7 @@ fn selection_overlay(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     page: &Page,
     view: View,
@@ -282,6 +283,7 @@ pub fn build(
     s: f32,
     filters: &RelFilters,
     ext: &Extensions,
+    pictures: &crate::pictures::Pictures,
     text: &mut TextLayer,
 ) -> CanvasOverlay {
     let mut out = CanvasOverlay::default();
@@ -391,12 +393,17 @@ pub fn build(
                     }
                 }
             }
-            NodeKind::File(_) => {
-                let played = canvas_core::scan::media_kind(&n.rel_path).filter(|what| *what != "picture");
-                if let (Some(what), true) = (played, n.rect.h * z >= 90.0) {
-                    let word = format!("{what}  ·  click to play");
-                    let size = (13.0 * s).round();
-                    let width = text.measure(&word, size, false);
+            NodeKind::File(fi) => {
+                let h_px = n.rect.h * z;
+                let word = match (canvas_core::scan::media_kind(&n.rel_path), repo.files[fi].note.as_deref()) {
+                    (Some("picture"), _) => pictures.problem(&page.root.join(&n.rel_path)).map(str::to_string),
+                    (Some(what), _) => (h_px >= 90.0).then(|| format!("{what}  ·  click to play")),
+                    (None, Some(note)) if !note.starts_with("truncated") => Some(note.to_string()),
+                    _ => None,
+                };
+                let size = (13.0 * s).min((h_px - 2.0) / 1.3).floor();
+                let said = word.filter(|_| size >= 9.0 * s).map(|word| (text.measure(&word, size, false), word));
+                if let Some((width, word)) = said.filter(|(width, _)| width + 8.0 * s <= w_px) {
                     let middle = view.to_screen(n.rect.center());
                     out.labels.push(OwnedLabel {
                         text: word,
