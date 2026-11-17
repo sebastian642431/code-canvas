@@ -959,7 +959,13 @@ const config = {
     'editor.tabSize': 4,
     'editor.insertSpaces': true,
     'editor.detectIndentation': true,
-    'editor.formatOnSave': false,
+    // Formatting works without setting anything up: saving formats the file
+    // with Prettier where it is installed and knows the language (another
+    // formatter is used where it does not). Prose is left as it was typed.
+    'editor.formatOnSave': true,
+    'editor.defaultFormatter': 'esbenp.prettier-vscode',
+    '[markdown]': { 'editor.formatOnSave': false },
+    '[plaintext]': { 'editor.formatOnSave': false },
     'editor.codeActionsOnSave': {},
     'files.eol': 'auto',
     'files.encoding': 'utf8',
@@ -2122,8 +2128,8 @@ const requests = {
     const doc = openDocument(file, true);
     if (!doc) throw new Error('cannot read the file');
     const cfg = getConfiguration('editor', doc);
-    // Saving formats only when the user's settings say so (`editor.formatOnSave`).
-    if (onSave && !cfg.get('formatOnSave', false)) return { changed: false, skipped: true };
+    // Saving formats unless the settings say not to (`editor.formatOnSave`).
+    if (onSave && !cfg.get('formatOnSave', true)) return { changed: false, skipped: true };
     const candidates = providersFor('DocumentFormattingEdit', doc);
     if (candidates.length === 0) {
       if (onSave) return { changed: false, skipped: true };

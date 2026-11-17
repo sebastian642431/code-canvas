@@ -15,6 +15,7 @@ mod ext;
 mod git;
 mod icon;
 mod icons;
+mod keys;
 mod overlay;
 mod page;
 mod script;

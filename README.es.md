@@ -27,7 +27,7 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Buscar**: explorador con casillas y filtro, `Ctrl+P` para ir a un archivo,
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
 - **Edición**: el código legible es un editor: clic y a escribir, con deshacer,
-  copiar y pegar y `Ctrl+S`. Formatea al guardar si tu configuración lo pide, los
+  copiar y pegar y `Ctrl+S`. Formatea al guardar (se apaga con `editor.formatOnSave`), los
   problemas se actualizan mientras escribís y los archivos cambiados por otro programa
   se recargan solos. `Ctrl+Shift+P` abre la paleta de comandos.
 - **Extensiones de VS Code**: instala las mismas extensiones `.vsix` desde

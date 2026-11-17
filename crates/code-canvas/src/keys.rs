@@ -1,0 +1,445 @@
+//! Keyboard shortcuts: what can be bound to a key, the keys each command has
+//! from the start, and the user's changes.
+//!
+//! The changes are stored as `keybindings.json` in the data directory: the
+//! id of a command and the chords it answers to, replacing its own. An
+//! empty list leaves the command without a shortcut.
+//!
+//! ```json
+//! { "goToFile": ["ctrl+e"], "rescan": [] }
+//! ```
+//!
+//! The keys of the text editor itself (arrows, Ctrl+C, Ctrl+Z, Ctrl+S…) are
+//! not in this table: they are what every editor does.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+/// Something a shortcut can do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Command {
+    Palette,
+    GoToFile,
+    SearchInFiles,
+    FormatFile,
+    GoToDefinition,
+    OpenFolder,
+    CloseFolder,
+    NextFolder,
+    PreviousFolder,
+    Rescan,
+    ToggleLeftPanel,
+    Settings,
+    ShowAll,
+    GoToSelection,
+    ZoomToParent,
+    ZoomIn,
+    ZoomOut,
+    PanLeft,
+    PanRight,
+    PanUp,
+    PanDown,
+}
+
+/// Where a shortcut is listened to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    /// Wherever the keyboard is: a text field, an extension's web page.
+    Anywhere,
+    /// The window, but not while typing in one of the app's text fields.
+    Window,
+    /// The canvas: keys nothing else wanted, plain letters among them.
+    Canvas,
+}
+
+pub struct CommandInfo {
+    pub command: Command,
+    /// Its name in `keybindings.json`.
+    pub id: &'static str,
+    /// Its name on screen.
+    pub title: &'static str,
+    /// The heading it is listed under.
+    pub group: &'static str,
+    pub scope: Scope,
+    /// The chords it has unless the user says otherwise.
+    pub defaults: &'static [&'static str],
+}
+
+const fn info(
+    command: Command,
+    id: &'static str,
+    title: &'static str,
+    group: &'static str,
+    scope: Scope,
+    defaults: &'static [&'static str],
+) -> CommandInfo {
+    CommandInfo { command, id, title, group, scope, defaults }
+}
+
+/// Every command, in the order the settings panel lists them.
+pub const COMMANDS: &[CommandInfo] = &[
+    info(Command::Palette, "commandPalette", "Command palette", "Find", Scope::Anywhere, &["ctrl+shift+p", "f1"]),
+    info(Command::GoToFile, "goToFile", "Go to a file or folder", "Find", Scope::Anywhere, &["ctrl+p"]),
+    info(Command::SearchInFiles, "searchInFiles", "Search in files", "Find", Scope::Anywhere, &["ctrl+shift+f"]),
+    info(Command::GoToDefinition, "goToDefinition", "Go to the definition", "Find", Scope::Canvas, &["f12"]),
+    info(
+        Command::OpenFolder,
+        "openFolder",
+        "Open a folder in a new canvas",
+        "Folders",
+        Scope::Window,
+        &["ctrl+o", "ctrl+t"],
+    ),
+    info(Command::CloseFolder, "closeFolder", "Close the canvas", "Folders", Scope::Window, &["ctrl+w"]),
+    info(Command::NextFolder, "nextFolder", "Next canvas", "Folders", Scope::Window, &["ctrl+tab"]),
+    info(Command::PreviousFolder, "previousFolder", "Previous canvas", "Folders", Scope::Window, &["ctrl+shift+tab"]),
+    info(Command::Rescan, "rescan", "Reload the folder from disk", "Folders", Scope::Window, &["f5", "ctrl+r"]),
+    info(
+        Command::FormatFile,
+        "formatFile",
+        "Format the file under the pointer",
+        "Editing",
+        Scope::Window,
+        &["shift+alt+f"],
+    ),
+    info(
+        Command::ToggleLeftPanel,
+        "toggleLeftPanel",
+        "Show or hide the left panel",
+        "Panels",
+        Scope::Window,
+        &["ctrl+b"],
+    ),
+    info(Command::Settings, "settings", "Settings", "Panels", Scope::Window, &["ctrl+,"]),
+    info(Command::ShowAll, "showAll", "Show the whole canvas", "Canvas", Scope::Canvas, &["f", "home"]),
+    info(Command::GoToSelection, "goToSelection", "Go to the selection", "Canvas", Scope::Canvas, &["l"]),
+    info(
+        Command::ZoomToParent,
+        "zoomToParent",
+        "Zoom out to the parent folder",
+        "Canvas",
+        Scope::Canvas,
+        &["backspace"],
+    ),
+    info(Command::ZoomIn, "zoomIn", "Zoom in", "Canvas", Scope::Canvas, &["+", "=", "ctrl++", "ctrl+="]),
+    info(Command::ZoomOut, "zoomOut", "Zoom out", "Canvas", Scope::Canvas, &["-", "ctrl+-"]),
+    info(Command::PanLeft, "panLeft", "Move left", "Canvas", Scope::Canvas, &["left"]),
+    info(Command::PanRight, "panRight", "Move right", "Canvas", Scope::Canvas, &["right"]),
+    info(Command::PanUp, "panUp", "Move up", "Canvas", Scope::Canvas, &["up"]),
+    info(Command::PanDown, "panDown", "Move down", "Canvas", Scope::Canvas, &["down"]),
+];
+
+impl Command {
+    pub fn info(self) -> &'static CommandInfo {
+        COMMANDS.iter().find(|c| c.command == self).expect("every command is in COMMANDS")
+    }
+}
+
+/// A key with its modifiers. `key` is lower case: a character (`"p"`,
+/// `"+"`) or a name (`"f5"`, `"tab"`, `"left"`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Chord {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub key: String,
+}
+
+impl Chord {
+    /// A key as it was pressed. Browsers say `arrowleft` where we say `left`.
+    pub fn new(key: &str, ctrl: bool, shift: bool, alt: bool) -> Chord {
+        let key = key.to_lowercase();
+        let key = key.strip_prefix("arrow").filter(|rest| !rest.is_empty()).unwrap_or(&key).to_string();
+        // Shift is how many symbols are typed at all (`+` is Shift+`=` on
+        // some keyboards and a key of its own on others): for them it says
+        // nothing. Letters and named keys keep it.
+        let symbol = key.chars().count() == 1 && !key.chars().all(char::is_alphanumeric);
+        Chord { ctrl, shift: shift && !symbol, alt, key }
+    }
+
+    /// Reads `ctrl+shift+p`, `f5`, `ctrl++`.
+    pub fn parse(text: &str) -> Option<Chord> {
+        let mut rest = text.trim().to_lowercase();
+        let (mut ctrl, mut shift, mut alt) = (false, false, false);
+        loop {
+            let found = [("ctrl+", 0), ("shift+", 1), ("alt+", 2)]
+                .into_iter()
+                .find(|(p, _)| rest.starts_with(p) && rest.len() > p.len());
+            let Some((prefix, which)) = found else { break };
+            match which {
+                0 => ctrl = true,
+                1 => shift = true,
+                _ => alt = true,
+            }
+            rest = rest[prefix.len()..].to_string();
+        }
+        // What is left is the key: one character, or a name.
+        let valid = rest.chars().count() == 1 || (!rest.is_empty() && rest.chars().all(char::is_alphanumeric));
+        valid.then(|| Chord::new(&rest, ctrl, shift, alt))
+    }
+
+    /// As [`Chord::parse`] reads it.
+    pub fn to_text(&self) -> String {
+        let mut out = String::new();
+        for (on, name) in [(self.ctrl, "ctrl+"), (self.shift, "shift+"), (self.alt, "alt+")] {
+            if on {
+                out.push_str(name);
+            }
+        }
+        out + &self.key
+    }
+
+    /// As people write it: `Ctrl+Shift+P`.
+    pub fn label(&self) -> String {
+        let mut out = String::new();
+        for (on, name) in [(self.ctrl, "Ctrl+"), (self.shift, "Shift+"), (self.alt, "Alt+")] {
+            if on {
+                out.push_str(name);
+            }
+        }
+        let key = match self.key.as_str() {
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "-" => "−".to_string(),
+            "pageup" => "Page Up".to_string(),
+            "pagedown" => "Page Down".to_string(),
+            k => {
+                let mut c = k.chars();
+                c.next().map(|first| first.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            }
+        };
+        out + &key
+    }
+
+    /// A character on its own (or with Shift): what typing produces. Only
+    /// the canvas can listen to these.
+    pub fn is_typing(&self) -> bool {
+        !self.ctrl && !self.alt && self.key.chars().count() == 1
+    }
+}
+
+/// The user's changes: command id → the chords it has instead of its own.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct KeyFile(pub BTreeMap<String, Vec<String>>);
+
+impl KeyFile {
+    /// The chords `command` answers to: the user's, else its own.
+    pub fn chords(&self, command: Command) -> Vec<Chord> {
+        let info = command.info();
+        match self.0.get(info.id) {
+            Some(list) => list.iter().filter_map(|t| Chord::parse(t)).collect(),
+            None => info.defaults.iter().filter_map(|t| Chord::parse(t)).collect(),
+        }
+    }
+
+    pub fn is_changed(&self, command: Command) -> bool {
+        self.0.contains_key(command.info().id)
+    }
+
+    /// Make `chord` the shortcut of `command`, taking it away from whichever
+    /// command had it. False when that chord cannot be used for it: a plain
+    /// letter would make typing impossible outside the canvas.
+    pub fn bind(&mut self, command: Command, chord: Chord) -> bool {
+        if chord.is_typing() && command.info().scope != Scope::Canvas {
+            return false;
+        }
+        for other in COMMANDS.iter().filter(|c| c.command != command) {
+            let chords = self.chords(other.command);
+            if chords.contains(&chord) {
+                let left: Vec<Chord> = chords.into_iter().filter(|c| *c != chord).collect();
+                self.store(other.command, &left);
+            }
+        }
+        self.store(command, &[chord]);
+        true
+    }
+
+    /// Leave `command` without a shortcut.
+    pub fn unbind(&mut self, command: Command) {
+        self.store(command, &[]);
+    }
+
+    /// Give `command` its own shortcuts back.
+    pub fn reset(&mut self, command: Command) {
+        self.0.remove(command.info().id);
+    }
+
+    /// Remember `chords` for `command`, unless they are simply its own.
+    fn store(&mut self, command: Command, chords: &[Chord]) {
+        let info = command.info();
+        let own: Vec<Chord> = info.defaults.iter().filter_map(|t| Chord::parse(t)).collect();
+        if own == chords {
+            self.0.remove(info.id);
+        } else {
+            self.0.insert(info.id.to_string(), chords.iter().map(Chord::to_text).collect());
+        }
+    }
+}
+
+/// Chord → command, built from a [`KeyFile`]; what the app asks on every key.
+#[derive(Clone, Debug, Default)]
+pub struct Keymap {
+    bound: Vec<(Chord, Command)>,
+}
+
+impl Keymap {
+    pub fn new(file: &KeyFile) -> Keymap {
+        let mut bound = Vec::new();
+        for info in COMMANDS {
+            for chord in file.chords(info.command) {
+                // A chord means one thing: the first command listed keeps it.
+                if !bound.iter().any(|(c, _)| *c == chord) {
+                    bound.push((chord, info.command));
+                }
+            }
+        }
+        Keymap { bound }
+    }
+
+    pub fn command(&self, chord: &Chord) -> Option<Command> {
+        self.bound.iter().find(|(c, _)| c == chord).map(|(_, command)| *command)
+    }
+
+    pub fn chords(&self, command: Command) -> impl Iterator<Item = &Chord> {
+        self.bound.iter().filter(move |(_, c)| *c == command).map(|(chord, _)| chord)
+    }
+
+    /// The main shortcut of `command` as people write it, `""` without one.
+    pub fn label(&self, command: Command) -> String {
+        self.chords(command).next().map(Chord::label).unwrap_or_default()
+    }
+
+    /// `"Close this folder (Ctrl+W)"`, or just the text without a shortcut.
+    pub fn hint(&self, text: &str, command: Command) -> String {
+        match self.label(command) {
+            key if key.is_empty() => text.to_string(),
+            key => format!("{text} ({key})"),
+        }
+    }
+}
+
+fn path() -> PathBuf {
+    crate::session::data_dir().join("keybindings.json")
+}
+
+pub fn load() -> KeyFile {
+    match std::fs::read_to_string(path()) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+            log::warn!("ignoring unreadable keybindings file: {e}");
+            KeyFile::default()
+        }),
+        Err(_) => KeyFile::default(),
+    }
+}
+
+pub fn save(file: &KeyFile) {
+    let path = path();
+    let tmp = path.with_extension("json.tmp");
+    let result = serde_json::to_string_pretty(file)
+        .map_err(std::io::Error::other)
+        .and_then(|json| std::fs::write(&tmp, json))
+        .and_then(|_| std::fs::rename(&tmp, &path));
+    if let Err(e) = result {
+        log::warn!("could not save the keybindings to {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chord(text: &str) -> Chord {
+        Chord::parse(text).unwrap()
+    }
+
+    #[test]
+    fn chords_parse_and_print() {
+        assert_eq!(chord("ctrl+shift+p"), Chord { ctrl: true, shift: true, alt: false, key: "p".into() });
+        assert_eq!(chord("F5"), Chord { ctrl: false, shift: false, alt: false, key: "f5".into() });
+        assert_eq!(chord("ctrl++").key, "+");
+        assert_eq!(chord("shift+alt+f").label(), "Shift+Alt+F");
+        assert_eq!(chord("ctrl+tab").label(), "Ctrl+Tab");
+        assert_eq!(chord("left").label(), "←");
+        for text in ["ctrl+shift+p", "f1", "ctrl++", "shift+alt+f", "ctrl+,", "-"] {
+            assert_eq!(chord(text).to_text(), text);
+        }
+        for bad in ["", "ctrl+", "ctrl+shift+", "two words", "ctrl+p+q"] {
+            assert_eq!(Chord::parse(bad), None, "{bad:?} is not a chord");
+        }
+    }
+
+    #[test]
+    fn a_key_as_pressed_matches_how_it_is_written() {
+        // Ctrl+Shift+P arrives as an upper case "P" with Shift held.
+        assert_eq!(Chord::new("P", true, true, false), chord("ctrl+shift+p"));
+        // "+" needs Shift on some keyboards and not on others.
+        assert_eq!(Chord::new("+", false, true, false), chord("+"));
+        // Web pages name the arrows differently.
+        assert_eq!(Chord::new("ArrowLeft", false, false, false), chord("left"));
+    }
+
+    #[test]
+    fn every_default_is_valid_and_unique() {
+        let map = Keymap::new(&KeyFile::default());
+        let mut seen: Vec<Chord> = Vec::new();
+        for info in COMMANDS {
+            assert!(!info.defaults.is_empty(), "{} has no shortcut", info.id);
+            for text in info.defaults {
+                let c = Chord::parse(text).unwrap_or_else(|| panic!("{text} is not a chord"));
+                assert!(!seen.contains(&c), "{text} is given to two commands");
+                assert!(!c.is_typing() || info.scope == Scope::Canvas, "{text} would be typed, not run");
+                assert_eq!(map.command(&c), Some(info.command));
+                seen.push(c);
+            }
+        }
+        let mut ids: Vec<&str> = COMMANDS.iter().map(|c| c.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn binding_takes_the_chord_from_its_owner() {
+        let mut file = KeyFile::default();
+        assert!(file.bind(Command::GoToFile, chord("ctrl+w")));
+        let map = Keymap::new(&file);
+        assert_eq!(map.command(&chord("ctrl+w")), Some(Command::GoToFile));
+        assert_eq!(map.command(&chord("ctrl+p")), None);
+        assert_eq!(map.label(Command::CloseFolder), "");
+        assert_eq!(map.hint("Close", Command::CloseFolder), "Close");
+        assert_eq!(map.hint("Go", Command::GoToFile), "Go (Ctrl+W)");
+
+        // Back to its own keys: nothing is left in the file for it.
+        file.reset(Command::GoToFile);
+        file.reset(Command::CloseFolder);
+        assert_eq!(file, KeyFile::default());
+    }
+
+    #[test]
+    fn plain_letters_are_for_the_canvas_only() {
+        let mut file = KeyFile::default();
+        assert!(!file.bind(Command::GoToFile, chord("g")));
+        assert!(file.bind(Command::ShowAll, chord("g")));
+        assert!(file.bind(Command::GoToFile, chord("f2")));
+        let expected: BTreeMap<String, Vec<String>> = [("showAll", "g"), ("goToFile", "f2")]
+            .into_iter()
+            .map(|(id, key)| (id.to_string(), vec![key.to_string()]))
+            .collect();
+        assert_eq!(file.0, expected);
+    }
+
+    #[test]
+    fn the_file_reads_like_the_example() {
+        let file: KeyFile =
+            serde_json::from_str(r#"{ "goToFile": ["ctrl+e"], "rescan": [], "noSuchCommand": ["f9"] }"#).unwrap();
+        let map = Keymap::new(&file);
+        assert_eq!(map.command(&chord("ctrl+e")), Some(Command::GoToFile));
+        assert_eq!(map.command(&chord("f5")), None);
+        assert_eq!(map.command(&chord("f9")), None);
+        assert!(file.is_changed(Command::Rescan));
+        assert!(!file.is_changed(Command::ZoomIn));
+    }
+}

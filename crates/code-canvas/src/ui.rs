@@ -27,6 +27,8 @@ mod ext_panels;
 mod git_panel;
 mod settings_panel;
 
+use crate::keys::{Command, Keymap};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LeftPanel {
     Files,
@@ -90,6 +92,12 @@ pub struct UiState {
     /// The theme chosen and the colours changed on top of it. The app keeps
     /// it in step with what is on screen and on disk.
     pub theme: crate::themes::ThemeFile,
+    /// The shortcuts in use, and the user's changes they were built from.
+    pub keys: Keymap,
+    pub key_file: crate::keys::KeyFile,
+    /// The command whose new shortcut the settings panel is waiting for:
+    /// the next key pressed becomes it.
+    pub rebinding: Option<Command>,
 }
 
 impl Default for UiState {
@@ -113,6 +121,9 @@ impl Default for UiState {
             webview_rect: None,
             ext_icons: Default::default(),
             theme: Default::default(),
+            keys: Keymap::new(&Default::default()),
+            key_file: Default::default(),
+            rebinding: None,
         }
     }
 }
@@ -193,6 +204,10 @@ pub enum Action {
     SetColor(&'static str, u32),
     /// Forget every colour changed by hand.
     ResetColors,
+    /// Give a command its own shortcuts back.
+    ResetKey(Command),
+    /// Leave a command without a shortcut.
+    UnbindKey(Command),
     // The window itself (it has no system title bar).
     DragWindow,
     ToggleMaximize,
@@ -442,7 +457,7 @@ pub fn build(
             LeftPanel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
             LeftPanel::Changes => git_panel::changes_panel(ui, pages.get_mut(active), actions),
             LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
-            LeftPanel::Help => help_panel(ui),
+            LeftPanel::Help => help_panel(ui, &st.keys),
             LeftPanel::Settings => settings_panel::settings_panel(ui, st, actions),
         });
     }
@@ -457,7 +472,7 @@ pub fn build(
 
     let canvas = ui.available_rect_before_wrap();
     let ctx = ui.ctx().clone();
-    center_message(ui, canvas, pages.get(active));
+    center_message(ui, canvas, pages.get(active), &st.keys);
     toolbar(&ctx, st, canvas, info, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
@@ -499,7 +514,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 )
                 .frame(false),
             );
-            if rescan.on_hover_text("Reload the folder from disk (F5)").clicked() {
+            if rescan.on_hover_text(st.keys.hint("Reload the folder from disk", Command::Rescan)).clicked() {
                 actions.push(Action::Rescan);
             }
             ui.add_space(8.0);
@@ -553,7 +568,8 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 FontId::proportional(14.0),
                 pal().text_dim,
             );
-            let hint = if w > 330.0 { "Go to a file or folder by name (Ctrl+P)" } else { "Go to file (Ctrl+P)" };
+            let hint = if w > 330.0 { "Go to a file or folder by name" } else { "Go to file" };
+            let hint = st.keys.hint(hint, Command::GoToFile);
             ui.painter().text(
                 Pos2::new(rect.left() + 34.0, rect.center().y),
                 Align2::LEFT_CENTER,
@@ -642,15 +658,19 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
         ui.spacing_mut().item_spacing.y = 2.0;
         let b = Vec2::splat(34.0);
         for (panel, glyph, tip) in [
-            (LeftPanel::Files, icons::FOLDER, "Files (Ctrl+B)"),
-            (LeftPanel::Search, icons::TEXT_SEARCH, "Search in files (Ctrl+Shift+F)"),
+            (LeftPanel::Files, icons::FOLDER, st.keys.hint("Files", Command::ToggleLeftPanel)),
+            (LeftPanel::Search, icons::TEXT_SEARCH, st.keys.hint("Search in files", Command::SearchInFiles)),
             (
                 LeftPanel::Changes,
                 crate::codicons::glyph("source-control").unwrap_or(icons::GIT_GRAPH),
-                "Source control",
+                "Source control".to_string(),
             ),
-            (LeftPanel::Extensions, crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE), "Extensions"),
-            (LeftPanel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions"),
+            (
+                LeftPanel::Extensions,
+                crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE),
+                "Extensions".to_string(),
+            ),
+            (LeftPanel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions".to_string()),
         ] {
             let resp = icon_button(ui, glyph, b, st.left == Some(panel), pal().hover);
             if panel == LeftPanel::Problems {
@@ -679,13 +699,13 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
             if icon_button(ui, icons::PANEL_LEFT, b, false, pal().hover)
-                .on_hover_text("Show or hide the left panel (Ctrl+B)")
+                .on_hover_text(st.keys.hint("Show or hide the left panel", Command::ToggleLeftPanel))
                 .clicked()
             {
                 st.toggle_left();
             }
             for (panel, glyph, tip) in [
-                (LeftPanel::Settings, icons::SETTINGS, "Settings: theme and colours"),
+                (LeftPanel::Settings, icons::SETTINGS, "Settings: theme, colours, shortcuts"),
                 (LeftPanel::Help, icons::CIRCLE_HELP, "Keyboard and mouse shortcuts"),
             ] {
                 if icon_button(ui, glyph, b, st.left == Some(panel), pal().hover).on_hover_text(tip).clicked() {
@@ -828,7 +848,14 @@ fn file_glyph(name: &str) -> &'static str {
 
 /// The open folders as a menu: pick one, close one, open another. Each
 /// folder is its own canvas.
-fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: usize, actions: &mut Vec<Action>) {
+fn folder_switcher(
+    ui: &mut egui::Ui,
+    open: &mut bool,
+    keys: &Keymap,
+    pages: &[Page],
+    active: usize,
+    actions: &mut Vec<Action>,
+) {
     let title = match pages.get(active) {
         Some(p) if p.is_loading() => format!("{} …", p.title),
         Some(p) => p.title.clone(),
@@ -895,7 +922,7 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
                 PageState::Waiting => "not read yet · ".to_string(),
                 _ => String::new(),
             };
-            if close.on_hover_text("Close this folder (Ctrl+W)").clicked() {
+            if close.on_hover_text(keys.hint("Close this folder", Command::CloseFolder)).clicked() {
                 actions.push(Action::CloseTab(i));
                 ui.close();
             } else if resp.on_hover_text(format!("{files}{}", p.root.display())).clicked() {
@@ -931,7 +958,7 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
         ui.painter().text(
             Pos2::new(rect.right() - 10.0, mid),
             Align2::RIGHT_CENTER,
-            "Ctrl+O",
+            keys.label(Command::OpenFolder),
             FontId::proportional(11.5),
             pal().text_faint,
         );
@@ -944,7 +971,7 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
     if std::mem::take(open) {
         egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&button.response));
     }
-    button.response.on_hover_text("Switch folder (Ctrl+Tab)");
+    button.response.on_hover_text(keys.hint("Switch folder", Command::NextFolder));
 }
 
 fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
@@ -952,7 +979,7 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                if small_icon(ui, icons::PLUS, "Open a folder in a new canvas (Ctrl+O)") {
+                if small_icon(ui, icons::PLUS, &st.keys.hint("Open a folder in a new canvas", Command::OpenFolder)) {
                     actions.push(Action::OpenFolder);
                 }
                 if small_icon(ui, icons::EYE, "Put every hidden file back on the canvas") {
@@ -966,7 +993,7 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
                 }
                 // The folder being shown: what is left of the row.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    folder_switcher(ui, &mut st.open_folder_menu, pages, active, actions)
+                    folder_switcher(ui, &mut st.open_folder_menu, &st.keys, pages, active, actions)
                 });
             });
         });
@@ -1206,59 +1233,84 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
     });
 }
 
-fn help_panel(ui: &mut egui::Ui) {
+fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
+    // What a command answers to right now: every chord it has.
+    let key = |command: Command| -> String {
+        let all: Vec<String> = keys.chords(command).map(|c| c.label()).collect();
+        if all.is_empty() {
+            "no shortcut".to_string()
+        } else {
+            all.join(" or ")
+        }
+    };
+    let fixed = |text: &str| text.to_string();
+    let groups: Vec<(&str, Vec<(&str, String)>)> = vec![
+        (
+            "Canvas",
+            vec![
+                ("Zoom", format!("Mouse wheel, {} / {}", keys.label(Command::ZoomIn), keys.label(Command::ZoomOut))),
+                ("Pan", fixed("Drag, arrow keys")),
+                ("Fly to a file or folder", fixed("Double-click")),
+                ("Show everything", key(Command::ShowAll)),
+                ("Go to the selection", key(Command::GoToSelection)),
+                ("Zoom out to the parent folder", key(Command::ZoomToParent)),
+                ("Collapse / expand a folder", fixed("Click − / + next to its name")),
+            ],
+        ),
+        (
+            "Symbols",
+            vec![
+                ("See where a name is used", fixed("Click it (zoomed in to text)")),
+                ("Select a function", fixed("Click inside it")),
+                ("Deselect", fixed("Click it again, or Esc for all")),
+                ("Go to the definition", key(Command::GoToDefinition)),
+            ],
+        ),
+        (
+            "Find",
+            vec![
+                ("Go to a file or folder", key(Command::GoToFile)),
+                ("Search in files", key(Command::SearchInFiles)),
+                ("Run a command", key(Command::Palette)),
+            ],
+        ),
+        (
+            "Extensions",
+            vec![
+                ("Format the file under the pointer", key(Command::FormatFile)),
+                ("See a problem's message", fixed("Point at the underlined code")),
+            ],
+        ),
+        (
+            "Folders and panels",
+            vec![
+                ("Open a folder in a new canvas", format!("{}, or drop it", key(Command::OpenFolder))),
+                (
+                    "Next / previous canvas",
+                    format!("{} / {}", keys.label(Command::NextFolder), keys.label(Command::PreviousFolder)),
+                ),
+                ("Go to canvas N", fixed("Ctrl+1 … Ctrl+9")),
+                ("Close the canvas", key(Command::CloseFolder)),
+                ("Reload from disk", key(Command::Rescan)),
+                ("Toggle the left panel", key(Command::ToggleLeftPanel)),
+                ("Settings", key(Command::Settings)),
+            ],
+        ),
+    ];
     Frame::NONE.inner_margin(Margin { left: 12, right: 10, top: 10, bottom: 6 }).show(ui, |ui| {
         panel_title(ui, "Shortcuts", |_| {});
-        ui.add_space(6.0);
+        ui.add_space(2.0);
+        ui.label(RichText::new("Change them in Settings.").size(11.5).color(pal().text_faint));
+        ui.add_space(4.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (title, rows) in [
-                (
-                    "Canvas",
-                    &[
-                        ("Zoom", "Mouse wheel, + / −"),
-                        ("Pan", "Drag, arrow keys"),
-                        ("Fly to a file or folder", "Double-click"),
-                        ("Show everything", "F or Home"),
-                        ("Go to the selection", "L"),
-                        ("Zoom out to the parent folder", "Backspace"),
-                        ("Collapse / expand a folder", "Click − / + next to its name"),
-                    ][..],
-                ),
-                (
-                    "Symbols",
-                    &[
-                        ("See where a name is used", "Click it (zoomed in to text)"),
-                        ("Select a function", "Click inside it"),
-                        ("Deselect", "Click it again, or Esc for all"),
-                    ][..],
-                ),
-                ("Find", &[("Go to a file or folder", "Ctrl+P"), ("Search in files", "Ctrl+Shift+F")][..]),
-                (
-                    "Extensions",
-                    &[
-                        ("Format the file under the pointer", "Shift+Alt+F"),
-                        ("See a problem's message", "Point at the underlined code"),
-                    ][..],
-                ),
-                (
-                    "Folders and panels",
-                    &[
-                        ("Open a folder in a new canvas", "Ctrl+O, or drop it"),
-                        ("Next / previous canvas", "Ctrl+Tab / Ctrl+Shift+Tab"),
-                        ("Go to canvas N", "Ctrl+1 … Ctrl+9"),
-                        ("Close the canvas", "Ctrl+W"),
-                        ("Reload from disk", "F5"),
-                        ("Toggle the left panel", "Ctrl+B"),
-                    ][..],
-                ),
-            ] {
+            for (title, rows) in &groups {
                 section(ui, icons::CHEVRON_DOWN, title);
                 well(ui, |ui| {
                     for (what, keys) in rows {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(*what).size(12.5).color(pal().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(*keys).size(12.0).color(pal().text_dim));
+                                ui.label(RichText::new(keys).size(12.0).color(pal().text_dim));
                             });
                         });
                     }
@@ -1447,9 +1499,15 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
     });
 }
 
-fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>) {
+fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>, keys: &Keymap) {
     let message = match page {
-        None => Some(("Open a folder with Ctrl+O, the + button, or drop it here".to_string(), pal().text)),
+        None => {
+            let key = match keys.label(Command::OpenFolder) {
+                key if key.is_empty() => String::new(),
+                key => format!("{key}, "),
+            };
+            Some((format!("Open a folder with {key}the + button, or drop it here"), pal().text))
+        }
         Some(p) => match &p.state {
             PageState::Loading { progress, started, .. } => Some((
                 format!(

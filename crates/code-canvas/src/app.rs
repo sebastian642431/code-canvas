@@ -17,6 +17,7 @@ use winit::window::{CursorIcon, ResizeDirection, Window, WindowId};
 use crate::bench::Bench;
 use crate::camera::Camera;
 use crate::ext::{self, Extensions};
+use crate::keys::{Chord, Command, Keymap, Scope};
 use crate::overlay::{self, CanvasOverlay, SYMBOL_HOVER_MIN_PX};
 use crate::page::{Page, PageState, Ready};
 use crate::script::{Script, Step};
@@ -39,6 +40,46 @@ struct Gfx {
     instance: wgpu::Instance,
     // Dropped last: the surface must go before the window.
     window: Arc<Window>,
+}
+
+/// The name shortcuts know a key by (`keys::Chord`). `None` for keys that
+/// are not a shortcut on their own: modifiers, dead keys, media keys.
+fn key_name(key: &Key) -> Option<String> {
+    let name = match key {
+        Key::Character(c) if !c.is_empty() => return Some(c.to_lowercase()),
+        Key::Named(named) => match named {
+            NamedKey::F1 => "f1",
+            NamedKey::F2 => "f2",
+            NamedKey::F3 => "f3",
+            NamedKey::F4 => "f4",
+            NamedKey::F5 => "f5",
+            NamedKey::F6 => "f6",
+            NamedKey::F7 => "f7",
+            NamedKey::F8 => "f8",
+            NamedKey::F9 => "f9",
+            NamedKey::F10 => "f10",
+            NamedKey::F11 => "f11",
+            NamedKey::F12 => "f12",
+            NamedKey::Tab => "tab",
+            NamedKey::Enter => "enter",
+            NamedKey::Escape => "escape",
+            NamedKey::Space => "space",
+            NamedKey::Backspace => "backspace",
+            NamedKey::Delete => "delete",
+            NamedKey::Insert => "insert",
+            NamedKey::Home => "home",
+            NamedKey::End => "end",
+            NamedKey::PageUp => "pageup",
+            NamedKey::PageDown => "pagedown",
+            NamedKey::ArrowLeft => "left",
+            NamedKey::ArrowRight => "right",
+            NamedKey::ArrowUp => "up",
+            NamedKey::ArrowDown => "down",
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(name.to_string())
 }
 
 struct Drag {
@@ -147,6 +188,8 @@ impl App {
         canvas_render::theme::set(chosen.resolve());
         let mut ui = UiState::default();
         ui.theme = chosen;
+        ui.key_file = crate::keys::load();
+        ui.keys = Keymap::new(&ui.key_file);
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
         ui.last_right = RightPanel::Symbols;
         ui.left = saved.left_open.then_some(ui.last_left);
@@ -1077,114 +1120,129 @@ impl App {
             return;
         }
         let cmd = self.mods.control_key() || self.mods.super_key();
-        let shift = self.mods.shift_key();
+        let (shift, alt) = (self.mods.shift_key(), self.mods.alt_key());
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
-        // The key by name, as the shortcut tables below (and web pages) spell it.
-        let name = match &event.logical_key {
-            Key::Named(NamedKey::F1) => "f1".to_string(),
-            Key::Named(NamedKey::F5) => "f5".to_string(),
-            Key::Named(NamedKey::Tab) => "tab".to_string(),
-            Key::Character(c) => c.to_lowercase(),
-            _ => String::new(),
-        };
+        let chord = key_name(&event.logical_key).map(|key| Chord::new(&key, cmd, shift, alt));
 
-        if self.global_chord(&name, cmd, shift) {
+        // Settings is waiting for the new shortcut of a command: this key is
+        // it. Esc gives up; a modifier on its own, or a key that cannot be
+        // used for that command, keeps it waiting.
+        if self.ui.left != Some(LeftPanel::Settings) {
+            self.ui.rebinding = None;
+        }
+        if let Some(command) = self.ui.rebinding {
+            match chord {
+                Some(chord) if chord.key == "escape" && !cmd && !alt => self.ui.rebinding = None,
+                Some(chord) => {
+                    if self.ui.key_file.bind(command, chord) {
+                        self.ui.rebinding = None;
+                        self.keys_changed();
+                    }
+                }
+                None => {}
+            }
+            self.request_redraw();
+            return;
+        }
+
+        let bound = chord.as_ref().and_then(|c| self.ui.keys.command(c)).map(Command::info);
+        // Some shortcuts work wherever the keyboard is, a text field included.
+        if let Some(info) = bound.filter(|i| i.scope == Scope::Anywhere) {
+            self.run_command(info.command);
             return;
         }
         if typing || self.ui.quick.is_some() {
             return;
         }
-        // The caret is in a file: keys go to the editor first.
-        let formatting = shift && self.mods.alt_key();
-        if !formatting && self.edit_key(event) {
+        // The caret is in a file: keys go to the editor first. A shortcut
+        // with Alt is the exception (Shift+Alt+F formats, it does not type);
+        // Ctrl+Alt is AltGr, which does type.
+        let before_editor = bound.is_some() && alt && !cmd;
+        if !before_editor && self.edit_key(event) {
             return;
         }
-        if let Key::Character(c) = &event.logical_key {
-            if shift && self.mods.alt_key() && c.as_str().eq_ignore_ascii_case("f") {
-                self.format_file(None);
-                return;
-            }
-        }
-
-        if self.window_chord(&name, cmd, shift) {
+        if let Some(info) = bound {
+            self.run_command(info.command);
             return;
         }
-
-        match &event.logical_key {
-            Key::Named(NamedKey::F12) => self.go_to_definition(),
-            Key::Named(NamedKey::Home) => self.frame_all(),
-            Key::Named(NamedKey::Escape) => {
-                if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
-                    self.clear_symbols();
-                } else if let Some(p) = self.pages.get_mut(self.active) {
-                    p.selected = None;
-                    self.request_redraw();
-                }
-            }
-            Key::Named(NamedKey::Backspace) => self.zoom_to_parent(),
-            Key::Named(NamedKey::ArrowLeft) => self.pan(160.0, 0.0),
-            Key::Named(NamedKey::ArrowRight) => self.pan(-160.0, 0.0),
-            Key::Named(NamedKey::ArrowUp) => self.pan(0.0, 160.0),
-            Key::Named(NamedKey::ArrowDown) => self.pan(0.0, -160.0),
-            Key::Character(c) => match (cmd, c.to_lowercase().as_str()) {
-                (false, "f") => self.frame_all(),
-                (false, "l") => self.frame_selection(),
-                (_, "+") | (_, "=") => self.zoom_center(1.25),
-                (_, "-") => self.zoom_center(0.8),
-                _ => {}
-            },
-            _ => {}
+        let Some(chord) = chord else { return };
+        if self.fixed_chord(&chord) {
+            return;
         }
-    }
-
-    /// Shortcuts that work wherever the keyboard is, a text field included:
-    /// the command palette (Ctrl+Shift+P or F1), go to a file (Ctrl+P) and
-    /// search in files (Ctrl+Shift+F). `key` is lower case: `"p"`, `"f1"`.
-    fn global_chord(&mut self, key: &str, cmd: bool, shift: bool) -> bool {
-        match (key, cmd, shift) {
-            ("f1", _, _) | ("p", true, true) => {
-                self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true })
-            }
-            ("p", true, false) => self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true }),
-            ("f", true, true) => self.ui.show_left(LeftPanel::Search),
-            _ => return false,
-        }
-        self.request_redraw();
-        true
-    }
-
-    /// Shortcuts of the window: folders, tabs, panels. Not while typing in
-    /// one of the app's own text fields.
-    fn window_chord(&mut self, key: &str, cmd: bool, shift: bool) -> bool {
-        match (cmd, key) {
-            (_, "f5") | (true, "r") => self.rescan(),
-            (true, "tab") => self.cycle(if shift { -1 } else { 1 }),
-            (true, "o") | (true, "t") => self.pick_folder(),
-            (true, "w") => self.close_page(self.active),
-            (true, "b") => {
-                self.ui.toggle_left();
+        if chord.key == "escape" {
+            if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
+                self.clear_symbols();
+            } else if let Some(p) = self.pages.get_mut(self.active) {
+                p.selected = None;
                 self.request_redraw();
             }
-            (true, d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
-                self.switch_to((d.as_bytes()[0] - b'1') as usize)
-            }
-            _ => return false,
         }
-        true
+    }
+
+    /// What a shortcut does (`keys::COMMANDS` says which keys it has).
+    fn run_command(&mut self, command: Command) {
+        match command {
+            Command::Palette => self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true }),
+            Command::GoToFile => self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true }),
+            Command::SearchInFiles => self.ui.show_left(LeftPanel::Search),
+            Command::Settings => self.ui.show_left(LeftPanel::Settings),
+            Command::ToggleLeftPanel => self.ui.toggle_left(),
+            Command::FormatFile => self.format_file(None),
+            Command::GoToDefinition => self.go_to_definition(),
+            Command::OpenFolder => self.pick_folder(),
+            Command::CloseFolder => self.close_page(self.active),
+            Command::NextFolder => self.cycle(1),
+            Command::PreviousFolder => self.cycle(-1),
+            Command::Rescan => self.rescan(),
+            Command::ShowAll => self.frame_all(),
+            Command::GoToSelection => self.frame_selection(),
+            Command::ZoomToParent => self.zoom_to_parent(),
+            Command::ZoomIn => self.zoom_center(1.25),
+            Command::ZoomOut => self.zoom_center(0.8),
+            Command::PanLeft => self.pan(160.0, 0.0),
+            Command::PanRight => self.pan(-160.0, 0.0),
+            Command::PanUp => self.pan(0.0, 160.0),
+            Command::PanDown => self.pan(0.0, -160.0),
+        }
+        self.request_redraw();
+    }
+
+    /// Shortcuts that are not in the table: Ctrl+1 … Ctrl+9 go to that canvas.
+    fn fixed_chord(&mut self, chord: &Chord) -> bool {
+        match chord.key.as_bytes() {
+            [digit @ b'1'..=b'9'] if chord.ctrl && !chord.alt => {
+                self.switch_to((digit - b'1') as usize);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// A chord pressed while a web page (an extension's panel) had the
-    /// keyboard: the same shortcuts as in the window.
+    /// keyboard: the same shortcuts as in the window, except the canvas's
+    /// own, which are not for a page that is being typed in.
     fn page_chord(&mut self, k: &crate::webview::PageKey) {
-        if k.alt {
-            return;
+        let chord = Chord::new(&k.key, k.ctrl, k.shift, k.alt);
+        match self.ui.keys.command(&chord).map(Command::info) {
+            Some(info) if info.scope != Scope::Canvas => {
+                // These open a text field of the app: typing must reach it.
+                if matches!(info.command, Command::Palette | Command::GoToFile | Command::SearchInFiles) {
+                    self.webviews.focus_app();
+                }
+                self.run_command(info.command);
+            }
+            Some(_) => {}
+            None => {
+                self.fixed_chord(&chord);
+            }
         }
-        if self.global_chord(&k.key, k.ctrl, k.shift) {
-            // These open a text field of the app: typing must reach it.
-            self.webviews.focus_app();
-        } else {
-            self.window_chord(&k.key, k.ctrl, k.shift);
-        }
+    }
+
+    /// The user changed a shortcut (`self.ui.key_file`): use it and save it.
+    fn keys_changed(&mut self) {
+        self.ui.keys = Keymap::new(&self.ui.key_file);
+        crate::keys::save(&self.ui.key_file);
+        self.request_redraw();
     }
 
     fn zoom_to_parent(&mut self) {
@@ -1402,6 +1460,14 @@ impl App {
             Action::ResetColors => {
                 self.ui.theme.colors.clear();
                 self.theme_changed();
+            }
+            Action::ResetKey(command) => {
+                self.ui.key_file.reset(command);
+                self.keys_changed();
+            }
+            Action::UnbindKey(command) => {
+                self.ui.key_file.unbind(command);
+                self.keys_changed();
             }
             Action::InstallVsix => {
                 let picked = rfd::FileDialog::new()
@@ -1789,7 +1855,10 @@ impl App {
     fn describe(&self) -> (String, Option<(String, String)>) {
         let Some(page) = self.pages.get(self.active) else {
             return (
-                "Ctrl+O: open a folder  ·  drop folders on the window  ·  each folder gets its own canvas".into(),
+                format!(
+                    "{}  ·  drop folders on the window  ·  each folder gets its own canvas",
+                    self.ui.keys.hint("Open a folder", Command::OpenFolder)
+                ),
                 None,
             );
         };

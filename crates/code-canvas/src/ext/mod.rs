@@ -744,7 +744,7 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": id, "method": "format", "params": { "path": path } }));
     }
 
-    /// The file was just saved: format it if the settings ask for that
+    /// The file was just saved: format it, unless the settings say not to
     /// (`editor.formatOnSave`). Says nothing unless it changes the file.
     pub fn format_on_save(&mut self, path: &Path) {
         if self.host.is_none() {

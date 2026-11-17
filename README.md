@@ -44,8 +44,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 **Editing**
 - Readable code is an editor: click to place the caret and type. Selection, undo and
   redo, copy and paste, `Ctrl+S` to save. Each file keeps its own tabs and line endings.
-- Saving formats the file when your settings say so (`editor.formatOnSave`), and
-  problems update while you type.
+- Saving formats the file (with Prettier where it is installed; turn it off with
+  `editor.formatOnSave`), and problems update while you type.
 - Files changed by another program (an editor, `git checkout`, an AI assistant)
   are reloaded by themselves.
 - `Ctrl+Shift+P` opens the command palette: the app's commands and every extension's.

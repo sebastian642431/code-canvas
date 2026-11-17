@@ -1,13 +1,17 @@
-//! Settings: which theme, and every colour of it.
+//! Settings: which theme, every colour of it, and the keyboard shortcuts.
 //!
 //! The panel only asks for changes (`Action::SetTheme`, `Action::SetColor`,
-//! `Action::ResetColors`); the app applies and saves them (`themes.rs`).
+//! `Action::ResetColors`, `Action::ResetKey`, `Action::UnbindKey`); the app
+//! applies and saves them (`themes.rs`, `keys.rs`). A new shortcut is the
+//! next key pressed after clicking one: `UiState::rebinding` says for which
+//! command, and the app's key handler takes it from there.
 
 use canvas_render::theme;
 use egui::{Align, Frame, Layout, Margin, RichText};
 
 use super::{check, pal, panel_title, section, small_icon, well, Action, UiState};
 use crate::icons;
+use crate::keys::{self, Scope};
 
 /// The icon next to each group of colours (`theme::Field::group`).
 fn group_icon(group: &str) -> &'static str {
@@ -85,6 +89,63 @@ pub(super) fn settings_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut 
                 });
             }
             ui.add_space(8.0);
+            shortcuts(ui, st, actions);
+            ui.add_space(8.0);
         });
     });
+}
+
+/// Every command with its shortcut. Clicking the shortcut waits for a new
+/// one; the icons give the command its own back, or leave it without any.
+fn shortcuts(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    section(ui, icons::CORNER_DOWN_LEFT, "Keyboard shortcuts");
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        let note = match st.rebinding {
+            Some(command) if command.info().scope == Scope::Canvas => "Press the new key. Esc to keep the old one.",
+            Some(_) => "Press the new keys, with Ctrl or Alt. Esc to keep the old ones.",
+            None => "Click a shortcut to change it.",
+        };
+        ui.label(RichText::new(note).size(11.5).color(pal().text_faint));
+    });
+    let mut group = "";
+    for info in keys::COMMANDS {
+        if info.group != group {
+            group = info.group;
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new(group).size(11.5).color(pal().text_dim));
+            });
+        }
+        let waiting = st.rebinding == Some(info.command);
+        let changed = st.key_file.is_changed(info.command);
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if changed && small_icon(ui, icons::HISTORY, "Back to its own shortcut") {
+                    actions.push(Action::ResetKey(info.command));
+                }
+                let has_one = st.keys.chords(info.command).next().is_some();
+                if has_one && small_icon(ui, icons::X, "Leave it without a shortcut") {
+                    actions.push(Action::UnbindKey(info.command));
+                }
+                let all: Vec<String> = st.keys.chords(info.command).map(|c| c.label()).collect();
+                let (text, color) = match (waiting, all.is_empty()) {
+                    (true, _) => ("Press keys…".to_string(), pal().accent),
+                    (false, true) => ("none".to_string(), pal().text_faint),
+                    (false, false) => (all.join("  "), if changed { pal().text } else { pal().text_dim }),
+                };
+                let button = egui::Button::new(RichText::new(text).size(11.5).color(color)).fill(pal().well);
+                if ui.add(button).on_hover_text("Click, then press the new shortcut").clicked() {
+                    st.rebinding = if waiting { None } else { Some(info.command) };
+                }
+                // The name takes what is left, cut at the end if it does not fit.
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let color = if changed { pal().text } else { pal().text_dim };
+                    ui.add(egui::Label::new(RichText::new(info.title).size(12.5).color(color)).truncate());
+                });
+            });
+        });
+    }
 }
