@@ -3703,6 +3703,18 @@ impl App {
                 }
                 self.update_hover();
             }
+            Step::Where => {
+                let (s, vp) = (self.scale(), self.viewport());
+                match self.pages.get(self.active).and_then(|page| page.portable_camera(s, vp)) {
+                    Some(seen) => log::info!(
+                        "script: the middle of the canvas shows ({:.0}, {:.0}) at zoom {:.3}",
+                        seen.center[0],
+                        seen.center[1],
+                        seen.zoom
+                    ),
+                    None => log::warn!("script: no canvas is shown yet"),
+                }
+            }
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -4367,15 +4379,14 @@ impl App {
                     }
                     page.framed = true;
                     page.pane_center = Some(area.center());
+                    page.pane_viewport = vp;
                 }
                 let middle = area.center();
+                let was = std::mem::replace(&mut page.pane_viewport, vp);
                 if let Some(old) = page.pane_center.replace(middle) {
-                    let z = page.camera.zoom;
-                    let (dx, dy) = ((old[0] - middle[0]) / z, (old[1] - middle[1]) / z);
-                    page.camera.center = [page.camera.center[0] + dx, page.camera.center[1] + dy];
+                    page.camera.keep_middle(old, was, middle, vp);
                     if let Some(t) = page.target.as_mut() {
-                        t.center =
-                            [t.center[0] + (old[0] - middle[0]) / t.zoom, t.center[1] + (old[1] - middle[1]) / t.zoom];
+                        t.keep_middle(old, was, middle, vp);
                     }
                 }
                 if let Some(bench) = self.bench.as_mut().filter(|_| active) {

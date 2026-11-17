@@ -1,5 +1,7 @@
-title: Making the window smaller and larger again leaves the canvas where it was on screen
+title: Making the window smaller and larger, and opening panels, keeps in the middle of the canvas what was in the middle
 folders: rust-small
+forbid-log: WARN.*script
+expect-file: {WORK}\data\code-canvas.log :: (?s)canvas shows (\(\S+ \S+\) at zoom \S+)(.*canvas shows \1){5}
 
 wait 3000
 left none
@@ -7,18 +9,22 @@ right none
 fit
 wait 1200
 mark a-1706
+where
 wait 500
 resize 1100 700
 wait 1200
 mark b-1100
+where
 wait 500
 resize 1706 920
 wait 1200
 mark c-1706
+where
 wait 500
 resize 720 420
 wait 1200
 mark d-720
+where
 wait 500
 left files
 wait 800
@@ -39,6 +45,7 @@ wait 500
 left changes
 wait 700
 mark i-720-changes
+where
 wait 500
 left extensions
 wait 1200
@@ -52,5 +59,6 @@ left none
 resize 1706 920
 wait 1200
 mark l-1706
+where
 wait 500
 quit

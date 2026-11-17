@@ -109,6 +109,7 @@ pub struct Page {
     pub framed: bool,
     pub restore_camera: Option<Camera>,
     pub pane_center: Option<[f32; 2]>,
+    pub pane_viewport: [f32; 2],
     pub extent: Option<canvas_core::Rect>,
     pub filter: LayoutFilter,
     pub tree_open: HashSet<String>,
@@ -331,6 +332,7 @@ impl Page {
             framed: false,
             restore_camera: None,
             pane_center: None,
+            pane_viewport: [0.0, 0.0],
             extent: None,
             filter: LayoutFilter::default(),
             tree_open: HashSet::new(),
@@ -423,7 +425,8 @@ impl Page {
             return None;
         }
         let z = self.camera.zoom;
-        let half = [viewport[0] * 0.5, viewport[1] * 0.5];
+        let window = if self.pane_center.is_some() { self.pane_viewport } else { viewport };
+        let half = [window[0] * 0.5, window[1] * 0.5];
         let middle = self.pane_center.unwrap_or(half);
         let center =
             [self.camera.center[0] + (middle[0] - half[0]) / z, self.camera.center[1] + (middle[1] - half[1]) / z];

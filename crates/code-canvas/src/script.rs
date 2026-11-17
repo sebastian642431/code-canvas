@@ -60,6 +60,7 @@ pub enum Step {
     Ignored(String),
     Part(String),
     Find(String),
+    Where,
     Quit,
 }
 
@@ -137,6 +138,7 @@ fn parse_step(text: &str) -> Option<Step> {
             Step::Menu(parts.next()?.ok()?, parts.next()?.ok()?)
         }
         "find" => Step::Find(arg.into()),
+        "where" => Step::Where,
         "drag" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             let mut next = || parts.next()?.ok();

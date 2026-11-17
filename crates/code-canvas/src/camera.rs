@@ -78,6 +78,13 @@ impl Camera {
         moved.then_some(at)
     }
 
+    pub fn keep_middle(&mut self, old_middle: [f32; 2], old_viewport: [f32; 2], middle: [f32; 2], viewport: [f32; 2]) {
+        for axis in 0..2 {
+            let moved = (old_middle[axis] - old_viewport[axis] * 0.5) - (middle[axis] - viewport[axis] * 0.5);
+            self.center[axis] += moved / self.zoom;
+        }
+    }
+
     pub fn pan_pixels(&mut self, dx: f32, dy: f32) {
         self.center[0] -= dx / self.zoom;
         self.center[1] -= dy / self.zoom;
@@ -137,6 +144,20 @@ mod tests {
         c.zoom_at(p, vp, 2.5);
         let after = c.view(vp).to_world(p);
         assert!((before[0] - after[0]).abs() < 1e-3 && (before[1] - after[1]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_middle_of_the_pane_stays_when_the_window_or_a_panel_changes() {
+        let mut c = Camera { center: [100.0, 50.0], zoom: 2.0 };
+        let (wide, small) = ([1706.0, 920.0], [1100.0, 700.0]);
+        let (whole, beside_a_panel) = ([853.0, 478.0], [722.0, 368.0]);
+        let seen = c.view(wide).to_world(whole);
+        c.keep_middle(whole, wide, [550.0, 368.0], small);
+        let after_resize = c.view(small).to_screen(seen);
+        assert!((after_resize[0] - 550.0).abs() < 1e-3 && (after_resize[1] - 368.0).abs() < 1e-3);
+        c.keep_middle([550.0, 368.0], small, beside_a_panel, small);
+        let after_panel = c.view(small).to_screen(seen);
+        assert!((after_panel[0] - 722.0).abs() < 1e-3 && (after_panel[1] - 368.0).abs() < 1e-3);
     }
 
     #[test]
