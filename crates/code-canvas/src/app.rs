@@ -273,8 +273,7 @@ impl App {
         ui.keys = Keymap::new(&ui.key_file);
         ui.rails = saved.rails.clone();
         ui.rails_at_home();
-        ui.restore(Side::Left, saved.left_open, &saved.left_last);
-        ui.restore(Side::Right, saved.right_open, &saved.right_last);
+        ui.restore(saved.left_open, &saved.cards);
         ui.single = saved.single;
         let mut app = Self {
             gfx: None,
@@ -504,10 +503,8 @@ impl App {
                 .map(|p| p.to_session(s, self.viewport()))
                 .collect(),
             active: self.pages.iter().take(self.active).filter(|p| !p.only && p.shared.is_none()).count(),
-            left_open: self.ui.left.is_some(),
-            right_open: self.ui.right.is_some(),
-            left_last: self.ui.last_left.key(),
-            right_last: self.ui.last_right.key(),
+            left_open: self.ui.files,
+            cards: self.ui.cards.iter().map(|card| card.key()).collect(),
             rails: self.ui.rails.clone(),
             workspace: self.workspace.clone(),
             window,
@@ -2749,7 +2746,7 @@ impl App {
             Command::Back => self.travel(true),
             Command::Forward => self.travel(false),
             Command::Settings => self.ui.settings.show(None),
-            Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
+            Command::ToggleLeftPanel => self.ui.files = !self.ui.files,
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::ToggleUi => self.apply(Action::ToggleUi),
             Command::FormatFile => self.format_file(None),
@@ -3835,16 +3832,14 @@ impl App {
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
                 ext::Event::WebviewClosed(handle) => {
                     self.webviews.close(&handle);
-                    for side in Side::BOTH {
-                        let Some(Panel::Webview(view)) = self.ui.open(side).cloned() else { continue };
-                        if view.starts_with(ext::TABS) && self.ext.shown(&view).is_none() {
+                    for card in self.ui.cards.clone() {
+                        let Panel::Webview(view) = &card else { continue };
+                        if view.starts_with(ext::TABS) && self.ext.shown(view).is_none() {
                             let extension = &view[ext::TABS.len()..];
                             let other = self.ext.rail_items().into_iter().find(|item| item.extension == extension);
-                            match other {
-                                Some(item) if self.ui.side_of(&Panel::Webview(item.view.clone())) == side => {
-                                    self.ui.show(Panel::Webview(item.view))
-                                }
-                                _ => self.ui.close(side),
+                            self.ui.close_panel(&card);
+                            if let Some(item) = other {
+                                self.ui.show(Panel::Webview(item.view));
                             }
                         }
                     }

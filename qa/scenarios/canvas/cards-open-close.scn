@@ -1,0 +1,38 @@
+title: Panels open as cards on the canvas, several at once on either side, and close one by one; the files stay docked and Ctrl+B hides them
+folders: git-changes
+limit: 60
+forbid-log: WARN.*script
+
+wait 3000
+fit
+wait 800
+mark a-files-docked-nothing-floating
+wait 400
+right symbols
+wait 700
+mark b-one-card
+wait 400
+left changes
+wait 400
+left search
+wait 700
+mark c-three-cards
+wait 400
+move changes right
+wait 700
+mark d-changes-on-the-right-side
+wait 400
+left help
+wait 700
+mark e-help-too
+wait 400
+left none
+wait 700
+mark f-files-hidden-right-cards-stay
+wait 400
+left files
+right none
+wait 700
+mark g-only-files
+wait 400
+quit

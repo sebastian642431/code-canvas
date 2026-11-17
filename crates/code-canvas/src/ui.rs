@@ -224,10 +224,9 @@ pub enum FindOp {
 }
 
 pub struct UiState {
-    pub left: Option<Panel>,
-    pub right: Option<Panel>,
-    pub last_left: Panel,
-    pub last_right: Panel,
+    pub files: bool,
+    pub cards: Vec<Panel>,
+    card_widths: std::collections::HashMap<String, f32>,
     pub explorer_filter: String,
     pub search_query: String,
     pub quick: Option<QuickOpen>,
@@ -280,10 +279,9 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            left: Some(Panel::Files),
-            right: Some(Panel::Symbols),
-            last_left: Panel::Files,
-            last_right: Panel::Symbols,
+            files: true,
+            cards: Vec::new(),
+            card_widths: Default::default(),
             explorer_filter: String::new(),
             search_query: String::new(),
             quick: None,
@@ -347,45 +345,37 @@ impl UiState {
         self.rails.at_home(|key| Panel::from_key(key).map_or(Side::Left, |panel| panel.home()));
     }
 
-    pub fn open(&self, side: Side) -> Option<&Panel> {
-        match side {
-            Side::Left => self.left.as_ref(),
-            Side::Right => self.right.as_ref(),
-        }
-    }
-
     pub fn is_open(&self, panel: &Panel) -> bool {
-        Side::BOTH.into_iter().any(|side| self.open(side) == Some(panel))
+        match panel {
+            Panel::Files => self.files,
+            card => self.cards.contains(card),
+        }
     }
 
     pub fn close(&mut self, side: Side) {
-        match side {
-            Side::Left => self.left = None,
-            Side::Right => self.right = None,
+        if side == Side::Left {
+            self.files = false;
         }
+        let kept: Vec<Panel> = self.cards.iter().filter(|card| self.side_of(card) != side).cloned().collect();
+        self.cards = kept;
     }
 
     pub fn close_panel(&mut self, panel: &Panel) {
-        for side in Side::BOTH {
-            if self.open(side) == Some(panel) {
-                self.close(side);
-            }
-        }
-    }
-
-    fn remember(&mut self, side: Side, panel: Panel) {
-        match side {
-            Side::Left => self.last_left = panel,
-            Side::Right => self.last_right = panel,
+        match panel {
+            Panel::Files => self.files = false,
+            card => self.cards.retain(|open| open != card),
         }
     }
 
     pub fn show(&mut self, panel: Panel) {
-        let side = self.side_of(&panel);
-        self.remember(side, panel.clone());
-        match side {
-            Side::Left => self.left = Some(panel),
-            Side::Right => self.right = Some(panel),
+        if panel == Panel::Files {
+            self.files = true;
+            return;
+        }
+        let key = panel.key();
+        match self.cards.iter().position(|card| card.key() == key) {
+            Some(at) => self.cards[at] = panel,
+            None => self.cards.push(panel),
         }
     }
 
@@ -397,58 +387,18 @@ impl UiState {
         }
     }
 
-    pub fn toggle_side(&mut self, side: Side) {
-        if self.open(side).is_some() {
-            return self.close(side);
-        }
-        let last = match side {
-            Side::Left => self.last_left.clone(),
-            Side::Right => self.last_right.clone(),
-        };
-        let wanted =
-            if self.side_of(&last) == side { Some(last) } else { self.rail_order[side.index()].first().cloned() };
-        if let Some(panel) = wanted {
-            self.show(panel);
-        }
-    }
-
     pub fn request_move(&mut self, panel: Panel, side: Side, before: Option<String>) {
         self.rail_move = Some((panel, side, before));
     }
 
     fn move_panel(&mut self, available: &[(String, Side)], panel: &Panel, side: Side, before: Option<&str>) {
-        let key = panel.key();
-        let open = Side::BOTH.into_iter().find_map(|from| self.open(from).filter(|shown| shown.key() == key).cloned());
-        if let Some(open) = &open {
-            self.close_panel(open);
-        }
-        self.rails.place(available, &key, side, before);
-        if let Some(open) = open {
-            self.show(open);
-        }
+        self.rails.place(available, &panel.key(), side, before);
     }
 
-    pub fn restore(&mut self, side: Side, open: bool, last: &str) {
-        let own = [
-            Panel::Files,
-            Panel::Search,
-            Panel::Changes,
-            Panel::Extensions,
-            Panel::Problems,
-            Panel::Symbols,
-            Panel::Deps,
-        ];
-        let available: Vec<(String, Side)> = own.iter().map(|panel| (panel.key(), panel.home())).collect();
-        let first = self.rails.arrange(&available)[side.index()].first().and_then(|key| Panel::from_key(key));
-        let saved = Panel::from_key(last).filter(|panel| !panel.is_page() && self.side_of(panel) == side);
-        match saved.or(first) {
-            Some(panel) if open => self.show(panel),
-            Some(panel) => {
-                self.close(side);
-                self.remember(side, panel);
-            }
-            None => self.close(side),
-        }
+    pub fn restore(&mut self, files: bool, cards: &[String]) {
+        self.files = files;
+        let open = cards.iter().filter_map(|key| Panel::from_key(key));
+        self.cards = open.filter(|panel| *panel != Panel::Files && !panel.is_page()).collect();
     }
 }
 
@@ -579,7 +529,9 @@ fn pal() -> Pal {
 const ROW_H: f32 = 24.0;
 const HEADER_H: f32 = 40.0;
 const RAIL_W: f32 = 44.0;
-const GAP: i8 = 6;
+const EDGE: f32 = 4.0;
+const ROUND: f32 = 10.0;
+const CARD_X: &str = "the card's cross";
 
 pub fn style(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
@@ -704,18 +656,36 @@ fn well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-fn card_panel(ui: &mut egui::Ui, panel: egui::Panel, side: Side, add: impl FnOnce(&mut egui::Ui)) {
-    let round = match side {
-        Side::Left => CornerRadius { nw: 0, ne: 10, sw: 0, se: 0 },
-        Side::Right => CornerRadius { nw: 10, ne: 0, sw: 0, se: 0 },
-    };
-    panel.frame(Frame::NONE.fill(pal().chrome)).show(ui, |ui| {
-        Frame::NONE.fill(pal().card).corner_radius(round).show(ui, |ui| {
-            ui.set_min_height(ui.available_height());
-            ui.set_width(ui.available_width());
-            add(ui);
-        });
-    });
+fn corner(painter: &egui::Painter, at: Pos2, into: Vec2, color: Color32) {
+    const STEPS: u32 = 10;
+    let centre = at + into * ROUND;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(at, color);
+    for step in 0..=STEPS {
+        let turn = step as f32 / STEPS as f32 * std::f32::consts::FRAC_PI_2;
+        let point = Pos2::new(centre.x - into.x * ROUND * turn.sin(), centre.y - into.y * ROUND * turn.cos());
+        mesh.colored_vertex(point, color);
+    }
+    for step in 0..STEPS {
+        mesh.add_triangle(0, step + 1, step + 2);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn enclose(painter: &egui::Painter, free: Rect, canvas: Rect) {
+    let chrome = pal().chrome;
+    for strip in [
+        Rect::from_min_max(free.min, Pos2::new(canvas.left(), free.bottom())),
+        Rect::from_min_max(Pos2::new(canvas.right(), free.top()), free.max),
+        Rect::from_min_max(Pos2::new(free.left(), canvas.bottom()), free.max),
+    ] {
+        painter.rect_filled(strip, 0.0, chrome);
+    }
+    corner(painter, canvas.left_top(), Vec2::new(1.0, 1.0), chrome);
+    corner(painter, canvas.right_top(), Vec2::new(-1.0, 1.0), chrome);
+    corner(painter, canvas.left_bottom(), Vec2::new(1.0, -1.0), chrome);
+    corner(painter, canvas.right_bottom(), Vec2::new(-1.0, -1.0), chrome);
+    painter.rect_stroke(canvas, ROUND, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
 }
 
 pub fn build(
@@ -731,9 +701,6 @@ pub fn build(
     st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
-    if !st.bare {
-        status_bar(ui, st, ext, pages.get(active), info, actions);
-    }
     let entries = rail_entries(st, ext);
     let available: Vec<(String, Side)> = entries.iter().map(|entry| (entry.panel.key(), entry.panel.home())).collect();
     let order = st.rails.arrange(&available);
@@ -750,12 +717,15 @@ pub fn build(
         st.move_panel(&available, &panel, side, before.as_deref());
         actions.push(Action::RailsChanged);
     }
-
-    for side in Side::BOTH.into_iter().filter(|_| !bare) {
-        side_panel(ui, st, pages, active, ext, actions, side);
+    if st.files && !bare {
+        files_dock(ui, st, pages, active, actions);
     }
 
-    let canvas = ui.available_rect_before_wrap();
+    let free = ui.available_rect_before_wrap();
+    let canvas = match bare {
+        true => free,
+        false => Rect::from_min_max(free.min + Vec2::new(EDGE, 0.0), free.max - Vec2::splat(EDGE)),
+    };
     let ctx = ui.ctx().clone();
     let on_canvas = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(canvas);
     let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -763,13 +733,16 @@ pub fn build(
         on_canvas.image(picture, at, whole, Color32::WHITE);
     }
     center_message(ui, canvas, pages.get(active), &st.keys);
-    if !st.bare {
+    agent_marks(&ctx, &on_canvas, st, canvas);
+    peer_marks(&on_canvas, st, canvas);
+    if !bare {
+        enclose(&ctx.layer_painter(egui::LayerId::background()), free, canvas);
+        cards(&ctx, st, canvas, pages, active, ext, actions);
         toolbar(&ctx, st, canvas, info, actions);
+        status_pill(&ctx, st, ext, pages.get(active), canvas, info, actions);
     }
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
-    agent_marks(&ctx, &on_canvas, st, canvas);
-    peer_marks(&on_canvas, st, canvas);
     workspace_drop(&ctx, st, canvas);
     following_bar(&ctx, st, canvas, actions);
     share_panel(&ctx, st, actions);
@@ -803,11 +776,16 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 let image = egui::ColorImage::from_rgba_unmultiplied([128, 128], pixels);
                 ui.ctx().load_texture("logo", image, egui::TextureOptions::LINEAR)
             });
-            let (slot, _) = ui.allocate_exact_size(Vec2::new(RAIL_W, HEADER_H), Sense::hover());
-            let at = Rect::from_center_size(slot.center(), Vec2::splat(24.0));
+            let (slot, _) = ui.allocate_exact_size(Vec2::new(RAIL_W + EDGE, HEADER_H), Sense::hover());
+            let at = Rect::from_center_size(slot.center() + Vec2::new(EDGE * 0.5, 0.0), Vec2::splat(24.0));
             let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
             ui.painter().image(logo.id(), at, uv, Color32::WHITE);
-            ui.add_space(2.0);
+            let tip = st.keys.hint("Show or hide the files", Command::ToggleLeftPanel);
+            if icon_button(ui, icons::PANEL_LEFT, Vec2::splat(30.0), st.files, pal().hover).on_hover_text(tip).clicked()
+            {
+                st.files = !st.files;
+            }
+            ui.add_space(4.0);
             let rescan = ui.add(
                 egui::Button::new(
                     RichText::new(format!("{}  Rescan", icons::REFRESH_CW)).size(13.0).color(pal().text_dim),
@@ -884,46 +862,30 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     });
 }
 
-fn status_bar(
-    ui: &mut egui::Ui,
+fn status_pill(
+    ctx: &egui::Context,
     st: &mut UiState,
     ext: &Extensions,
     page: Option<&Page>,
+    canvas: Rect,
     info: &FrameInfo,
     actions: &mut Vec<Action>,
 ) {
     let mut panel_to_show = None;
-    let (mut update_now, mut settings, mut save) = (false, false, false);
-    egui::Panel::bottom("status").frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
-        ui,
-        |ui| {
-            ui.horizontal_centered(|ui| {
-                if let Some(git) = page.and_then(|p| p.git.as_ref()) {
-                    let icon = crate::codicons::glyph("source-control").unwrap_or(icons::GIT_BRANCH);
-                    let mut text = format!("{icon} {}{}", git.branch, if git.changes.is_empty() { "" } else { "*" });
-                    if git.ahead > 0 {
-                        text.push_str(&format!(" ↑{}", git.ahead));
-                    }
-                    if git.behind > 0 {
-                        text.push_str(&format!(" ↓{}", git.behind));
-                    }
-                    let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
-                    if label.on_hover_text("Source control").clicked() {
-                        panel_to_show = Some(Panel::Changes);
-                    }
-                    ui.add_space(10.0);
-                }
-                let unsaved = page.map_or(0, |p| p.unsaved().count());
-                if unsaved > 0 {
-                    let (dot, _) = ui.allocate_exact_size(Vec2::new(8.0, 12.0), Sense::hover());
-                    ui.painter().circle_filled(dot.center(), 3.2, pal().text);
-                    let text = format!("{unsaved} not saved");
-                    let label =
-                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
-                    let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
-                    save = label.on_hover_text(tip).clicked();
-                    ui.add_space(10.0);
-                }
+    let (mut update_now, mut save) = (false, false);
+    let at = canvas.right_bottom() - Vec2::new(12.0, 12.0);
+    let area = egui::Area::new(egui::Id::unique("status")).pivot(Align2::RIGHT_BOTTOM).fixed_pos(at);
+    let resp = area.order(egui::Order::Foreground).show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, pal().border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(10, 6));
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let most = (canvas.width() * 0.4).clamp(120.0, 420.0);
+                let said = RichText::new(&info.status).size(12.0).color(pal().text_dim);
                 let more = page.and_then(|page| page.ready().map(|r| (page, r))).map(|(page, r)| {
                     format!(
                         "{}\n{} files  ·  {} lines  ·  {} symbols\nread in {} ms",
@@ -934,64 +896,66 @@ fn status_bar(
                         r.load_ms
                     )
                 });
-                let said = ui.add(egui::Label::new(RichText::new(&info.status).size(12.0).color(pal().text_dim)).truncate());
-                if let Some(more) = more {
-                    said.on_hover_text(more);
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let stats = info.stats;
-                    let drawn = format!(
-                        "Code Canvas {}: click for Settings, where updates are\n\nzoom {:.0}%  ·  {}  ·  {} draws  ·  {:.2} ms a frame\ncode instances {}  ·  boxes {}\ntoken chunks {}  ·  text chunks {}",
-                        crate::update::current(),
-                        info.zoom * 100.0,
-                        stats.lod.map(|l| l.name()).unwrap_or("-"),
-                        stats.draw_calls,
-                        info.frame_ms,
-                        stats.code_instances,
-                        stats.frame_instances,
-                        stats.token_chunks,
-                        stats.cached_chunks
-                    );
-                    let version = RichText::new(format!("v{}", crate::update::current())).size(12.0).color(pal().text_faint);
-                    let label = ui.add(egui::Label::new(version).sense(Sense::click()));
-                    if label.on_hover_text(drawn).clicked() {
-                        settings = true;
-                    }
-                    if let crate::update::State::Available(new) = &st.update {
-                        let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
-                        let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);
-                        let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
-                        if label.on_hover_text("Download the new version and restart into it").clicked() {
-                            update_now = true;
-                        }
-                        ui.add_space(6.0);
-                    } else if let crate::update::State::Installing(new) = &st.update {
-                        ui.label(RichText::new(format!("Downloading {new}…")).size(12.0).color(pal().accent));
-                        ui.add_space(6.0);
-                    }
-                    let (errors, warnings) = ext.totals();
-                    if errors + warnings > 0 {
-                        ui.add_space(10.0);
-                        let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
-                        let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
-                        let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
-                        if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
-                            panel_to_show = Some(Panel::Problems);
-                        }
-                    }
-                    for (_, text) in &ext.status_items {
-                        ui.add_space(12.0);
-                        ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
-                    }
+                let said = ui.scope(|ui| {
+                    ui.set_max_width(most);
+                    ui.add(egui::Label::new(said).truncate())
                 });
+                if let Some(more) = more {
+                    said.inner.on_hover_text(more);
+                }
+                for (_, text) in &ext.status_items {
+                    ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
+                }
+                let (errors, warnings) = ext.totals();
+                if errors + warnings > 0 {
+                    let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
+                    let color =
+                        if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
+                    let label =
+                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
+                    if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
+                        panel_to_show = Some(Panel::Problems);
+                    }
+                }
+                let unsaved = page.map_or(0, |p| p.unsaved().count());
+                if unsaved > 0 {
+                    let text = format!("●  {unsaved} not saved");
+                    let label = ui
+                        .add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                    let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
+                    save = label.on_hover_text(tip).clicked();
+                }
+                if let Some(git) = page.and_then(|p| p.git.as_ref()) {
+                    let icon = crate::codicons::glyph("source-control").unwrap_or(icons::GIT_BRANCH);
+                    let mut text = format!("{icon} {}{}", git.branch, if git.changes.is_empty() { "" } else { "*" });
+                    if git.ahead > 0 {
+                        text.push_str(&format!(" ↑{}", git.ahead));
+                    }
+                    if git.behind > 0 {
+                        text.push_str(&format!(" ↓{}", git.behind));
+                    }
+                    let label = ui
+                        .add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                    if label.on_hover_text("Source control").clicked() {
+                        panel_to_show = Some(Panel::Changes);
+                    }
+                }
+                if let crate::update::State::Available(new) = &st.update {
+                    let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
+                    let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);
+                    let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
+                    if label.on_hover_text("Download the new version and restart into it").clicked() {
+                        update_now = true;
+                    }
+                } else if let crate::update::State::Installing(new) = &st.update {
+                    ui.label(RichText::new(format!("Downloading {new}…")).size(12.0).color(pal().accent));
+                }
             });
-        },
-    );
+        });
+    });
+    st.floating.push(resp.response.rect);
     if let Some(panel) = panel_to_show {
-        st.show(panel);
-    }
-    if settings {
-        st.settings.show(Some(SettingsTab::General));
+        st.toggle(panel);
     }
     if update_now {
         actions.push(Action::InstallUpdate);
@@ -1001,55 +965,48 @@ fn status_bar(
     }
 }
 
-fn rail_frame() -> Frame {
-    Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: RAIL_PAD, right: RAIL_PAD, top: 0, bottom: GAP })
+fn rail_frame(side: Side) -> Frame {
+    let edge = EDGE as i8;
+    let margin = match side {
+        Side::Left => Margin { left: edge, right: 0, top: 0, bottom: edge },
+        Side::Right => Margin { left: 0, right: edge, top: 0, bottom: edge },
+    };
+    Frame::NONE.fill(pal().chrome).inner_margin(margin)
 }
 
-const RAIL_PAD: i8 = 5;
-
-fn rail_tab(painter: &egui::Painter, icon: Rect, side: Side) {
-    const ROUND: f32 = 9.0;
-    let (card, chrome, pad) = (pal().card, pal().chrome, RAIL_PAD as f32);
-    let (tab, round, joint, away) = match side {
-        Side::Left => {
-            let tab =
-                Rect::from_min_max(icon.left_top() + Vec2::new(1.0, 0.0), icon.right_bottom() + Vec2::new(pad, 0.0));
-            (tab, CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 }, tab.right(), -1.0)
-        }
-        Side::Right => {
-            let tab =
-                Rect::from_min_max(icon.left_top() - Vec2::new(pad, 0.0), icon.right_bottom() - Vec2::new(1.0, 0.0));
-            (tab, CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 }, tab.left(), 1.0)
-        }
-    };
-    painter.rect_filled(tab, round, card);
-    for (edge, up) in [(tab.top(), -1.0), (tab.bottom(), 1.0)] {
-        let corner = Pos2::new(joint, edge);
-        let far = corner + Vec2::new(away * pad, up * pad);
-        painter.rect_filled(Rect::from_two_pos(corner, far), 0.0, card);
-        painter.circle_filled(far, pad, chrome);
-    }
+fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect) {
+    let tab = Rect::from_min_max(icon.left_top() + Vec2::new(3.0, 0.0), Pos2::new(bar.right(), icon.bottom()));
+    let round = CornerRadius { nw: 9, sw: 9, ne: 0, se: 0 };
+    painter.rect_filled(tab, round, pal().row);
 }
 
 const RAIL_ICON: Vec2 = Vec2::splat(34.0);
 const RAIL_REACH: f32 = 56.0;
 
-fn side_panel(
+fn files_dock(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
+    let dock = egui::Panel::left("left").resizable(true).default_size(290.0).size_range(230.0..=560.0);
+    let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: EDGE as i8 });
+    dock.frame(frame).show_separator_line(false).show(ui, |ui| {
+        let all = ui.max_rect();
+        let round = CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 };
+        ui.painter().rect(all, round, pal().row, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+        ui.set_min_height(ui.available_height());
+        ui.set_width(ui.available_width());
+        files_panel(ui, st, pages, active, actions);
+    });
+}
+
+fn card_of(
     ui: &mut egui::Ui,
     st: &mut UiState,
     pages: &mut [Page],
     active: usize,
     ext: &mut Extensions,
     actions: &mut Vec<Action>,
-    side: Side,
+    panel: &Panel,
 ) {
-    let Some(panel) = st.open(side).cloned() else { return };
-    let frame = match side {
-        Side::Left => egui::Panel::left("left").resizable(true).default_size(300.0).size_range(240.0..=560.0),
-        Side::Right => egui::Panel::right("right").resizable(true).default_size(340.0).size_range(260.0..=600.0),
-    };
-    card_panel(ui, frame, side, |ui| match &panel {
-        Panel::Files => files_panel(ui, st, pages, active, actions),
+    match panel {
+        Panel::Files => {}
         Panel::Search => search_panel(ui, st, pages.get(active), actions),
         Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
         Panel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
@@ -1058,9 +1015,84 @@ fn side_panel(
         Panel::Help => help_panel(ui, &st.keys),
         Panel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
         Panel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
-        Panel::Webview(view) => ext_panels::webview_panel(ui, st, ext, view),
+        Panel::Webview(view) => {
+            let title = ext.shown(view).map(|shown| shown.title.clone()).unwrap_or_default();
+            Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 4 }).show(ui, |ui| {
+                panel_title(ui, &title, |_| {});
+            });
+            ext_panels::webview_panel(ui, st, ext, view)
+        }
         Panel::Media => ext_panels::media_panel(ui, st, actions),
-    });
+    }
+}
+
+fn cards(
+    ctx: &egui::Context,
+    st: &mut UiState,
+    canvas: Rect,
+    pages: &mut [Page],
+    active: usize,
+    ext: &mut Extensions,
+    actions: &mut Vec<Action>,
+) {
+    const AWAY: f32 = 8.0;
+    const BETWEEN: f32 = 6.0;
+    const NARROWEST: f32 = 250.0;
+    const UNDER: f32 = 50.0;
+    let mut next = canvas.right() - AWAY;
+    let height = (canvas.height() - AWAY - UNDER).max(120.0);
+    for panel in st.cards.clone().iter().rev() {
+        let key = panel.key();
+        let room = next - canvas.left() - AWAY;
+        if room < NARROWEST {
+            break;
+        }
+        let wanted = st.card_widths.get(&key).copied().unwrap_or(if panel.is_page() { 420.0 } else { 330.0 });
+        let width = wanted.clamp(NARROWEST, room.min(760.0));
+        let rect = Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, height));
+        let id = egui::Id::unique(("card", &key));
+        let own_cross = *panel == Panel::Media;
+        let mut shut = false;
+        egui::Area::new(id).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
+            ui.painter().rect(rect, 12.0, pal().card, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(1.0)), |ui| {
+                ui.set_clip_rect(rect.shrink(1.0));
+                ui.set_min_size(rect.shrink(1.0).size());
+                ctx.data_mut(|data| data.insert_temp(egui::Id::unique(CARD_X), !own_cross));
+                card_of(ui, st, pages, active, ext, actions, panel);
+                ctx.data_mut(|data| data.insert_temp(egui::Id::unique(CARD_X), false));
+            });
+            if !own_cross {
+                let cross = Rect::from_min_size(Pos2::new(rect.right() - 32.0, rect.top() + 8.0), Vec2::splat(24.0));
+                let resp = ui.interact(cross, id.with("cross"), Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(cross, 6.0, pal().hover);
+                }
+                let color = if resp.hovered() { pal().text } else { pal().text_dim };
+                ui.painter().text(cross.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(15.0), color);
+                shut = resp.on_hover_text("Close").clicked();
+            }
+            let grip = Rect::from_min_max(
+                Pos2::new(rect.left() - 5.0, rect.top() + 14.0),
+                Pos2::new(rect.left() + 3.0, rect.bottom() - 14.0),
+            );
+            let pull = ui.interact(grip, id.with("width"), Sense::drag());
+            if pull.hovered() || pull.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                let line =
+                    Rect::from_center_size(Pos2::new(rect.left(), grip.center().y), Vec2::new(2.0, grip.height()));
+                ui.painter().rect_filled(line, 1.0, pal().border_strong);
+            }
+            if pull.dragged() {
+                st.card_widths.insert(key.clone(), (width - pull.drag_delta().x).clamp(NARROWEST, 760.0));
+            }
+        });
+        st.floating.push(rect.expand(5.0));
+        if shut {
+            st.close_panel(panel);
+        }
+        next = rect.left() - BETWEEN;
+    }
 }
 
 fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
@@ -1097,11 +1129,14 @@ fn paint_rail_icon(
     ext: &Extensions,
     entry: &RailEntry,
     rect: Rect,
-    active: Option<Side>,
+    active: Option<Rect>,
     hovered: bool,
 ) {
     match active {
-        Some(side) => rail_tab(ui.painter(), rect, side),
+        Some(bar) if entry.panel == Panel::Files => rail_tab(ui.painter(), rect, bar),
+        Some(_) => {
+            ui.painter().rect_filled(rect.shrink(3.0), 8.0, pal().selection.gamma_multiply(0.7));
+        }
         None if hovered => {
             ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
         }
@@ -1161,21 +1196,32 @@ fn rail(
     entries: &[RailEntry],
     order: &[String],
 ) {
+    if side == Side::Right && order.is_empty() && st.rail_drag.is_none() {
+        return;
+    }
     let bar = match side {
         Side::Left => egui::Panel::left("rail_left"),
         Side::Right => egui::Panel::right("rail_right"),
     };
-    bar.frame(rail_frame()).exact_size(RAIL_W).resizable(false).show_separator_line(false).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
+    let joined = side == Side::Left && st.files;
+    bar.frame(rail_frame(side)).exact_size(RAIL_W + EDGE).resizable(false).show_separator_line(false).show(ui, |ui| {
         let zone = ui.max_rect();
+        let round = match joined {
+            true => CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 },
+            false => CornerRadius::same(ROUND as u8),
+        };
+        ui.painter().rect(zone, round, pal().well, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add_space(5.0);
         let mut slots: Vec<(String, Rect)> = Vec::new();
         for entry in order.iter().filter_map(|key| entries.iter().find(|entry| entry.panel.key() == *key)) {
             let key = entry.panel.key();
-            let (rect, resp) = ui.allocate_exact_size(RAIL_ICON, Sense::click_and_drag());
+            let (slot, resp) = ui.allocate_exact_size(Vec2::new(zone.width(), RAIL_ICON.y), Sense::click_and_drag());
+            let rect = Rect::from_center_size(slot.center(), RAIL_ICON);
             slots.push((key.clone(), rect));
             let lifted = st.rail_drag.as_ref().is_some_and(|drag| drag.key == key);
             if !lifted {
-                let active = st.is_open(&entry.panel).then_some(side);
+                let active = st.is_open(&entry.panel).then_some(zone);
                 paint_rail_icon(ui, st, ext, entry, rect, active, resp.hovered());
                 rail_badge(ui, ext, page, &entry.panel, rect);
             }
@@ -1199,19 +1245,11 @@ fn rail(
             }
         }
         rail_drop_target(ui, st, side, zone, &slots);
+        if side == Side::Right {
+            return;
+        }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-            let (glyph, tip) = match side {
-                Side::Left => {
-                    (icons::PANEL_LEFT, st.keys.hint("Show or hide the left panel", Command::ToggleLeftPanel))
-                }
-                Side::Right => (icons::PANEL_RIGHT, "Show or hide the right panel".to_string()),
-            };
-            if icon_button(ui, glyph, RAIL_ICON, false, pal().hover).on_hover_text(tip).clicked() {
-                st.toggle_side(side);
-            }
-            if side == Side::Right {
-                return;
-            }
+            ui.add_space(5.0);
             let tip = st.keys.hint("Settings: version, theme, colours, shortcuts", Command::Settings);
             if icon_button(ui, icons::SETTINGS, RAIL_ICON, st.settings.open, pal().hover).on_hover_text(tip).clicked() {
                 st.settings.toggle();
@@ -1287,6 +1325,9 @@ fn panel_title(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)
         ui.label(RichText::new(title).size(14.0).color(pal().text));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
+            if ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::unique(CARD_X))).unwrap_or(false) {
+                ui.add_space(26.0);
+            }
             right(ui);
         });
     });
@@ -2632,12 +2673,26 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                         if icon_button(ui, icons::MINUS, b, false, pal().hover).on_hover_text("Zoom out").clicked() {
                             actions.push(Action::ZoomBy(1.0 / 1.4));
                         }
+                        let stats = info.stats;
+                        let drawn = format!(
+                            "{}  ·  {} draws  ·  {:.2} ms a frame
+code instances {}  ·  boxes {}
+token chunks {}  ·  text chunks {}",
+                            stats.lod.map(|l| l.name()).unwrap_or("-"),
+                            stats.draw_calls,
+                            info.frame_ms,
+                            stats.code_instances,
+                            stats.frame_instances,
+                            stats.token_chunks,
+                            stats.cached_chunks
+                        );
                         ui.label(
                             RichText::new(format!("{:>4.0}%", info.zoom * 100.0))
                                 .monospace()
                                 .size(11.0)
                                 .color(pal().text_dim),
-                        );
+                        )
+                        .on_hover_text(drawn);
                         if icon_button(ui, icons::PLUS, b, false, pal().hover).on_hover_text("Zoom in").clicked() {
                             actions.push(Action::ZoomBy(1.4));
                         }

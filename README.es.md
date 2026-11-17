@@ -75,8 +75,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
   [Open VSX](https://open-vsx.org) y las ejecuta sin modificar. Los linters marcan los
   errores sobre el código y en un panel de problemas; `Shift+Alt+F` formatea con la
   configuración del proyecto. Las *webviews* (la interfaz propia de una extensión) se
-  abren en el panel derecho: ahí se ve el panel oficial de Claude Code (por ahora solo
-  en Windows). Las vistas de árbol todavía no se muestran.
+  abren como tarjeta sobre el lienzo: ahí se ve el panel oficial de Claude Code (por
+  ahora solo en Windows). Las vistas de árbol todavía no se muestran.
 - **Autocompletado**: con la extensión del lenguaje instalada (rust-analyzer,
   TypeScript y similares), mientras se escribe aparecen los miembros después de un
   punto y los nombres que encajan, con su tipo. Enter o Tab lo toma y agrega el
@@ -119,12 +119,16 @@ muy grandes. Código abierto: cualquiera puede aportar.
   (archivo: ocultar, renombrar, borrar, copiar ruta; carpeta: plegar; lienzo: ver
   todo, comandos). *Hide the interface* (o `Ctrl+\`) deja solo el lienzo.
 - Al seleccionar un archivo en el lienzo, el explorador abre sus carpetas y lo marca.
-- **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y
-  recuerda carpetas, cámaras y disposición entre aperturas. Lo propio de la app
-  (archivos, búsqueda, control de código, extensiones, problemas, símbolos,
-  dependencias) va a la izquierda; lo que trae una extensión (el panel de un
-  asistente, sus vistas) va a la derecha; cualquier ícono se puede arrastrar a otro
-  lugar o a la otra barra (o con clic derecho) y queda donde lo dejaste.
+- **Los archivos quedan pegados a la izquierda** (`Ctrl+B` o el botón de arriba los
+  oculta); **todo lo demás se abre como tarjeta flotante sobre el lienzo**: búsqueda,
+  control de código, símbolos, un asistente. Abrís las que quieras, una al lado de la
+  otra, las ensanchás arrastrando el borde y cada una se cierra con su cruz. El lienzo
+  sigue por detrás.
+- **Es una app**: encabezado propio, barras de íconos a los costados, y recuerda
+  carpetas, cámaras, tarjetas abiertas y disposición entre aperturas. Los íconos de
+  lo propio de la app arrancan en la barra izquierda y los de las extensiones en la
+  derecha; cualquier ícono se puede arrastrar a otro lugar o a la otra barra (o con
+  clic derecho) y queda donde lo dejaste.
 
 ## Instalar y abrir
 

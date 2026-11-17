@@ -851,12 +851,12 @@ Graphics and the frame
 - A path taken from the list of paths closes the list unless it is a folder,
   whose files come next. It used to open again on the name just taken, and the
   next Enter took it once more.
-- **The status bar says little**: the branch, what is not saved, and one short
-  thing about where you are (the folder and its files, the file under the
-  pointer, the caret). The path of the folder, its lines and symbols and how
-  long it took to read are the hint of that text; what a frame cost is the hint
-  of the version. Numbers that are there to be looked up are not there to be
-  read all day.
+- **The colours are the concept video's** (`theme::DARK`, measured from its
+  frames): almost no colour in the interface or on the canvas (a ground of
+  `#171619`, boxes of `#0a090c`, a black canvas, grey outlines and names), so
+  that colour means something where it shows: green is new, blue is changed,
+  red is removed, and the relations keep theirs. Folder borders are greys that
+  get fainter with depth, not four hues.
 - **Nothing of VS Code's own is read.** The app does not need VS Code installed
   and does not look at its settings, its extensions or its sign-ins: settings
   are `<data dir>/settings.json` and a folder's `.vscode/settings.json` (a file
@@ -1913,18 +1913,37 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - The "go to file" box becomes the command palette when the query starts with `>`,
   as in VS Code. `quick_score` is a subsequence match on a lower-case query
   (`appts` → `src/app/types.ts`).
-- **The two bars.** `Panel` names every panel; which side one opens on is where
-  its icon is (`UiState::side_of`), so nothing opens a panel "on the left": it
-  calls `UiState::show`. An icon never moved is on its home side
-  (`Panel::home`): the app's own panels on the left, what an extension brings
-  (`Panel::Webview`) on the right. `Help` stays at the bottom of the left bar,
-  next to the gear that opens Settings.
-  - **The icon of the open panel is a tab of it** (`rail_tab`): filled with the
-    panel's colour, round on the outer side, reaching the edge of the bar, with a
-    small inward curve above and below where it meets the panel. For that the
-    panel's corner on the bar's side is square, the line egui draws between the
-    bar and the panel is off, and the panel goes down to the status bar: a gap
-    under it, with round corners, read as a loose strip.
+- **The window is boxes on a dark ground** (the concept video `git.mp4`): the
+  ground is `chrome`; on it sit the left box (the bar of icons and, joined to
+  it, the files), the canvas in a box of its own, black, with round corners,
+  and the right bar when it has icons. `EDGE` is the strip of ground between
+  them and `ROUND` their corners.
+  - **The files are docked, everything else floats.** `UiState::files` is the
+    one panel that is part of the window (`files_dock`); it has no cross and is
+    hidden with `Ctrl+B` or the button at the top. Any other panel is a card
+    over the canvas (`UiState::cards`, `cards`): several at once, side by side
+    from the top right corner, the newest further in, each with a cross and an
+    edge that is dragged to make it wider (`card_widths`). A card that does not
+    fit waits until one is closed. The canvas goes on under and between them.
+  - The canvas is drawn on the whole window and the interface over it, so its
+    round corners are the ground painted over its square ones (`enclose`,
+    `corner`: a fan of triangles from the corner to the arc), with the border
+    drawn last.
+  - There is no status bar. What it said is a small card at the bottom right of
+    the canvas (`status_pill`): what is under the pointer, what extensions
+    report, problems, what is not saved, the branch, an update. The version is
+    in Settings; what a frame costs is the hint of the zoom number.
+  - A card's cross is drawn over its top right corner after its content, so
+    `panel_title` leaves room for it when it is told one is coming (`CARD_X`).
+    The viewer has its own cross and a web page gets a title row to carry it.
+  - `Panel` names every panel and `UiState::show` opens one, wherever it goes.
+    Which bar an icon is on is `UiState::side_of`: the app's own start on the
+    left, what an extension brings (`Panel::Webview`) on the right
+    (`Panel::home`), and any icon can be dragged to the other bar. `Help` and
+    the gear stay at the bottom of the left bar. The right bar is not there
+    while it has no icon, unless one is being dragged.
+  - The icon of the files is a tab of them (`rail_tab`); the icon of an open
+    card is lit.
   - The homes changed once (symbols and dependencies were on the right). An
     arrangement saved before that is taken home one time (`Rails::at_home`,
     `Rails::homes`); what is moved afterwards stays where it was put. For one
@@ -1938,9 +1957,8 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     `finish_rail_drag`): a bar takes a drop within `RAIL_REACH` points of it, and
     the button being up ends the drag even if the release itself was missed.
   - The move is applied after both bars are drawn (`UiState::rail_move`), so the
-    drag, the icon's menu and a script all go the same way. A panel that is open
-    moves with its icon.
-  - Two web pages can be on screen, one per side: each panel adds its place to
+    drag, the icon's menu and a script all go the same way.
+  - Several web pages can be on screen, one per card: each adds its place to
     `UiState::page_places` and `WebViews::show` takes them all.
 - The filter rows of the symbols panel give the slider what room is left and drop
   the percentages below 244 points: the panel can be on the narrower left side.

@@ -31,43 +31,43 @@ macro_rules! theme {
 
 theme! {
     "Interface" {
-        chrome: "Window and side rails" = 0x1e2227ff, 0x0a0b0eff;
-        card: "Panels" = 0x23272eff, 0x101115ff;
-        well: "Text fields and insets" = 0x1d1f23ff, 0x0b0c0fff;
-        row: "List rows" = 0x282c34ff, 0x14161bff;
-        raised: "Buttons and selected rows" = 0x2c313aff, 0x1b1d24ff;
-        hover: "Under the pointer" = 0x323842ff, 0x22252eff;
-        active: "While pressed" = 0x3e4452ff, 0x2c313eff;
-        selection: "Selected text" = 0x3d4657ff, 0x344058ff;
-        border: "Borders" = 0x353b45ff, 0x22252eff;
-        border_strong: "Borders under the pointer" = 0x4b5362ff, 0x3a3f4eff;
-        text: "Text" = 0xccccccff, 0xe6e7ecff;
-        text_dim: "Secondary text" = 0x9da5b4ff, 0x8a8e99ff;
-        text_faint: "Hints and disabled text" = 0x6f7683ff, 0x5c606cff;
-        accent: "Accent" = 0x61afefff, 0x5a96ffff;
-        on_accent: "Text on the accent" = 0x16191dff, 0x080a10ff;
+        chrome: "Window and side rails" = 0x171619ff, 0x0a0b0eff;
+        card: "Panels" = 0x171619ff, 0x101115ff;
+        well: "Text fields and insets" = 0x0a090cff, 0x0b0c0fff;
+        row: "List rows" = 0x121114ff, 0x14161bff;
+        raised: "Buttons and selected rows" = 0x27262bff, 0x1b1d24ff;
+        hover: "Under the pointer" = 0x222126ff, 0x22252eff;
+        active: "While pressed" = 0x302f35ff, 0x2c313eff;
+        selection: "Selected text" = 0x2e3b4cff, 0x344058ff;
+        border: "Borders" = 0x242327ff, 0x22252eff;
+        border_strong: "Borders under the pointer" = 0x3b3a40ff, 0x3a3f4eff;
+        text: "Text" = 0xdcdce0ff, 0xe6e7ecff;
+        text_dim: "Secondary text" = 0x8f8e93ff, 0x8a8e99ff;
+        text_faint: "Hints and disabled text" = 0x5c5b60ff, 0x5c606cff;
+        accent: "Accent" = 0x6aa5d9ff, 0x5a96ffff;
+        on_accent: "Text on the accent" = 0x0a0f16ff, 0x080a10ff;
     }
     "Canvas" {
-        background: "Background" = 0x1e2227ff, 0x090a0eff;
-        card_fill: "File cards" = 0x23272ef0, 0x10162290;
-        card_border: "File card borders" = 0x3e4452ff, 0x26304aff;
-        card_note_fill: "Cards of skipped files" = 0x2e2529f0, 0x1a141490;
-        dir_fill: "Folders" = 0xffffff05, 0xffffff04;
-        dir_collapsed_fill: "Collapsed folders" = 0xffffff0e, 0xffffff0c;
-        dir_border_0: "Folder borders, depth 1" = 0x4a6a8cff, 0x3d4f6eff;
-        dir_border_1: "Folder borders, depth 2" = 0x4f7350ff, 0x2f5c4cff;
-        dir_border_2: "Folder borders, depth 3" = 0x7a4f80ff, 0x4e4470ff;
-        dir_border_3: "Folder borders, depth 4" = 0x7d6c4eff, 0x5c4c34ff;
-        label_dir: "Folder names" = 0x9da5b4ff, 0x8b93abff;
-        label_file: "File names" = 0xc5cad3ff, 0xa9b1d6ff;
-        canvas_hover: "Outline under the pointer" = 0x8a93a6ff, 0x8aa0d0ff;
-        select: "Selection outline" = 0x61afefff, 0x7aa2f7ff;
-        select_fill: "Selection fill" = 0x61afef1c, 0x7aa2f714;
-        chip_fill: "Labels on lines" = 0x1d1f23f2, 0x0b0e14f2;
-        chip_text: "Label text" = 0xd7dae0ff, 0xe6e9f5ff;
-        chip_text_dim: "Label secondary text" = 0xabb2bfff, 0xaab0c8ff;
-        ui_text: "Text drawn on the canvas" = 0xccccccff, 0xc0caf5ff;
-        ui_text_dim: "Secondary text on the canvas" = 0x7f848eff, 0x6b7394ff;
+        background: "Background" = 0x000000ff, 0x090a0eff;
+        card_fill: "File cards" = 0x0c0b0ef0, 0x10162290;
+        card_border: "File card borders" = 0x35343aff, 0x26304aff;
+        card_note_fill: "Cards of skipped files" = 0x1a1214f0, 0x1a141490;
+        dir_fill: "Folders" = 0xffffff07, 0xffffff04;
+        dir_collapsed_fill: "Collapsed folders" = 0xffffff10, 0xffffff0c;
+        dir_border_0: "Folder borders, depth 1" = 0x55545cff, 0x3d4f6eff;
+        dir_border_1: "Folder borders, depth 2" = 0x47464eff, 0x2f5c4cff;
+        dir_border_2: "Folder borders, depth 3" = 0x3d3c43ff, 0x4e4470ff;
+        dir_border_3: "Folder borders, depth 4" = 0x35343aff, 0x5c4c34ff;
+        label_dir: "Folder names" = 0x9a999fff, 0x8b93abff;
+        label_file: "File names" = 0xc9c8cdff, 0xa9b1d6ff;
+        canvas_hover: "Outline under the pointer" = 0x9796a0ff, 0x8aa0d0ff;
+        select: "Selection outline" = 0x6f9df2ff, 0x7aa2f7ff;
+        select_fill: "Selection fill" = 0x6f9df21a, 0x7aa2f714;
+        chip_fill: "Labels on lines" = 0x171619f2, 0x0b0e14f2;
+        chip_text: "Label text" = 0xdcdce0ff, 0xe6e9f5ff;
+        chip_text_dim: "Label secondary text" = 0x9a999fff, 0xaab0c8ff;
+        ui_text: "Text drawn on the canvas" = 0xdcdce0ff, 0xc0caf5ff;
+        ui_text_dim: "Secondary text on the canvas" = 0x7c7b81ff, 0x6b7394ff;
         ui_warn: "Warnings on the canvas" = 0xe5c07bff, 0xe0af68ff;
     }
     "Code" {
@@ -77,11 +77,11 @@ theme! {
         tok_macro: "Macros" = 0x2bbac5ff, 0xff9e64ff;
         tok_string: "Strings" = 0x89ca78ff, 0x9ece6aff;
         tok_number: "Numbers" = 0xd19a66ff, 0xff9e64ff;
-        tok_comment: "Comments" = 0x7f848eff, 0x5f6a94ff;
-        tok_punct: "Punctuation" = 0xabb2bfc8, 0x89ddffb0;
-        tok_ident: "Names" = 0xabb2bfff, 0xc0caf5ff;
+        tok_comment: "Comments" = 0x6f6e75ff, 0x5f6a94ff;
+        tok_punct: "Punctuation" = 0xa9a8afc8, 0x89ddffb0;
+        tok_ident: "Names" = 0xc3c2c8ff, 0xc0caf5ff;
         tok_heading: "Headings" = 0xef596fff, 0xe0af68ff;
-        tok_text: "Prose" = 0xabb2bfff, 0xa9b1d6ff;
+        tok_text: "Prose" = 0xc3c2c8ff, 0xa9b1d6ff;
     }
     "Relations" {
         rel_def: "Definitions" = 0xff4fb8ff, 0xff4fb8ff;
@@ -95,10 +95,10 @@ theme! {
     "Status" {
         problem_error: "Errors" = 0xef596fff, 0xf7768eff;
         problem_warning: "Warnings" = 0xe5c07bff, 0xe0af68ff;
-        problem_info: "Information" = 0x61afefff, 0x7aa2f7ff;
-        git_added: "Git: new" = 0x89ca78ff, 0x3ddc84ff;
-        git_modified: "Git: changed" = 0xe2c08dff, 0x5a96ffff;
-        git_removed: "Git: removed" = 0xef596fff, 0xf7768eff;
+        problem_info: "Information" = 0x6f9df2ff, 0x7aa2f7ff;
+        git_added: "Git: new" = 0x22e39aff, 0x3ddc84ff;
+        git_modified: "Git: changed" = 0x6f9df2ff, 0x5a96ffff;
+        git_removed: "Git: removed" = 0xf0452fff, 0xf7768eff;
     }
 }
 

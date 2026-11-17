@@ -45,8 +45,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Drop a file on the window to copy it into the selected folder; a video, image or
   PDF opens in the viewer when it has arrived.
 - What git ignores stays off the canvas but is listed, dimmed, in the file tree.
-- **Updates**: a newer release is offered in a notice when the app starts and in the
-  status bar, next to the version; *Update and restart* downloads it and restarts into
+- **Updates**: a newer release is offered in a notice when the app starts and at the
+  bottom right of the canvas; *Update and restart* downloads it and restarts into
   it. Settings shows the version and has *Check for updates*.
 - **Themes of VS Code**: install a colour theme as an extension (Dracula, GitHub
   Theme, Tokyo Night…) and pick it in Settings, Appearance: the window, the canvas
@@ -122,7 +122,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   stay marked from any zoom level, so they show on the map of the whole repository.
 - Formatters: `Shift+Alt+F` formats the file under the pointer with the project's own
   configuration. Each extension gets its icon in the rail, with its commands.
-- Webviews: an extension's own interface opens in the right panel — the official
+- Webviews: an extension's own interface opens in a card on the canvas — the official
   Claude Code extension renders there (Windows only for now).
 - Language extensions answer about the code under the pointer (hover) and `F12` goes
   to a definition. VS Code's own TypeScript extension works: real compiler errors.
@@ -200,7 +200,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 
 **Claude Code**
 - Install the official Claude Code extension from the Extensions panel: its own
-  panel opens in the right side of the window (Windows only for now).
+  panel opens as a card on the canvas (Windows only for now).
 
 **An app, not a demo**
 - **A right click anywhere on the canvas** opens a menu for what is under it: a
@@ -211,12 +211,16 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   brings it back.
 - Selecting a file on the canvas opens its folders in the files panel and marks
   it there.
-- Own title bar and panels, icon rails on both sides, remembers your folders, cameras
-  and layout between launches.
-- What is the app's own (files, search, source control, extensions, problems,
-  symbols, dependencies) starts on the left and what an extension brings (an
-  assistant's panel, its views) on the right. Any icon can be dragged to another
-  place or to the other bar (or right click it), and stays where you put it.
+- **The files stay docked on the left** (`Ctrl+B` or the button at the top hides
+  them); **every other panel opens as a card floating over the canvas**: search,
+  source control, symbols, an assistant. Open as many as you want side by side,
+  drag a card's edge to make it wider, close each with its cross. The canvas
+  goes on behind them.
+- Own title bar, icon bars on both sides, remembers your folders, cameras, open
+  cards and layout between launches.
+- The icons of the app's own panels start on the left bar and what an extension
+  brings on the right one. Any icon can be dragged to another place or to the
+  other bar (or right click it), and stays where you put it.
 
 ## Install and run
 

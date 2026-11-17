@@ -8,9 +8,7 @@ pub struct Session {
     pub pages: Vec<PageSession>,
     pub active: usize,
     pub left_open: bool,
-    pub right_open: bool,
-    pub left_last: String,
-    pub right_last: String,
+    pub cards: Vec<String>,
     pub rails: crate::rails::Rails,
     pub window: Option<[f32; 2]>,
     pub window_pos: Option<[i32; 2]>,
@@ -50,7 +48,7 @@ fn session_path() -> PathBuf {
 }
 
 pub fn load() -> Session {
-    let fresh = Session { left_open: true, right_open: true, ..Default::default() };
+    let fresh = Session { left_open: true, ..Default::default() };
     match std::fs::read_to_string(session_path()) {
         Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
             log::warn!("ignoring unreadable session file: {e}");
