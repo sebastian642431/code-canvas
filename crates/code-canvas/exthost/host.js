@@ -2158,11 +2158,15 @@ function plainSnippet(value) {
   let out = '';
   let i = 0;
   const stops = new Map();
+  const said = new Map();
   const number = /^\d+$/;
+  const mirror = (name) => {
+    if (number.test(name) && said.has(name)) out += said.get(name);
+  };
   const parse = (until) => {
     while (i < value.length) {
       const c = value[i];
-      if (c === '\\' && i + 1 < value.length) {
+      if (c === '\\' && i + 1 < value.length && '$}\\'.includes(value[i + 1])) {
         out += value[i + 1];
         i += 2;
         continue;
@@ -2179,7 +2183,8 @@ function plainSnippet(value) {
       const rest = value.slice(i, i + 80);
       const bare = /^\$(\d+|[A-Za-z_]\w*)/.exec(rest);
       if (bare) {
-        if (number.test(bare[1]) && !stops.has(bare[1])) stops.set(bare[1], [out.length, out.length]);
+        if (number.test(bare[1]) && !said.has(bare[1]) && !stops.has(bare[1])) stops.set(bare[1], [out.length, out.length]);
+        mirror(bare[1]);
         i += bare[0].length;
         continue;
       }
@@ -2190,6 +2195,7 @@ function plainSnippet(value) {
         continue;
       }
       const from = out.length;
+      const first = !stops.has(open[1]);
       i += open[0].length;
       if (value[i] === ':') {
         i += 1;
@@ -2199,10 +2205,19 @@ function plainSnippet(value) {
         out += value.slice(i + 1, end < 0 ? value.length : end).split(',')[0];
         i = end < 0 ? value.length : end + 2;
       } else {
-        const end = value.indexOf('}', i);
-        i = end < 0 ? value.length : end + 1;
+        let depth = 1;
+        while (i < value.length && depth > 0) {
+          if (value[i] === '\\') i += 1;
+          else if (value[i] === '$' && value[i + 1] === '{') depth += 1;
+          else if (value[i] === '}') depth -= 1;
+          i += 1;
+        }
+        mirror(open[1]);
       }
-      if (number.test(open[1]) && !stops.has(open[1])) stops.set(open[1], [from, out.length]);
+      if (number.test(open[1]) && first) {
+        stops.set(open[1], [from, out.length]);
+        said.set(open[1], out.slice(from));
+      }
     }
   };
   parse('');

@@ -755,6 +755,9 @@ impl App {
 
     fn switch_to(&mut self, i: usize) {
         if i < self.pages.len() {
+            if i != self.active {
+                self.completion = None;
+            }
             if i != self.active && self.shares_canvas() {
                 self.follow_active_camera();
                 let origins = self.origins();
@@ -1574,9 +1577,9 @@ impl App {
         let Some((i, rel)) = self.locate_file(path) else { return };
         let Some(editor) = self.pages[i].editors.get_mut(&rel) else { return };
         let mut edits = edits;
-        edits.sort_by_key(|edit| std::cmp::Reverse((edit.line, edit.col)));
+        edits.sort_by_key(|edit| (edit.line, edit.col));
         let mut changed = false;
-        for edit in edits {
+        for edit in edits.into_iter().rev() {
             let from = editor.pos_at_display(edit.line as usize, edit.col as usize);
             let to = editor.pos_at_display(edit.end_line as usize, edit.end_col as usize);
             changed |= editor.edit_before(from, to, &edit.text);
@@ -1853,6 +1856,9 @@ impl App {
     fn edit_key(&mut self, event: &KeyEvent) -> bool {
         let cmd = (self.mods.control_key() && !self.mods.alt_key()) || self.mods.super_key();
         let shift = self.mods.shift_key();
+        if self.pages.get(self.active).and_then(|page| page.editor()).is_none() {
+            self.completion = None;
+        }
         if let Some(offer) = self.completion.as_mut() {
             let count = offer.items.len();
             let code = matches!(offer.items, Offered::Code { .. });
