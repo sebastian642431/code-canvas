@@ -953,8 +953,7 @@ impl App {
     }
 
     fn write_file(&mut self, path: &Path, text: &str) {
-        self.watcher.expect(path);
-        if let Err(e) = std::fs::write(path, text) {
+        if let Err(e) = self.watcher.write(path, text) {
             log::error!("cannot write {}: {e}", path.display());
             return;
         }
@@ -1756,8 +1755,7 @@ impl App {
         let Some(page) = self.pages.get_mut(index) else { return false };
         let path = page.root.join(rel);
         let Some(editor) = page.editors.get_mut(rel).filter(|editor| editor.dirty) else { return false };
-        self.watcher.expect(&path);
-        if let Err(e) = std::fs::write(&path, editor.text()) {
+        if let Err(e) = self.watcher.write(&path, editor.text()) {
             log::error!("cannot save {}: {e}", path.display());
             self.ext.notice(ext::Level::Error, "Files", format!("{} could not be saved: {e}", path.display()));
             return false;
