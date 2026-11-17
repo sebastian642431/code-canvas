@@ -21,6 +21,7 @@ mod icons;
 mod keys;
 mod overlay;
 mod page;
+mod paths;
 mod prefs;
 mod script;
 mod session;

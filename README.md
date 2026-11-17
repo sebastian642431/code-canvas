@@ -53,6 +53,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   `editor.formatOnSave`), and problems update while you type.
 - Files changed by another program (an editor, `git checkout`, an AI assistant)
   are reloaded by themselves.
+- While a path is typed inside quotes (`"./`, `"../`, `"src/`), the files and folders
+  that are there are offered under the caret: arrows, then Enter or Tab.
 - In `package.json` and `Cargo.toml`, each dependency says whether a newer version
   exists (`✓ latest`, `↑ 2.1.0`), and a notice sums it up. Only package names are
   sent, to npm and crates.io; it can be switched off in the settings.

@@ -145,6 +145,16 @@ pub struct Naming {
     pub focus: bool,
 }
 
+/// Names offered while a path is typed (`paths.rs`), for the list under
+/// the caret.
+pub struct CompletionView {
+    /// Where the list hangs from: under the caret, in points.
+    pub at: Pos2,
+    /// `(name, is a folder)`.
+    pub items: Vec<(String, bool)>,
+    pub selected: usize,
+}
+
 pub struct QuickOpen {
     pub query: String,
     pub selected: usize,
@@ -193,6 +203,8 @@ pub struct UiState {
     /// Show one folder at a time, instead of all of them side by side.
     pub single: bool,
     pub prefs: crate::prefs::Prefs,
+    /// The names offered under the caret, when a path is being typed.
+    pub completion: Option<CompletionView>,
     /// Who writes commit messages when asked (`commit_ai.rs`).
     pub commit_ai: crate::commit_ai::Settings,
     /// The file icon theme in use.
@@ -226,6 +238,7 @@ impl Default for UiState {
             naming: None,
             single: false,
             prefs: Default::default(),
+            completion: None,
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
@@ -303,6 +316,8 @@ pub enum Action {
     /// Change who writes commit messages.
     SetCommitAi(crate::commit_ai::Settings),
     SetPrefs(crate::prefs::Prefs),
+    /// Take one of the names offered under the caret.
+    AcceptCompletion(usize),
     /// Show only the files git reports as changed.
     SetOnlyChanged(bool),
     /// Pick a `.vsix` file and install it.
@@ -630,6 +645,7 @@ pub fn build(
     // The zoom buttons act on the active folder: they sit in its pane.
     let active_pane = if panes.len() > 1 { panes.get(active).copied().unwrap_or(canvas) } else { canvas };
     toolbar(&ctx, st, active_pane, info, actions);
+    completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
@@ -1330,6 +1346,62 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, is_dir, hidden, locked, actions));
         }
     });
+}
+
+/// The names offered while a path is typed: a short list under the caret.
+/// Arrows, Enter, Tab and Esc are the editor's (the app handles them); a
+/// click takes a name.
+fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    const ROWS: usize = 9;
+    let Some(view) = &st.completion else { return };
+    // A window of rows that keeps the selected one in sight.
+    let first = view.selected.saturating_sub(ROWS - 1).min(view.items.len().saturating_sub(ROWS));
+    let shown = &view.items[first..view.items.len().min(first + ROWS)];
+    let file_icons = &mut st.file_icons;
+    let area = egui::Area::new(egui::Id::unique("path completion"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(view.at + Vec2::new(-28.0, 4.0))
+        .show(ctx, |ui| {
+            Frame::NONE
+                .fill(pal().card)
+                .stroke(Stroke::new(1.0, pal().border_strong))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::same(4))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    for (i, (name, is_dir)) in shown.iter().enumerate() {
+                        let index = first + i;
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(260.0, 24.0), Sense::click());
+                        if index == view.selected {
+                            ui.painter().rect_filled(rect, 6.0, pal().raised);
+                        } else if resp.hovered() {
+                            ui.painter().rect_filled(rect, 6.0, pal().row);
+                        }
+                        let mid = rect.center().y;
+                        let icon_at = Rect::from_center_size(Pos2::new(rect.left() + 14.0, mid), Vec2::splat(16.0));
+                        if !file_icons.paint(ui, name, *is_dir, false, icon_at, false) {
+                            let glyph = if *is_dir { icons::FOLDER } else { file_glyph(name) };
+                            let font = FontId::proportional(13.0);
+                            ui.painter().text(icon_at.center(), Align2::CENTER_CENTER, glyph, font, pal().text_dim);
+                        }
+                        let label = if *is_dir { format!("{name}/") } else { name.clone() };
+                        let (from, font) = (rect.left() + 30.0, FontId::proportional(13.0));
+                        text_fit(
+                            ui.painter(),
+                            Pos2::new(from, mid),
+                            &label,
+                            font,
+                            pal().text,
+                            rect.right() - 8.0 - from,
+                        );
+                        if resp.clicked() {
+                            actions.push(Action::AcceptCompletion(index));
+                        }
+                    }
+                });
+        });
+    // Clicks on it are for it, not for the canvas under it.
+    st.floating.push(area.response.rect);
 }
 
 /// One line of text starting at `at` (its left end, vertically centred)

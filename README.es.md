@@ -29,6 +29,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Archivos**: clic derecho en el explorador para crear, renombrar, borrar (a la
   papelera), copiar la ruta, mostrar en el explorador del sistema o abrir una
   terminal. Soltá un archivo en la ventana para copiarlo a la carpeta seleccionada.
+- **Ayudas al escribir**: al tipear una ruta entre comillas se ofrecen los archivos
+  y carpetas que hay ahí; en `package.json` y `Cargo.toml` cada dependencia dice si
+  existe una versión más nueva.
 - **Varias carpetas a la vez**: se muestran lado a lado, cada una en su panel y con
   su propio zoom; `Ctrl+E` vuelve a una sola por vez.
 - **Edición**: el código legible es un editor: clic y a escribir, con deshacer,

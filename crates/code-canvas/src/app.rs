@@ -83,6 +83,14 @@ fn key_name(key: &Key) -> Option<String> {
     Some(name.to_string())
 }
 
+/// Names offered for the path being typed in the editor (`paths.rs`).
+struct Completion {
+    /// The column where the name being completed starts.
+    start: usize,
+    items: Vec<crate::paths::Candidate>,
+    selected: usize,
+}
+
 struct Drag {
     last: [f32; 2],
     start: [f32; 2],
@@ -159,6 +167,8 @@ pub struct App {
     webviews: crate::webview::WebViews,
     /// Folders webview pages may load files from (to notice changes).
     webview_roots: Vec<PathBuf>,
+    /// What is offered under the caret while a path is typed.
+    completion: Option<Completion>,
     /// Latest versions of dependencies, asked for in the background.
     versions: crate::versions::Checker,
     /// The dependencies of each manifest of the open folders, by its path.
@@ -253,6 +263,7 @@ impl App {
             auto_rescan: None,
             webviews: crate::webview::WebViews::new(),
             webview_roots: Vec::new(),
+            completion: None,
             versions: crate::versions::Checker::new(ext::wake_ui),
             manifests: HashMap::new(),
             versions_due: Vec::new(),
@@ -719,21 +730,57 @@ impl App {
         self.request_redraw();
     }
 
+    /// Where the caret's cell is on screen: its top left and bottom right
+    /// corners, in physical pixels.
+    fn caret_cell(&self) -> Option<([f32; 2], [f32; 2])> {
+        let page = self.pages.get(self.active)?;
+        let editor = page.editor()?;
+        let (line, col) = (editor.caret.line as u32, editor.display_col(editor.caret) as u32);
+        let r = page.ready()?;
+        let node = r.repo.file_index(&editor.rel_path).and_then(|fi| r.layout.file_node.get(fi).copied());
+        let n = node.filter(|&n| n != canvas_core::layout::NONE).map(|n| &r.layout.nodes[n as usize])?;
+        let cell = n.cell_rect(line, col, 1);
+        let view = page.camera.view(self.viewport());
+        Some((view.to_screen([cell.x, cell.y]), view.to_screen([cell.right(), cell.bottom()])))
+    }
+
+    /// Offer names for the path being typed at the caret, if one is.
+    fn update_completion(&mut self) {
+        self.completion = None;
+        if !self.ui.prefs.complete_paths {
+            return;
+        }
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
+        let caret = editor.caret;
+        let Some(typed) = crate::paths::partial(editor.line(caret.line), caret.col) else { return };
+        let Some(folder) = crate::paths::folder(&page.root, &editor.rel_path, &typed.dir) else { return };
+        let mut items = crate::paths::candidates(&folder, &typed.prefix);
+        // A file does not import itself.
+        let own = page.root.join(&editor.rel_path);
+        items.retain(|c| folder.join(&c.name) != own);
+        if !items.is_empty() {
+            self.completion = Some(Completion { start: typed.start, items, selected: 0 });
+        }
+    }
+
+    /// Write the offered name `index` where it was being typed. After a
+    /// folder the names inside it are offered straight away.
+    fn accept_completion(&mut self, index: usize) {
+        let Some(offer) = self.completion.take() else { return };
+        let Some(candidate) = offer.items.get(index) else { return };
+        let Some(editor) = self.pages.get_mut(self.active).and_then(|p| p.editor_mut()) else { return };
+        let text = crate::paths::completion(candidate, &editor.rel_path, editor.line(editor.caret.line));
+        editor.complete(offer.start, &text);
+        self.after_edit();
+        self.update_completion();
+    }
+
     /// Pan just enough for the caret to be on screen.
     fn keep_caret_visible(&mut self) {
-        let (vp, area) = (self.viewport(), self.canvas);
+        let area = self.canvas;
+        let Some((tl, br)) = self.caret_cell() else { return };
         let Some(page) = self.pages.get_mut(self.active) else { return };
-        let Some(editor) = page.editor() else { return };
-        let (line, col, rel) =
-            (editor.caret.line as u32, editor.display_col(editor.caret) as u32, editor.rel_path.clone());
-        let Some(r) = page.ready() else { return };
-        let node = r.repo.file_index(&rel).and_then(|fi| r.layout.file_node.get(fi).copied());
-        let Some(n) = node.filter(|&n| n != canvas_core::layout::NONE).map(|n| &r.layout.nodes[n as usize]) else {
-            return;
-        };
-        let cell = n.cell_rect(line, col, 1);
-        let view = page.camera.view(vp);
-        let (tl, br) = (view.to_screen([cell.x, cell.y]), view.to_screen([cell.right(), cell.bottom()]));
         let margin = 24.0;
         let mut shift = [0.0f32, 0.0f32];
         if tl[0] < area.x + margin {
@@ -830,12 +877,43 @@ impl App {
         // AltGr reports Ctrl+Alt: that is typing (`@`, `{`, `[` on many layouts), not a shortcut.
         let cmd = (self.mods.control_key() && !self.mods.alt_key()) || self.mods.super_key();
         let shift = self.mods.shift_key();
+        // A list of names is up: the keys that walk and take it are its own.
+        // Any other key goes on to the editor, which then offers again
+        // for what is at the caret.
+        if let Some(offer) = self.completion.as_mut() {
+            let count = offer.items.len();
+            let taken = match &event.logical_key {
+                Key::Named(NamedKey::ArrowDown) => {
+                    offer.selected = (offer.selected + 1) % count;
+                    true
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    offer.selected = (offer.selected + count - 1) % count;
+                    true
+                }
+                Key::Named(NamedKey::Enter | NamedKey::Tab) if !cmd => {
+                    let index = offer.selected;
+                    self.accept_completion(index);
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.completion = None;
+                    true
+                }
+                _ => false,
+            };
+            if taken {
+                self.request_redraw();
+                return true;
+            }
+        }
         let Some(page) = self.pages.get_mut(self.active) else { return false };
         let Some(editor) = page.editor_mut() else { return false };
         let mut changed = false;
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => {
                 page.editing = None;
+                self.completion = None;
                 self.request_redraw();
                 return true;
             }
@@ -911,6 +989,8 @@ impl App {
             self.keep_caret_visible();
             self.request_redraw();
         }
+        // What is at the caret now may be a path being typed.
+        self.update_completion();
         true
     }
 
@@ -1131,6 +1211,7 @@ impl App {
     // ----- input --------------------------------------------------------
 
     fn on_canvas_click(&mut self, pos: [f32; 2]) {
+        self.completion = None;
         let now = Instant::now();
         let double = self.last_click.is_some_and(|(t, p)| {
             now.duration_since(t) < Duration::from_millis(400)
@@ -1551,6 +1632,7 @@ impl App {
                 }
                 self.request_redraw();
             }
+            Action::AcceptCompletion(index) => self.accept_completion(index),
             Action::SetPrefs(prefs) => {
                 crate::prefs::save(&prefs);
                 let versions = prefs.check_versions != self.ui.prefs.check_versions;
@@ -1728,6 +1810,20 @@ impl App {
                     e.insert(&text);
                 }
                 self.after_edit();
+                self.update_completion();
+            }
+            // With a list of names up, these keys are the list's, as when typed.
+            Step::Key(name)
+                if self.completion.is_some() && matches!(name.as_str(), "up" | "down" | "enter" | "tab" | "escape") =>
+            {
+                let (count, selected) = self.completion.as_ref().map_or((1, 0), |c| (c.items.len(), c.selected));
+                match name.as_str() {
+                    "down" => self.completion.as_mut().unwrap().selected = (selected + 1) % count,
+                    "up" => self.completion.as_mut().unwrap().selected = (selected + count - 1) % count,
+                    "escape" => self.completion = None,
+                    _ => self.accept_completion(selected),
+                }
+                self.request_redraw();
             }
             Step::Key(name) => {
                 let mut save = false;
@@ -2188,6 +2284,14 @@ impl App {
 
         // 1. The UI. It only produces actions; they are applied right after,
         //    so the canvas drawn below already reflects them.
+        self.ui.completion = self.completion.as_ref().and_then(|offer| {
+            let (tl, br) = self.caret_cell()?;
+            Some(ui::CompletionView {
+                at: egui::pos2(tl[0] / s, br[1] / s),
+                items: offer.items.iter().map(|c| (c.name.clone(), c.is_dir)).collect(),
+                selected: offer.selected,
+            })
+        });
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
         let mut actions = Vec::new();

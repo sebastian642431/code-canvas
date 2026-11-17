@@ -213,6 +213,18 @@ impl Editor {
 
     // ----- typing ------------------------------------------------------------
 
+    /// The text of line `i`; empty past the end.
+    pub fn line(&self, i: usize) -> &str {
+        self.lines.get(i).map_or("", String::as_str)
+    }
+
+    /// Replace what is between column `from` of the caret's line and the
+    /// caret with `text`, as one undo step: how a completion is taken.
+    pub fn complete(&mut self, from: usize, text: &str) {
+        let end = self.caret;
+        self.replace(Pos::new(end.line, from.min(end.col)), end, text);
+    }
+
     /// Type or paste `text` over the selection.
     pub fn insert(&mut self, text: &str) {
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
