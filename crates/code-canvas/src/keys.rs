@@ -55,15 +55,15 @@ const fn info(
 }
 
 pub const COMMANDS: &[CommandInfo] = &[
-    info(Command::Palette, "commandPalette", "Command palette", "Find", Scope::Anywhere, &["ctrl+shift+p", "f1"]),
+    info(Command::Palette, "commandPalette", "Command palette", "Find", Scope::Anywhere, &["ctrl+shift+p"]),
     info(Command::GoToFile, "goToFile", "Go to a file or folder", "Find", Scope::Anywhere, &["ctrl+p"]),
     info(Command::SearchInFiles, "searchInFiles", "Search in files", "Find", Scope::Anywhere, &["ctrl+shift+f"]),
     info(Command::GoToDefinition, "goToDefinition", "Go to the definition", "Find", Scope::Canvas, &["f12"]),
-    info(Command::OpenFolder, "openFolder", "Open another folder", "Folders", Scope::Window, &["ctrl+o", "ctrl+t"]),
+    info(Command::OpenFolder, "openFolder", "Open another folder", "Folders", Scope::Window, &["ctrl+o"]),
     info(Command::CloseFolder, "closeFolder", "Close the folder", "Folders", Scope::Window, &["ctrl+w"]),
     info(Command::NextFolder, "nextFolder", "Next folder", "Folders", Scope::Window, &["ctrl+tab"]),
     info(Command::PreviousFolder, "previousFolder", "Previous folder", "Folders", Scope::Window, &["ctrl+shift+tab"]),
-    info(Command::Rescan, "rescan", "Reload the folder from disk", "Folders", Scope::Window, &["f5", "ctrl+r"]),
+    info(Command::Rescan, "rescan", "Reload the folder from disk", "Folders", Scope::Window, &["f5"]),
     info(
         Command::FormatFile,
         "formatFile",

@@ -40,6 +40,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   existe una versión más nueva.
 - **Actualizaciones**: al abrir, si hay una versión más nueva la ofrece en un aviso y
   la instala sola. El panel del asistente sigue lo que va escribiendo hasta que subís.
+- **Ajustes** (el engranaje, o `Ctrl+,`): se abren en una ventana sobre la app, con
+  versión y actualizaciones, tema, íconos, cada color, cada atajo y un buscador que
+  recorre todo. La ventana abre donde y como la dejaste (maximizada si lo estaba) y
+  nunca más grande que la pantalla.
 - **Varias carpetas a la vez**: comparten un solo lienzo, una al lado de la otra y con
   el mismo zoom; `Ctrl+E` vuelve a una sola por vez.
 - **Edición**: el código legible es un editor: clic y a escribir, con deshacer,

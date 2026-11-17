@@ -28,6 +28,7 @@ mod update;
 mod versions;
 mod watch;
 mod webview;
+mod window_place;
 
 use std::io::Write;
 use std::path::PathBuf;

@@ -46,6 +46,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - **Updates**: a newer release is offered in a notice when the app starts and in the
   status bar, next to the version; *Update and restart* downloads it and restarts into
   it. Settings shows the version and has *Check for updates*.
+- **Settings** (the gear, or `Ctrl+,`) open over the app: version and updates, theme,
+  file icons, every colour, every shortcut and who writes commit messages, with a
+  search box across all of it. The window opens where and as big as it was left,
+  maximized if it was, and never larger than the screen.
 - **Images, video, audio and PDF**: click one (on the canvas, in the file tree, or a
   link an assistant gives) and it opens in a viewer panel. Windows only for now.
 - **Markdown as it reads**: *Preview*, next to the name of a `.md` file on the canvas
@@ -95,7 +99,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   commit it becomes *Sync Changes* or *Publish Branch*. The "…" menu has pull, push,
   fetch, discard all and stash.
 - The sparkle in the message box has an assistant write the message from the change:
-  Claude Code, Codex, or a command of your own (set in the settings panel).
+  Claude Code, Codex, or a command of your own (set in Settings).
 - **Show only changed files** re-lays the canvas out with just your work in progress.
 - Timeline: the commits that touched the selected file, under the file tree.
 
@@ -147,7 +151,7 @@ Without arguments the previous session is restored. Folders can also be opened w
 | Go to a file or folder | `Ctrl+P` |
 | Search in files | `Ctrl+Shift+F` |
 | Open a folder in a new canvas | `Ctrl+O` |
-| Next / previous canvas, canvas N | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+1…9` |
+| Next / previous canvas | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Close the canvas / reload from disk | `Ctrl+W` / `F5` |
 
 ## Performance

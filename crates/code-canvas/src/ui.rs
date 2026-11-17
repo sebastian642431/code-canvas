@@ -13,11 +13,12 @@ use crate::page::{build_tree, Page, PageState, RelFilters};
 mod deps_panel;
 mod ext_panels;
 mod git_panel;
-mod settings_panel;
+mod settings;
 
 use crate::keys::{Command, Keymap};
 
 pub use crate::rails::Side;
+pub use settings::{SettingsView, Tab as SettingsTab};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Panel {
@@ -28,7 +29,6 @@ pub enum Panel {
     Changes,
     Extension,
     Help,
-    Settings,
     Symbols,
     Deps,
     Media,
@@ -44,7 +44,6 @@ impl Panel {
             Panel::Problems => "problems".to_string(),
             Panel::Changes => "changes".to_string(),
             Panel::Help => "help".to_string(),
-            Panel::Settings => "settings".to_string(),
             Panel::Symbols => "symbols".to_string(),
             Panel::Deps => "deps".to_string(),
             Panel::Media => "media".to_string(),
@@ -60,7 +59,6 @@ impl Panel {
             "problems" => Panel::Problems,
             "changes" => Panel::Changes,
             "help" => Panel::Help,
-            "settings" => Panel::Settings,
             "symbols" => Panel::Symbols,
             "deps" => Panel::Deps,
             "media" => Panel::Media,
@@ -76,7 +74,7 @@ impl Panel {
     }
 
     fn stays_put(&self) -> bool {
-        matches!(self, Panel::Help | Panel::Settings)
+        matches!(self, Panel::Help)
     }
 
     fn is_page(&self) -> bool {
@@ -201,6 +199,7 @@ pub struct UiState {
     pub keys: Keymap,
     pub key_file: crate::keys::KeyFile,
     pub rebinding: Option<Command>,
+    pub settings: SettingsView,
     pub naming: Option<Naming>,
     pub single: bool,
     pub prefs: crate::prefs::Prefs,
@@ -238,6 +237,7 @@ impl Default for UiState {
             keys: Keymap::new(&Default::default()),
             key_file: Default::default(),
             rebinding: None,
+            settings: Default::default(),
             naming: None,
             single: false,
             prefs: Default::default(),
@@ -395,6 +395,7 @@ pub enum Action {
     RefreshGit,
     WriteCommitMessage,
     SetCommitAi(crate::commit_ai::Settings),
+    Settings(SettingsTab),
     SetPrefs(crate::prefs::Prefs),
     OpenMedia(std::path::PathBuf),
     Preview(String),
@@ -655,6 +656,7 @@ pub fn build(
     toolbar(&ctx, st, canvas, info, actions);
     completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
+    settings::settings_modal(&ctx, st, ext, actions);
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
     canvas
@@ -769,7 +771,7 @@ fn status_bar(
     actions: &mut Vec<Action>,
 ) {
     let mut panel_to_show = None;
-    let mut update_now = false;
+    let (mut update_now, mut settings) = (false, false);
     egui::Panel::bottom("status").frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
         ui,
         |ui| {
@@ -794,7 +796,7 @@ fn status_bar(
                     let version = RichText::new(format!("v{}", crate::update::current())).size(12.0).color(pal().text_faint);
                     let label = ui.add(egui::Label::new(version).sense(Sense::click()));
                     if label.on_hover_text("Code Canvas version: click for Settings, where updates are").clicked() {
-                        panel_to_show = Some(Panel::Settings);
+                        settings = true;
                     }
                     if let crate::update::State::Available(new) = &st.update {
                         let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
@@ -847,6 +849,9 @@ fn status_bar(
     if let Some(panel) = panel_to_show {
         st.show(panel);
     }
+    if settings {
+        st.settings.show(Some(SettingsTab::General));
+    }
     if update_now {
         actions.push(Action::InstallUpdate);
     }
@@ -881,7 +886,6 @@ fn side_panel(
         Panel::Changes => git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions),
         Panel::Extension => ext_panels::extension_view(ui, st, ext),
         Panel::Help => help_panel(ui, &st.keys),
-        Panel::Settings => settings_panel::settings_panel(ui, st, ext, actions),
         Panel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
         Panel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
         Panel::Webview(view) => ext_panels::webview_panel(ui, st, ext, view),
@@ -1031,14 +1035,14 @@ fn rail(
             if side == Side::Right {
                 return;
             }
-            for (panel, glyph, tip) in [
-                (Panel::Settings, icons::SETTINGS, "Settings: theme, colours, shortcuts"),
-                (Panel::Help, icons::CIRCLE_HELP, "Keyboard and mouse shortcuts"),
-            ] {
-                let active = st.is_open(&panel);
-                if icon_button(ui, glyph, RAIL_ICON, active, pal().hover).on_hover_text(tip).clicked() {
-                    st.toggle(panel);
-                }
+            let tip = st.keys.hint("Settings: version, theme, colours, shortcuts", Command::Settings);
+            if icon_button(ui, icons::SETTINGS, RAIL_ICON, st.settings.open, pal().hover).on_hover_text(tip).clicked() {
+                st.settings.toggle();
+            }
+            let help = st.is_open(&Panel::Help);
+            let tip = "Keyboard and mouse shortcuts";
+            if icon_button(ui, icons::CIRCLE_HELP, RAIL_ICON, help, pal().hover).on_hover_text(tip).clicked() {
+                st.toggle(Panel::Help);
             }
         });
     });
@@ -1780,7 +1784,6 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                     "Next / previous folder",
                     format!("{} / {}", keys.label(Command::NextFolder), keys.label(Command::PreviousFolder)),
                 ),
-                ("Go to folder N", fixed("Ctrl+1 … Ctrl+9")),
                 ("Close the folder", key(Command::CloseFolder)),
                 ("Reload from disk", key(Command::Rescan)),
                 ("Toggle the left panel", key(Command::ToggleLeftPanel)),
@@ -2136,10 +2139,13 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("View: Extensions".into(), Action::Show(Panel::Extensions)),
         ("View: Problems".into(), Action::Show(Panel::Problems)),
         ("View: Keyboard Shortcuts".into(), Action::Show(Panel::Help)),
-        ("Preferences: Settings".into(), Action::Show(Panel::Settings)),
+        ("Preferences: Settings".into(), Action::Settings(SettingsTab::General)),
+        ("Preferences: Keyboard Shortcuts".into(), Action::Settings(SettingsTab::Keyboard)),
+        ("Preferences: Colours".into(), Action::Settings(SettingsTab::Colours)),
+        ("Preferences: Commit Messages".into(), Action::Settings(SettingsTab::Commits)),
         ("Code Canvas: Check for Updates".into(), Action::CheckUpdates),
-        (format!("Code Canvas: About (version {})", crate::update::current()), Action::Show(Panel::Settings)),
-        ("Preferences: Colour Theme".into(), Action::Show(Panel::Settings)),
+        (format!("Code Canvas: About (version {})", crate::update::current()), Action::Settings(SettingsTab::General)),
+        ("Preferences: Colour Theme".into(), Action::Settings(SettingsTab::Appearance)),
         ("View: Every Folder on the Canvas, or One at a Time".into(), Action::ToggleSideBySide),
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),

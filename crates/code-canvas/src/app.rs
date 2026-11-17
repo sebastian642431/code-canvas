@@ -96,6 +96,8 @@ pub struct App {
     initial: Vec<(PathBuf, Option<PageSession>)>,
     initial_active: usize,
     window_size: Option<[f32; 2]>,
+    window_pos: Option<[i32; 2]>,
+    start_maximized: bool,
     cursor: [f32; 2],
     drag: Option<Drag>,
     mods: ModifiersState,
@@ -186,6 +188,8 @@ impl App {
             initial,
             initial_active,
             window_size: saved.window,
+            window_pos: saved.window_pos,
+            start_maximized: saved.maximized,
             cursor: [-1.0, -1.0],
             drag: None,
             mods: ModifiersState::empty(),
@@ -359,10 +363,16 @@ impl App {
         self.session_dirty = false;
         self.last_save = Instant::now();
         let s = self.scale();
-        let window = self.gfx.as_ref().map(|g| {
-            let size = g.window.inner_size().to_logical::<f32>(g.window.scale_factor());
-            [size.width, size.height]
-        });
+        if let Some(g) = &self.gfx {
+            let (maximized, minimized) = (g.window.is_maximized(), g.window.is_minimized().unwrap_or(false));
+            self.start_maximized = maximized;
+            if !maximized && !minimized {
+                let size = g.window.inner_size().to_logical::<f32>(g.window.scale_factor());
+                self.window_size = Some([size.width, size.height]);
+                self.window_pos = g.window.outer_position().ok().map(|p| [p.x, p.y]);
+            }
+        }
+        let (window, window_pos, maximized) = (self.window_size, self.window_pos, self.start_maximized);
         session::save(&Session {
             pages: self.pages.iter().map(|p| p.to_session(s, self.viewport())).collect(),
             active: self.active,
@@ -372,6 +382,8 @@ impl App {
             right_last: self.ui.last_right.key(),
             rails: self.ui.rails.clone(),
             window,
+            window_pos,
+            maximized,
             single: self.ui.single,
         });
     }
@@ -1386,7 +1398,7 @@ impl App {
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
         let chord = key_name(&event.logical_key).map(|key| Chord::new(&key, cmd, shift, alt));
 
-        if !self.ui.is_open(&Panel::Settings) {
+        if !self.ui.settings.open {
             self.ui.rebinding = None;
         }
         if let Some(command) = self.ui.rebinding {
@@ -1409,6 +1421,14 @@ impl App {
             self.run_command(info.command);
             return;
         }
+        if self.ui.settings.open && self.ui.quick.is_none() {
+            let leaves = chord.as_ref().is_some_and(|c| c.key == "escape" && !cmd && !alt);
+            if leaves || bound.is_some_and(|i| i.command == Command::Settings) {
+                self.ui.settings.open = false;
+                self.request_redraw();
+            }
+            return;
+        }
         if typing || self.ui.quick.is_some() {
             return;
         }
@@ -1421,9 +1441,6 @@ impl App {
             return;
         }
         let Some(chord) = chord else { return };
-        if self.fixed_chord(&chord) {
-            return;
-        }
         if chord.key == "escape" {
             if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
                 self.clear_symbols();
@@ -1436,10 +1453,16 @@ impl App {
 
     fn run_command(&mut self, command: Command) {
         match command {
-            Command::Palette => self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true }),
-            Command::GoToFile => self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true }),
+            Command::Palette => {
+                self.ui.settings.open = false;
+                self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true })
+            }
+            Command::GoToFile => {
+                self.ui.settings.open = false;
+                self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true })
+            }
             Command::SearchInFiles => self.ui.show(Panel::Search),
-            Command::Settings => self.ui.show(Panel::Settings),
+            Command::Settings => self.ui.settings.show(None),
             Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::FormatFile => self.format_file(None),
@@ -1462,16 +1485,6 @@ impl App {
         self.request_redraw();
     }
 
-    fn fixed_chord(&mut self, chord: &Chord) -> bool {
-        match chord.key.as_bytes() {
-            [digit @ b'1'..=b'9'] if chord.ctrl && !chord.alt => {
-                self.switch_to((digit - b'1') as usize);
-                true
-            }
-            _ => false,
-        }
-    }
-
     fn page_chord(&mut self, k: &crate::webview::PageKey) {
         let chord = Chord::new(&k.key, k.ctrl, k.shift, k.alt);
         match self.ui.keys.command(&chord).map(Command::info) {
@@ -1482,9 +1495,7 @@ impl App {
                 self.run_command(info.command);
             }
             Some(_) => {}
-            None => {
-                self.fixed_chord(&chord);
-            }
+            None => {}
         }
     }
 
@@ -1694,6 +1705,10 @@ impl App {
                 self.ui.show(panel);
                 self.request_redraw();
             }
+            Action::Settings(tab) => {
+                self.ui.settings.show(Some(tab));
+                self.request_redraw();
+            }
             Action::SaveFile => self.save_edit(),
             Action::RunCommand(id, title) => {
                 self.ext.run_command(&id, &title);
@@ -1873,7 +1888,12 @@ impl App {
                 "extensions" => self.ui.show(Panel::Extensions),
                 "problems" => self.ui.show(Panel::Problems),
                 "changes" => self.ui.show(Panel::Changes),
-                "settings" => self.ui.show(Panel::Settings),
+                "settings" => self.ui.settings.show(None),
+                "settings:close" => self.ui.settings.open = false,
+                id if id.starts_with("settings:") => match ui::SettingsTab::from_key(&id[9..]) {
+                    Some(tab) => self.ui.settings.show(Some(tab)),
+                    None => self.ui.settings.search(&id[9..]),
+                },
                 id if id.contains('.') => {
                     self.ui.extension = id.to_string();
                     self.ui.show(Panel::Extension);
@@ -2867,10 +2887,22 @@ impl ApplicationHandler for App {
         if self.gfx.is_some() {
             return;
         }
-        let size = self.window_size.filter(|s| s[0] >= 400.0 && s[1] >= 300.0).unwrap_or([1440.0, 900.0]);
+        let screens: Vec<crate::window_place::Screen> = event_loop
+            .available_monitors()
+            .map(|m| crate::window_place::Screen {
+                origin: [m.position().x, m.position().y],
+                size: [m.size().width, m.size().height],
+                scale: m.scale_factor() as f32,
+            })
+            .collect();
+        let first = event_loop.primary_monitor().map(|m| [m.position().x, m.position().y]);
+        let place = crate::window_place::place(&screens, first, self.window_size, self.window_pos);
+        let size = place.size;
         let attrs = Window::default_attributes()
             .with_title("Code Canvas")
             .with_inner_size(LogicalSize::new(size[0] as f64, size[1] as f64))
+            .with_position(winit::dpi::PhysicalPosition::new(place.position[0], place.position[1]))
+            .with_maximized(self.start_maximized)
             .with_min_inner_size(LogicalSize::new(720.0, 420.0))
             .with_decorations(false)
             .with_window_icon(crate::icon::window_icon());

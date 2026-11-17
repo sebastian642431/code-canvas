@@ -578,6 +578,23 @@ Window
   and so are the edges (`App::edge_at` finds the edge or corner under the pointer).
 - The window icon is set explicitly. The taskbar and Alt+Tab use the big icon, and
   setting it keeps them from falling back to whatever Windows cached for the file.
+- **Where it opens** (`window_place::place`, called from `App::resumed`). The
+  first time: centred on the main screen at 90% × 92% of what the taskbar leaves,
+  never the 1440×900 it used to ask for whatever the screen was. After that: the
+  size and place it was left in.
+  - A saved size larger than the screen it opens on is cut to fit (minus
+    `MARGIN`, and `TASKBAR` in height, because winit does not report the work
+    area and a window as tall as the screen ends up under the taskbar).
+  - A saved place is kept only if a screen still holds enough of the title bar to
+    grab (`holds`); a second screen that is gone sends the window back to the
+    main one, centred.
+  - Maximized is saved as its own flag (`Session::maximized`). While maximized,
+    `save_session` keeps the size and place from before, so "restore" after the
+    next start gives the old window back and not a screen-sized one.
+  - A maximized window on Windows reports a rectangle 8 px larger than the screen
+    on every side. That is the invisible resize frame, not our content: the
+    client area ends at the screen's edges, so nothing needs padding. (A padding
+    was tried and it only added a band.)
 
 Start-up and shutdown
 
@@ -613,8 +630,14 @@ Keyboard and focus
 - While Settings waits for the new shortcut of a command (`UiState::rebinding`),
   the next key is it. Esc gives up; a modifier on its own, or a key that cannot be
   used for that command, keeps it waiting.
-- `App::fixed_chord`: Ctrl+1 … Ctrl+9 go to that canvas and are not in the
-  shortcut table.
+- While Settings is open no key reaches the canvas or the editor
+  (`App::on_key`). Esc and the Settings shortcut close it; `Scope::Anywhere`
+  shortcuts still run, and the two that open the "go to" box close Settings
+  first, so two things never fight over which is on top.
+- Each command has one shortcut by default. The second ones (Ctrl+T to open a
+  folder, Ctrl+R to reload, F1 for the palette) and Ctrl+1 … Ctrl+9 to go to
+  folder N were removed at the user's request: duplicates nobody needed. A
+  second shortcut can still be given to any command in Settings.
 - `App::page_chord` handles chords pressed while a web page had the keyboard: the
   same shortcuts as in the window, except the canvas's own, which are not for a
   page that is being typed in. Palette, go to file and search in files open a text
@@ -1085,7 +1108,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `goto` | `goto <path>` | Select a file or folder and fly to it. |
 | `select` | `select <name>` | Select the first symbol with that name. |
 | `search` | `search <text>` | Search in files. |
-| `left` | `left files\|search\|extensions\|problems\|changes\|settings\|help` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
+| `left` | `left files\|search\|extensions\|problems\|changes\|help` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
+| `left settings` | `left settings`, `left settings:general\|appearance\|colours\|keyboard\|commits`, `left settings:<text>`, `left settings:close` | Open Settings, on a category, or searching for the text; close it. |
 | `right` | `right symbols\|deps` or `right <view id or extension id>`; `right none` | Open that panel, or that extension's webview, on the side its icon is on. `none` closes the right side. |
 | `preview` | `preview <path>` | Show a Markdown file of the folder rendered, or close it if it is the one shown. `open <path>` shows one from anywhere. |
 | `drop` | `drop <path>` | What dropping that file on the window does: a copy in the selected folder. |
@@ -1166,12 +1190,29 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Lucide and Codicons are added as fallback fonts, so icon code points render
   anywhere text does. Codicons are needed because extensions name them in their
   texts, and a few panels that mirror VS Code's use the icons it does.
+- **Settings is a window over the app, not a panel** (`ui/settings.rs`,
+  `UiState::settings`): the user asked for room to see everything at once. It has
+  its categories on the left and a search box that, while it has text, shows what
+  matches from every category.
+  - It is `egui::Modal`, which puts the backdrop and the content in one area. Two
+    separate areas would swap places the first time the backdrop is clicked.
+  - Esc is not egui's to handle here (`ModalResponse::should_close` is not used):
+    the same key gives up on a shortcut that is waiting for its keys, and that
+    must not close the window too.
+  - While it is open the whole screen is in `UiState::floating`, so the canvas
+    gets no pointer, and `page_places` is emptied, so web pages (which are real
+    child windows, always above what we draw) hide instead of covering it.
+  - Each section function says whether it drew anything; nothing drawn is "No
+    setting matches".
+  - Shortcut rows are sorted by the place of their group in `keys::COMMANDS`,
+    whose rows are not grouped.
 - The "go to file" box becomes the command palette when the query starts with `>`,
   as in VS Code. `quick_score` is a subsequence match on a lower-case query
   (`appts` → `src/app/types.ts`).
 - **The two bars.** `Panel` names every panel; which side one opens on is where
   its icon is (`UiState::side_of`), so nothing opens a panel "on the left": it
-  calls `UiState::show`. `Help` and `Settings` stay at the bottom of the left bar.
+  calls `UiState::show`. `Help` stays at the bottom of the left bar, next to the
+  gear that opens Settings.
   - `rail_entries` lists the icons there are this frame; `Rails::arrange` puts
     them in order. An icon never moved sits on its home side after the moved ones.
     One that is not there now (an extension's view whose condition is false, the

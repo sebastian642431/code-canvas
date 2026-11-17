@@ -13,6 +13,8 @@ pub struct Session {
     pub right_last: String,
     pub rails: crate::rails::Rails,
     pub window: Option<[f32; 2]>,
+    pub window_pos: Option<[i32; 2]>,
+    pub maximized: bool,
     pub single: bool,
 }
 
