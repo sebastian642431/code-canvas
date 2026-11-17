@@ -26,6 +26,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   panel que lista ambas cosas.
 - **Buscar**: explorador con casillas y filtro, `Ctrl+P` para ir a un archivo,
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
+- **Archivos**: clic derecho en el explorador para crear, renombrar, borrar (a la
+  papelera), copiar la ruta, mostrar en el explorador del sistema o abrir una
+  terminal. Soltá un archivo en la ventana para copiarlo a la carpeta seleccionada.
 - **Edición**: el código legible es un editor: clic y a escribir, con deshacer,
   copiar y pegar y `Ctrl+S`. Formatea al guardar (se apaga con `editor.formatOnSave`), los
   problemas se actualizan mientras escribís y los archivos cambiados por otro programa

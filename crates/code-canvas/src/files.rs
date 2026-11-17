@@ -1,0 +1,229 @@
+//! What the explorer's menu does to files and folders: create, rename, move
+//! to the recycle bin, show in the system's file manager, open a terminal.
+//!
+//! Everything stays inside the open folder (`root`), nothing existing is
+//! ever overwritten, and nothing is deleted for good: "delete" moves to the
+//! recycle bin. The file watcher shows the result on the canvas.
+
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+/// `root` joined with a path relative to it, as long as that stays inside.
+pub fn inside(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let rel_path = Path::new(rel);
+    let stays = rel_path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    if !stays {
+        return Err(format!("\"{rel}\" is not inside the folder"));
+    }
+    Ok(root.join(rel_path))
+}
+
+/// A name typed by the user for something inside `dir`. It may have `/` in
+/// it (`"a/b.txt"` makes `a` too) but cannot leave `dir`.
+fn named(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim().replace('\\', "/");
+    let name = name.trim_matches('/');
+    if name.is_empty() {
+        return Err("a name is needed".to_string());
+    }
+    let mut out = dir.to_path_buf();
+    for part in name.split('/') {
+        let part = part.trim();
+        let reserved = part.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control());
+        if part.is_empty() || part == "." || part == ".." || reserved || part.ends_with('.') {
+            return Err(format!("\"{name}\" is not a name a file can have"));
+        }
+        out.push(part);
+    }
+    Ok(out)
+}
+
+fn fresh(target: PathBuf) -> Result<PathBuf, String> {
+    if target.exists() {
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return Err(format!("there is already something named \"{name}\" there"));
+    }
+    Ok(target)
+}
+
+/// Make an empty file named `name` in `dir`. Folders in the name are made too.
+pub fn create_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let target = fresh(named(dir, name)?)?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+pub fn create_folder(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let target = fresh(named(dir, name)?)?;
+    std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+/// Give `path` another name, in the folder it is in.
+pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.contains('/') || name.contains('\\') {
+        return Err("a new name, not a path: it stays in the same folder".to_string());
+    }
+    let dir = path.parent().ok_or("it has no folder")?;
+    let target = named(dir, name)?;
+    if target == path {
+        return Ok(target);
+    }
+    // On Windows "Readme" and "README" are the same file: changing only the
+    // case is a rename, not a clash with something that exists.
+    let same_file = target.to_string_lossy().eq_ignore_ascii_case(&path.to_string_lossy());
+    let target = if same_file { target } else { fresh(target)? };
+    std::fs::rename(path, &target).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+/// Move `path` to the recycle bin.
+pub fn recycle(path: &Path) -> Result<(), String> {
+    trash::delete(path).map_err(|e| e.to_string())
+}
+
+/// Put a copy of `file` in `dir`. Runs on a thread of its own (it may be a
+/// large video); what goes wrong is only logged.
+pub fn copy_into(file: PathBuf, dir: &Path) -> Result<PathBuf, String> {
+    let name = file.file_name().ok_or("it has no name")?.to_os_string();
+    if file.parent().is_some_and(|p| p == dir) {
+        return Err(String::new()); // it is already there: nothing to say
+    }
+    let target = fresh(dir.join(name))?;
+    let to = target.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = std::fs::copy(&file, &to) {
+            log::error!("could not copy {} to {}: {e}", file.display(), to.display());
+        }
+    });
+    Ok(target)
+}
+
+/// Show `path` selected in the system's file manager.
+pub fn reveal(path: &Path) -> Result<(), String> {
+    let mut command = if cfg!(windows) {
+        let mut c = Command::new("explorer.exe");
+        // Explorer wants the comma glued to the switch and backslashes.
+        c.arg(format!("/select,{}", path.display().to_string().replace('/', "\\")));
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg("-R").arg(path);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(path.parent().unwrap_or(path));
+        c
+    };
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Open the system's terminal in `dir`.
+pub fn terminal(dir: &Path) -> Result<(), String> {
+    if cfg!(windows) {
+        // Windows Terminal where it is installed, else the classic console.
+        let modern = Command::new("wt.exe").arg("-d").arg(dir).spawn();
+        if modern.is_ok() {
+            return Ok(());
+        }
+        return Command::new("cmd.exe")
+            .args(["/C", "start", "", "cmd.exe"])
+            .current_dir(dir)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+    let mut command = if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.args(["-a", "Terminal"]).arg(dir);
+        c
+    } else {
+        let mut c = Command::new("x-terminal-emulator");
+        c.current_dir(dir);
+        c
+    };
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-files-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn paths_stay_inside_the_folder() {
+        let root = Path::new("/project");
+        assert_eq!(inside(root, "src/main.rs").unwrap(), root.join("src").join("main.rs"));
+        assert_eq!(inside(root, "").unwrap(), root.join(""));
+        assert!(inside(root, "../other").is_err());
+        assert!(inside(root, "src/../../other").is_err());
+        assert!(inside(root, "/etc/passwd").is_err());
+        assert!(inside(root, "C:\\Windows").is_err() || !cfg!(windows));
+    }
+
+    #[test]
+    fn names_are_checked() {
+        let dir = Path::new("/project/src");
+        assert_eq!(named(dir, "a.txt").unwrap(), dir.join("a.txt"));
+        assert_eq!(named(dir, "  deep/er\\file.rs ").unwrap(), dir.join("deep").join("er").join("file.rs"));
+        for bad in ["", "   ", "..", "a/../b", "what?.txt", "a:b", "tab\there", "ends.", "/"] {
+            assert!(named(dir, bad).is_err(), "{bad:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn create_and_rename_never_overwrite() {
+        let dir = scratch("create");
+        let file = create_file(&dir, "notes/today.md").unwrap();
+        assert!(file.is_file() && file.ends_with("notes/today.md"));
+        assert!(create_file(&dir, "notes/today.md").is_err());
+        assert!(create_folder(&dir, "notes").is_err());
+        let folder = create_folder(&dir, "assets/img").unwrap();
+        assert!(folder.is_dir());
+
+        std::fs::write(&file, "kept").unwrap();
+        let other = create_file(&dir, "notes/other.md").unwrap();
+        // Renaming onto something that exists is refused, and nothing changes.
+        assert!(rename(&other, "today.md").is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "kept");
+        assert!(rename(&other, "sub/other.md").is_err());
+        let renamed = rename(&other, "renamed.md").unwrap();
+        assert!(renamed.is_file() && !other.exists());
+        // The same name again is fine: nothing to do.
+        assert_eq!(rename(&renamed, "renamed.md").unwrap(), renamed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dropped_file_is_copied_once() {
+        let (from, to) = (scratch("drop-from"), scratch("drop-to"));
+        let file = from.join("clip.mp4");
+        std::fs::write(&file, b"video").unwrap();
+        let target = copy_into(file.clone(), &to).unwrap();
+        // The copy runs on its own thread.
+        for _ in 0..200 {
+            if std::fs::read(&target).is_ok_and(|b| b == b"video") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), b"video");
+        assert!(file.exists(), "the original stays where it was");
+        // Again: there is one already, so it is refused with a reason.
+        assert!(copy_into(file.clone(), &to).is_err_and(|e| !e.is_empty()));
+        // Dropped on the folder it is already in: nothing happens, quietly.
+        assert!(copy_into(file, &from).is_err_and(|e| e.is_empty()));
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+}

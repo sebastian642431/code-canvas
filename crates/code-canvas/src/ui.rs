@@ -55,6 +55,50 @@ pub enum RightPanel {
     Webview,
 }
 
+/// Something the explorer's menu asks the app to do with a file or folder.
+/// Paths are relative to the open folder, with `/`; `""` is the folder itself.
+pub enum FileOp {
+    /// Show it in the system's file manager.
+    Reveal(String),
+    /// Open a terminal in this folder.
+    Terminal(String),
+    CopyPath {
+        path: String,
+        relative: bool,
+    },
+    NewFile {
+        dir: String,
+        name: String,
+    },
+    NewFolder {
+        dir: String,
+        name: String,
+    },
+    Rename {
+        path: String,
+        name: String,
+    },
+    /// Move it to the recycle bin (the app asks first).
+    Delete(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NamingKind {
+    NewFile,
+    NewFolder,
+    Rename,
+}
+
+/// The explorer is asking for a name.
+pub struct Naming {
+    pub kind: NamingKind,
+    /// The folder the new thing goes in, or what is being renamed.
+    pub path: String,
+    pub text: String,
+    /// Put the caret in the field on the next frame.
+    pub focus: bool,
+}
+
 pub struct QuickOpen {
     pub query: String,
     pub selected: usize,
@@ -98,6 +142,8 @@ pub struct UiState {
     /// The command whose new shortcut the settings panel is waiting for:
     /// the next key pressed becomes it.
     pub rebinding: Option<Command>,
+    /// The name the explorer is asking for, if it is asking.
+    pub naming: Option<Naming>,
 }
 
 impl Default for UiState {
@@ -124,6 +170,7 @@ impl Default for UiState {
             keys: Keymap::new(&Default::default()),
             key_file: Default::default(),
             rebinding: None,
+            naming: None,
         }
     }
 }
@@ -208,6 +255,8 @@ pub enum Action {
     ResetKey(Command),
     /// Leave a command without a shortcut.
     UnbindKey(Command),
+    /// The explorer's menu: something to do with a file or folder.
+    File(FileOp),
     // The window itself (it has no system title bar).
     DragWindow,
     ToggleMaximize,
@@ -1002,6 +1051,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 6 }).show(ui, |ui| {
         search_field(ui, &mut st.explorer_filter, "Filter by name, e.g. api types", icons::SEARCH);
     });
+    naming_box(ui, st, actions);
 
     let Some(page) = page else {
         ui.add_space(8.0);
@@ -1166,8 +1216,138 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             if resp.double_clicked() && is_dir && on {
                 actions.push(Action::ToggleCollapsed(path.to_string()));
             }
+            resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, is_dir, hidden, locked, actions));
         }
     });
+}
+
+/// A row of a menu: an icon and what it does. True when it was chosen.
+fn menu_row(ui: &mut egui::Ui, glyph: &str, label: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 6.0, pal().hover);
+    }
+    let (mid, font) = (rect.center().y, FontId::proportional(13.0));
+    ui.painter().text(Pos2::new(rect.left() + 10.0, mid), Align2::LEFT_CENTER, glyph, font.clone(), pal().text_dim);
+    ui.painter().text(Pos2::new(rect.left() + 32.0, mid), Align2::LEFT_CENTER, label, font, pal().text);
+    resp.clicked()
+}
+
+/// A line between two groups of a menu.
+fn menu_gap(ui: &mut egui::Ui) {
+    ui.add_space(3.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, pal().border);
+    ui.add_space(3.0);
+}
+
+/// The menu of a row of the explorer (right click).
+fn file_menu(
+    ui: &mut egui::Ui,
+    naming: &mut Option<Naming>,
+    path: &str,
+    is_dir: bool,
+    hidden: bool,
+    locked: bool,
+    actions: &mut Vec<Action>,
+) {
+    ui.set_width(236.0);
+    ui.spacing_mut().item_spacing.y = 1.0;
+    // Where new things go: into a folder, next to a file.
+    let dir = if is_dir { path } else { path.rsplit_once('/').map_or("", |(dir, _)| dir) };
+    let name = path.rsplit_once('/').map_or(path, |(_, name)| name);
+    let mut op = None;
+    let mut ask = None;
+
+    let reveal = if cfg!(windows) {
+        "Reveal in File Explorer"
+    } else if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else {
+        "Open the containing folder"
+    };
+    if menu_row(ui, icons::FOLDER_OPEN, reveal) {
+        op = Some(FileOp::Reveal(path.to_string()));
+    }
+    if menu_row(ui, icons::CODE, "Open in terminal") {
+        op = Some(FileOp::Terminal(dir.to_string()));
+    }
+    menu_gap(ui);
+    if menu_row(ui, icons::COPY, "Copy path") {
+        op = Some(FileOp::CopyPath { path: path.to_string(), relative: false });
+    }
+    if menu_row(ui, icons::COPY, "Copy relative path") {
+        op = Some(FileOp::CopyPath { path: path.to_string(), relative: true });
+    }
+    menu_gap(ui);
+    if menu_row(ui, icons::FILE, "New file…") {
+        ask = Some((NamingKind::NewFile, dir.to_string(), String::new()));
+    }
+    if menu_row(ui, icons::FOLDER, "New folder…") {
+        ask = Some((NamingKind::NewFolder, dir.to_string(), String::new()));
+    }
+    if menu_row(ui, icons::FILE_TEXT, "Rename…") {
+        ask = Some((NamingKind::Rename, path.to_string(), name.to_string()));
+    }
+    if menu_row(ui, icons::TRASH_2, "Delete") {
+        op = Some(FileOp::Delete(path.to_string()));
+    }
+    menu_gap(ui);
+    let mut canvas = None;
+    if !is_dir && menu_row(ui, icons::WAND_SPARKLES, "Format") {
+        canvas = Some(Action::FormatFile(Some(path.to_string())));
+    }
+    if !locked {
+        let (glyph, label) =
+            if hidden { (icons::EYE, "Show on the canvas") } else { (icons::EYE_OFF, "Hide from the canvas") };
+        if menu_row(ui, glyph, label) {
+            canvas = Some(Action::ToggleHidden(path.to_string()));
+        }
+    }
+    if is_dir && !hidden && menu_row(ui, icons::FOLD_VERTICAL, "Collapse or expand on the canvas") {
+        canvas = Some(Action::ToggleCollapsed(path.to_string()));
+    }
+
+    if let Some((kind, path, text)) = ask {
+        *naming = Some(Naming { kind, path, text, focus: true });
+        ui.close();
+    }
+    if let Some(action) = op.map(Action::File).or(canvas) {
+        actions.push(action);
+        ui.close();
+    }
+}
+
+/// The field the explorer asks a name with: Enter takes it, Esc or a click
+/// elsewhere gives up.
+fn naming_box(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    let Some(naming) = &mut st.naming else { return };
+    let place = |path: &str| if path.is_empty() { "this folder".to_string() } else { format!("{path}/") };
+    let (title, hint, glyph) = match naming.kind {
+        NamingKind::NewFile => {
+            (format!("New file in {}", place(&naming.path)), "name.ext, or folder/name.ext", icons::FILE)
+        }
+        NamingKind::NewFolder => (format!("New folder in {}", place(&naming.path)), "name", icons::FOLDER),
+        NamingKind::Rename => (format!("New name for {}", naming.path), "name", icons::FILE_TEXT),
+    };
+    let mut done = None;
+    Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 0, bottom: 6 }).show(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(title).size(11.5).color(pal().text_dim)).truncate());
+        let field = search_field(ui, &mut naming.text, hint, glyph);
+        if std::mem::take(&mut naming.focus) {
+            field.request_focus();
+        } else if field.lost_focus() {
+            done = Some(ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        }
+    });
+    let Some(accepted) = done else { return };
+    if let Some(n) = st.naming.take().filter(|n| accepted && !n.text.trim().is_empty()) {
+        actions.push(Action::File(match n.kind {
+            NamingKind::NewFile => FileOp::NewFile { dir: n.path, name: n.text },
+            NamingKind::NewFolder => FileOp::NewFolder { dir: n.path, name: n.text },
+            NamingKind::Rename => FileOp::Rename { path: n.path, name: n.text },
+        }));
+    }
 }
 
 fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actions: &mut Vec<Action>) {

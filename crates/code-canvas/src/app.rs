@@ -22,7 +22,7 @@ use crate::overlay::{self, CanvasOverlay, SYMBOL_HOVER_MIN_PX};
 use crate::page::{Page, PageState, Ready};
 use crate::script::{Script, Step};
 use crate::session::{self, PageSession, Session};
-use crate::ui::{self, Action, FrameInfo, LeftPanel, QuickOpen, RightPanel, UiState};
+use crate::ui::{self, Action, FileOp, FrameInfo, LeftPanel, QuickOpen, RightPanel, UiState};
 
 struct Gfx {
     renderer: Renderer,
@@ -343,30 +343,68 @@ impl App {
     // ----- pages -------------------------------------------------------
 
     /// A file was dropped on the window while a folder is open: put a copy
-    /// of it in that folder. Nothing is ever overwritten. The copy runs in
-    /// the background (it may be a large video); the file watcher shows it
-    /// on the canvas once it is there.
+    /// of it there. It goes into the folder selected on the canvas or in the
+    /// explorer (the one a selected file is in), else the open folder itself.
+    /// Nothing is ever overwritten; the file watcher shows it once it is in.
     fn drop_file(&mut self, file: PathBuf) {
         let Some(page) = self.pages.get(self.active) else { return };
-        let Some(name) = file.file_name().map(|n| n.to_os_string()) else { return };
-        let (folder, shown) = (page.root.clone(), name.to_string_lossy().into_owned());
-        let target = folder.join(&name);
-        if file.parent().is_some_and(|p| p == folder) {
-            return; // it is already here
-        }
-        if target.exists() {
-            let text = format!("\"{shown}\" was not copied: this folder already has a file with that name.");
-            self.ext.notice(ext::Level::Warn, "files", text);
-            self.request_redraw();
-            return;
-        }
-        self.ext.notice(ext::Level::Info, "files", format!("Copying \"{shown}\" into {}", folder.display()));
-        self.request_redraw();
-        std::thread::spawn(move || {
-            if let Err(e) = std::fs::copy(&file, &target) {
-                log::error!("could not copy {} to {}: {e}", file.display(), target.display());
+        let selected = page.selected.and_then(|n| page.ready().and_then(|r| r.layout.nodes.get(n)));
+        let rel = match selected {
+            Some(n) if n.is_dir() => n.rel_path.clone(),
+            Some(n) => n.rel_path.rsplit_once('/').map_or(String::new(), |(dir, _)| dir.to_string()),
+            None => String::new(),
+        };
+        let dir = crate::files::inside(&page.root, &rel).unwrap_or_else(|_| page.root.clone());
+        let shown = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let place: PathBuf = dir.components().collect();
+        match crate::files::copy_into(file, &dir) {
+            Ok(_) => {
+                let text = format!("Copying \"{shown}\" into {}", place.display());
+                self.ext.notice(ext::Level::Info, "files", text)
             }
-        });
+            Err(why) if why.is_empty() => {}
+            Err(why) => self.ext.notice(ext::Level::Warn, "files", format!("\"{shown}\" was not copied: {why}.")),
+        }
+        self.request_redraw();
+    }
+
+    /// Something chosen in the explorer's menu. Paths are relative to the
+    /// open folder and cannot leave it (`files::inside`).
+    fn file_op(&mut self, op: FileOp) {
+        let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
+        let at = |rel: &str| crate::files::inside(&root, rel);
+        let done: Result<(), String> = match op {
+            FileOp::Reveal(path) => at(&path).and_then(|p| crate::files::reveal(&p)),
+            FileOp::Terminal(dir) => at(&dir).and_then(|p| crate::files::terminal(&p)),
+            FileOp::CopyPath { path, relative } => at(&path).and_then(|full| {
+                // With the separators of this system, whatever the tree uses.
+                let full: PathBuf = full.components().collect();
+                let text = if relative { path.clone() } else { full.display().to_string() };
+                arboard::Clipboard::new().and_then(|mut c| c.set_text(text)).map_err(|e| e.to_string())
+            }),
+            FileOp::NewFile { dir, name } => at(&dir).and_then(|d| crate::files::create_file(&d, &name)).map(|_| ()),
+            FileOp::NewFolder { dir, name } => {
+                at(&dir).and_then(|d| crate::files::create_folder(&d, &name)).map(|_| ())
+            }
+            FileOp::Rename { path, name } => at(&path).and_then(|p| crate::files::rename(&p, &name)).map(|_| ()),
+            FileOp::Delete(path) if path.is_empty() => Err("the open folder itself is not deleted from here".into()),
+            FileOp::Delete(path) => at(&path).and_then(|p| {
+                let answer = rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_title("Code Canvas")
+                    .set_description(format!("Move \"{path}\" to the recycle bin?"))
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show();
+                match answer {
+                    rfd::MessageDialogResult::Yes => crate::files::recycle(&p),
+                    _ => Ok(()),
+                }
+            }),
+        };
+        if let Err(why) = done {
+            self.ext.notice(ext::Level::Error, "files", why);
+        }
+        self.request_redraw();
     }
 
     fn open_folder(&mut self, path: PathBuf, saved: Option<PageSession>) {
@@ -1461,6 +1499,7 @@ impl App {
                 self.ui.theme.colors.clear();
                 self.theme_changed();
             }
+            Action::File(op) => self.file_op(op),
             Action::ResetKey(command) => {
                 self.ui.key_file.reset(command);
                 self.keys_changed();

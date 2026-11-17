@@ -37,7 +37,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   On Chromium: 1.35 million edges found in half a second.
 
 **Finding things**
-- Files panel: tree with checkboxes, filter, click to fly to a file.
+- Files panel: tree with checkboxes, filter, click to fly to a file. Right click for
+  new file or folder, rename, delete (to the recycle bin), copy path, reveal in the
+  file manager, open a terminal there.
+- Drop a file on the window to copy it into the selected folder.
 - `Ctrl+P` go to a file or folder; `Ctrl+Shift+F` search text in every file, with the
   hits marked on the canvas.
 

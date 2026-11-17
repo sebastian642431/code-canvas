@@ -12,6 +12,7 @@ mod camera;
 mod codicons;
 mod editor;
 mod ext;
+mod files;
 mod git;
 mod icon;
 mod icons;
