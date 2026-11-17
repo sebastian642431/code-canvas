@@ -50,7 +50,8 @@ fn is_word(c: char) -> bool {
 
 impl Editor {
     pub fn open(rel_path: String, source: &str) -> Editor {
-        let eol = if source.contains("\r\n") { "\r\n" } else { "\n" };
+        let (windows, all) = (source.matches("\r\n").count(), source.matches('\n').count());
+        let eol = if windows * 2 > all { "\r\n" } else { "\n" };
         let final_newline = source.ends_with('\n');
         let body = source.strip_suffix('\n').unwrap_or(source);
         let lines: Vec<String> = body.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect();
@@ -516,6 +517,13 @@ mod tests {
         assert_eq!(e.caret, Pos::new(3, 19));
         assert!(e.undo() && e.undo());
         assert_eq!(e.text(), "mod util;\n\nfn main() {\n    let m = HashMap\n}\n");
+    }
+
+    #[test]
+    fn a_file_keeps_the_line_ends_most_of_its_lines_have() {
+        assert_eq!(Editor::open("a".into(), "a\nb\nc\r\nd\n").text(), "a\nb\nc\nd\n");
+        assert_eq!(Editor::open("a".into(), "a\r\nb\r\nc\nd\r\n").text(), "a\r\nb\r\nc\r\nd\r\n");
+        assert_eq!(Editor::open("a".into(), "one line").text(), "one line");
     }
 
     #[test]

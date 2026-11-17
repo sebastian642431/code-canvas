@@ -799,6 +799,8 @@ Graphics and the frame
 - git is run with `--literal-pathspecs` (a path like `app/[slug]/page.tsx` is
   that path, not a pattern) and the diff a change is cut from does not follow
   the user's `diff.noprefix` or text conversions.
+- An editor keeps the line ends most lines of the file have, not CRLF for one
+  stray one.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest

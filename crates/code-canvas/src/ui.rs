@@ -413,17 +413,8 @@ impl UiState {
     }
 
     fn move_panel(&mut self, available: &[(String, Side)], panel: &Panel, side: Side, before: Option<&str>) {
-        let key = panel.key();
-        let open = Side::BOTH.into_iter().find_map(|from| self.open(from).filter(|shown| shown.key() == key).cloned());
-        if let Some(open) = &open {
-            self.close_panel(open);
-        }
-        if side != panel.home() {
-            return;
-        }
-        self.rails.place(available, &key, before);
-        if let Some(open) = open {
-            self.show(open);
+        if side == panel.home() {
+            self.rails.place(available, &panel.key(), before);
         }
     }
 
@@ -1206,6 +1197,9 @@ fn rail(
 
 fn rail_drop_target(ui: &egui::Ui, st: &mut UiState, side: Side, zone: Rect, slots: &[(String, Rect)]) {
     let Some(drag) = st.rail_drag.as_mut() else { return };
+    if Panel::from_key(&drag.key).is_none_or(|panel| panel.home() != side) {
+        return;
+    }
     let reach = match side {
         Side::Left => Rect::from_min_max(zone.min, zone.max + Vec2::new(RAIL_REACH, 0.0)),
         Side::Right => Rect::from_min_max(zone.min - Vec2::new(RAIL_REACH, 0.0), zone.max),

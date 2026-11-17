@@ -104,7 +104,11 @@ pub fn clean_up() {
         for nth in 0..ASIDES {
             let _ = std::fs::remove_file(aside(&exe, nth));
         }
-        let _ = std::fs::remove_file(exe.with_extension("new.exe"));
+        let fresh = exe.with_extension("new.exe");
+        let age = std::fs::metadata(&fresh).and_then(|file| file.modified()).ok().and_then(|at| at.elapsed().ok());
+        if age.is_some_and(|age| age > std::time::Duration::from_secs(3600)) {
+            let _ = std::fs::remove_file(fresh);
+        }
     }
 }
 

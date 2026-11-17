@@ -4743,6 +4743,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 self.ui.card_menu = None;
+                self.share_let_go();
                 let vp = self.viewport();
                 let cursor = self.cursor;
                 if let Some(page) = self.pages.get_mut(self.active) {
@@ -4765,6 +4766,15 @@ impl ApplicationHandler for App {
             if let Some(program) = self.restart_as.take() {
                 if let Err(e) = std::process::Command::new(&program).spawn() {
                     log::error!("the new version did not start ({}): {e}", program.display());
+                    self.exit_requested = false;
+                    self.exit_confirmed = false;
+                    let old = program.with_extension("old.exe");
+                    let text = format!(
+                        "The new version was installed but did not start ({e}). This one keeps running; the one before it is kept as {}.",
+                        old.display()
+                    );
+                    self.ext.notice(ext::Level::Error, "Code Canvas", text);
+                    return;
                 }
             }
             event_loop.exit();
