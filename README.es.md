@@ -55,6 +55,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   mientras escribís (Rust con rust-analyzer, que la app ofrece instalar).
 - **Seguir a la IA**: cuando un asistente u otro programa cambia un archivo, el lienzo
   viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
+- **Ver qué cambió dentro de cada archivo** (Control de código fuente): lo que se quitó
+  en rojo arriba de lo que lo reemplazó, y las líneas sin cambios plegadas, para que un
+  archivo largo sea solo sus cambios.
   `Ctrl+Shift+P` abre la paleta de comandos.
 - **Extensiones de VS Code**: instala las mismas extensiones `.vsix` desde
   [Open VSX](https://open-vsx.org) y las ejecuta sin modificar. Los linters marcan los

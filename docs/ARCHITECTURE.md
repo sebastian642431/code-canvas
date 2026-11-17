@@ -205,7 +205,8 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 points: what a button, a menu or a drag of an icon gets),
 `move <panel> left|right [panel to sit before]` (an icon to the other bar),
 `preview <path>` (a Markdown file rendered), `drop <path>` (a file dropped on the window),
-`tool move|edit` (the hand or the pencil), `touch <path> <text>` (a line appended to a file behind
+`tool move|edit` (the hand or the pencil), `diff on|off|fold|unfold|around <lines>` (what changed
+inside the files), `drag <x> <y> <x> <y>` (a drag on the canvas), `touch <path> <text>` (a line appended to a file behind
 the app's back, as another program would), `page <javascript>` (a line of script run in the
 webview on screen),
 `mark <name>` (leaves an empty file `marks/<name>` in the data directory: a sign for whoever watches the

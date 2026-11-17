@@ -72,6 +72,12 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - What is typed shows at once, before saving: a dot on the file's name (on its
   card, in the explorer, in the status bar), its changed lines washed in colour,
   and the file listed in Source Control. Staging or committing it saves it.
+- **See what changed inside the files** (Source Control): each changed file shows
+  its removed lines in red above what replaced them, and the lines that did not
+  change folded away, so a long file is only its changes. With *Show only changed
+  files* the canvas becomes the change itself.
+- With the pencil, dragging over code selects it; the hand, or the right button,
+  moves the canvas.
 - Saving formats the file (with Prettier where it is installed; turn it off with
   `editor.formatOnSave`), and problems update while you type. Rust is checked by
   rust-analyzer and TypeScript by VS Code's own extension: the app offers to
@@ -207,27 +213,36 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - [x] **Editing**: click into a file and type, with undo and save; format on save;
       reload when files change on disk; command palette.
-- [ ] Editing: drag to select, multiple cursors, find and replace, completions.
+- [x] A hand to look and a pencil to edit; what is typed shown before it is saved;
+      drag to select.
+- [x] The canvas travels to what an assistant or another program changes.
+- [ ] Editing: multiple cursors, find and replace, completions.
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 - [x] **Webviews** for extensions (the official Claude Code panel renders).
-- [ ] Tree views, code lenses and hovers on the canvas; webviews on Linux and macOS.
+- [x] Language servers that come as extensions (rust-analyzer, VS Code's TypeScript):
+      problems while typing, hover, go to definition. Tabs for what an extension
+      opens as an editor (the sessions of Claude Code).
+- [ ] Tree views and code lenses on the canvas; webviews on Linux and macOS.
 - [ ] Colour themes and grammars from extensions (file icon themes work).
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
-- [ ] **Language servers** (rust-analyzer, typescript-language-server, pyright …) as an
-      exact provider for the same relations the name-based index gives today.
+- [ ] **Language servers** as an exact provider for the same relations (definitions,
+      references, calls) the name-based index gives today.
 - [x] Dependency edges between files (imports), for the selected file or folder.
 - [ ] Dependencies: edges bundled per folder so that all of them can be drawn on a
       huge repository, arrowheads, backwards edges, arranging by namespace.
 - [x] Git: changed files and lines on the canvas, file timeline.
 - [x] Git: staging, committing and syncing from the source control panel.
-- [ ] Git: the diff itself (removed lines), discarding changes, branches, stashes.
+- [x] Git: the diff inside each file (removed lines too), with the lines that did
+      not change folded; discarding changes, switching branches, stashes.
+- [ ] Git: old and new side by side; staging part of a file; the diff of a commit.
 - [ ] Text read on demand instead of kept in memory (Chromium uses ~4 GB today).
 - [ ] A scan cache for instant re-open of huge folders; cheaper single-file updates
       on them (today they rebuild the whole layout).
 - [ ] Faster symbol indexing (parallel, lazy) and memory-mapped sources for 1M+ file monorepos.
-- [ ] Line numbers, a settings panel, configurable skip lists.
+- [x] A settings window: theme, every colour, every shortcut, commit messages.
+- [ ] Line numbers, configurable skip lists.
 - [ ] Linux / macOS packaging, a web build (WebGPU).
 
 ## Project layout

@@ -10,7 +10,7 @@ use canvas_render::{Renderer, SceneData, SceneGpu};
 
 use crate::camera::Camera;
 use crate::editor::Editor;
-use crate::git::{Change, Commit, FileChange, GitState};
+use crate::git::{Change, Commit, FileChange, GitState, Row};
 use crate::session::PageSession;
 
 pub struct Loaded {
@@ -135,7 +135,33 @@ pub struct Page {
     pub changed_dirs: HashSet<String>,
     pub touched: Vec<Touch>,
     pub reveal: Option<String>,
+    heads_at: String,
+    pub diff: DiffView,
+    pub diffs: HashMap<String, Diffed>,
+    diff_stale: bool,
+    diff_editing: Option<String>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DiffView {
+    pub on: bool,
+    pub fold: bool,
+    pub around: u32,
+}
+
+impl Default for DiffView {
+    fn default() -> Self {
+        DiffView { on: false, fold: true, around: 3 }
+    }
+}
+
+pub struct Diffed {
+    stamp: u64,
+    pub rows: Vec<Row>,
+    pub plain: String,
+}
+
+const MAX_DIFFS: usize = 400;
 
 pub struct Touch {
     pub path: String,
@@ -214,6 +240,11 @@ impl Page {
             changed_dirs: HashSet::new(),
             touched: Vec::new(),
             reveal: None,
+            heads_at: String::new(),
+            diff: DiffView::default(),
+            diffs: HashMap::new(),
+            diff_stale: false,
+            diff_editing: None,
         };
         if let Some(s) = saved {
             page.filter.collapsed = s.collapsed.iter().cloned().collect();
@@ -292,23 +323,25 @@ impl Page {
             crate::ext::wake_ui();
         });
         self.git_rx = Some(rx);
-        self.heads.clear();
-        self.heads_asked.clear();
-        self.heads_round += 1;
-        let unsaved: Vec<String> = self.editors.values().filter(|e| e.dirty).map(|e| e.rel_path.clone()).collect();
-        for rel in unsaved {
-            self.want_head(&rel);
-        }
     }
 
     pub fn want_head(&mut self, rel_path: &str) {
-        if !self.heads_asked.insert(rel_path.to_string()) {
+        self.want_heads(vec![rel_path.to_string()]);
+    }
+
+    fn want_heads(&mut self, paths: Vec<String>) {
+        let Some(git) = &self.git else { return };
+        let paths: Vec<String> = paths.into_iter().filter(|path| self.heads_asked.insert(path.clone())).collect();
+        if paths.is_empty() {
             return;
         }
-        let (root, rel, round, tx) = (self.root.clone(), rel_path.to_string(), self.heads_round, self.heads_tx.clone());
+        let (root, prefix, round, tx) =
+            (self.root.clone(), git.prefix.clone(), self.heads_round, self.heads_tx.clone());
         std::thread::spawn(move || {
-            let text = crate::git::head_text(&root, &rel);
-            let _ = tx.send((round, rel, text));
+            let texts = crate::git::head_texts(&root, &prefix, &paths);
+            for (rel, text) in paths.into_iter().zip(texts) {
+                let _ = tx.send((round, rel, text));
+            }
             crate::ext::wake_ui();
         });
     }
@@ -321,7 +354,113 @@ impl Page {
                 arrived = true;
             }
         }
+        self.diff_stale |= arrived;
         arrived
+    }
+
+    pub fn rows(&self, rel_path: &str) -> Option<&[Row]> {
+        self.diffs.get(rel_path).map(|shown| shown.rows.as_slice())
+    }
+
+    pub fn row_of(&self, rel_path: &str, line: u32) -> u32 {
+        crate::git::row_of(self.rows(rel_path), line)
+    }
+
+    pub fn line_of(&self, rel_path: &str, row: u32) -> Option<u32> {
+        crate::git::line_of(self.rows(rel_path), row)
+    }
+
+    pub fn set_diff(&mut self, view: DiffView) {
+        self.diff = view;
+        self.diff_stale = true;
+    }
+
+    pub fn diff_due(&mut self) -> bool {
+        if self.diff_editing != self.editing {
+            self.diff_editing = self.editing.clone();
+            self.diff_stale = true;
+        }
+        if !self.diff.on && self.diffs.is_empty() {
+            self.diff_stale = false;
+        }
+        self.diff_stale && self.ready().is_some()
+    }
+
+    pub fn diff_settled(&self, rel_path: &str) -> bool {
+        let waiting = self.git_rx.is_some()
+            || self.diff_stale
+            || (self.heads_asked.contains(rel_path) && !self.heads.contains_key(rel_path));
+        !self.diff.on || self.diffs.contains_key(rel_path) || !waiting
+    }
+
+    pub fn sync_diff(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) -> bool {
+        use std::hash::{Hash, Hasher};
+        self.diff_stale = false;
+        let wanted: Vec<String> = match (&self.git, self.diff.on) {
+            (Some(git), true) => git
+                .changes
+                .iter()
+                .filter(|c| !matches!(c.change, Change::Untracked | Change::Added | Change::Deleted))
+                .filter(|c| self.editing.as_deref() != Some(c.path.as_str()))
+                .map(|c| c.path.clone())
+                .take(MAX_DIFFS)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let unknown: Vec<String> = wanted.iter().filter(|path| !self.heads.contains_key(*path)).cloned().collect();
+        self.want_heads(unknown);
+        let around = self.diff.fold.then_some(self.diff.around);
+        let PageState::Ready(r) = &mut self.state else { return false };
+        let options = ScanOptions::default();
+        let current = |editors: &HashMap<String, Editor>, rel: &str| match editors.get(rel) {
+            Some(editor) => Some(editor.text()),
+            None => std::fs::read_to_string(self.root.join(rel)).ok(),
+        };
+        let mut changed = false;
+        let keep: HashSet<&str> = wanted.iter().map(String::as_str).collect();
+        let gone: Vec<String> = self.diffs.keys().filter(|rel| !keep.contains(rel.as_str())).cloned().collect();
+        for rel in gone {
+            self.diffs.remove(&rel);
+            if let (Some(index), Some(text)) = (r.repo.file_index(&rel), current(&self.editors, &rel)) {
+                r.repo.replace_source(index, &text, &options);
+                changed = true;
+            }
+        }
+        for rel in &wanted {
+            let Some(Some(head)) = self.heads.get(rel) else { continue };
+            let Some(index) = r.repo.file_index(rel) else { continue };
+            let Some(text) = current(&self.editors, rel) else { continue };
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (head, &text, around).hash(&mut hasher);
+            let stamp = hasher.finish();
+            if self.diffs.get(rel).is_some_and(|shown| shown.stamp == stamp) {
+                continue;
+            }
+            match crate::git::unified(head, &text, around) {
+                Some((with_removed, rows)) => {
+                    r.repo.replace_source(index, &with_removed, &options);
+                    let plain = canvas_core::scan::normalise(&text).0;
+                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, plain });
+                }
+                None => {
+                    if self.diffs.remove(rel).is_none() {
+                        continue;
+                    }
+                    r.repo.replace_source(index, &text, &options);
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            r.tokens = Default::default();
+            if r.repo.files.len() <= 60_000 {
+                r.repo.reindex_symbols();
+            }
+            self.selections.clear();
+            self.search = None;
+            self.relayout(renderer, device, filters);
+        }
+        changed
     }
 
     pub fn unsaved(&self) -> impl Iterator<Item = &Editor> {
@@ -510,11 +649,21 @@ impl Page {
         let Some(rx) = &self.git_rx else { return false };
         match rx.try_recv() {
             Ok(state) => {
+                let head = state.as_ref().map(|git| git.head.clone()).unwrap_or_default();
                 self.git = state;
                 self.git_rx = None;
+                if head != self.heads_at {
+                    self.heads_at = head;
+                    self.heads.clear();
+                    self.heads_asked.clear();
+                    self.heads_round += 1;
+                }
+                let unsaved: Vec<String> = self.unsaved().map(|e| e.rel_path.clone()).collect();
+                self.want_heads(unsaved);
                 self.previewed.clear();
                 self.changed_dirs.clear();
                 self.preview_unsaved();
+                self.diff_stale = true;
                 if let PageState::Ready(r) = &mut self.state {
                     r.tree_dirty = true;
                 }
@@ -562,6 +711,8 @@ impl Page {
     }
 
     pub fn start_scan(&mut self) {
+        self.diffs.clear();
+        self.diff_stale = true;
         self.refresh_git();
         let progress = Arc::new(ScanProgress::default());
         let (tx, rx) = mpsc::channel();
@@ -705,6 +856,8 @@ impl Page {
         device: &wgpu::Device,
         filters: &RelFilters,
     ) -> bool {
+        self.diffs.remove(rel_path);
+        self.diff_stale = true;
         let PageState::Ready(r) = &mut self.state else { return false };
         let Some(index) = r.repo.file_index(rel_path) else { return false };
         r.repo.reload_file(index, &ScanOptions::default());

@@ -407,6 +407,7 @@ pub enum Action {
     InstallUpdate,
     AcceptCompletion(usize),
     SetOnlyChanged(bool),
+    SetDiff(crate::page::DiffView),
     InstallVsix,
     SetTheme(&'static str),
     SetColor(&'static str, u32),
@@ -1807,6 +1808,7 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
             vec![
                 ("Move around without editing (the hand)", key(Command::MoveTool)),
                 ("Edit: a click puts the caret (the pencil)", key(Command::EditTool)),
+                ("Select code", fixed("Drag over it with the pencil")),
                 ("Save", key(Command::Save)),
                 ("Stop typing in a file", fixed("Esc")),
             ],
@@ -2225,6 +2227,11 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("Source Control: Refresh".into(), Action::RefreshGit),
         ("Source Control: Show Only Changed Files".into(), Action::SetOnlyChanged(true)),
         ("Source Control: Show All Files".into(), Action::SetOnlyChanged(false)),
+        (
+            "Source Control: Show What Changed Inside the Files".into(),
+            Action::SetDiff(crate::page::DiffView { on: true, ..Default::default() }),
+        ),
+        ("Source Control: Show the Files as They Are".into(), Action::SetDiff(Default::default())),
         ("Extensions: Install from VSIX…".into(), Action::InstallVsix),
     ];
     for e in ext.installed.iter().filter(|e| e.enabled && e.has_code) {

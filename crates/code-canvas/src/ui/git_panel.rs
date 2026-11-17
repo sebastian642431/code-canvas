@@ -311,7 +311,7 @@ pub fn changes_panel(
         return;
     }
     let writing = page.writing_message();
-    let Page { git, commit_message, only_changed, git_note, title, .. } = page;
+    let Page { git, commit_message, only_changed, git_note, title, diff, .. } = page;
     let Some(g) = git.as_ref() else {
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(pal().text_dim));
         return;
@@ -545,6 +545,35 @@ pub fn changes_panel(
                     let mut only = *only_changed;
                     if check(ui, &mut only, "Show only changed files on canvas", true, true).clicked() {
                         actions.push(Action::SetOnlyChanged(only));
+                    }
+                }
+                if !g.changes.is_empty() || diff.on {
+                    let mut view = *diff;
+                    let shown = check(ui, &mut view.on, "Show what changed inside the files", true, true);
+                    shown.on_hover_text("The removed lines too, in red above what replaced them. A file is as it is on disk again while it is edited.");
+                    if view.on {
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            check(ui, &mut view.fold, "Fold the lines that did not change", true, true);
+                        });
+                    }
+                    if view.on && view.fold {
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.label(RichText::new("Lines kept around a change").size(12.0).color(pal().text_dim));
+                            ui.add_space(6.0);
+                            if small_icon(ui, icons::MINUS, "Fewer") {
+                                view.around = view.around.saturating_sub(1);
+                            }
+                            ui.label(RichText::new(view.around.to_string()).monospace().size(12.0).color(pal().text));
+                            if small_icon(ui, icons::PLUS, "More") {
+                                view.around = (view.around + 1).min(40);
+                            }
+                        });
+                    }
+                    if view != *diff {
+                        actions.push(Action::SetDiff(view));
                     }
                 }
             });

@@ -35,6 +35,7 @@ pub enum Step {
     Quick(String),
     Maximize,
     Click(f32, f32),
+    Drag([f32; 2], [f32; 2]),
     Move(String),
     Mark(String),
     Drop(String),
@@ -43,6 +44,7 @@ pub enum Step {
     Tool(String),
     Touch(String),
     Page(String),
+    Diff(String),
     Quit,
 }
 
@@ -100,6 +102,12 @@ fn parse_step(text: &str) -> Option<Step> {
         "tool" => Step::Tool(arg.into()),
         "touch" => Step::Touch(arg.into()),
         "page" => Step::Page(arg.into()),
+        "diff" => Step::Diff(arg.into()),
+        "drag" => {
+            let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
+            let mut next = || parts.next()?.ok();
+            Step::Drag([next()?, next()?], [next()?, next()?])
+        }
         "click" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             Step::Click(parts.next()?.ok()?, parts.next()?.ok()?)

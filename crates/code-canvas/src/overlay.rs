@@ -6,7 +6,7 @@ use canvas_render::text::TextLayer;
 use canvas_render::{push_curve, theme, CurveVertex, Label, RectInstance, View};
 
 use crate::ext::{Extensions, Severity};
-use crate::git::{Change, HunkKind};
+use crate::git::{row_of, Change, HunkKind, RowKind};
 use crate::page::{DepFilters, Page, PageState, Ready, RelFilters, Selection};
 
 const MAX_WORLD_LABELS: usize = 600;
@@ -503,6 +503,33 @@ pub fn build(
             let bar = (2.5 * s / z).min(CARD_PAD * 0.6);
             let wash = if readable { 0.16 } else { 0.55 };
             let seen = world.expand(CARD_PAD);
+            if let Some(rows) = page.rows(&change.path) {
+                let mut first = 0usize;
+                while first < rows.len() && out.under.len() < MAX_MARKERS {
+                    let kind = rows[first].kind;
+                    let mut end = first + 1;
+                    while end < rows.len() && rows[end].kind == kind {
+                        end += 1;
+                    }
+                    let tint = match kind {
+                        RowKind::Added => Some((theme::get().git_added, wash)),
+                        RowKind::Removed => Some((theme::get().git_removed, wash * 1.2)),
+                        RowKind::Gap => Some((theme::get().ui_text_dim, 0.08)),
+                        RowKind::Same => None,
+                    };
+                    for mut rect in n.line_rects(first as u32..(end as u32).min(lines)) {
+                        let Some((c, alpha)) = tint.filter(|_| rect.intersects(&seen)) else { continue };
+                        rect.h = rect.h.max(1.5 / z);
+                        out.under.push(RectInstance::new(rect, with_alpha(c, alpha), 0, 0.0, 0.0));
+                        if readable && kind != RowKind::Gap {
+                            let edge = Rect::new(rect.x - CARD_PAD * 0.75, rect.y, bar, rect.h);
+                            out.over.push(RectInstance::new(edge, c, 0, 0.0, 0.0));
+                        }
+                    }
+                    first = end;
+                }
+                continue;
+            }
             for h in &change.hunks {
                 if h.line > lines || out.under.len() >= MAX_MARKERS {
                     continue;
@@ -544,7 +571,9 @@ pub fn build(
         let lines = repo.files[fi].line_count() as u32;
         let glow = theme::get().accent;
         out.over.push(RectInstance::new(n.rect.expand(2.0 / z), 0, with_alpha(glow, strength), 3.0, 2.0));
+        let rows = page.rows(&touch.path);
         for &(first, count) in touch.lines.iter().take(200) {
+            let first = row_of(rows, first);
             for mut rect in n.line_rects(first.min(lines)..(first + count).min(lines)) {
                 if rect.intersects(&world) {
                     rect.h = rect.h.max(2.0 / z);
@@ -569,16 +598,18 @@ pub fn build(
         out.over.push(RectInstance::new(n.rect, 0, color, 3.0, 1.5));
         if readable {
             let f = &repo.files[fi];
+            let rows = page.rows(rel);
             for d in found.items.iter().take(500) {
-                if d.line as usize >= f.line_count() {
+                let line = row_of(rows, d.line);
+                if line as usize >= f.line_count() {
                     continue;
                 }
                 let cols = if d.end_line > d.line {
-                    (f.line(d.line as usize).chars().count() as u32).saturating_sub(d.col)
+                    (f.line(line as usize).chars().count() as u32).saturating_sub(d.col)
                 } else {
                     d.end_col.saturating_sub(d.col)
                 };
-                let cell = n.cell_rect(d.line, d.col, cols.max(1));
+                let cell = n.cell_rect(line, d.col, cols.max(1));
                 if !cell.intersects(&world) {
                     continue;
                 }
@@ -609,12 +640,14 @@ pub fn build(
             let mut next_col: std::collections::HashMap<u32, u32> = Default::default();
             let mut types: Vec<_> = found.by_type.iter().collect();
             types.sort_by(|a, b| a.0.cmp(b.0));
+            let rows = page.rows(rel);
             for d in types.into_iter().flat_map(|(_, items)| items) {
-                if d.line as usize >= f.line_count() || drawn >= MAX_DECORATIONS {
+                let line = row_of(rows, d.line);
+                if line as usize >= f.line_count() || drawn >= MAX_DECORATIONS {
                     continue;
                 }
-                let len = f.line(d.line as usize).chars().count() as u32;
-                let line_cell = n.cell_rect(d.line, 0, len.max(1));
+                let len = f.line(line as usize).chars().count() as u32;
+                let line_cell = n.cell_rect(line, 0, len.max(1));
                 if !line_cell.intersects(&world.expand(400.0 / z)) {
                     continue;
                 }
@@ -623,13 +656,13 @@ pub fn build(
                     let cell = if d.whole_line || d.end_line > d.line {
                         line_cell
                     } else {
-                        n.cell_rect(d.line, d.col, d.end_col.saturating_sub(d.col).max(1))
+                        n.cell_rect(line, d.col, d.end_col.saturating_sub(d.col).max(1))
                     };
                     out.under.push(RectInstance::new(cell, d.background, 0, 2.0, 0.0));
                 }
                 if !d.text.is_empty() {
                     let col = next_col.get(&d.line).copied().unwrap_or(len + 3);
-                    let at = n.cell_rect(d.line, col.min(canvas_core::layout::MAX_COLS), 1);
+                    let at = n.cell_rect(line, col.min(canvas_core::layout::MAX_COLS), 1);
                     let p = view.to_screen([at.x, at.y]);
                     let text: String = d.text.chars().take(160).collect();
                     next_col.insert(d.line, col + text.chars().count() as u32 + 3);

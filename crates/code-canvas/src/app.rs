@@ -98,6 +98,8 @@ struct Drag {
     start: [f32; 2],
     moved: bool,
     button: MouseButton,
+    select: Option<String>,
+    anchored: bool,
 }
 
 pub struct App {
@@ -154,6 +156,7 @@ pub struct App {
     theme_dirty: bool,
     last_input: Instant,
     checkers_offered: HashSet<&'static str>,
+    following: Option<(usize, String, u32, Instant)>,
 }
 
 impl App {
@@ -252,6 +255,7 @@ impl App {
             theme_dirty: false,
             last_input: Instant::now(),
             checkers_offered: HashSet::new(),
+            following: None,
         }
     }
 
@@ -670,9 +674,11 @@ impl App {
             None => page.hover_cell,
         };
         let Some((file, line, col)) = at else { return };
-        let path = page.root.join(&r.repo.files[file as usize].rel_path);
+        let rel = &r.repo.files[file as usize].rel_path;
+        let path = page.root.join(rel);
         let by_index = r.repo.resolve_at(file, line, col).map(|(sym, _)| r.repo.sym_site(sym));
-        if !self.ext.request_definition(&path, line, col) {
+        let asked = page.line_of(rel, line).is_some_and(|line| self.ext.request_definition(&path, line, col));
+        if !asked {
             if let Some(site) = by_index {
                 self.frame_site(site);
             }
@@ -748,7 +754,8 @@ impl App {
                 let caret = page.editors.remove(&rel).map(|e| e.caret);
                 let text_of = |page: &Page| {
                     let r = page.ready()?;
-                    Some(r.repo.files[r.repo.file_index(&rel)?].text.clone())
+                    let shown = &r.repo.files[r.repo.file_index(&rel)?].text;
+                    Some(page.diffs.get(&rel).map_or(shown, |diffed| &diffed.plain).clone())
                 };
                 let before = text_of(page);
                 if let Some(g) = self.gfx.as_mut() {
@@ -808,10 +815,81 @@ impl App {
             }
             self.switch_to(index);
         }
-        let file = self.pages.get(index).and_then(|p| p.ready()).and_then(|r| r.repo.file_index(rel));
-        if let Some(file) = file {
-            self.frame_site(Site { file: file as u32, line, col: 0, len: 0 });
+        self.following = Some((index, rel.to_string(), line, Instant::now()));
+    }
+
+    fn code_under(&self, point: [f32; 2]) -> Option<String> {
+        let page = self.pages.get(self.active)?;
+        let r = page.ready()?;
+        if Lod::for_zoom(page.camera.zoom) != Lod::Text {
+            return None;
         }
+        let world = page.camera.view(self.viewport()).to_world(point);
+        let n = &r.layout.nodes[r.layout.hit(world)?];
+        let NodeKind::File(fi) = n.kind else { return None };
+        let f = &r.repo.files[fi];
+        n.cell_at(world, f.line_count())?;
+        (f.note.is_none() && page.rows(&f.rel_path).is_none()).then(|| f.rel_path.clone())
+    }
+
+    fn cell_in(&self, rel: &str, point: [f32; 2]) -> Option<(usize, usize)> {
+        let page = self.pages.get(self.active)?;
+        let r = page.ready()?;
+        let fi = r.repo.file_index(rel)?;
+        let n = r.layout.file_node.get(fi).filter(|&&n| n != canvas_core::layout::NONE)?;
+        let n = &r.layout.nodes[*n as usize];
+        let lines = r.repo.files[fi].line_count();
+        let world = page.camera.view(self.viewport()).to_world(point);
+        let first = n.cell_rect(0, 0, 1);
+        let last = n.cell_rect(lines.saturating_sub(1) as u32, 0, 1);
+        let inside = [world[0].max(first.x), world[1].clamp(first.y, last.bottom() - 0.01)];
+        n.cell_at(inside, lines).map(|(line, col)| (line as usize, col as usize))
+    }
+
+    fn drag_select(&mut self, rel: &str, from: [f32; 2], first: bool) {
+        let Some(to) = self.cell_in(rel, self.cursor) else { return };
+        let anchor = if first { self.cell_in(rel, from) } else { None };
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        if first && !page.begin_edit(rel) {
+            return;
+        }
+        if let Some(editor) = page.editor_mut().filter(|e| e.rel_path == rel) {
+            if let Some((line, col)) = anchor {
+                let at = editor.pos_at_display(line, col);
+                editor.move_to(at, false);
+            }
+            let at = editor.pos_at_display(to.0, to.1);
+            editor.move_to(at, true);
+        }
+        self.completion = None;
+        self.request_redraw();
+    }
+
+    fn follow_now(&mut self) -> bool {
+        let Some((index, rel, line, since)) = self.following.take() else { return false };
+        let Some(page) = self.pages.get(index) else { return false };
+        if !page.diff_settled(&rel) && since.elapsed() < Duration::from_millis(1500) {
+            self.following = Some((index, rel, line, since));
+            return true;
+        }
+        let file = page.ready().and_then(|r| r.repo.file_index(&rel));
+        let row = page.row_of(&rel, line);
+        if let (Some(file), true) = (file, index == self.active) {
+            self.frame_site(Site { file: file as u32, line: row, col: 0, len: 0 });
+        }
+        false
+    }
+
+    fn sync_diffs(&mut self) -> bool {
+        let Some(g) = self.gfx.as_mut() else { return false };
+        let mut changed = false;
+        for page in &mut self.pages {
+            if page.diff_due() && page.sync_diff(&g.renderer, &g.device, &self.ui.filters) {
+                g.renderer.text.drop_page(page.id);
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn after_edit(&mut self) {
@@ -1468,6 +1546,7 @@ impl App {
 
         page.selected = hit;
         if let Some((rel, line, col)) = caret_at {
+            let line = page.rows(&rel).and_then(|rows| rows.get(line)).map_or(line, |row| row.line as usize);
             if page.begin_edit(&rel) {
                 if let Some(editor) = page.editor_mut() {
                     let at = editor.pos_at_display(line, col);
@@ -1915,6 +1994,12 @@ impl App {
                     page.refresh_git();
                 }
             }
+            Action::SetDiff(view) => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.set_diff(view);
+                }
+                self.request_redraw();
+            }
             Action::SetOnlyChanged(on) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.only_changed = on;
@@ -2228,6 +2313,18 @@ impl App {
             }
             Step::Preview(path) => self.apply(Action::Preview(path)),
             Step::Page(script) => self.webviews.run(&script),
+            Step::Diff(what) => {
+                let mut view = self.pages.get(self.active).map(|page| page.diff).unwrap_or_default();
+                match what.split_once(' ').unwrap_or((what.as_str(), "")) {
+                    ("on", _) => view.on = true,
+                    ("off", _) => view.on = false,
+                    ("fold", _) => view.fold = true,
+                    ("unfold", _) => view.fold = false,
+                    ("around", lines) => view.around = lines.trim().parse().unwrap_or(view.around),
+                    _ => log::warn!("script: diff needs on|off|fold|unfold|around <lines>"),
+                }
+                self.apply(Action::SetDiff(view));
+            }
             Step::Tool(which) => {
                 let edit = which == "edit";
                 self.apply(Action::SetPrefs(crate::prefs::Prefs { edit, ..self.ui.prefs.clone() }));
@@ -2271,6 +2368,17 @@ impl App {
                 match (panel, side) {
                     (Some(panel), Some(side)) => self.ui.request_move(panel, side, parts.next().map(str::to_string)),
                     _ => log::warn!("script: move needs <panel> left|right [panel to sit before]"),
+                }
+            }
+            Step::Drag(from, to) => {
+                self.cursor = from;
+                let select = self.code_under(from).filter(|_| self.ui.prefs.edit);
+                match select {
+                    Some(rel) => {
+                        self.cursor = to;
+                        self.drag_select(&rel, from, true);
+                    }
+                    None => self.pan(to[0] - from[0], to[1] - from[1]),
                 }
             }
             Step::Click(x, y) => {
@@ -2355,12 +2463,12 @@ impl App {
             (Some(c), Some((at, since, asked))) if *at == c => {
                 if !*asked && since.elapsed() > Duration::from_millis(350) {
                     *asked = true;
-                    let path = self.pages.get(self.active).and_then(|p| {
-                        let r = p.ready()?;
-                        Some(p.root.join(&r.repo.files.get(c.0 as usize)?.rel_path))
+                    let place = self.pages.get(self.active).and_then(|p| {
+                        let rel = &p.ready()?.repo.files.get(c.0 as usize)?.rel_path;
+                        Some((p.root.join(rel), p.line_of(rel, c.1)?))
                     });
-                    if let Some(path) = path {
-                        self.ext.request_hover(&path, c.1, c.2);
+                    if let Some((path, line)) = place {
+                        self.ext.request_hover(&path, line, c.2);
                     }
                 }
                 busy |= !*asked;
@@ -2388,6 +2496,7 @@ impl App {
                     if let Some((i, rel)) = self.locate_file(&path) {
                         self.switch_to(i);
                         let file = self.pages[i].ready().and_then(|r| r.repo.file_index(&rel));
+                        let line = self.pages[i].row_of(&rel, line);
                         match file {
                             Some(file) => {
                                 let site = Site {
@@ -2452,6 +2561,8 @@ impl App {
             self.show_versions();
             changed = true;
         }
+        changed |= self.sync_diffs();
+        busy |= self.follow_now();
         busy |= !self.ext.notices.is_empty();
         if changed {
             self.request_redraw();
@@ -2674,15 +2785,17 @@ impl App {
                             status.push_str(&format!("  ·  {note}"));
                         }
                         let sym = page.hover_cell.and_then(|(file, line, _)| r.repo.sym_at(file, line));
-                        let problem = page.hover_cell.filter(|_| on_canvas).and_then(|(_, line, col)| {
-                            let key = ext::path_key(&page.root.join(&f.rel_path).to_string_lossy());
-                            let found = self.ext.diagnostics.get(&key)?;
-                            found.items.iter().filter(|d| d.covers(line, col)).min_by_key(|d| d.severity)
-                        });
+                        let in_file = |cell: (u32, u32, u32)| Some((page.line_of(&f.rel_path, cell.1)?, cell.2));
+                        let problem =
+                            page.hover_cell.filter(|_| on_canvas).and_then(in_file).and_then(|(line, col)| {
+                                let key = ext::path_key(&page.root.join(&f.rel_path).to_string_lossy());
+                                let found = self.ext.diagnostics.get(&key)?;
+                                found.items.iter().filter(|d| d.covers(line, col)).min_by_key(|d| d.severity)
+                            });
                         if let Some(d) = problem {
                             return (status, Some((d.title(), d.message.clone())));
                         }
-                        let known = page.hover_cell.filter(|_| on_canvas).and_then(|(_, line, col)| {
+                        let known = page.hover_cell.filter(|_| on_canvas).and_then(in_file).and_then(|(line, col)| {
                             let h = self.ext.hover.as_ref()?;
                             let here = h.line == line && h.col == col && !h.text.is_empty();
                             (here && h.path == page.root.join(&f.rel_path)).then(|| crate::ui::hover_text(&h.text))
@@ -3291,13 +3404,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = [position.x as f32, position.y as f32];
+                let mut selecting = None;
                 if let Some(d) = &mut self.drag {
                     let (dx, dy) = (p[0] - d.last[0], p[1] - d.last[1]);
                     d.last = p;
                     if (p[0] - d.start[0]).abs() + (p[1] - d.start[1]).abs() > 4.0 {
                         d.moved = true;
                     }
-                    if d.moved {
+                    if let (true, Some(rel)) = (d.moved, &d.select) {
+                        selecting = Some((rel.clone(), d.start, !std::mem::replace(&mut d.anchored, true)));
+                    } else if d.moved {
                         if let Some(page) = self.pages.get_mut(self.active) {
                             page.target = None;
                             page.camera.pan_pixels(dx, dy);
@@ -3306,6 +3422,9 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.cursor = p;
+                if let Some((rel, from, first)) = selecting {
+                    self.drag_select(&rel, from, first);
+                }
                 self.update_hover();
             }
             WindowEvent::CursorLeft { .. } => {
@@ -3318,7 +3437,16 @@ impl ApplicationHandler for App {
                     self.webviews.focus_app();
                     self.focus_folder_at(self.cursor);
                     if self.drag.is_none() && !self.over_ui(self.cursor) {
-                        self.drag = Some(Drag { last: self.cursor, start: self.cursor, moved: false, button });
+                        let plain = button == MouseButton::Left && !self.mods.control_key() && !self.mods.shift_key();
+                        let select = if plain && self.ui.prefs.edit { self.code_under(self.cursor) } else { None };
+                        self.drag = Some(Drag {
+                            last: self.cursor,
+                            start: self.cursor,
+                            moved: false,
+                            button,
+                            select,
+                            anchored: false,
+                        });
                     }
                 }
                 ElementState::Released => {

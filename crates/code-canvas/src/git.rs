@@ -62,9 +62,128 @@ pub struct FileChange {
     pub unsaved: bool,
 }
 
-pub fn head_text(root: &Path, rel_path: &str) -> Option<String> {
-    let spec = format!("HEAD:./{rel_path}");
-    git(root, &["show", &spec]).and_then(|bytes| String::from_utf8(bytes).ok())
+pub fn head_texts(root: &Path, prefix: &str, paths: &[String]) -> Vec<Option<String>> {
+    use std::io::{Read, Write};
+    let mut texts = vec![None; paths.len()];
+    let mut c = command(root);
+    c.args(["cat-file", "--batch"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let Ok(mut child) = c.spawn() else { return texts };
+    let asked: String = paths.iter().map(|path| format!("HEAD:{prefix}{path}\n")).collect();
+    let stdin = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(asked.as_bytes());
+        }
+    });
+    let mut bytes = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut bytes);
+    }
+    let _ = writer.join();
+    let _ = child.wait();
+    let mut at = 0;
+    for text in texts.iter_mut() {
+        let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else { break };
+        let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
+        at += end + 1;
+        let Some(size) = header.rsplit(' ').next().and_then(|size| size.parse::<usize>().ok()) else { continue };
+        if at + size > bytes.len() {
+            break;
+        }
+        if header.contains(" blob ") {
+            *text = String::from_utf8(bytes[at..at + size].to_vec()).ok();
+        }
+        at += size + 1;
+    }
+    texts
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowKind {
+    Same,
+    Added,
+    Removed,
+    Gap,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Row {
+    pub kind: RowKind,
+    pub line: u32,
+}
+
+pub fn unified(old: &str, new: &str, around: Option<u32>) -> Option<(String, Vec<Row>)> {
+    use similar::DiffOp;
+    let (before, after): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let deadline = Instant::now() + std::time::Duration::from_millis(60);
+    let ops = similar::capture_diff_slices_deadline(similar::Algorithm::Myers, &before, &after, Some(deadline));
+    if ops.iter().all(|op| matches!(op, DiffOp::Equal { .. })) {
+        return None;
+    }
+    let mut text = String::new();
+    let mut rows: Vec<Row> = Vec::new();
+    let mut put = |kind: RowKind, line: usize, content: &str| {
+        if !rows.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(content);
+        rows.push(Row { kind, line: line as u32 });
+    };
+    let last = ops.len() - 1;
+    for (i, op) in ops.iter().enumerate() {
+        match *op {
+            DiffOp::Equal { new_index, len, .. } => {
+                let keep = around.map_or(len, |n| n as usize);
+                let (head, tail) = (if i == 0 { 0 } else { keep }, if i == last { 0 } else { keep });
+                let folded = around.is_some() && len > head + tail + 1;
+                for k in 0..len {
+                    if folded && k == head {
+                        put(RowKind::Gap, new_index + k, &format!("··· {} unchanged lines ···", len - head - tail));
+                    }
+                    if !folded || k < head || k >= len - tail {
+                        put(RowKind::Same, new_index + k, after[new_index + k]);
+                    }
+                }
+            }
+            DiffOp::Delete { old_index, old_len, new_index } => {
+                for k in 0..old_len {
+                    put(RowKind::Removed, new_index, before[old_index + k]);
+                }
+            }
+            DiffOp::Insert { new_index, new_len, .. } => {
+                for k in 0..new_len {
+                    put(RowKind::Added, new_index + k, after[new_index + k]);
+                }
+            }
+            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                for k in 0..old_len {
+                    put(RowKind::Removed, new_index, before[old_index + k]);
+                }
+                for k in 0..new_len {
+                    put(RowKind::Added, new_index + k, after[new_index + k]);
+                }
+            }
+        }
+    }
+    Some((text, rows))
+}
+
+pub fn row_of(rows: Option<&[Row]>, line: u32) -> u32 {
+    let Some(rows) = rows else { return line };
+    let mut at = rows.partition_point(|row| row.line < line);
+    while rows.get(at).is_some_and(|row| row.kind == RowKind::Removed && row.line == line) {
+        at += 1;
+    }
+    let exact = rows.get(at).is_some_and(|row| row.line == line && row.kind != RowKind::Gap);
+    if !exact && at > 0 && rows[at - 1].kind == RowKind::Gap {
+        at -= 1;
+    }
+    at.min(rows.len().saturating_sub(1)) as u32
+}
+
+pub fn line_of(rows: Option<&[Row]>, row: u32) -> Option<u32> {
+    let Some(rows) = rows else { return Some(row) };
+    rows.get(row as usize).filter(|r| matches!(r.kind, RowKind::Same | RowKind::Added)).map(|r| r.line)
 }
 
 pub fn compare(old: &str, new: &str) -> (Vec<Hunk>, u32, u32) {
@@ -105,6 +224,8 @@ pub struct GitState {
     pub ignored: Vec<String>,
     pub truncated: bool,
     pub ms: u32,
+    pub prefix: String,
+    pub head: String,
 }
 
 impl GitState {
@@ -273,11 +394,13 @@ pub fn load(root: &Path) -> Option<GitState> {
     let status = status?;
     let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
     let mut state = parse_status(&String::from_utf8_lossy(&status), &prefix);
+    state.prefix = prefix;
     if let Some(diff) = diff {
         apply_diff(&mut state, &String::from_utf8_lossy(&diff));
     }
     if let Some(log) = log {
         state.graph = parse_graph(&String::from_utf8_lossy(&log));
+        state.head = state.graph.first().map(|first| first.commit.hash.clone()).unwrap_or_default();
     }
     if let Some(list) = list {
         state.branches = String::from_utf8_lossy(&list).lines().map(str::to_string).filter(|b| !b.is_empty()).collect();
@@ -499,6 +622,30 @@ mod tests {
         );
         assert_eq!((insertions, deletions), (3, 2));
         assert!(compare("a\r\nb\r\n", "a\nb").0.is_empty(), "line endings are not a change");
+    }
+
+    #[test]
+    fn a_file_with_what_was_removed_and_the_rest_folded() {
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
+        let new = "a\nb\nc\nd\nE\nf\ng\nh\ni\nj\nk\n";
+        let (text, rows) = unified(old, new, None).expect("they differ");
+        assert_eq!(text, "a\nb\nc\nd\ne\nE\nf\ng\nh\ni\nj\nk");
+        assert_eq!(rows[4], Row { kind: RowKind::Removed, line: 4 });
+        assert_eq!(rows[5], Row { kind: RowKind::Added, line: 4 });
+        assert_eq!(rows[11], Row { kind: RowKind::Added, line: 10 });
+        let all = Some(rows.as_slice());
+        assert_eq!((row_of(all, 3), row_of(all, 4), row_of(all, 5), row_of(all, 10)), (3, 5, 6, 11));
+        assert_eq!((line_of(all, 4), line_of(all, 5), line_of(all, 6)), (None, Some(4), Some(5)));
+
+        let (text, rows) = unified(old, new, Some(1)).expect("they differ");
+        assert_eq!(text, "··· 3 unchanged lines ···\nd\ne\nE\nf\n··· 3 unchanged lines ···\nj\nk");
+        let folded = Some(rows.as_slice());
+        assert_eq!(rows[0], Row { kind: RowKind::Gap, line: 0 });
+        assert_eq!((row_of(folded, 1), row_of(folded, 3), row_of(folded, 4), row_of(folded, 7)), (0, 1, 3, 5));
+        assert_eq!((row_of(folded, 9), row_of(folded, 10)), (6, 7));
+        assert_eq!((line_of(folded, 0), line_of(folded, 1), line_of(folded, 2)), (None, Some(3), None));
+        assert_eq!((row_of(None, 7), line_of(None, 7)), (7, Some(7)));
+        assert!(unified(old, old, Some(3)).is_none(), "nothing to show for a file that did not change");
     }
 
     #[test]

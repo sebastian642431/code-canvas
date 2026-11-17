@@ -933,6 +933,14 @@ Details:
   `None` for a file git does not have yet.
 - `FileChange::unsaved`: the entry describes text that is typed but not on disk
   (see `Page::preview_unsaved`).
+- `head_texts` reads many files as committed with one `git cat-file --batch`. The
+  names are written from another thread: git answers while it is still being
+  asked, and both pipes are small.
+- `unified` is a file with its removed lines put back above what replaced them,
+  and with `around` the unchanged stretches replaced by one `Gap` row. `Row::line`
+  is the line of the real file the row is, or for a removed or gap row the next
+  real line. `row_of` and `line_of` go from one numbering to the other; a line
+  hidden in a fold is its `Gap` row.
 - Everything runs the user's `git`, off the UI thread. A folder outside a
   repository, or a missing git, simply means no changes (`load` returns `None`).
 - **`GIT_OPTIONAL_LOCKS=0` in `command` is load-bearing.** Reading the status must
@@ -1048,6 +1056,8 @@ Details:
 
 ### crates/code-canvas/src/overlay.rs
 
+- A card shown as a diff draws its rows (added, removed, the folds) instead of
+  git's hunks, which count lines of the real file.
 - Changed lines are washed in their git colour over the whole line, and from far
   away the wash is stronger and at least a pixel and a half tall: a changed file
   is seen on the map of the whole folder. `Touch` (a file just changed from
@@ -1086,6 +1096,23 @@ Details:
   to put it back when the file is saved, discarded or undone to no changes. A
   file whose text equals `HEAD` leaves the list even if the disk still differs.
 - `changed_dirs`: every folder above a changed file, for the explorer's colours.
+- **The diff view swaps the text of the card.** `Page::sync_diff` gives every
+  changed file (`MAX_DIFFS` at most) the text `git::unified` makes of it, with
+  `Repo::replace_source`, and keeps the rows in `diffs`: the layout, the symbols
+  and the drawing stay line based and need no second kind of card. The price is
+  that such a card numbers *rows*, not lines of the file: whatever comes from
+  outside in file lines (problems, decorations, where a definition is, a line to
+  travel to) goes through `row_of`, and what goes out (hover, go to definition,
+  the caret of a click) through `line_of`.
+- The file being edited is never shown as a diff: its caret is in file lines.
+  `diff_due` notices that the edited file changed and asks for a new pass.
+- `Diffed::plain` is the file's real text as the canvas would show it, kept to
+  tell what an outside change touched (`App::on_disk_changes`).
+- `heads` are thrown away only when `HEAD` moves (`heads_at` against
+  `GitState::head`), not at every look at git.
+- `diff_settled`: whether a file already looks the way it is going to. Travelling
+  to a changed line waits for it (`App::follow_now`), or the fold that arrives a
+  moment later would move the line away from where the camera went.
 - `reveal`: a file that appeared on disk; when the scan it caused is done the
   canvas goes to it.
 - `PageState::Waiting`: opened but not read, a folder restored from the last
@@ -1187,6 +1214,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `type` | `type <text>` | Type at the caret. |
 | `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
+| `diff` | `diff on\|off\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
 | `git` | `git stage [path]`, `git unstage [path]`, `git commit <message>` | Source control. |
