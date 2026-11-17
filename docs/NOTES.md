@@ -757,6 +757,17 @@ Graphics and the frame
 - A folder just put on the canvas is framed by its own first frame; all of
   them at once (`PutAll`) are framed together when the last one is read
   (`frame_all_when_read`), not before, when there is nothing to frame yet.
+- A file is renamed in its own row of the explorer (`rename_in_place`), the name
+  without its extension chosen, as editors do; Enter takes it, leaving the field
+  or Esc does not. New files and folders still ask in the box above the list.
+- `Put` of the workspace always turns the shared canvas on, also for a folder
+  that was already open: with one folder at a time, dropping it only changed
+  which one was looked at, which is not what dropping it on the canvas says.
+- The offer to connect Claude Code (`offer_claude`) comes by itself a few
+  seconds after the app starts, once, when Claude Code is on the computer and
+  not connected: a feature that waits behind a button in the settings is a
+  feature nobody sees. `--connect-claude` and `--disconnect-claude` do the same
+  from a command line.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1502,6 +1513,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `share` | `share start [writers]`, `share stop`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
+| `rename` | `rename <path>` | Start renaming a file in its row of the explorer. |
 | `delete` | `delete <path>` | Ask to delete a file or folder (answer with `answer Delete` or `answer Cancel`). |
 | `ignored` | `ignored <path>` | A click on a file git ignores, in the explorer: it comes onto the canvas. |
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
@@ -1722,6 +1734,12 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
   extension brings (`Panel::Webview`) on the right. Nothing opens a panel "on
   the left": it calls `UiState::show`. `Help` stays at the bottom of the left
   bar, next to the gear that opens Settings.
+  - **The icon of the open panel is a tab of it** (`rail_tab`): filled with the
+    panel's colour, round on the outer side, reaching the edge of the bar, with a
+    small inward curve above and below where it meets the panel. For that the
+    panel's corner on the bar's side is square, the line egui draws between the
+    bar and the panel is off, and the panel goes down to the status bar: a gap
+    under it, with round corners, read as a loose strip.
   - Icons could be dragged across until 0.3.3. An arrangement saved then is
     read as an order only: `Rails::arrange` puts each key on its own side
     whatever list it was saved in, and a drop on the other bar does nothing.

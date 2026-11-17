@@ -226,6 +226,7 @@ pub struct App {
     agents: crate::agents::Agents,
     agent_followed: Option<(u64, Option<u32>)>,
     claude_checked: Option<Instant>,
+    claude_offer_due: Option<Instant>,
     last_move_by_itself: bool,
 }
 
@@ -346,6 +347,7 @@ impl App {
             agents: crate::agents::Agents::listen(),
             agent_followed: None,
             claude_checked: None,
+            claude_offer_due: Some(Instant::now() + Duration::from_secs(6)),
             last_move_by_itself: false,
         };
         app.share_setup();
@@ -694,7 +696,13 @@ impl App {
         let on = |me: &App, path: &Path| me.pages.iter().position(|page| page.root == path);
         match op {
             WorkspaceOp::Put(path) => match on(self, &path) {
-                Some(page) => self.show_folder(page),
+                Some(page) => {
+                    let apart = std::mem::take(&mut self.ui.single);
+                    self.show_folder(page);
+                    if apart {
+                        self.frame_all_when_read = true;
+                    }
+                }
                 None if path.is_dir() => {
                     self.ui.single = false;
                     self.open_folder(path, None);
@@ -3150,6 +3158,11 @@ impl App {
             Step::Forward => self.travel(false),
             Step::Menu(x, y) => self.card_menu([x, y]),
             Step::Delete(path) => self.apply(Action::File(FileOp::Delete(path))),
+            Step::Rename(path) => {
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                self.ui.naming = Some(ui::Naming { kind: ui::NamingKind::Rename, path, text: name, focus: true });
+                self.request_redraw();
+            }
             Step::Ignored(path) => self.apply(Action::OpenIgnored(path)),
             Step::Part(asked) => {
                 let mut words = asked.split_whitespace();
@@ -3392,6 +3405,10 @@ impl App {
         busy |= self.unsent_edit.is_some();
         busy |= self.poll_share();
         busy |= self.poll_agents();
+        if self.claude_offer_due.is_some_and(|due| due <= Instant::now()) {
+            self.claude_offer_due = None;
+            self.offer_claude();
+        }
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
@@ -3663,6 +3680,10 @@ impl App {
                     _ => {}
                 }
                 self.request_redraw();
+                continue;
+            }
+            if about == assistants::CLAUDE_OFFER {
+                self.claude_answered(&choice);
                 continue;
             }
             if about != "update" {

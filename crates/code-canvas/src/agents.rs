@@ -199,6 +199,10 @@ pub fn with_hooks(mut settings: Value, program: Option<&Path>) -> Value {
     settings
 }
 
+pub fn claude_there() -> bool {
+    claude_settings().and_then(|file| Some(file.parent()?.is_dir())).unwrap_or(false)
+}
+
 pub fn claude_connected() -> bool {
     let read = claude_settings().and_then(|file| std::fs::read_to_string(file).ok());
     let settings: Value = read.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Value::Null);
@@ -291,6 +295,7 @@ impl Agents {
             return &mut self.list[at];
         }
         let free = (0..NAMES.len()).find(|avatar| self.list.iter().all(|agent| agent.avatar != *avatar));
+        log::info!("{} ({role}) is on the canvas", NAMES[free.unwrap_or(self.list.len() % NAMES.len())]);
         self.list.push(Agent {
             key: key.to_string(),
             session: session.to_string(),

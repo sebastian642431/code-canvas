@@ -5,6 +5,8 @@ use crate::agents::{Agent, Doing};
 use crate::ui::{AgentMark, AgentOp, AgentView};
 
 const LOOKED_FOR: Duration = Duration::from_secs(5);
+const CONNECT: &str = "Connect";
+pub(super) const CLAUDE_OFFER: &str = "claude on the canvas";
 
 impl App {
     fn agent_file(&self, agent: &Agent) -> Option<(usize, String)> {
@@ -25,6 +27,23 @@ impl App {
         let r = page.ready()?;
         let file = &r.repo.files[r.repo.file_index(rel)?];
         file.note.is_none().then(|| file.text().lines().position(|line| line.contains(wanted)))?.map(|line| line as u32)
+    }
+
+    pub(super) fn offer_claude(&mut self) {
+        let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
+        if quiet || self.ui.prefs.asked_claude || crate::agents::claude_connected() || !crate::agents::claude_there() {
+            return;
+        }
+        let text = "Claude Code can show on the canvas while it works: each session and each of its agents with a face of its own, where it reads and what it changes.";
+        self.ext.ask("Assistants", text, &[CONNECT, "Not now"], CLAUDE_OFFER);
+    }
+
+    pub(super) fn claude_answered(&mut self, choice: &str) {
+        self.ui.prefs.asked_claude = true;
+        crate::prefs::save(&self.ui.prefs);
+        if choice == CONNECT {
+            self.agent_op(AgentOp::ConnectClaude(true));
+        }
     }
 
     pub(super) fn poll_agents(&mut self) -> bool {

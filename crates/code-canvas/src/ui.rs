@@ -692,17 +692,18 @@ fn well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-fn card_panel(ui: &mut egui::Ui, panel: egui::Panel, add: impl FnOnce(&mut egui::Ui)) {
-    panel.frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: GAP })).show(
-        ui,
-        |ui| {
-            Frame::NONE.fill(pal().card).corner_radius(CornerRadius::same(10)).show(ui, |ui| {
-                ui.set_min_height(ui.available_height());
-                ui.set_width(ui.available_width());
-                add(ui);
-            });
-        },
-    );
+fn card_panel(ui: &mut egui::Ui, panel: egui::Panel, side: Side, add: impl FnOnce(&mut egui::Ui)) {
+    let round = match side {
+        Side::Left => CornerRadius { nw: 0, ne: 10, sw: 0, se: 0 },
+        Side::Right => CornerRadius { nw: 10, ne: 0, sw: 0, se: 0 },
+    };
+    panel.frame(Frame::NONE.fill(pal().chrome)).show(ui, |ui| {
+        Frame::NONE.fill(pal().card).corner_radius(round).show(ui, |ui| {
+            ui.set_min_height(ui.available_height());
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+    });
 }
 
 pub fn build(
@@ -976,7 +977,33 @@ fn status_bar(
 }
 
 fn rail_frame() -> Frame {
-    Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 5, right: 5, top: 0, bottom: GAP })
+    Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: RAIL_PAD, right: RAIL_PAD, top: 0, bottom: GAP })
+}
+
+const RAIL_PAD: i8 = 5;
+
+fn rail_tab(painter: &egui::Painter, icon: Rect, side: Side) {
+    const ROUND: f32 = 9.0;
+    let (card, chrome, pad) = (pal().card, pal().chrome, RAIL_PAD as f32);
+    let (tab, round, joint, away) = match side {
+        Side::Left => {
+            let tab =
+                Rect::from_min_max(icon.left_top() + Vec2::new(1.0, 0.0), icon.right_bottom() + Vec2::new(pad, 0.0));
+            (tab, CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 }, tab.right(), -1.0)
+        }
+        Side::Right => {
+            let tab =
+                Rect::from_min_max(icon.left_top() - Vec2::new(pad, 0.0), icon.right_bottom() - Vec2::new(1.0, 0.0));
+            (tab, CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 }, tab.left(), 1.0)
+        }
+    };
+    painter.rect_filled(tab, round, card);
+    for (edge, up) in [(tab.top(), -1.0), (tab.bottom(), 1.0)] {
+        let corner = Pos2::new(joint, edge);
+        let far = corner + Vec2::new(away * pad, up * pad);
+        painter.rect_filled(Rect::from_two_pos(corner, far), 0.0, card);
+        painter.circle_filled(far, pad, chrome);
+    }
 }
 
 const RAIL_ICON: Vec2 = Vec2::splat(34.0);
@@ -996,7 +1023,7 @@ fn side_panel(
         Side::Left => egui::Panel::left("left").resizable(true).default_size(300.0).size_range(240.0..=560.0),
         Side::Right => egui::Panel::right("right").resizable(true).default_size(340.0).size_range(260.0..=600.0),
     };
-    card_panel(ui, frame, |ui| match &panel {
+    card_panel(ui, frame, side, |ui| match &panel {
         Panel::Files => files_panel(ui, st, pages, active, actions),
         Panel::Search => search_panel(ui, st, pages.get(active), actions),
         Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
@@ -1045,14 +1072,17 @@ fn paint_rail_icon(
     ext: &Extensions,
     entry: &RailEntry,
     rect: Rect,
-    active: bool,
+    active: Option<Side>,
     hovered: bool,
 ) {
-    if active {
-        ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().raised);
-    } else if hovered {
-        ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
+    match active {
+        Some(side) => rail_tab(ui.painter(), rect, side),
+        None if hovered => {
+            ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
+        }
+        None => {}
     }
+    let active = active.is_some();
     let color = if active || hovered { pal().text } else { pal().text_dim };
     let glyph = |shape: &str| {
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, shape, FontId::proportional(17.0), color);
@@ -1110,7 +1140,7 @@ fn rail(
         Side::Left => egui::Panel::left("rail_left"),
         Side::Right => egui::Panel::right("rail_right"),
     };
-    bar.frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
+    bar.frame(rail_frame()).exact_size(RAIL_W).resizable(false).show_separator_line(false).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
         let zone = ui.max_rect();
         let mut slots: Vec<(String, Rect)> = Vec::new();
@@ -1120,7 +1150,7 @@ fn rail(
             slots.push((key.clone(), rect));
             let lifted = st.rail_drag.as_ref().is_some_and(|drag| drag.key == key);
             if !lifted {
-                let active = st.is_open(&entry.panel);
+                let active = st.is_open(&entry.panel).then_some(side);
                 paint_rail_icon(ui, st, ext, entry, rect, active, resp.hovered());
                 rail_badge(ui, ext, page, &entry.panel, rect);
             }
@@ -1201,7 +1231,8 @@ fn finish_rail_drag(ui: &egui::Ui, st: &mut UiState, ext: &Extensions, entries: 
         .fixed_pos(pointer - RAIL_ICON * 0.5)
         .show(ui.ctx(), |ui| {
             let (rect, _) = ui.allocate_exact_size(RAIL_ICON, Sense::hover());
-            paint_rail_icon(ui, st, ext, entry, rect, true, false);
+            ui.painter().rect_filled(rect.shrink(2.0), 9.0, pal().raised);
+            paint_rail_icon(ui, st, ext, entry, rect, None, false);
         });
 }
 
@@ -1759,6 +1790,15 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 right_pad += 14.0;
             }
             let room = rect.right() - right_pad - text_x;
+            let renamed = st.naming.as_ref().is_some_and(|n| n.kind == NamingKind::Rename && n.path == path);
+            if renamed {
+                let field = Rect::from_min_max(
+                    Pos2::new(text_x - 5.0, rect.top() + 1.0),
+                    Pos2::new(rect.right() - 8.0, rect.bottom() - 1.0),
+                );
+                rename_in_place(ui, st, field, actions);
+                continue;
+            }
             text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
             if is_dir && !ignored {
                 let at = Pos2::new(rect.right() - 14.0, mid);
@@ -1989,7 +2029,46 @@ fn file_menu(ui: &mut egui::Ui, naming: &mut Option<Naming>, path: &str, row: Ro
     }
 }
 
+fn rename_in_place(ui: &mut egui::Ui, st: &mut UiState, field: Rect, actions: &mut Vec<Action>) {
+    let Some(naming) = &mut st.naming else { return };
+    ui.painter().rect_filled(field, 5.0, pal().well);
+    ui.painter().rect_stroke(field, 5.0, Stroke::new(1.0, pal().accent), egui::StrokeKind::Inside);
+    let inside = Rect::from_center_size(field.center(), Vec2::new(field.width() - 10.0, 18.0));
+    let mut row = ui.new_child(egui::UiBuilder::new().max_rect(inside).layout(Layout::left_to_right(Align::Center)));
+    let edit = egui::TextEdit::singleline(&mut naming.text)
+        .frame(Frame::NONE)
+        .font(FontId::proportional(13.0))
+        .desired_width(inside.width())
+        .margin(Margin::ZERO);
+    let mut shown = edit.show(&mut row);
+    if std::mem::take(&mut naming.focus) {
+        shown.response.request_focus();
+        let stem = naming
+            .text
+            .rfind('.')
+            .filter(|at| *at > 0)
+            .map_or(naming.text.chars().count(), |at| naming.text[..at].chars().count());
+        let chosen = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(stem));
+        shown.state.cursor.set_char_range(Some(chosen));
+        shown.state.store(ui.ctx(), shown.response.id);
+        return;
+    }
+    if !shown.response.lost_focus() {
+        return;
+    }
+    let accepted = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if let Some(n) = st.naming.take().filter(|n| accepted && !n.text.trim().is_empty()) {
+        let same = n.path.rsplit('/').next() == Some(n.text.trim());
+        if !same {
+            actions.push(Action::File(FileOp::Rename { path: n.path, name: n.text }));
+        }
+    }
+}
+
 fn naming_box(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    if st.naming.as_ref().is_some_and(|naming| naming.kind == NamingKind::Rename) {
+        return;
+    }
     let Some(naming) = &mut st.naming else { return };
     let place = |path: &str| if path.is_empty() { "this folder".to_string() } else { format!("{path}/") };
     let (title, hint, glyph) = match naming.kind {

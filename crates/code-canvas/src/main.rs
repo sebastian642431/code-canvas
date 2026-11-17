@@ -106,6 +106,19 @@ fn main() -> anyhow::Result<()> {
     if asked.first().is_some_and(|flag| flag == "--agent-hook") {
         std::process::exit(agents::hook(asked.get(1).map_or("assistant", String::as_str)));
     }
+    if let Some(on) = asked.first().and_then(|flag| match flag.as_str() {
+        "--connect-claude" => Some(true),
+        "--disconnect-claude" => Some(false),
+        _ => None,
+    }) {
+        std::process::exit(match agents::connect_claude(on) {
+            Ok(()) => 0,
+            Err(why) => {
+                eprintln!("{why}");
+                1
+            }
+        });
+    }
     init_logging();
     log::info!("Code Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
     update::clean_up();
