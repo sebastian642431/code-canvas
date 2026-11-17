@@ -197,6 +197,14 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   panel opens in the right side of the window (Windows only for now).
 
 **An app, not a demo**
+- **A right click anywhere on the canvas** opens a menu for what is under it: a
+  file (hide it from the canvas, rename, delete, copy its path, show it in the
+  files, stage it), a folder (collapse or expand it), or the canvas itself (show
+  everything, put hidden files back, commands, open a folder).
+- **Hide the interface** (that menu, or `Ctrl+\`) leaves only the canvas; the same
+  brings it back.
+- Selecting a file on the canvas opens its folders in the files panel and marks
+  it there.
 - Own title bar and panels, icon rails on both sides, remembers your folders, cameras
   and layout between launches.
 - What is the app's own (files, search, source control, extensions, problems,

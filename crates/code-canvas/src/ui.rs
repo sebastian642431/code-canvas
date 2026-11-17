@@ -267,6 +267,10 @@ pub struct UiState {
     pub workspace_shut: bool,
     workspace_drag: Option<(std::path::PathBuf, String)>,
     canvas_was: Rect,
+    pub bare: bool,
+    pub explorer_reveal: Option<String>,
+    explorer_shown: Option<(u32, String)>,
+    explorer_seen: (f32, f32),
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
     pub commit_ai: crate::commit_ai::Settings,
@@ -319,6 +323,10 @@ impl Default for UiState {
             workspace_shut: false,
             workspace_drag: None,
             canvas_was: Rect::NOTHING,
+            bare: false,
+            explorer_reveal: None,
+            explorer_shown: None,
+            explorer_seen: (0.0, 0.0),
             can_go: (false, false),
             pictures: Vec::new(),
             commit_ai: Default::default(),
@@ -496,6 +504,9 @@ pub enum Action {
     Share(ShareOp),
     Workspace(WorkspaceOp),
     Agent(AgentOp),
+    ToggleUi,
+    Commands,
+    RevealInFiles(String),
     InstallVsix,
     SetTheme(String),
     SetColor(&'static str, u32),
@@ -719,7 +730,9 @@ pub fn build(
     st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
-    status_bar(ui, st, ext, pages.get(active), info, actions);
+    if !st.bare {
+        status_bar(ui, st, ext, pages.get(active), info, actions);
+    }
     let entries = rail_entries(st, ext);
     let available: Vec<(String, Side)> = entries.iter().map(|entry| (entry.panel.key(), entry.panel.home())).collect();
     let order = st.rails.arrange(&available);
@@ -727,7 +740,8 @@ pub fn build(
     if let Some(drag) = st.rail_drag.as_mut() {
         drag.target = None;
     }
-    for side in Side::BOTH {
+    let bare = st.bare;
+    for side in Side::BOTH.into_iter().filter(|_| !bare) {
         rail(ui, st, ext, pages.get(active), side, &entries, &order[side.index()]);
     }
     finish_rail_drag(ui, st, ext, &entries);
@@ -736,7 +750,7 @@ pub fn build(
         actions.push(Action::RailsChanged);
     }
 
-    for side in Side::BOTH {
+    for side in Side::BOTH.into_iter().filter(|_| !bare) {
         side_panel(ui, st, pages, active, ext, actions, side);
     }
 
@@ -748,7 +762,9 @@ pub fn build(
         on_canvas.image(picture, at, whole, Color32::WHITE);
     }
     center_message(ui, canvas, pages.get(active), &st.keys);
-    toolbar(&ctx, st, canvas, info, actions);
+    if !st.bare {
+        toolbar(&ctx, st, canvas, info, actions);
+    }
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     agent_marks(&ctx, &on_canvas, st, canvas);
@@ -1658,11 +1674,26 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         .map(|n| n.rel_path.clone())
         .unwrap_or_default();
     let has_selection = page.selected.is_some();
+    let now_shown = has_selection.then(|| (page.id, selected_path.clone()));
+    if now_shown.is_some() && now_shown != st.explorer_shown {
+        st.explorer_reveal = Some(selected_path.clone());
+    }
+    st.explorer_shown = now_shown;
+    let reveal = st.explorer_reveal.take();
+    let mut opened = false;
+    if let Some(path) = &reveal {
+        let mut at = path.as_str();
+        while let Some((parent, _)) = at.rsplit_once('/') {
+            opened |= page.tree_open.insert(parent.to_string());
+            at = parent;
+        }
+    }
     let PageState::Ready(r) = &mut page.state else {
         ui.add_space(8.0);
         ui.vertical_centered(|ui| ui.label(RichText::new("Scanning…").color(pal().text_dim)));
         return;
     };
+    r.tree_dirty |= opened;
     if r.tree_dirty {
         let ignored = page.git.as_ref().map_or(&[][..], |git| git.ignored.as_slice());
         r.tree = build_tree(&r.repo, &page.tree_open, &page.filter.hidden, ignored);
@@ -1693,7 +1724,16 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     }
 
     ui.spacing_mut().item_spacing.y = 0.0;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, ROW_H, rows, |ui, range| {
+    let mut list = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    let row_of =
+        reveal.as_ref().filter(|_| matches.is_none()).and_then(|path| r.tree.iter().position(|row| row.path == *path));
+    if let Some(row) = row_of {
+        let (top, (from, tall)) = (row as f32 * ROW_H, st.explorer_seen);
+        if top < from || top + ROW_H > from + tall {
+            list = list.vertical_scroll_offset((top - tall * 0.35).max(0.0));
+        }
+    }
+    let seen = list.show_rows(ui, ROW_H, rows, |ui, range| {
         for i in range {
             let (depth, open, name, path, count, state) = match &matches {
                 Some(m) => {
@@ -1841,6 +1881,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             }
         }
     });
+    st.explorer_seen = (seen.state.clamped_offset().y, seen.inner_rect.height());
 }
 
 fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
@@ -3191,10 +3232,17 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuOn {
+    Canvas,
+    Folder { path: String, collapsed: bool },
+    File { path: String },
+}
+
 pub struct CardMenu {
     pub at: Pos2,
-    pub folder: (std::path::PathBuf, String),
-    pub path: String,
+    pub folder: Option<(std::path::PathBuf, String)>,
+    pub on: MenuOn,
     pub line: Option<u32>,
     pub staged: bool,
     pub unstaged: bool,
@@ -3202,8 +3250,25 @@ pub struct CardMenu {
     pub place: Option<Rect>,
 }
 
+fn menu_row_key(ui: &mut egui::Ui, glyph: &str, label: &str, key: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 6.0, pal().hover);
+    }
+    let (mid, font) = (rect.center().y, FontId::proportional(13.0));
+    ui.painter().text(Pos2::new(rect.left() + 10.0, mid), Align2::LEFT_CENTER, glyph, font.clone(), pal().text_dim);
+    ui.painter().text(Pos2::new(rect.left() + 32.0, mid), Align2::LEFT_CENTER, label, font, pal().text);
+    let small = FontId::proportional(11.5);
+    ui.painter().text(Pos2::new(rect.right() - 10.0, mid), Align2::RIGHT_CENTER, key, small, pal().text_faint);
+    resp.clicked()
+}
+
 fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
     use crate::git::{GitOp, Part};
+    const WIDTH: f32 = 252.0;
+    let bare = st.bare;
+    let (ui_key, fit_key, commands_key) =
+        (st.keys.label(Command::ToggleUi), st.keys.label(Command::ShowAll), st.keys.label(Command::Palette));
     let Some(menu) = st.card_menu.as_mut() else { return };
     let pressed = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
     let outside = pressed.is_some_and(|at| menu.place.is_some_and(|place| !place.contains(at)));
@@ -3211,9 +3276,14 @@ fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut 
         st.card_menu = None;
         return;
     }
-    let at = Pos2::new(menu.at.x.min(canvas.right() - 250.0), menu.at.y.min(canvas.bottom() - 250.0));
+    let tall = menu.place.map_or(330.0, |place| place.height());
+    let at = Pos2::new(
+        menu.at.x.min(canvas.right() - WIDTH - 20.0).max(canvas.left() + 4.0),
+        menu.at.y.min(canvas.bottom() - tall - 8.0).max(canvas.top() + 4.0),
+    );
     let area = egui::Area::new(egui::Id::unique("card menu")).fixed_pos(at).order(egui::Order::Foreground);
-    let mut chosen = None;
+    let mut chosen: Vec<Action> = Vec::new();
+    let mut rename = None;
     let resp = area.show(ctx, |ui| {
         let frame = Frame::NONE
             .fill(pal().card)
@@ -3221,51 +3291,124 @@ fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut 
             .corner_radius(CornerRadius::same(10))
             .inner_margin(Margin::same(6));
         frame.show(ui, |ui| {
-            ui.set_width(236.0);
+            ui.set_width(WIDTH);
             ui.spacing_mut().item_spacing.y = 1.0;
-            let path = menu.path.clone();
-            let part = |what: Part, line: u32| Action::Git(GitOp::Part { path: path.clone(), line, what });
-            if let Some(line) = menu.line {
-                if menu.unstaged && menu_row(ui, icons::PLUS, "Stage this change") {
-                    chosen = Some(part(Part::Stage, line));
+            let on = menu.on.clone();
+            match &on {
+                MenuOn::File { path } => {
+                    let part = |what: Part, line: u32| Action::Git(GitOp::Part { path: path.clone(), line, what });
+                    if let Some(line) = menu.line {
+                        if menu.unstaged && menu_row(ui, icons::PLUS, "Stage this change") {
+                            chosen.push(part(Part::Stage, line));
+                        }
+                        if menu.staged && menu_row(ui, icons::MINUS, "Unstage this change") {
+                            chosen.push(part(Part::Unstage, line));
+                        }
+                        if menu.unstaged && menu_row(ui, icons::ARROW_LEFT, "Discard this change") {
+                            chosen.push(part(Part::Discard, line));
+                        }
+                        menu_gap(ui);
+                    }
+                    if (menu.unstaged || menu.untracked) && menu_row(ui, icons::PLUS, "Stage the file") {
+                        chosen.push(Action::Git(GitOp::Stage(path.clone())));
+                    }
+                    if menu.staged && menu_row(ui, icons::MINUS, "Unstage the file") {
+                        chosen.push(Action::Git(GitOp::Unstage(path.clone())));
+                    }
+                    if menu.staged || menu.unstaged || menu.untracked {
+                        menu_gap(ui);
+                    }
                 }
-                if menu.staged && menu_row(ui, icons::MINUS, "Unstage this change") {
-                    chosen = Some(part(Part::Unstage, line));
+                MenuOn::Folder { path, collapsed } => {
+                    let label = if *collapsed { "Expand this folder" } else { "Collapse this folder" };
+                    let glyph = if *collapsed { icons::UNFOLD_VERTICAL } else { icons::FOLD_VERTICAL };
+                    if menu_row(ui, glyph, label) {
+                        chosen.push(Action::ToggleCollapsed(path.clone()));
+                    }
                 }
-                if menu.unstaged && menu_row(ui, icons::ARROW_LEFT, "Discard this change") {
-                    chosen = Some(part(Part::Discard, line));
+                MenuOn::Canvas => {}
+            }
+            let target = match &on {
+                MenuOn::File { path } => Some((path.clone(), false)),
+                MenuOn::Folder { path, .. } => Some((path.clone(), true)),
+                MenuOn::Canvas => None,
+            };
+            if let Some((path, is_dir)) = &target {
+                let inside = !path.is_empty();
+                if inside && menu_row(ui, icons::EYE_OFF, "Hide from the canvas") {
+                    chosen.push(Action::ToggleHidden(path.clone()));
+                }
+                if inside && menu_row(ui, icons::FILE_TEXT, "Rename…") {
+                    rename = Some(path.clone());
+                }
+                if inside && menu_row(ui, icons::TRASH_2, "Delete…") {
+                    chosen.push(Action::File(FileOp::Delete(path.clone())));
+                }
+                if inside {
+                    menu_gap(ui);
+                }
+                if menu_row(ui, icons::COPY, "Copy path") {
+                    chosen.push(Action::File(FileOp::CopyPath { path: path.clone(), relative: false }));
+                }
+                if inside && menu_row(ui, icons::COPY, "Copy relative path") {
+                    chosen.push(Action::File(FileOp::CopyPath { path: path.clone(), relative: true }));
+                }
+                let reveal = if cfg!(windows) { "Reveal in File Explorer" } else { "Open the containing folder" };
+                if menu_row(ui, icons::FOLDER_OPEN, reveal) {
+                    chosen.push(Action::File(FileOp::Reveal(path.clone())));
+                }
+                if !*is_dir && menu_row(ui, icons::LIST_TREE, "Show it in the files") {
+                    chosen.push(Action::RevealInFiles(path.clone()));
                 }
                 menu_gap(ui);
             }
-            if (menu.unstaged || menu.untracked) && menu_row(ui, icons::PLUS, "Stage the file") {
-                chosen = Some(Action::Git(GitOp::Stage(path.clone())));
+            let label = if bare { "Show the interface" } else { "Hide the interface" };
+            if menu_row_key(ui, icons::PANEL_LEFT, label, &ui_key) {
+                chosen.push(Action::ToggleUi);
             }
-            if menu.staged && menu_row(ui, icons::MINUS, "Unstage the file") {
-                chosen = Some(Action::Git(GitOp::Unstage(path.clone())));
+            if menu_row_key(ui, icons::SCAN, "Show the whole canvas", &fit_key) {
+                chosen.push(Action::Fit);
             }
-            if menu.staged || menu.unstaged || menu.untracked {
+            if on == MenuOn::Canvas {
+                if menu_row(ui, icons::EYE, "Put hidden files back") {
+                    chosen.push(Action::ShowAll);
+                }
+                if menu_row(ui, icons::FOLD_VERTICAL, "Collapse every folder") {
+                    chosen.push(Action::CollapseAll);
+                }
+                if menu_row(ui, icons::UNFOLD_VERTICAL, "Expand every folder") {
+                    chosen.push(Action::ExpandAll);
+                }
                 menu_gap(ui);
+                if menu_row_key(ui, icons::SEARCH, "Commands…", &commands_key) {
+                    chosen.push(Action::Commands);
+                }
+                if menu_row(ui, icons::PLUS, "Open a folder…") {
+                    chosen.push(Action::OpenFolder);
+                }
             }
-            if menu_row(ui, icons::COPY, "Copy path") {
-                chosen = Some(Action::File(FileOp::CopyPath { path: path.clone(), relative: false }));
-            }
-            if menu_row(ui, icons::COPY, "Copy relative path") {
-                chosen = Some(Action::File(FileOp::CopyPath { path: path.clone(), relative: true }));
-            }
-            let reveal = if cfg!(windows) { "Reveal in File Explorer" } else { "Open the containing folder" };
-            if menu_row(ui, icons::FOLDER_OPEN, reveal) {
-                chosen = Some(Action::File(FileOp::Reveal(path.clone())));
-            }
-            menu_gap(ui);
-            if menu_row(ui, icons::X, &format!("Take {} off the canvas", menu.folder.1)) {
-                chosen = Some(Action::Workspace(WorkspaceOp::TakeOff(menu.folder.0.clone())));
+            if let Some((root, title)) = &menu.folder {
+                menu_gap(ui);
+                if menu_row(ui, icons::X, &format!("Take {title} off the canvas")) {
+                    chosen.push(Action::Workspace(WorkspaceOp::TakeOff(root.clone())));
+                }
             }
         });
     });
+    if let Some(path) = rename {
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        st.naming = Some(Naming { kind: NamingKind::Rename, path: path.clone(), text: name, focus: true });
+        st.bare = false;
+        st.show(Panel::Files);
+        st.explorer_reveal = Some(path);
+        st.card_menu = None;
+        return;
+    }
+    let Some(menu) = st.card_menu.as_mut() else { return };
     menu.place = Some(resp.response.rect);
     st.floating.push(resp.response.rect);
-    if let Some(action) = chosen {
-        actions.push(action);
+    if !chosen.is_empty() {
+        actions.extend(chosen);
         st.card_menu = None;
     }
 }
@@ -3460,6 +3603,7 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("Source Control: Show Only Changed Files".into(), Action::SetOnlyChanged(true)),
         ("Source Control: Show All Files".into(), Action::SetOnlyChanged(false)),
         ("Source Control: Stop Showing the Commit".into(), Action::ShowCommit(None)),
+        ("View: Show or Hide the Interface".into(), Action::ToggleUi),
         ("Sharing: Share This Session or Join One".into(), Action::Share(ShareOp::Panel)),
         ("Sharing: Stop Sharing or Leave".into(), Action::Share(ShareOp::Stop)),
         ("Sharing: Stop Following".into(), Action::Share(ShareOp::Follow(None))),

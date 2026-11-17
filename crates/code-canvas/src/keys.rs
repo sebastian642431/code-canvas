@@ -21,6 +21,7 @@ pub enum Command {
     Rescan,
     ToggleLeftPanel,
     ToggleSideBySide,
+    ToggleUi,
     Settings,
     ShowAll,
     GoToSelection,
@@ -112,6 +113,7 @@ pub const COMMANDS: &[CommandInfo] = &[
         Scope::Window,
         &["ctrl+e"],
     ),
+    info(Command::ToggleUi, "toggleUi", "Show or hide the interface", "Panels", Scope::Window, &["ctrl+\\"]),
     info(Command::Settings, "settings", "Settings", "Panels", Scope::Window, &["ctrl+,"]),
     info(Command::Back, "back", "Back to where the canvas was", "Canvas", Scope::Canvas, &["ctrl+z", "alt+left"]),
     info(

@@ -1112,17 +1112,39 @@ impl App {
 
     fn card_menu(&mut self, point: [f32; 2]) {
         self.ui.card_menu = None;
-        let Some(page) = self.pages.get(self.active) else { return };
-        let Some(r) = page.ready() else { return };
-        let world = page.camera.view(self.viewport()).to_world(point);
-        let Some(n) = r.layout.hit(world).map(|n| &r.layout.nodes[n]) else { return };
         let scale = self.scale();
-        let folder = (page.root.clone(), page.title.clone());
-        let NodeKind::File(fi) = n.kind else {
+        let bare = |me: &mut App| {
+            me.ui.card_menu = Some(ui::CardMenu {
+                at: egui::Pos2::new(point[0] / scale, point[1] / scale),
+                folder: None,
+                on: ui::MenuOn::Canvas,
+                line: None,
+                staged: false,
+                unstaged: false,
+                untracked: false,
+                place: None,
+            });
+            me.request_redraw();
+        };
+        let Some(page) = self.pages.get(self.active) else { return bare(self) };
+        let Some(r) = page.ready() else { return bare(self) };
+        let world = page.camera.view(self.viewport()).to_world(point);
+        let scale = self.scale();
+        let folder = (!page.only && page.shared.is_none()).then(|| (page.root.clone(), page.title.clone()));
+        let hit = r.layout.hit(world).map(|n| &r.layout.nodes[n]);
+        let file = hit.and_then(|n| match n.kind {
+            NodeKind::File(fi) => Some((n, fi)),
+            NodeKind::Dir => None,
+        });
+        let Some((n, fi)) = file else {
+            let on = match hit {
+                Some(n) => ui::MenuOn::Folder { path: n.rel_path.clone(), collapsed: n.collapsed },
+                None => ui::MenuOn::Canvas,
+            };
             self.ui.card_menu = Some(ui::CardMenu {
                 at: egui::Pos2::new(point[0] / scale, point[1] / scale),
                 folder,
-                path: n.rel_path.clone(),
+                on,
                 line: None,
                 staged: false,
                 unstaged: false,
@@ -1147,7 +1169,7 @@ impl App {
         self.ui.card_menu = Some(ui::CardMenu {
             at: egui::Pos2::new(point[0] / scale, point[1] / scale),
             folder,
-            path: f.rel_path.clone(),
+            on: ui::MenuOn::File { path: f.rel_path.clone() },
             line: line.filter(changed_here),
             staged: change.is_some_and(|change| change.staged.is_some()),
             unstaged: change
@@ -2455,6 +2477,7 @@ impl App {
             Command::Settings => self.ui.settings.show(None),
             Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
+            Command::ToggleUi => self.apply(Action::ToggleUi),
             Command::FormatFile => self.format_file(None),
             Command::Save => self.save_edit(),
             Command::MoveTool | Command::EditTool => {
@@ -2715,6 +2738,23 @@ impl App {
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
             Action::Agent(op) => self.agent_op(op),
+            Action::ToggleUi => {
+                self.ui.bare = !self.ui.bare;
+                if self.ui.bare {
+                    let key = self.ui.keys.label(Command::ToggleUi);
+                    let text =
+                        format!("The interface is hidden. {key}, or a right click on the canvas, brings it back.");
+                    self.ext.notice(ext::Level::Info, "Canvas", text);
+                }
+                self.request_redraw();
+            }
+            Action::Commands => self.run_command(Command::Palette),
+            Action::RevealInFiles(path) => {
+                self.ui.bare = false;
+                self.ui.show(Panel::Files);
+                self.ui.explorer_reveal = Some(path);
+                self.request_redraw();
+            }
             Action::Git(op) => {
                 use crate::git::{GitOp, Part};
                 let lost = match &op {
@@ -3157,6 +3197,10 @@ impl App {
             Step::Back => self.travel(true),
             Step::Forward => self.travel(false),
             Step::Menu(x, y) => self.card_menu([x, y]),
+            Step::Interface => {
+                self.ui.card_menu = None;
+                self.apply(Action::ToggleUi);
+            }
             Step::Delete(path) => self.apply(Action::File(FileOp::Delete(path))),
             Step::Rename(path) => {
                 let name = path.rsplit('/').next().unwrap_or(&path).to_string();

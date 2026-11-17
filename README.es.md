@@ -111,6 +111,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   Claude Code, a Codex o a un comando tuyo.
 - **Claude Code**: la extensión oficial, instalada desde el panel de extensiones; su
   panel se abre a la derecha de la ventana.
+- **Clic derecho en cualquier parte del lienzo**: menú según lo que haya debajo
+  (archivo: ocultar, renombrar, borrar, copiar ruta; carpeta: plegar; lienzo: ver
+  todo, comandos). *Hide the interface* (o `Ctrl+\`) deja solo el lienzo.
+- Al seleccionar un archivo en el lienzo, el explorador abre sus carpetas y lo marca.
 - **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y
   recuerda carpetas, cámaras y disposición entre aperturas. Lo propio de la app
   (archivos, búsqueda, control de código, extensiones, problemas, símbolos,

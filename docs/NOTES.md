@@ -768,6 +768,18 @@ Graphics and the frame
   not connected: a feature that waits behind a button in the settings is a
   feature nobody sees. `--connect-claude` and `--disconnect-claude` do the same
   from a command line.
+- **The menu of a right click** (`ui::CardMenu`, `MenuOn`) is for a file, a
+  folder or the canvas, whatever is under the pointer, and is there with no
+  folder open too. What it offers ends with what is always there: hiding the
+  interface and seeing the whole canvas.
+- **The interface hidden** (`UiState::bare`): the bars, the panels, the status
+  bar and the toolbar are not drawn; the title bar stays, it is how the window
+  is moved and closed. Hiding says once how to bring it back.
+- **The explorer follows the selection**: when the selected node changes
+  (`explorer_shown`), its folders are opened in the tree and the list scrolls to
+  its row if it is out of sight (`explorer_seen` is what the list showed a frame
+  ago). Only then: a list that scrolled back on every frame could not be
+  scrolled by hand. `explorer_reveal` asks the same for a path by name.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1516,6 +1528,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `rename` | `rename <path>` | Start renaming a file in its row of the explorer. |
 | `delete` | `delete <path>` | Ask to delete a file or folder (answer with `answer Delete` or `answer Cancel`). |
 | `ignored` | `ignored <path>` | A click on a file git ignores, in the explorer: it comes onto the canvas. |
+| `interface` | `interface` | Hide the interface, or show it again. |
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
