@@ -388,7 +388,8 @@ impl Renderer {
                             let col_r = view.to_screen([cx + n.col_stride - FOLD_GAP - n.gutter, 0.0])[0];
                             let numbers_l = view.to_screen([cx - n.gutter, 0.0])[0];
                             let rows_top = view.to_screen([0.0, o[1]])[1];
-                            let rows_bottom = view.to_screen([0.0, o[1] + n.fold as f32 * LINE_H])[1];
+                            let rows = f.line_count().min((col + 1) * n.fold as usize) - col * n.fold as usize;
+                            let rows_bottom = view.to_screen([0.0, o[1] + rows as f32 * LINE_H])[1];
                             code_texts.push(CodeText {
                                 page: sc.page,
                                 file_index: fi,
@@ -406,6 +407,7 @@ impl Renderer {
                                 numbers: (n.gutter > 0.0).then_some([
                                     numbers_l.max(clip[0]) as i32,
                                     (col_l - view.zoom * CHAR_W * 0.5).min(clip[2]) as i32,
+                                    br[1].min(rows_bottom).min(clip[3]) as i32,
                                 ]),
                             });
                         }

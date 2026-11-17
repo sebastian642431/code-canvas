@@ -29,7 +29,7 @@ pub struct CodeText<'a> {
     pub top: f32,
     pub zoom: f32,
     pub clip: [i32; 4],
-    pub numbers: Option<[i32; 2]>,
+    pub numbers: Option<[i32; 3]>,
 }
 
 pub struct Label<'a> {
@@ -219,7 +219,7 @@ impl TextLayer {
             let first_chunk = c.lines.start / CHUNK_LINES;
             let last_chunk = (c.lines.end - 1) / CHUNK_LINES;
             for chunk in first_chunk..=last_chunk {
-                if let Some([left, right]) = c.numbers.filter(|[left, right]| right > left) {
+                if let Some([left, right, bottom]) = c.numbers.filter(|[left, right, _]| right > left) {
                     let own = c.file.numbers.is_some();
                     let key = ChunkKey {
                         page: if own { c.page } else { u32::MAX },
@@ -234,7 +234,7 @@ impl TextLayer {
                         shaped.last_used = frame;
                     }
                     let top = c.top + (chunk * CHUNK_LINES) as f32 * LINE_H * c.zoom;
-                    let bounds = TextBounds { left, top: c.clip[1], right, bottom: c.clip[3] };
+                    let bounds = TextBounds { left, top: c.clip[1], right, bottom };
                     areas_numbers.push((key, left as f32, top, c.zoom, bounds));
                 }
                 let key = ChunkKey { page: c.page, file: c.file_index as u32, chunk: chunk as u32 };
