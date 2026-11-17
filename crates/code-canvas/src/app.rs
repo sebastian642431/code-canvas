@@ -117,6 +117,15 @@ struct Completion {
     selected: usize,
 }
 
+fn theme_of_extension(ext: &Extensions, key: &str) -> Option<canvas_render::theme::Theme> {
+    let chosen = ext.color_themes().find(|theme| theme.key == key)?;
+    let made = crate::themes::from_vscode(&chosen.file, chosen.light);
+    if made.is_none() {
+        log::warn!("the theme {} could not be read from {}", chosen.label, chosen.file.display());
+    }
+    made
+}
+
 fn can_show(size: winit::dpi::PhysicalSize<u32>) -> bool {
     size.width >= 320 && size.height >= 200
 }
@@ -226,9 +235,10 @@ impl App {
             }
         }
         crate::page::forget_old_scans();
-        let chosen = crate::themes::load();
-        canvas_render::theme::set(chosen.resolve());
+        let mut chosen = crate::themes::load();
         let mut ext = Extensions::new(session::data_dir(), waker);
+        chosen.from_extension = theme_of_extension(&ext, &chosen.theme);
+        canvas_render::theme::set(chosen.resolve());
         if std::env::var_os("CODE_CANVAS_SCRIPT").is_none() && std::env::var_os("CODE_CANVAS_BENCH").is_none() {
             ext.install_defaults();
         }
@@ -2630,7 +2640,8 @@ impl App {
                 self.frame_all();
             }
             Action::SetTheme(key) => {
-                self.ui.theme.set_base(key);
+                self.ui.theme.from_extension = theme_of_extension(&self.ext, &key);
+                self.ui.theme.set_base(&key);
                 self.theme_changed();
             }
             Action::SetColor(key, color) => {
@@ -2953,6 +2964,16 @@ impl App {
                         self.apply(Action::Git(crate::git::GitOp::Part { path: path.to_string(), line, what }))
                     }
                     _ => log::warn!("script: part needs stage|unstage, a path and a line"),
+                }
+            }
+            Step::Theme(named) => {
+                let own =
+                    canvas_render::theme::PRESETS.iter().map(|(key, name, _)| (key.to_string(), name.to_string()));
+                let theirs = self.ext.color_themes().map(|theme| (theme.key.clone(), theme.label.clone()));
+                let found = own.chain(theirs).find(|(key, name)| *key == named || name.eq_ignore_ascii_case(&named));
+                match found {
+                    Some((key, _)) => self.apply(Action::SetTheme(key)),
+                    None => log::warn!("script: no theme named '{named}'"),
                 }
             }
             Step::Commit(which) => {

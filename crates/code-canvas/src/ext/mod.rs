@@ -93,6 +93,15 @@ pub struct Installed {
     pub views: Vec<String>,
     pub containers: Vec<Container>,
     pub icon_themes: Vec<IconThemeDecl>,
+    pub color_themes: Vec<ColorThemeDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorThemeDecl {
+    pub key: String,
+    pub label: String,
+    pub file: PathBuf,
+    pub light: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -597,6 +606,7 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
     let display_name = Some(manifest_text(&v, &nls, "displayName")).filter(|s| !s.is_empty()).unwrap_or(name);
     let enabled = !disabled.contains(&id);
     let has_code = v.get("main").and_then(Value::as_str).is_some_and(|m| !m.is_empty());
+    let theme_key = format!("{}{id}:", crate::themes::FROM_EXTENSION);
     Some(Installed {
         id,
         display_name,
@@ -618,6 +628,23 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         commands: manifest_commands(&v, &nls),
         views: manifest_views(&v, &nls),
         containers: manifest_containers(&v, &nls),
+        color_themes: v
+            .pointer("/contributes/themes")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|t| {
+                        let file = dir.join(t.get("path").and_then(Value::as_str)?);
+                        let named =
+                            t.get("label").or(t.get("id")).map(|l| localized(l, &nls)).filter(|l| !l.is_empty());
+                        let label = named.or_else(|| Some(file.file_stem()?.to_string_lossy().into_owned()))?;
+                        let light =
+                            t.get("uiTheme").and_then(Value::as_str).is_some_and(|ui| ui == "vs" || ui == "hc-light");
+                        Some(ColorThemeDecl { key: format!("{theme_key}{label}"), label, file, light })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         icon_themes: v
             .pointer("/contributes/iconThemes")
             .and_then(Value::as_array)
@@ -1062,6 +1089,10 @@ impl Extensions {
 
     pub fn rail_items(&self) -> Vec<RailItem> {
         rail_items_of(&self.installed, &self.webviews, &|key| self.contexts.get(key).cloned())
+    }
+
+    pub fn color_themes(&self) -> impl Iterator<Item = &ColorThemeDecl> {
+        self.installed.iter().filter(|e| e.enabled).flat_map(|e| e.color_themes.iter())
     }
 
     pub fn icon_themes(&self) -> impl Iterator<Item = &IconThemeDecl> {

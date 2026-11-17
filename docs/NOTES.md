@@ -1454,6 +1454,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
@@ -1497,8 +1498,31 @@ the menu with.
   { "theme": "dark", "colors": { "card_border": "#4b5362" }, "icons": "symbols" }
   ```
 
-- `theme`: key of a built-in theme (`theme::PRESETS`); unknown or empty means the
-  default one.
+- `theme`: key of a built-in theme (`theme::PRESETS`), or of a theme of an
+  extension: `ext:<extension id>:<label>` (`ColorThemeDecl::key`); unknown or
+  empty means the default one.
+- A theme of an extension is read when it is chosen and at startup
+  (`theme_of_extension`) and kept in `ThemeFile::from_extension`, which is not
+  written: `base` gives it while the key is one of an extension, and the default
+  theme if the extension is gone.
+- `from_vscode` reads the file and the ones it `include`s (the included first, so
+  the including one wins), through `plain_json`: theme files carry comments and
+  commas before a closing bracket. `theme_of` makes a `Theme` out of it:
+  - `editor.background` is the colour of the *cards* (it is where code is); the
+    canvas behind them is `editorPane.background` or, for want of it, the same
+    colour darkened, so cards stand out as they do in the built-in themes.
+  - Panels are the side bar, the window's frame the activity bar. Rows, buttons
+    and borders are the side bar's colour moved towards the text's: themes set
+    their own borders to transparent or to their accent too often to trust them.
+  - A colour with alpha is laid over what it will be on (`over`): the theme
+    struct has no place for "see-through over the side bar".
+  - Code: for each kind of token the app tells apart, the scopes it could be, most
+    telling first (`token`). A rule fits a scope it is or begins (`keyword` fits
+    `keyword.control`); the longest fitting rule wins, the later of two as long.
+    Of `a b c` only `c` counts, and a rule with ` - ` is left out. A kind with no
+    rule is the plain foreground.
+  - Relations keep the built-in colours: they have to be told apart from each
+    other, which no theme promises.
 - `colors`: colours changed by the user, key → `#rrggbb` or `#rrggbbaa`. Keys that
   no longer exist and values that are not colours are ignored. `set_color` forgets
   a change when the colour is set back to the base theme's value, so the file only

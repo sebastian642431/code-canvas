@@ -41,6 +41,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   existe una versión más nueva.
 - **Actualizaciones**: al abrir, si hay una versión más nueva la ofrece en un aviso y
   la instala sola. El panel del asistente sigue lo que va escribiendo hasta que subís.
+- **Temas de VS Code**: instalá un tema de colores como extensión (Dracula, GitHub
+  Theme, Tokyo Night…) y elegilo en Ajustes, Apariencia: la ventana, el lienzo y el
+  código toman sus colores, también los claros.
 - **Ajustes** (el engranaje, o `Ctrl+,`): se abren en una ventana sobre la app, con
   versión y actualizaciones, tema, íconos, cada color, cada atajo y un buscador que
   recorre todo. La ventana abre donde y como la dejaste (maximizada si lo estaba) y

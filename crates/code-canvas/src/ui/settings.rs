@@ -358,19 +358,25 @@ fn appearance(
     f: &str,
     actions: &mut Vec<Action>,
 ) -> bool {
-    let (base_key, _) = st.theme.base();
+    let base_key = st.theme.base().0.to_string();
     let all = hit(f, &["Theme"]);
-    let presets: Vec<_> = theme::PRESETS.iter().filter(|(_, name, _)| all || hit(f, &[name])).collect();
+    let presets: Vec<(&str, &str)> = theme::PRESETS.iter().map(|(key, name, _)| (*key, *name)).collect();
+    let from_extensions: Vec<(&str, &str)> = ext.color_themes().map(|t| (t.key.as_str(), t.label.as_str())).collect();
+    let presets: Vec<(&str, &str)> =
+        presets.into_iter().chain(from_extensions.iter().copied()).filter(|(_, name)| all || hit(f, &[name])).collect();
     if !presets.is_empty() {
         section(ui, icons::PALETTE, "Theme");
         well(ui, |ui| {
-            for (key, name, _) in presets.iter().copied() {
-                let mut on = *key == base_key;
-                if check(ui, &mut on, name, true, false).clicked() && *key != base_key {
-                    actions.push(Action::SetTheme(key));
+            for (key, name) in presets.iter().copied() {
+                let mut on = key == base_key;
+                if check(ui, &mut on, name, true, false).clicked() && key != base_key {
+                    actions.push(Action::SetTheme(key.to_string()));
                 }
             }
             ui.add_space(2.0);
+            if from_extensions.is_empty() {
+                note(ui, "A colour theme installed as an extension (Dracula, Tokyo Night, GitHub Theme…) is listed here too.");
+            }
             note(ui, "Every colour of a theme can be changed under Colours.");
         });
     }

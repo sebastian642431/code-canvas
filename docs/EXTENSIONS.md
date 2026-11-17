@@ -31,6 +31,14 @@ A new installation gets four by itself, once (`ext::DEFAULTS`): Claude Code,
 Prettier, ESLint and the Symbols file icons. Removing one is respected: it does
 not come back.
 
+**Colour themes** work: every theme an extension declares (`contributes.themes`)
+is listed in the settings next to the built-in ones. The app has far fewer
+colours than VS Code, so a theme is read as a few anchors (the editor's and the
+side bar's background and foreground, the accent, the selection) from which the
+rest is made, and its `tokenColors` give the colours of code by scope. The
+grammar is still the app's own: what a theme says about scopes the app does not
+tell apart is not used.
+
 **File icon themes** work: install one (Symbols, Material Icon Theme) and the
 explorer and the go-to-file list use it. With several, pick one in the settings.
 Themes made of SVG files are read; font icons are not.
@@ -96,7 +104,7 @@ is what starts the extension (`onView:<id>`). `when` clauses are evaluated in
 `ext/when.rs` against the context keys extensions set with `setContext`. A container
 that only has tree views gets no icon yet: there would be nothing to show.
 
-Implemented: file icon themes, webview views and panels, documents and their events, configuration, diagnostics, every
+Implemented: colour themes, file icon themes, webview views and panels, documents and their events, configuration, diagnostics, every
 `languages.register…Provider` (kept by kind; the app uses formatting, hovers,
 definitions and completions, and references can be requested), commands, workspace edits,
 `workspace.fs`, output channels, status bar items, messages, decorations, extension

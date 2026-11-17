@@ -48,6 +48,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - **Updates**: a newer release is offered in a notice when the app starts and in the
   status bar, next to the version; *Update and restart* downloads it and restarts into
   it. Settings shows the version and has *Check for updates*.
+- **Themes of VS Code**: install a colour theme as an extension (Dracula, GitHub
+  Theme, Tokyo Night…) and pick it in Settings, Appearance: the window, the canvas
+  and the code take its colours, light ones as well. Any colour can still be
+  changed on top.
 - **Settings** (the gear, or `Ctrl+,`) open over the app: version and updates, theme,
   file icons, every colour, every shortcut and who writes commit messages, with a
   search box across all of it. The window opens where and as big as it was left,
@@ -264,7 +268,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       problems while typing, hover, go to definition. Tabs for what an extension
       opens as an editor (the sessions of Claude Code).
 - [ ] Tree views and code lenses on the canvas; webviews on Linux and macOS.
-- [ ] Colour themes and grammars from extensions (file icon themes work).
+- [x] Colour themes from extensions (Dracula, GitHub Theme, Tokyo Night…): the
+      canvas, the panels and the code take their colours. File icon themes too.
+- [ ] Grammars from extensions (highlighting is the app's own).
 - [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
 - [x] **Language servers** give the exact uses of the selected name (references and
       incoming calls) in place of the ones guessed by name.

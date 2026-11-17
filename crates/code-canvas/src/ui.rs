@@ -470,7 +470,7 @@ pub enum Action {
     SetDiff(crate::page::DiffView),
     ShowCommit(Option<crate::git::Commit>),
     InstallVsix,
-    SetTheme(&'static str),
+    SetTheme(String),
     SetColor(&'static str, u32),
     ResetColors,
     SetIconTheme(String),
