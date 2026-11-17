@@ -1683,6 +1683,27 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   Who has not the secret cannot open the first frame and is dropped; there is no
   other password. The invitation is `cc1:<address>:<port>:<secret in hex>`;
   the address is the one of this network unless another is written in the panel.
+- **The other side is not trusted**, either way:
+  - A path that arrives is checked before it is anything (`wire::safe_path`):
+    no `..`, no drive, no `.git` in any spelling Windows takes for it. A guest
+    that wrote a host's `.git/config` and then ran `git status` there would run
+    whatever that config names. For the same reason a page under
+    `<data dir>/shared` never runs git (`Page::no_git`) and never reaches an
+    extension (`Extensions::trusted`): a language server builds what it opens.
+  - Before the secret is proven nothing is set aside: the greeting has a deadline
+    for the whole of it (`Hurried`), the first message is at most `wire::FIRST`
+    bytes, a message is read as it comes and not into a buffer of the size it
+    claims, and at most `MOST_KNOCKING` connections are being greeted at once.
+  - What waits to be sent to one connection is counted (`Conn::waiting`); past
+    `MOST_WAITING` that connection is closed: someone who asks for files and
+    does not read them cannot fill the memory.
+  - A guest takes at most what a host would send (`LARGEST_FILE`, `MOST_FILES`,
+    `MOST_TEXT`, each with room) and ends the session past that. Where someone
+    is (`Seen`) must be finite numbers and short names (`Seen::sane`), or one
+    message would leave every follower's camera nowhere.
+  - A save from a guest is for a file that is shared, not for any page whose
+    number is guessed. Sending someone away changes the secret: the invitation
+    they have stops working.
 - One thread reads each connection and one writes it, so the app never waits on
   a socket; they wake the loop as the extension host does. `Session::close`
   says `Bye`, and it is called when the app exits and when the session is

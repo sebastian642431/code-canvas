@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::ot::TextOp;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 47800;
 const MAGIC: &[u8; 5] = b"CCSH1";
-const LARGEST: usize = 64 << 20;
+const LARGEST: usize = 16 << 20;
+pub const FIRST: usize = 64 << 10;
+const LONGEST_NAME: usize = 1024;
+const FARTHEST: f32 = 1.0e9;
 const PACKED_FROM: usize = 512;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -40,6 +43,28 @@ pub struct Seen {
     pub caret: Option<Caret>,
 }
 
+impl Seen {
+    pub fn sane(&self) -> bool {
+        let near = |v: &[f32; 2]| v.iter().all(|n| n.is_finite() && n.abs() <= FARTHEST);
+        let named = |text: &str| text.len() <= LONGEST_NAME;
+        near(&self.offset)
+            && near(&self.view)
+            && self.view.iter().all(|n| *n > 0.0)
+            && named(&self.anchor)
+            && self.pointer.as_ref().is_none_or(|(at, offset)| named(at) && near(offset))
+            && self.caret.as_ref().is_none_or(|caret| named(&caret.path))
+    }
+}
+
+pub fn safe_path(path: &str) -> bool {
+    let part = |part: &str| {
+        let bare = part.trim_end_matches(['.', ' ']).to_lowercase();
+        let odd = part.chars().any(|c| c.is_control() || "<>:\"|?*".contains(c));
+        !bare.is_empty() && bare != ".git" && !bare.starts_with("git~") && !odd && part.len() <= 255
+    };
+    !path.is_empty() && path.len() <= LONGEST_NAME && path.split(['/', '\\']).all(part)
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t")]
 pub enum Msg {
@@ -56,6 +81,7 @@ pub enum Msg {
     Again { folder: u32, path: String },
     Seen { who: u32, at: Seen },
     Come { who: u32 },
+    Said { folder: u32, path: String, epoch: u32, seen: u64 },
     Bye { why: String },
 }
 
@@ -186,20 +212,32 @@ pub fn write_msg(stream: &mut impl Write, seal: &mut Seal, msg: &Msg) -> io::Res
 }
 
 pub fn read_msg(stream: &mut impl Read, seal: &mut Seal) -> io::Result<Msg> {
+    read_msg_within(stream, seal, LARGEST)
+}
+
+pub fn read_msg_within(stream: &mut impl Read, seal: &mut Seal, most: usize) -> io::Result<Msg> {
+    let odd = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
-    if !(17..=LARGEST).contains(&length) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "a message of an impossible size"));
+    if !(17..=most.min(LARGEST)).contains(&length) {
+        return Err(odd("a message of an impossible size"));
     }
-    let mut sealed = vec![0u8; length];
-    stream.read_exact(&mut sealed)?;
+    let mut sealed = Vec::new();
+    Read::by_ref(stream).take(length as u64).read_to_end(&mut sealed)?;
+    if sealed.len() != length {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "a message cut short"));
+    }
     let plain = seal.open(sealed)?;
     let json = match plain[0] {
         0 => plain[1..].to_vec(),
         _ => {
             let mut json = Vec::new();
-            flate2::read::DeflateDecoder::new(&plain[1..]).take(LARGEST as u64 * 4).read_to_end(&mut json)?;
+            let room = LARGEST as u64 * 2;
+            flate2::read::DeflateDecoder::new(&plain[1..]).take(room + 1).read_to_end(&mut json)?;
+            if json.len() as u64 > room {
+                return Err(odd("a message that unpacks to too much"));
+            }
             json
         }
     };
@@ -279,6 +317,77 @@ mod tests {
         let mut wire = Vec::new();
         write_msg(&mut wire, &mut stranger_out, &Msg::Hello { name: "x".into(), version: VERSION }).unwrap();
         assert!(read_msg(&mut io::Cursor::new(wire), &mut host_in).is_err(), "another secret opens nothing");
+    }
+
+    #[test]
+    fn a_path_from_the_other_side_stays_inside_and_is_never_gits_own() {
+        for good in ["a.rs", "src/app/main.rs", ".gitignore", ".github/workflows/ci.yml", "with space/ñ €.md", "git.rs"]
+        {
+            assert!(safe_path(good), "{good}");
+        }
+        let long = "x".repeat(2000);
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../up",
+            "a/../../b",
+            "a//b",
+            ".git/config",
+            "sub/.GIT/hooks/x",
+            ".git./config",
+            ".git /config",
+            "GIT~1/config",
+            "c:/x",
+            "a\\..\\b",
+            "nul\0",
+            "a/./b",
+            "..",
+            ".",
+            long.as_str(),
+        ] {
+            assert!(!safe_path(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn what_someone_sees_is_refused_when_it_is_not_a_place() {
+        let seen = Seen { view: [800.0, 600.0], ..Default::default() };
+        assert!(seen.sane());
+        assert!(!Seen { offset: [f32::INFINITY, 0.0], ..seen.clone() }.sane());
+        assert!(!Seen { offset: [f32::NAN, 0.0], ..seen.clone() }.sane());
+        assert!(!Seen { view: [0.0, 600.0], ..seen.clone() }.sane());
+        assert!(!Seen { anchor: "x".repeat(5000), ..seen.clone() }.sane());
+        assert!(!Seen { pointer: Some((String::new(), [1.0e30, 0.0])), ..seen.clone() }.sane());
+        let far: Seen = serde_json::from_str(
+            r#"{"folder":1,"anchor":"","offset":[1e39,0],"view":[1,1],"pointer":null,"caret":null}"#,
+        )
+        .unwrap();
+        assert!(!far.sane(), "a number too large for the wire's floats is not a place either");
+    }
+
+    #[test]
+    fn a_first_message_is_small_and_nothing_is_set_aside_for_what_has_not_come() {
+        let secret = [3u8; 16];
+        let ((mut guest_out, _), (_, mut host_in)) = pair(&secret, &secret);
+        let mut wire = Vec::new();
+        write_msg(
+            &mut wire,
+            &mut guest_out,
+            &Msg::File { folder: 1, path: "a".into(), text: "x".repeat(200_000), epoch: 0 },
+        )
+        .unwrap();
+        let ((mut guest_out, _), (_, mut again_in)) = pair(&secret, &secret);
+        let mut plain = Vec::new();
+        write_msg(&mut plain, &mut guest_out, &Msg::Hello { name: "x".into(), version: VERSION }).unwrap();
+        assert!(read_msg_within(&mut io::Cursor::new(plain), &mut again_in, FIRST).is_ok());
+        let claimed = [(LARGEST as u32).to_be_bytes().as_slice(), &[0u8; 40]].concat();
+        let cut = read_msg_within(&mut io::Cursor::new(claimed), &mut host_in, LARGEST).unwrap_err();
+        assert_eq!(cut.kind(), io::ErrorKind::UnexpectedEof);
+        let huge = [(LARGEST as u32 + 1).to_be_bytes().as_slice(), &[0u8; 40]].concat();
+        assert_eq!(read_msg(&mut io::Cursor::new(huge), &mut host_in).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let big_first = [(FIRST as u32 + 1).to_be_bytes().as_slice(), &[0u8; 40]].concat();
+        assert!(read_msg_within(&mut io::Cursor::new(big_first), &mut host_in, FIRST).is_err());
+        assert!(wire.len() > 100);
     }
 
     #[test]

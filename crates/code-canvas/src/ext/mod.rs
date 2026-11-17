@@ -412,6 +412,7 @@ pub struct Extensions {
     own_decorations: HashMap<String, FileDecorations>,
     pub hover: Option<Hover>,
     completing: u64,
+    not_ours: String,
     dropped_webviews: Vec<String>,
     pub host_running: bool,
 
@@ -692,6 +693,7 @@ impl Extensions {
             own_decorations: HashMap::new(),
             hover: None,
             completing: 0,
+            not_ours: format!("{}/", path_key(&data_dir.join("shared").to_string_lossy())),
             dropped_webviews: Vec::new(),
             host_running: false,
             dir,
@@ -928,7 +930,12 @@ impl Extensions {
         }
     }
 
+    fn trusted(&self, path: &Path) -> bool {
+        !path_key(&path.to_string_lossy()).starts_with(&self.not_ours)
+    }
+
     pub fn set_folders(&mut self, folders: Vec<PathBuf>) {
+        let folders: Vec<PathBuf> = folders.into_iter().filter(|folder| self.trusted(folder)).collect();
         if folders == self.folders {
             return;
         }
@@ -944,6 +951,8 @@ impl Extensions {
     }
 
     pub fn show_documents(&mut self, visible: &[PathBuf], focus: Option<&Path>) {
+        let visible: Vec<PathBuf> = visible.iter().filter(|path| self.trusted(path)).cloned().collect();
+        let (visible, focus) = (visible.as_slice(), focus.filter(|path| self.trusted(path)));
         for path in visible {
             match self.open.iter().position(|p| p == path) {
                 Some(at) => {
@@ -970,6 +979,9 @@ impl Extensions {
     }
 
     pub fn file_edited(&mut self, path: &Path, text: &str) {
+        if !self.trusted(path) {
+            return;
+        }
         if !self.open.iter().any(|p| p == path) {
             self.open.push(path.to_path_buf());
         }
@@ -977,10 +989,16 @@ impl Extensions {
     }
 
     pub fn file_changed(&mut self, path: &Path) {
+        if !self.trusted(path) {
+            return;
+        }
         self.send(json!({ "type": "changed", "path": path }));
     }
 
     pub fn format(&mut self, path: &Path) {
+        if !self.trusted(path) {
+            return;
+        }
         if self.host.is_none() {
             let why = match &self.node {
                 NodeStatus::Missing(_) => "Node.js is needed to run extensions and was not found",
@@ -1003,6 +1021,9 @@ impl Extensions {
     }
 
     pub fn format_on_save(&mut self, path: &Path) {
+        if !self.trusted(path) {
+            return;
+        }
         if self.host.is_none() {
             return;
         }
@@ -1028,6 +1049,9 @@ impl Extensions {
     }
 
     pub fn request_hover(&mut self, path: &Path, line: u32, col: u32) {
+        if !self.trusted(path) {
+            return;
+        }
         if self.host.is_none() {
             return;
         }
@@ -1038,6 +1062,9 @@ impl Extensions {
     }
 
     pub fn request_completion(&mut self, path: &Path, line: u32, col: u32, trigger: Option<char>) {
+        if !self.trusted(path) {
+            return;
+        }
         if self.host.is_none() {
             return;
         }
@@ -1061,6 +1088,9 @@ impl Extensions {
     }
 
     pub fn request_uses(&mut self, path: &Path, line: u32, col: u32, page: u32, of: (u32, u32)) {
+        if !self.trusted(path) {
+            return;
+        }
         if self.host.is_none() {
             return;
         }
@@ -1072,6 +1102,9 @@ impl Extensions {
     }
 
     pub fn request_definition(&mut self, path: &Path, line: u32, col: u32) -> bool {
+        if !self.trusted(path) {
+            return false;
+        }
         if self.host.is_none() {
             return false;
         }

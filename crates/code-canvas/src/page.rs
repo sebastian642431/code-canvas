@@ -154,6 +154,7 @@ pub struct Page {
     pub shared: Option<u32>,
     pub read_only: bool,
     pub refused_edit: bool,
+    pub no_git: bool,
     pub extra: Vec<String>,
 }
 
@@ -277,6 +278,7 @@ impl Page {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
         let (heads_tx, heads_rx) = mpsc::channel();
+        let no_git = root.starts_with(crate::session::data_dir().join("shared"));
         let mut page = Page {
             id,
             root,
@@ -337,6 +339,7 @@ impl Page {
             shared: None,
             read_only: false,
             refused_edit: false,
+            no_git,
             extra: Vec::new(),
         };
         if let Some(s) = saved {
@@ -411,6 +414,9 @@ impl Page {
     }
 
     pub fn refresh_git(&mut self) {
+        if self.no_git {
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
@@ -766,7 +772,7 @@ impl Page {
     }
 
     pub fn run_git(&mut self, op: crate::git::GitOp) {
-        if self.git_op.is_some() {
+        if self.git_op.is_some() || self.no_git {
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -873,7 +879,7 @@ impl Page {
     }
 
     pub fn want_timeline(&mut self, path: Option<String>) {
-        if self.timeline.path == path {
+        if self.timeline.path == path || self.no_git {
             return;
         }
         self.timeline = Timeline { path: path.clone(), commits: Vec::new(), loading: path.is_some() };

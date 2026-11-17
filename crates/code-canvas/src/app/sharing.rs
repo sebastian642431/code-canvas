@@ -549,6 +549,9 @@ impl App {
         let zoom = zoom.clamp(crate::camera::MIN_ZOOM, crate::camera::MAX_ZOOM);
         let middle = area.center();
         let center = [at[0] - (middle[0] - vp[0] * 0.5) / zoom, at[1] - (middle[1] - vp[1] * 0.5) / zoom];
+        if !(center[0].is_finite() && center[1].is_finite() && zoom.is_finite()) {
+            return;
+        }
         self.pages[index].target = Some(Camera { center, zoom });
         self.sharing.followed = Some(seen);
         self.request_redraw();

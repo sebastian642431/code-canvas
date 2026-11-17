@@ -2,12 +2,12 @@ pub mod ot;
 pub mod wire;
 
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use ot::{Link, TextOp};
 use wire::Msg;
@@ -20,11 +20,55 @@ const GREETING: Duration = Duration::from_secs(10);
 const STUCK: Duration = Duration::from_secs(20);
 pub const MOST_TEXT: usize = 96 << 20;
 pub const LARGEST_FILE: usize = 2 << 20;
+pub const MOST_FILES: usize = 20_000;
+const MOST_WAITING: usize = MOST_TEXT * 2 + (32 << 20);
+const MOST_KNOCKING: usize = 24;
 
 pub fn body(text: &str) -> String {
     let text = text.strip_suffix('\n').unwrap_or(text);
     let text = text.strip_suffix('\r').unwrap_or(text);
     text.replace("\r\n", "\n")
+}
+
+fn weight(msg: &Msg) -> usize {
+    let texts = match msg {
+        Msg::File { text, path, .. } => text.len() + path.len(),
+        Msg::Edit { op, .. } => {
+            let inserted = |part: &ot::Part| match part {
+                ot::Part::Insert(text) => text.len(),
+                _ => 0,
+            };
+            op.parts.iter().map(inserted).sum::<usize>() + op.parts.len() * 16
+        }
+        _ => 0,
+    };
+    texts + 128
+}
+
+struct Hurried<'a> {
+    stream: &'a mut TcpStream,
+    until: Instant,
+}
+
+impl Read for Hurried<'_> {
+    fn read(&mut self, into: &mut [u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "it took too long to say hello"));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(into)
+    }
+}
+
+impl Write for Hurried<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 pub fn local_address() -> String {
@@ -36,7 +80,7 @@ pub fn local_address() -> String {
 }
 
 enum Net {
-    Open(u32, Sender<Option<Msg>>),
+    Open(u32, Sender<Option<Msg>>, Arc<AtomicUsize>),
     Got(u32, Msg),
     Closed(u32, String),
 }
@@ -44,7 +88,20 @@ enum Net {
 struct Conn {
     id: u32,
     out: Sender<Option<Msg>>,
+    waiting: Arc<AtomicUsize>,
     greeted: bool,
+}
+
+impl Conn {
+    fn send(&self, msg: Msg) {
+        let size = weight(&msg);
+        if self.waiting.fetch_add(size, Ordering::Relaxed) + size > MOST_WAITING {
+            log::warn!("share: someone does not take what is sent: their place is closed");
+            let _ = self.out.send(None);
+            return;
+        }
+        let _ = self.out.send(Some(msg));
+    }
 }
 
 struct Doc {
@@ -84,6 +141,8 @@ pub struct Session {
     docs: HashMap<(u32, String), Doc>,
     folders: Vec<(u32, String)>,
     colors: u8,
+    taken: usize,
+    secret: Arc<Mutex<[u8; 16]>>,
 }
 
 fn serve(stream: TcpStream, id: u32, secret: [u8; 16], hello: Option<Msg>, net: Sender<Net>) {
@@ -91,22 +150,26 @@ fn serve(stream: TcpStream, id: u32, secret: [u8; 16], hello: Option<Msg>, net: 
     let run = move || -> io::Result<()> {
         let mut stream = stream;
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(Some(GREETING))?;
         stream.set_write_timeout(Some(STUCK))?;
-        let (mut seal_out, mut seal_in) = match &hello {
-            Some(_) => wire::greet_as_guest(&mut stream, &secret)?,
-            None => wire::greet_as_host(&mut stream, &secret)?,
-        };
-        let first = match hello {
-            Some(hello) => {
-                wire::write_msg(&mut stream, &mut seal_out, &hello)?;
-                None
+        let (first, mut seal_out, mut seal_in) = {
+            let mut hurried = Hurried { stream: &mut stream, until: Instant::now() + GREETING };
+            match hello {
+                Some(hello) => {
+                    let (mut seal_out, seal_in) = wire::greet_as_guest(&mut hurried, &secret)?;
+                    wire::write_msg(&mut hurried, &mut seal_out, &hello)?;
+                    (None, seal_out, seal_in)
+                }
+                None => {
+                    let (seal_out, mut seal_in) = wire::greet_as_host(&mut hurried, &secret)?;
+                    let first = wire::read_msg_within(&mut hurried, &mut seal_in, wire::FIRST)?;
+                    (Some(first), seal_out, seal_in)
+                }
             }
-            None => Some(wire::read_msg(&mut stream, &mut seal_in)?),
         };
         stream.set_read_timeout(None)?;
         let (out, queued) = mpsc::channel::<Option<Msg>>();
-        let _ = net.send(Net::Open(id, out));
+        let waiting = Arc::new(AtomicUsize::new(0));
+        let _ = net.send(Net::Open(id, out, waiting.clone()));
         if let Some(first) = first {
             let _ = net.send(Net::Got(id, first));
         }
@@ -114,7 +177,10 @@ fn serve(stream: TcpStream, id: u32, secret: [u8; 16], hello: Option<Msg>, net: 
         let mut writing = stream.try_clone()?;
         std::thread::spawn(move || {
             while let Ok(Some(msg)) = queued.recv() {
-                if wire::write_msg(&mut writing, &mut seal_out, &msg).is_err() {
+                let size = weight(&msg);
+                let sent = wire::write_msg(&mut writing, &mut seal_out, &msg);
+                waiting.fetch_sub(size.min(waiting.load(Ordering::Relaxed)), Ordering::Relaxed);
+                if sent.is_err() {
                     break;
                 }
             }
@@ -154,6 +220,8 @@ impl Session {
             docs: HashMap::new(),
             folders: Vec::new(),
             colors: 1,
+            taken: 0,
+            secret: Arc::new(Mutex::new([0; 16])),
         }
     }
 
@@ -167,16 +235,26 @@ impl Session {
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
         let secret = wire::random::<16>();
+        let shared = Arc::new(Mutex::new(secret));
         let (tx, net) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let (stopped, ids) = (stop.clone(), AtomicU32::new(1));
+        let (stopped, ids, asked) = (stop.clone(), AtomicU32::new(1), shared.clone());
+        let knocking = Arc::new(AtomicUsize::new(0));
         std::thread::spawn(move || {
             while !stopped.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let (id, tx) = (ids.fetch_add(1, Ordering::Relaxed), tx.clone());
+                        if knocking.load(Ordering::Relaxed) >= MOST_KNOCKING {
+                            continue;
+                        }
+                        knocking.fetch_add(1, Ordering::Relaxed);
+                        let (id, tx, here) = (ids.fetch_add(1, Ordering::Relaxed), tx.clone(), knocking.clone());
+                        let secret = *asked.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         let _ = stream.set_nonblocking(false);
-                        std::thread::spawn(move || serve(stream, id, secret, None, tx));
+                        std::thread::spawn(move || {
+                            serve(stream, id, secret, None, tx);
+                            here.fetch_sub(1, Ordering::Relaxed);
+                        });
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(60)),
                 }
@@ -184,6 +262,7 @@ impl Session {
         });
         let mut session = Session::new(true, net, stop);
         session.guests_write = guests_write;
+        session.secret = shared;
         let host = if address == "0.0.0.0" { local_address() } else { address.to_string() };
         session.invite = Some(Invite { host, port, secret });
         session.people = vec![Person { id: HOST, name: name.to_string(), color: 0, writer: true, host: true }];
@@ -249,13 +328,13 @@ impl Session {
 
     fn to(&self, id: u32, msg: Msg) {
         if let Some(conn) = self.conns.iter().find(|conn| conn.id == id) {
-            let _ = conn.out.send(Some(msg));
+            conn.send(msg);
         }
     }
 
     fn to_all(&self, msg: &Msg, but: Option<u32>) {
         for conn in self.conns.iter().filter(|conn| conn.greeted && Some(conn.id) != but) {
-            let _ = conn.out.send(Some(msg.clone()));
+            conn.send(msg.clone());
         }
     }
 
@@ -408,6 +487,20 @@ impl Session {
             let _ = conn.out.send(Some(Msg::Bye { why: "the host closed your place in the session".to_string() }));
             let _ = conn.out.send(None);
         }
+        if let Some(invite) = self.invite.as_mut().filter(|_| self.host) {
+            invite.secret = wire::random::<16>();
+            *self.secret.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = invite.secret;
+        }
+    }
+
+    fn give_up(&mut self, why: &str, events: &mut Vec<Event>) {
+        for conn in self.conns.drain(..) {
+            let _ = conn.out.send(None);
+        }
+        if self.ended.is_none() {
+            self.ended = Some(why.to_string());
+            events.push(Event::Ended(why.to_string()));
+        }
     }
 
     pub fn close(&mut self, why: &str) {
@@ -451,9 +544,8 @@ impl Session {
         let mut events = Vec::new();
         while let Ok(net) = self.net.try_recv() {
             match net {
-                Net::Open(id, out) => {
-                    self.conns.push(Conn { id, out, greeted: !self.host });
-                    self.connected = true;
+                Net::Open(id, out, waiting) => {
+                    self.conns.push(Conn { id, out, waiting, greeted: !self.host });
                 }
                 Net::Closed(id, why) => self.gone(id, why, &mut events),
                 Net::Got(id, msg) => self.got(id, msg, &mut events),
@@ -478,7 +570,7 @@ impl Session {
                 let taken = self.people.iter().filter(|person| person.name == name).count();
                 let name = if taken > 0 { format!("{name} ({})", taken + 1) } else { name };
                 let color = self.colors % COLORS.len() as u8;
-                self.colors += 1;
+                self.colors = self.colors.wrapping_add(1);
                 self.people.push(Person { id: from, name, color, writer: self.guests_write, host: false });
                 if let Some(conn) = self.conns.iter_mut().find(|conn| conn.id == from) {
                     conn.greeted = true;
@@ -488,7 +580,23 @@ impl Session {
                 events.push(Event::Joined(from));
             }
             _ if self.host && !greeted => {}
-            Msg::Welcome { you } if !self.host => self.me = you,
+            Msg::Welcome { you } if !self.host => {
+                self.me = you;
+                self.connected = true;
+            }
+            Msg::File { path, .. } | Msg::Gone { path, .. } | Msg::Edit { path, .. }
+                if !self.host && !wire::safe_path(&path) =>
+            {
+                log::warn!("share: a file with a name that is not taken was sent: {path:?}");
+            }
+            Msg::File { text, .. }
+                if !self.host
+                    && (text.len() > LARGEST_FILE * 2
+                        || self.docs.len() >= MOST_FILES * 2
+                        || self.taken + text.len() > MOST_TEXT * 4) =>
+            {
+                self.give_up("the one sharing sent more than a session carries", events);
+            }
             Msg::People { list } if !self.host => {
                 let was = self.writer();
                 self.seen.retain(|id, _| list.iter().any(|person| person.id == *id));
@@ -502,6 +610,7 @@ impl Session {
                 events.push(Event::Folder { id, name });
             }
             Msg::File { folder, path, text, epoch } if !self.host => {
+                self.taken += text.len();
                 let mut links = HashMap::new();
                 links.insert(HOST, Link::fresh(epoch));
                 let again =
@@ -522,11 +631,13 @@ impl Session {
                 events.extend(self.edit(from, folder, path, (epoch, number, seen), op));
             }
             Msg::Save { folder, path } if self.host => {
-                if self.person(from).is_some_and(|person| person.writer) {
+                let known = self.docs.contains_key(&(folder, path.clone()));
+                if known && self.person(from).is_some_and(|person| person.writer) {
                     events.push(Event::Save { folder, path, by: from });
                 }
             }
             Msg::Again { folder, path } if self.host => self.again(from, folder, &path),
+            Msg::Seen { at, .. } if !at.sane() => {}
             Msg::Seen { who, at } => {
                 let who = if self.host { from } else { who };
                 if self.host {
@@ -629,7 +740,7 @@ mod tests {
         host.removed(7, "b.txt");
         until(&mut [&mut host, &mut guest], |sessions, _| sessions[1].has(7, "new.md") && !sessions[1].has(7, "b.txt"));
 
-        host.see(Seen { folder: 7, anchor: "src/a.rs".into(), ..Default::default() });
+        host.see(Seen { folder: 7, anchor: "src/a.rs".into(), view: [800.0, 600.0], ..Default::default() });
         until(&mut [&mut host, &mut guest], |sessions, _| sessions[1].seen.contains_key(&HOST));
         guest.call_everyone();
         let events = until(&mut [&mut host, &mut guest], |_, all| !all[0].is_empty());
@@ -638,6 +749,54 @@ mod tests {
         host.close("done for today");
         let events = until(&mut [&mut guest], |_, all| !all[0].is_empty());
         assert_eq!(events[0], [Event::Ended("done for today".to_string())]);
+    }
+
+    #[test]
+    fn a_guest_takes_no_file_that_would_land_outside_or_in_gits_own_folder() {
+        let (_tx, net) = mpsc::channel();
+        let mut guest = Session::new(false, net, Arc::new(AtomicBool::new(false)));
+        let mut events = Vec::new();
+        for path in [".git/config", "../../up.txt", "sub/.GIT/hooks/pre-commit", "C:/Windows/x"] {
+            guest.got(HOST, Msg::File { folder: 1, path: path.into(), text: "x".into(), epoch: 1 }, &mut events);
+            guest.got(HOST, Msg::Gone { folder: 1, path: path.into() }, &mut events);
+        }
+        assert!(events.is_empty() && guest.docs.is_empty(), "{events:?}");
+        guest.got(
+            HOST,
+            Msg::File { folder: 1, path: "src/a.rs".into(), text: "a\r\nb\rc".into(), epoch: 1 },
+            &mut events,
+        );
+        assert_eq!(guest.text(1, "src/a.rs"), Some("a\nb\nc"), "and no carriage return comes in with a text");
+        let far = Seen { offset: [f32::INFINITY, 0.0], view: [1.0, 1.0], ..Default::default() };
+        guest.got(HOST, Msg::Seen { who: 0, at: far }, &mut events);
+        assert!(guest.seen.is_empty());
+        guest.got(
+            HOST,
+            Msg::File { folder: 1, path: "big".into(), text: "x".repeat(LARGEST_FILE * 2 + 1), epoch: 2 },
+            &mut events,
+        );
+        assert!(matches!(events.last(), Some(Event::Ended(_))), "a file past every limit ends the session");
+    }
+
+    #[test]
+    fn a_save_is_only_for_a_file_that_is_shared() {
+        let mut host = Session::open_on("127.0.0.1", "Ana", true).unwrap();
+        host.share_folder(7, "demo", vec![("a.txt".into(), "one".into())]);
+        host.people.push(Person { id: 5, name: "Beto".into(), color: 1, writer: true, host: false });
+        let (out, _kept) = mpsc::channel();
+        host.conns.push(Conn { id: 5, out, waiting: Arc::new(AtomicUsize::new(0)), greeted: true });
+        let mut events = Vec::new();
+        host.got(5, Msg::Save { folder: 7, path: "a.txt".into() }, &mut events);
+        host.got(5, Msg::Save { folder: 8, path: "a.txt".into() }, &mut events);
+        host.got(5, Msg::Save { folder: 7, path: "not shared.txt".into() }, &mut events);
+        assert_eq!(events, [Event::Save { folder: 7, path: "a.txt".into(), by: 5 }]);
+        let before = host.invite.clone().unwrap().secret;
+        host.send_away(5);
+        assert_ne!(
+            host.invite.clone().unwrap().secret,
+            before,
+            "who was sent away cannot come back with the same invitation"
+        );
     }
 
     #[test]
