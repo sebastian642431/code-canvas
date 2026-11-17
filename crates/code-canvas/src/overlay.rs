@@ -386,6 +386,22 @@ pub fn build(
                 }
             }
             NodeKind::File(_) => {
+                let played = canvas_core::scan::media_kind(&n.rel_path).filter(|what| *what != "picture");
+                if let (Some(what), true) = (played, n.rect.h * z >= 90.0) {
+                    let word = format!("{what}  ·  click to play");
+                    let size = (13.0 * s).round();
+                    let width = text.measure(&word, size, false);
+                    let middle = view.to_screen(n.rect.center());
+                    out.labels.push(OwnedLabel {
+                        text: word,
+                        left: middle[0] - width * 0.5,
+                        top: middle[1] - size * 0.65,
+                        size,
+                        color: theme::get().ui_text_dim,
+                        max_w: width + 2.0,
+                        bold: false,
+                    });
+                }
                 let lab_px = FILE_LABEL_H * z;
                 if lab_px >= 9.0 && w_px > 30.0 {
                     let size = (lab_px * 0.7).min(14.0 * s).round();

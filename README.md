@@ -81,6 +81,9 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   moves the canvas.
 - `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
   and Shift+Enter walk them, and with the pencil one or all can be replaced.
+- **Pictures and videos are on the canvas too**: a picture is drawn inside its
+  card, and a video, a sound or a PDF plays inside its card when it is clicked
+  (`Esc`, or a click somewhere else, stops it).
 - **Any path opens on the canvas**: a file an assistant names in its panel, a
   definition in another file, a link in a Markdown file. One that is not in an open
   folder gets its own card next to them, and the canvas goes to the line asked for.

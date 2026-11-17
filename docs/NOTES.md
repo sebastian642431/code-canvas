@@ -617,6 +617,26 @@ Showing a path
   has not opened, because extensions go on to call `revealRange` on it; that call
   is what carries the line.
 
+Pictures and what plays
+
+- Nothing of a folder opens beside the canvas: a picture is drawn in its card and
+  a video, a sound or a PDF plays in its card. The side panel that used to show
+  them only reads Markdown now.
+- Media files get a card of a fixed size from the scan (`scan::media_kind`,
+  `MEDIA_LINES` by `MEDIA_COLS`): their own size is not known without opening
+  them, which a scan must not do, so the picture is fitted inside.
+- `pictures.rs` reads a picture on another thread the first time its card is tall
+  enough to be worth it, never more than three at once, shrunk to 1024 pixels on
+  its longer side, and keeps the 96 most recently drawn. They are painted by egui
+  under everything it draws but over the canvas, clipped to it: what the canvas
+  draws over a card (curves) goes under a picture.
+- The cameras move before the interface is built in `App::redraw`, not after as
+  they used to: pictures are placed from the cameras, and a frame late they
+  would lag behind their cards while the canvas travels.
+- What plays is one webview (`media::PLAYER`) placed over the card each frame
+  (`App::player_place`), hidden and paused when the card is too small or off the
+  canvas. It is a window of its own: it covers the toolbar where they overlap.
+
 Back and forward
 
 - A `Place` is not a camera: it is the node under the middle of the canvas, where

@@ -229,6 +229,7 @@ pub struct UiState {
     pub completion: Option<CompletionView>,
     pub find: Option<Find>,
     pub can_go: (bool, bool),
+    pub pictures: Vec<(egui::TextureId, Rect)>,
     pub commit_ai: crate::commit_ai::Settings,
     file_icons: FileIcons,
 }
@@ -269,6 +270,7 @@ impl Default for UiState {
             completion: None,
             find: None,
             can_go: (false, false),
+            pictures: Vec::new(),
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
@@ -681,6 +683,11 @@ pub fn build(
 
     let canvas = ui.available_rect_before_wrap();
     let ctx = ui.ctx().clone();
+    let on_canvas = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(canvas);
+    let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    for (picture, at) in st.pictures.drain(..) {
+        on_canvas.image(picture, at, whole, Color32::WHITE);
+    }
     center_message(ui, canvas, pages.get(active), &st.keys);
     toolbar(&ctx, st, canvas, info, actions);
     find_bar(&ctx, st, canvas, actions);
@@ -953,7 +960,7 @@ fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
         own(Panel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which".to_string()),
     ];
     if st.media.is_some() {
-        entries.push(own(Panel::Media, icons::IMAGE, "The image, video or PDF you last looked at".to_string()));
+        entries.push(own(Panel::Media, icons::FILE_TEXT, "The Markdown file being read".to_string()));
     }
     for item in ext.rail_items() {
         entries.push(RailEntry {

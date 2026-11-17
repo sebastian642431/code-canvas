@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 pub const HANDLE: &str = "media-viewer";
+pub const PLAYER: &str = "canvas-player";
 
 const FILES: &str = "https://ccres.localhost/file/";
 
@@ -76,8 +77,8 @@ pub fn page(path: &Path, kind: Kind) -> String {
   img.addEventListener('click', () => document.body.classList.toggle('actual'));
 </script>"#
         ),
-        Kind::Video => format!(r#"<video id="media" src="{url}" controls preload="metadata"></video>"#),
-        Kind::Audio => format!(r#"<audio id="media" src="{url}" controls preload="metadata"></audio>"#),
+        Kind::Video => format!(r#"<video id="media" src="{url}" controls autoplay preload="metadata"></video>"#),
+        Kind::Audio => format!(r#"<audio id="media" src="{url}" controls autoplay preload="metadata"></audio>"#),
         Kind::Pdf => format!(r#"<iframe id="media" class="page" src="{url}"></iframe>"#),
     };
     format!(

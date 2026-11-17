@@ -56,6 +56,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Seguir a la IA**: cuando un asistente u otro programa cambia un archivo, el lienzo
   viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
 - **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el lápiz, arrastrar selecciona.
+- **Imágenes y videos dentro del lienzo**: la imagen se dibuja en su tarjeta, y un video,
+  un audio o un PDF se reproduce dentro de su tarjeta al tocarlo.
 - **Cualquier ruta se abre en el lienzo**: la que nombra un asistente, una definición, un
   enlace. Si el archivo no está en una carpeta abierta, aparece como una tarjeta más.
 - **Atrás y adelante**: las flechas de la barra, `Ctrl+Z` / `Ctrl+Y` o `Alt+←` / `Alt+→`

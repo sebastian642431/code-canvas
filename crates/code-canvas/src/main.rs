@@ -18,6 +18,7 @@ mod media;
 mod overlay;
 mod page;
 mod paths;
+mod pictures;
 mod prefs;
 mod rails;
 mod script;

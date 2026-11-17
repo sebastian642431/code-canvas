@@ -429,6 +429,12 @@ mod platform {
             }
         }
 
+        pub fn run_in(&mut self, handle: &str, script: &str) {
+            if let Some(view) = self.views.get(handle) {
+                let _ = view.web.evaluate_script(script);
+            }
+        }
+
         pub fn run(&mut self, script: &str) {
             for (handle, _) in &self.shown {
                 if let Some(view) = self.views.get(handle) {
@@ -617,6 +623,7 @@ mod platform {
         pub fn post(&mut self, _handle: &str, _message: &Value) {}
         pub fn close(&mut self, _handle: &str) {}
         pub fn run(&mut self, _script: &str) {}
+        pub fn run_in(&mut self, _handle: &str, _script: &str) {}
         pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect)]) {}
         pub fn poll(&mut self) -> Vec<PageMessage> {
             Vec::new()

@@ -9,7 +9,7 @@ use crate::symbols::{Symbol, SymbolKind};
 use crate::syntax::{Analysis, Block, TokenKind};
 
 const MAGIC: &[u8; 4] = b"CCSC";
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 const BATCH: usize = 4096;
 
 const SYMBOL_KINDS: [SymbolKind; 11] = [

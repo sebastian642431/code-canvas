@@ -172,6 +172,9 @@ pub struct App {
     back: Vec<Place>,
     forward: Vec<Place>,
     moved_by_itself: bool,
+    pictures: crate::pictures::Pictures,
+    playing: Option<PathBuf>,
+    player_shown: bool,
     last_move_by_itself: bool,
 }
 
@@ -278,6 +281,9 @@ impl App {
             back: Vec::new(),
             forward: Vec::new(),
             moved_by_itself: false,
+            pictures: crate::pictures::Pictures::new(),
+            playing: None,
+            player_shown: false,
             last_move_by_itself: false,
         }
     }
@@ -803,7 +809,10 @@ impl App {
             }
             let on_canvas = self.pages[i].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
             match (on_canvas, path.is_file()) {
-                (true, true) => known[i].push(rel),
+                (true, true) => {
+                    self.pictures.forget(path);
+                    known[i].push(rel)
+                }
                 (true, false) => other[i].push(rel),
                 (false, true) => other[i].push(rel),
                 (false, false) => {}
@@ -1422,13 +1431,73 @@ impl App {
 
     fn open_media(&mut self, path: &Path) -> bool {
         let Some(kind) = crate::media::kind(path).filter(|_| path.is_file()) else { return false };
-        self.webviews.allow_file(path);
-        self.webviews.set_html(crate::media::HANDLE, crate::media::page(path, kind));
-        self.preview = None;
-        self.ui.media = Some(path.to_path_buf());
-        self.ui.show(Panel::Media);
+        let played = canvas_core::scan::media_kind(&path.to_string_lossy()).is_some_and(|what| what != "picture");
+        if played && self.playing.as_deref() != Some(path) {
+            self.webviews.allow_file(path);
+            self.webviews.set_html(crate::media::PLAYER, crate::media::page(path, kind));
+            self.playing = Some(path.to_path_buf());
+        }
         self.request_redraw();
         true
+    }
+
+    fn stop_playing(&mut self) {
+        if self.playing.take().is_some() {
+            self.webviews.close(crate::media::PLAYER);
+            self.player_shown = false;
+            self.request_redraw();
+        }
+    }
+
+    fn card_on_screen(&self, page: &Page, rel: &str) -> Option<Rect> {
+        let r = page.ready()?;
+        let node = r.layout.file_node.get(r.repo.file_index(rel)?).filter(|&&n| n != canvas_core::layout::NONE)?;
+        let inside = r.layout.nodes[*node as usize].rect.expand(-canvas_core::layout::CARD_PAD);
+        let view = page.camera.view(self.viewport());
+        let (tl, br) = (view.to_screen([inside.x, inside.y]), view.to_screen([inside.right(), inside.bottom()]));
+        Some(Rect::new(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]))
+    }
+
+    fn player_place(&self) -> Option<Rect> {
+        let (i, rel) = self.locate_file(self.playing.as_deref()?)?;
+        let card = self.card_on_screen(self.pages.get(i).filter(|_| self.shown().contains(&i))?, &rel)?;
+        let area = self.canvas;
+        let (left, top) = (card.x.max(area.x), card.y.max(area.y));
+        let (right, bottom) = (card.right().min(area.right()), card.bottom().min(area.bottom()));
+        let seen = Rect::new(left.round(), top.round(), (right - left).round(), (bottom - top).round());
+        (card.w >= 200.0 && card.h >= 120.0 && seen.w >= 120.0 && seen.h >= 80.0).then_some(seen)
+    }
+
+    fn place_pictures(&mut self) {
+        const MIN_SIDE: f32 = 24.0;
+        let (vp, s) = (self.viewport(), self.scale());
+        let area = self.canvas;
+        let mut wanted: Vec<(PathBuf, Rect)> = Vec::new();
+        for i in self.shown() {
+            let Some(page) = self.pages.get(i) else { continue };
+            let Some(r) = page.ready() else { continue };
+            let view = page.camera.view(vp);
+            let z = view.zoom;
+            let mut world = view.world_rect();
+            (world.x, world.y, world.w, world.h) = (world.x + area.x / z, world.y + area.y / z, area.w / z, area.h / z);
+            r.layout.visit_visible(&world, |_, n| {
+                let NodeKind::File(fi) = n.kind else { return true };
+                let f = &r.repo.files[fi];
+                if f.note.as_deref() == Some("picture") && n.rect.h * z >= MIN_SIDE {
+                    wanted.extend(self.card_on_screen(page, &f.rel_path).map(|at| (page.root.join(&f.rel_path), at)));
+                }
+                wanted.len() < 240
+            });
+        }
+        self.ui.pictures.clear();
+        for (path, card) in wanted {
+            let Some((picture, size)) = self.pictures.get(&path) else { continue };
+            let scale = (card.w / size[0] as f32).min(card.h / size[1] as f32);
+            let (w, h) = (size[0] as f32 * scale, size[1] as f32 * scale);
+            let (x, y) = (card.x + (card.w - w) * 0.5, card.y + (card.h - h) * 0.5);
+            let at = egui::Rect::from_min_size(egui::pos2(x / s, y / s), egui::vec2(w / s, h / s));
+            self.ui.pictures.push((picture, at));
+        }
     }
 
     fn markdown_text(&self, path: &Path) -> Option<String> {
@@ -1485,9 +1554,8 @@ impl App {
     }
 
     fn reveal_file(&mut self, path: &Path) {
-        if !self.open_media(path) {
-            self.show_path(path, None);
-        }
+        self.open_media(path);
+        self.show_path(path, None);
     }
 
     fn current_file(&self) -> Option<PathBuf> {
@@ -1848,8 +1916,11 @@ impl App {
         if !ctrl {
             page.editing = None;
         }
-        if let Some(file) = media {
-            self.open_media(&file);
+        match media {
+            Some(file) => {
+                self.open_media(&file);
+            }
+            None => self.stop_playing(),
         }
         let Some(node) = hit else {
             self.request_redraw();
@@ -1918,7 +1989,9 @@ impl App {
         }
         let Some(chord) = chord else { return };
         if chord.key == "escape" {
-            if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
+            if self.playing.is_some() {
+                self.stop_playing();
+            } else if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
                 self.clear_symbols();
             } else if let Some(p) = self.pages.get_mut(self.active) {
                 p.selected = None;
@@ -2014,7 +2087,9 @@ impl App {
             Action::FrameSelection => self.frame_selection(),
             Action::FlyToSite(site) => self.frame_site(site),
             Action::OpenMedia(path) => {
-                if !self.open_media(&path) {
+                if crate::media::kind(&path).is_some() {
+                    self.reveal_file(&path);
+                } else {
                     self.open_preview(&path);
                 }
             }
@@ -3119,6 +3194,10 @@ impl App {
                         if let Some(note) = &f.note {
                             status.push_str(&format!("  ·  {note}"));
                         }
+                        if let Some(what) = canvas_core::scan::media_kind(&f.rel_path) {
+                            let how = if what == "picture" { "" } else { "  ·  click it to play it here" };
+                            status = format!("{}  ·  {what}{how}", f.rel_path);
+                        }
                         let sym = page.hover_cell.and_then(|(file, line, _)| r.repo.sym_at(file, line));
                         let in_file = |cell: (u32, u32, u32)| Some((page.line_of(&f.rel_path, cell.1)?, cell.2));
                         let problem =
@@ -3188,6 +3267,21 @@ impl App {
                 selected: offer.selected,
             })
         });
+        let mut travelling = false;
+        for page in &mut self.pages {
+            if let Some(t) = page.target {
+                if page.camera.approach(&t, dt) {
+                    page.target = None;
+                } else {
+                    travelling = true;
+                }
+            }
+        }
+        self.follow_active_camera();
+        if let Some(g) = self.gfx.as_ref() {
+            self.pictures.begin_frame(&g.egui);
+        }
+        self.place_pictures();
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
         let mut actions = Vec::new();
@@ -3245,6 +3339,13 @@ impl App {
                     Some((handle, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
                 })
                 .collect();
+            let mut places = places;
+            let player = self.player_place();
+            if std::mem::replace(&mut self.player_shown, player.is_some()) && player.is_none() {
+                let quiet = "document.querySelectorAll('video,audio').forEach((m) => m.pause())";
+                self.webviews.run_in(crate::media::PLAYER, quiet);
+            }
+            places.extend(player.map(|at| (crate::media::PLAYER.to_string(), at)));
             let targets: Vec<(&str, Rect)> = places.iter().map(|(handle, at)| (handle.as_str(), *at)).collect();
             let g = self.gfx.as_ref().unwrap();
             let t = Instant::now();
@@ -3256,7 +3357,7 @@ impl App {
         }
         let area = self.canvas;
 
-        let mut animating = false;
+        let mut animating = travelling;
         for i in shown.iter().copied() {
             let active = i == self.active;
             let Some(page) = self.pages.get_mut(i) else { continue };
@@ -3288,13 +3389,6 @@ impl App {
                     let fit = Camera::fit(r.layout.bounds, area, vp, 24.0 * s);
                     bench.drive(&mut page.camera, fit, 1.6 * s, vp);
                     page.target = None;
-                    animating = true;
-                }
-            }
-            if let Some(t) = page.target {
-                if page.camera.approach(&t, dt) {
-                    page.target = None;
-                } else {
                     animating = true;
                 }
             }

@@ -323,8 +323,22 @@ impl SourceFile {
         let mut file = SourceFile::with_text(rel_path, String::new(), vec![0], max_cols);
         if note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
             (file.root, file.loaded, file.lines) = (Some(root), OnceLock::new(), lines);
+        } else {
+            file = file.as_tall_as(lines);
         }
         (file.note, file.analysis) = (note, analysis);
+        file
+    }
+
+    fn as_tall_as(mut self, lines: u32) -> Self {
+        let empty = Loaded::new(String::new(), vec![0]).with_lines(lines as usize);
+        (self.lines, self.loaded) = (lines, OnceLock::from(empty));
+        self
+    }
+
+    fn media(rel_path: String, what: &str) -> Self {
+        let mut file = SourceFile::placeholder(rel_path, what.to_string()).as_tall_as(MEDIA_LINES);
+        file.max_cols = MEDIA_COLS;
         file
     }
 
@@ -499,6 +513,9 @@ fn read_sized(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
 
 fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOptions) -> SourceFile {
     let mut t = Instant::now();
+    if let Some(what) = media_kind(&rel_path) {
+        return SourceFile::media(rel_path, what);
+    }
     if is_binary_name(&rel_path) {
         return SourceFile::placeholder(rel_path, "binary".into());
     }
@@ -553,6 +570,21 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "exe", "dll", "so", "dylib", "a", "lib", "o", "obj", "pdb", "class", "wasm", "pyc", "mp3", "mp4", "m4a", "aac",
     "wav", "ogg", "opus", "flac", "webm", "mov", "avi", "mkv", "sqlite", "db", "pak", "nib", "keystore",
 ];
+
+pub const MEDIA_LINES: u32 = 24;
+pub const MEDIA_COLS: u32 = 72;
+
+pub fn media_kind(rel_path: &str) -> Option<&'static str> {
+    let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" | "avif" | "tif" | "tiff" => "picture",
+        "mp4" | "m4v" | "webm" | "mov" | "mkv" | "avi" | "ogv" => "video",
+        "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus" | "flac" => "sound",
+        "pdf" => "document",
+        _ => return None,
+    })
+}
 
 fn is_binary_name(rel_path: &str) -> bool {
     let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
