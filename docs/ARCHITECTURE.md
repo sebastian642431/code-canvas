@@ -200,7 +200,10 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
 `answer <choice>` (press that button of a notice that asks),
 `resize <width> <height>`, `open <path>` (media viewer), `updates`, `maximize`,
-`click <x> <y>` (a click on the canvas, in physical pixels of the window), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
+`click <x> <y>` (a click on the canvas, in physical pixels of the window),
+`ui click|right|move|down|up <x> <y>` and `ui drag <x> <y> <x> <y>` (the pointer on the interface, in
+points: what a button, a menu or a drag of an icon gets),
+`move <panel> left|right [panel to sit before]` (an icon to the other bar), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.
 
 To see the result, `scripts/screenshot.ps1` (Windows) starts such an instance and

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -126,6 +126,7 @@ pub struct App {
     webviews: crate::webview::WebViews,
     webview_roots: Vec<PathBuf>,
     copies: Vec<crate::files::Copying>,
+    ui_events: VecDeque<Vec<egui::Event>>,
     updater: crate::update::Updater,
     restart_as: Option<PathBuf>,
     completion: Option<Completion>,
@@ -217,6 +218,7 @@ impl App {
             },
             webview_roots: Vec::new(),
             copies: Vec::new(),
+            ui_events: VecDeque::new(),
             updater: crate::update::Updater::new(updates, ext::wake_ui),
             restart_as: None,
             completion: None,
@@ -1743,7 +1745,8 @@ impl App {
     fn run_script(&mut self) -> bool {
         let Some(script) = self.script.as_mut() else { return false };
         let busy = self.pages.get(self.active).is_some_and(|p| p.is_loading() || p.target.is_some() || !p.framed);
-        if busy {
+        if busy || !self.ui_events.is_empty() {
+            self.request_redraw();
             return true;
         }
         let Some(step) = script.next(Instant::now()) else {
@@ -1941,6 +1944,44 @@ impl App {
                 self.ui.quick = Some(QuickOpen { query: format!(">{text}"), selected: 0, focus: true })
             }
             Step::Maximize => self.apply(Action::ToggleMaximize),
+            Step::Ui(what) => {
+                let mut parts = what.split_whitespace();
+                let gesture = parts.next().unwrap_or_default().to_string();
+                let numbers: Vec<f32> = parts.filter_map(|n| n.parse().ok()).collect();
+                let at = |i: usize| egui::pos2(numbers[i], numbers[i + 1]);
+                let press = |pos, button, pressed| egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                let (left, right) = (egui::PointerButton::Primary, egui::PointerButton::Secondary);
+                let frames: Vec<Vec<egui::Event>> = match (gesture.as_str(), numbers.len()) {
+                    ("move", 2) => vec![vec![egui::Event::PointerMoved(at(0))]],
+                    ("down", 2) => vec![vec![egui::Event::PointerMoved(at(0))], vec![press(at(0), left, true)]],
+                    ("up", 2) => vec![vec![egui::Event::PointerMoved(at(0))], vec![press(at(0), left, false)]],
+                    ("click", 2) | ("right", 2) => {
+                        let button = if gesture == "click" { left } else { right };
+                        vec![
+                            vec![egui::Event::PointerMoved(at(0))],
+                            vec![press(at(0), button, true)],
+                            vec![press(at(0), button, false)],
+                        ]
+                    }
+                    ("drag", 4) => {
+                        let (from, to) = (at(0), at(2));
+                        let mut frames = vec![vec![egui::Event::PointerMoved(from)], vec![press(from, left, true)]];
+                        frames.extend((1..=8).map(|i| vec![egui::Event::PointerMoved(from.lerp(to, i as f32 / 8.0))]));
+                        frames.push(vec![press(to, left, false)]);
+                        frames
+                    }
+                    _ => {
+                        log::warn!("script: ui needs move|down|up|click|right <x> <y> or drag <x> <y> <x> <y>");
+                        Vec::new()
+                    }
+                };
+                self.ui_events.extend(frames);
+            }
             Step::Move(what) => {
                 let mut parts = what.split_whitespace();
                 let panel = parts.next().and_then(|name| {
@@ -2374,7 +2415,8 @@ impl App {
         let mut actions = Vec::new();
         let (mut full, canvas_pts) = {
             let g = self.gfx.as_mut().unwrap();
-            let raw = g.egui_state.take_egui_input(&g.window);
+            let mut raw = g.egui_state.take_egui_input(&g.window);
+            raw.events.extend(self.ui_events.pop_front().unwrap_or_default());
             self.ui.update = self.updater.state();
             let info = FrameInfo { stats: &self.stats, frame_ms: self.frame_ms, zoom, tooltip, status };
             let mut canvas = egui::Rect::NOTHING;

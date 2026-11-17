@@ -528,14 +528,32 @@ Graphics and the frame
   ones egui no longer needs are freed after the frame that may still show them, or
   right away when there is no frame. The delta is taken out of the egui output
   (`full`), which checks that none is forgotten.
-- Side by side: the folders beside the active one are rendered first, each in its
-  own pane and with an encoder of its own (see
-  [canvas-render lib.rs](#cratescanvas-rendersrclibrs)). Relation curves are the
-  active folder's only. `App::panes` uses the same division the UI draws its
-  frames with (`ui::pane_rects`, with the gap in pixels).
-- When the number of panes changes, every folder is framed again, except on the
-  first frame, where the saved cameras are still to be used. When a page's part of
-  the window moves, what was in the middle of it stays in the middle.
+- **Several folders share one canvas.** Each page keeps its own world and its own
+  camera, but only the active page's camera is moved by the user: every frame
+  `App::follow_active_camera` copies it to the others, shifted by where each folder
+  sits (`camera::origins`: left to right, tops aligned, a gap of 6% of the widest
+  folder and at least 240 world units). So a point of the shared world is at the
+  same place on screen for every page, and nothing else in the app has to know.
+  - `Page::extent` is the last known size of a folder. It is kept while the folder
+    is scanned again, so its neighbours do not jump during a rescan.
+  - A camera animation (`Page::target`) belongs to the active page only;
+    `App::switch_to` hands it over to the page that becomes active.
+  - `App::focus_folder_at` makes the folder under the pointer the active one (a
+    press, the wheel, a pinch). `App::show_folder` (the folder menu, the keyboard)
+    also flies to it when none of it is on screen.
+  - `Fit` frames every folder (`App::frame_every_folder`); the other framing
+    commands stay within the active one.
+  - The folders beside the active one are rendered first, each with an encoder of
+    its own (see [canvas-render lib.rs](#cratescanvas-rendersrclibrs)). Relation
+    curves are the active folder's only.
+  - Leaving the shared canvas (`UiState::single`) frames the other folders again
+    when they are next shown: their cameras were looking at the active one.
+- When the canvas's part of the window moves (a panel opens), what was in the
+  middle of it stays in the middle (`Page::pane_center`).
+- A file dropped on the window is copied on a thread (`files::copy_into`);
+  `App::poll_copies` hears when it is done. A copy that git ignores is not listed
+  anywhere, so `App::show_dropped` says so, and opens it in the viewer when it is
+  media. The same happens when the file was already there.
 - Another frame is requested while text is still being shaped in any pane, while a
   notice is up (they fade by themselves), and once more when the stats changed:
   the status bar shows the previous frame's stats and would otherwise stay stale.
@@ -563,8 +581,12 @@ Start-up and shutdown
   on screen too and is scanned.
 - The session is saved as soon as the folders are open, so what is open is
   remembered even if the app is later killed.
-- `LEFT_PANELS` is in the order whose index the session saves (`left_panel`):
-  reordering it changes what old sessions reopen.
+- The session saves the panel each side last showed by its key (`Panel::key`),
+  and where each icon sits (`Rails`). At start a side reopens that panel unless it
+  is a web page (an extension's view or the media viewer): those wait to be asked
+  for.
+- `App::ui_events` holds pointer events a script asked for (`ui ...` steps), one
+  batch per frame, added to what egui gets from the window.
 - After an update is installed (`restart_as`), the app leaves the usual way, so
   unsaved files are asked about, and the new version starts once this one has
   closed. If the user cancels leaving, nothing is restarted; the new version is in
@@ -961,8 +983,8 @@ Details:
 - `Page::portable_camera` / `Page::place_camera`: the camera in a form that does
   not depend on where in the window the page is drawn, namely the world point in
   the middle of its pane and the zoom in logical pixels. This is what the session
-  stores, and what makes cameras survive panels opening and folders being shown
-  side by side (`Page::pane_center`).
+  stores, and what makes cameras survive panels opening and closing
+  (`Page::pane_center`).
 - `Page::begin_edit` only edits files that are valid UTF-8, text that survives a
   round trip, so nothing is lost on save.
 - `Page::editors` keeps files with edits in memory until saved, so leaving a file
@@ -1029,8 +1051,11 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `goto` | `goto <path>` | Select a file or folder and fly to it. |
 | `select` | `select <name>` | Select the first symbol with that name. |
 | `search` | `search <text>` | Search in files. |
-| `left` | `left files\|search\|extensions\|problems\|changes\|settings\|help\|none` or `left <publisher.name>` | Open a left panel, or that extension's own panel. |
-| `right` | `right symbols\|none` or `right <view id or extension id>` | Open a right panel, or that extension's webview. |
+| `left` | `left files\|search\|extensions\|problems\|changes\|settings\|help` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
+| `right` | `right symbols\|deps` or `right <view id or extension id>`; `right none` | Open that panel, or that extension's webview, on the side its icon is on. `none` closes the right side. |
+| `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
+| `click` | `click <x> <y>` | A click on the canvas, in physical pixels of the window. |
+| `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
 | `folders` | `folders` | Show the list of opened folders. |
 | `collapse-all` | `collapse-all` | No argument. |
 | `expand-all` | `expand-all` | No argument. |
@@ -1066,9 +1091,10 @@ the menu with.
 - `PageSession::camera` is the portable camera of `Page::portable_camera`: the
   world point in the middle of the page's part of the window, and the zoom in
   logical pixels per world unit.
-- `Session::window` is the logical window size. `Session::left_panel` is an index
-  into `LEFT_PANELS` (see [app.rs](#cratescode-canvassrcapprs)). `Session::single`
-  shows one folder at a time instead of all side by side.
+- `Session::window` is the logical window size. `Session::left_last` and
+  `Session::right_last` are keys of panels (`Panel::key`). `Session::rails` is the
+  order of the icons of each bar. `Session::single` shows one folder at a time
+  instead of all on one canvas.
 
 ### crates/code-canvas/src/themes.rs
 
@@ -1106,8 +1132,23 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - The "go to file" box becomes the command palette when the query starts with `>`,
   as in VS Code. `quick_score` is a subsequence match on a lower-case query
   (`appts` → `src/app/types.ts`).
-- `pane_rects` works in any unit: the UI calls it in points (`PANE_GAP` = 8) and
-  the app in physical pixels, so both divide the canvas the same way.
+- **The two bars.** `Panel` names every panel; which side one opens on is where
+  its icon is (`UiState::side_of`), so nothing opens a panel "on the left": it
+  calls `UiState::show`. `Help` and `Settings` stay at the bottom of the left bar.
+  - `rail_entries` lists the icons there are this frame; `Rails::arrange` puts
+    them in order. An icon never moved sits on its home side after the moved ones.
+    One that is not there now (an extension's view whose condition is false, the
+    media viewer before anything was looked at) keeps its place for when it is.
+  - An icon is dragged by hand (`RailDrag`, `rail_drop_target`,
+    `finish_rail_drag`): a bar takes a drop within `RAIL_REACH` points of it, and
+    the button being up ends the drag even if the release itself was missed.
+  - The move is applied after both bars are drawn (`UiState::rail_move`), so the
+    drag, the icon's menu and a script all go the same way. A panel that is open
+    moves with its icon.
+  - Two web pages can be on screen, one per side: each panel adds its place to
+    `UiState::page_places` and `WebViews::show` takes them all.
+- The filter rows of the symbols panel give the slider what room is left and drop
+  the percentages below 244 points: the panel can be on the narrower left side.
 - `text_fit` cuts what does not fit at the end, which then reads "…".
 - The folder menu lays its rows out by hand, as wide as its longest name needs
   within limits, so that the menu does not stretch.

@@ -36,6 +36,7 @@ pub enum Step {
     Maximize,
     Click(f32, f32),
     Move(String),
+    Ui(String),
     Quit,
 }
 
@@ -86,6 +87,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "quick" => Step::Quick(arg.into()),
         "maximize" => Step::Maximize,
         "move" => Step::Move(arg.into()),
+        "ui" => Step::Ui(arg.into()),
         "click" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             Step::Click(parts.next()?.ok()?, parts.next()?.ok()?)
