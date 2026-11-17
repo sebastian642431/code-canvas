@@ -554,6 +554,10 @@ pub fn changes_panel(
                     if view.on {
                         ui.horizontal(|ui| {
                             ui.add_space(22.0);
+                            check(ui, &mut view.split, "What it was and what it is, side by side", true, true);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
                             check(ui, &mut view.fold, "Fold the lines that did not change", true, true);
                         });
                     }

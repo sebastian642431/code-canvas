@@ -57,8 +57,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
 - **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el lápiz, arrastrar selecciona.
 - **Ver qué cambió dentro de cada archivo** (Control de código fuente): lo que se quitó
-  en rojo arriba de lo que lo reemplazó, y las líneas sin cambios plegadas, para que un
-  archivo largo sea solo sus cambios.
+  en rojo arriba de lo que lo reemplazó, o lo que era y lo que es **lado a lado** en dos
+  columnas de la misma tarjeta, con las líneas sin cambios plegadas, para que un archivo
+  largo sea solo sus cambios.
   `Ctrl+Shift+P` abre la paleta de comandos.
 - **Extensiones de VS Code**: instala las mismas extensiones `.vsix` desde
   [Open VSX](https://open-vsx.org) y las ejecuta sin modificar. Los linters marcan los

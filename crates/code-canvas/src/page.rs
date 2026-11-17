@@ -146,20 +146,28 @@ pub struct Page {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DiffView {
     pub on: bool,
+    pub split: bool,
     pub fold: bool,
     pub around: u32,
 }
 
 impl Default for DiffView {
     fn default() -> Self {
-        DiffView { on: false, fold: true, around: 3 }
+        DiffView { on: false, split: false, fold: true, around: 3 }
     }
 }
 
 pub struct Diffed {
     stamp: u64,
     pub rows: Vec<Row>,
+    lines: Vec<u32>,
     pub plain: String,
+}
+
+impl Diffed {
+    pub fn row(&self, line: u32) -> u32 {
+        crate::git::row_of(&self.lines, self.rows.len(), line)
+    }
 }
 
 const MAX_DIFFS: usize = 400;
@@ -364,7 +372,7 @@ impl Page {
     }
 
     pub fn row_of(&self, rel_path: &str, line: u32) -> u32 {
-        crate::git::row_of(self.rows(rel_path), line)
+        self.diffs.get(rel_path).map_or(line, |shown| shown.row(line))
     }
 
     pub fn line_of(&self, rel_path: &str, row: u32) -> Option<u32> {
@@ -397,6 +405,7 @@ impl Page {
     pub fn sync_diff(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) -> bool {
         use std::hash::{Hash, Hasher};
         self.diff_stale = false;
+        let split = self.diff.split;
         let wanted: Vec<String> = match (&self.git, self.diff.on) {
             (Some(git), true) => git
                 .changes
@@ -432,16 +441,21 @@ impl Page {
             let Some(index) = r.repo.file_index(rel) else { continue };
             let Some(text) = current(&self.editors, rel) else { continue };
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (head, &text, around).hash(&mut hasher);
+            (head, &text, around, split).hash(&mut hasher);
             let stamp = hasher.finish();
             if self.diffs.get(rel).is_some_and(|shown| shown.stamp == stamp) {
                 continue;
             }
-            match crate::git::unified(head, &text, around) {
-                Some((with_removed, rows)) => {
-                    r.repo.replace_source(index, &with_removed, &options);
+            let made = match split {
+                true => crate::git::side_by_side(head, &text, around),
+                false => crate::git::unified(head, &text, around),
+            };
+            match made {
+                Some(shown) => {
+                    r.repo.replace_source(index, &shown.text, &options);
+                    r.repo.files[index].fold = shown.fold;
                     let plain = canvas_core::scan::normalise(&text).0;
-                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, plain });
+                    self.diffs.insert(rel.clone(), Diffed { stamp, rows: shown.rows, lines: shown.lines, plain });
                 }
                 None => {
                     if self.diffs.remove(rel).is_none() {

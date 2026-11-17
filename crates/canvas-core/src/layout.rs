@@ -41,9 +41,17 @@ pub struct Node {
     pub parent: Option<u32>,
     pub subtree_end: u32,
     pub col_stride: f32,
+    pub fold: u32,
     pub collapsed: bool,
     pub files: u32,
     pub lines: u64,
+}
+
+pub fn rows_per_column(fold: usize) -> usize {
+    match fold {
+        0 => FOLD_LINES,
+        rows => rows.min(FOLD_LINES),
+    }
 }
 
 impl Node {
@@ -57,8 +65,8 @@ impl Node {
 
     pub fn cell_rect(&self, line: u32, col: u32, cols: u32) -> Rect {
         let o = self.code_origin();
-        let fold = line as usize / FOLD_LINES;
-        let row = line as usize % FOLD_LINES;
+        let fold = line as usize / self.fold as usize;
+        let row = line as usize % self.fold as usize;
         Rect::new(
             o[0] + fold as f32 * self.col_stride + col.min(MAX_COLS) as f32 * CHAR_W,
             o[1] + row as f32 * LINE_H,
@@ -74,10 +82,11 @@ impl Node {
         }
         let o = self.code_origin();
         let width = (self.col_stride - FOLD_GAP).max(CHAR_W);
-        let (first, last) = (lines.start as usize / FOLD_LINES, (lines.end as usize - 1) / FOLD_LINES);
+        let per = self.fold as usize;
+        let (first, last) = (lines.start as usize / per, (lines.end as usize - 1) / per);
         for fold in first..=last {
-            let a = (lines.start as usize).max(fold * FOLD_LINES) - fold * FOLD_LINES;
-            let b = (lines.end as usize).min((fold + 1) * FOLD_LINES) - fold * FOLD_LINES;
+            let a = (lines.start as usize).max(fold * per) - fold * per;
+            let b = (lines.end as usize).min((fold + 1) * per) - fold * per;
             out.push(Rect::new(
                 o[0] + fold as f32 * self.col_stride,
                 o[1] + a as f32 * LINE_H,
@@ -100,10 +109,10 @@ impl Node {
             return None;
         }
         let row = (dy / LINE_H) as usize;
-        if row >= FOLD_LINES {
+        if row >= self.fold as usize {
             return None;
         }
-        let line = fold * FOLD_LINES + row;
+        let line = fold * self.fold as usize + row;
         (line < line_count).then_some((line as u32, (in_col / CHAR_W) as u32))
     }
 
@@ -111,17 +120,18 @@ impl Node {
         let mut out = Vec::new();
         let o = self.code_origin();
         let first = ((view.y - o[1]) / LINE_H).floor().max(0.0) as usize;
-        let last = (((view.bottom() - o[1]) / LINE_H).ceil().max(0.0) as usize).min(FOLD_LINES);
+        let per = self.fold as usize;
+        let last = (((view.bottom() - o[1]) / LINE_H).ceil().max(0.0) as usize).min(per);
         if first >= last {
             return out;
         }
-        for c in 0..line_count.div_ceil(FOLD_LINES).max(1) {
+        for c in 0..line_count.div_ceil(per).max(1) {
             let x0 = o[0] + c as f32 * self.col_stride;
             let x1 = x0 + self.col_stride - FOLD_GAP;
             if x1 < view.x || x0 > view.right() {
                 continue;
             }
-            let base = c * FOLD_LINES;
+            let base = c * per;
             let r = (base + first).min(line_count)..(base + last).min(line_count);
             if !r.is_empty() {
                 out.push((c, r));
@@ -159,8 +169,9 @@ fn card_size(repo: &Repo, idx: usize) -> (f32, f32, f32) {
     let f = &repo.files[idx];
     let col_w = f.max_cols.clamp(MIN_COLS, MAX_COLS) as f32 * CHAR_W;
     let lines = f.line_count().max(1);
-    let folds = lines.div_ceil(FOLD_LINES) as f32;
-    let rows = lines.min(FOLD_LINES) as f32;
+    let per = rows_per_column(f.fold);
+    let folds = lines.div_ceil(per) as f32;
+    let rows = lines.min(per) as f32;
     let w = folds * col_w + (folds - 1.0) * FOLD_GAP;
     (w + CARD_PAD * 2.0, rows * LINE_H + CARD_PAD * 2.0, col_w + FOLD_GAP)
 }
@@ -369,6 +380,7 @@ fn flatten(l: Laid, x: f32, y: f32, depth: u16, parent: Option<u32>, out: &mut L
         parent,
         subtree_end: 0,
         col_stride: l.col_stride,
+        fold: FOLD_LINES as u32,
         collapsed: l.collapsed,
         files: l.files,
         lines: l.lines,
@@ -394,6 +406,10 @@ impl Layout {
             dir_node: HashMap::new(),
         };
         flatten(laid, 0.0, 0.0, 0, None, &mut out);
+        let Layout { nodes, file_node, .. } = &mut out;
+        for (file, &node) in file_node.iter().enumerate().filter(|(_, node)| **node != NONE) {
+            nodes[node as usize].fold = rows_per_column(repo.files[file].fold) as u32;
+        }
         out
     }
 

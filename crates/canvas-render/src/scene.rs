@@ -152,7 +152,7 @@ impl SceneData {
             }
             let n = &layout.nodes[ni as usize];
             let [x, y] = n.code_origin();
-            origins[fi] = [x, y, n.col_stride, 0.0];
+            origins[fi] = [x, y, n.col_stride, n.fold as f32];
         }
         SceneData { frames, blocks, block_start, origins }
     }

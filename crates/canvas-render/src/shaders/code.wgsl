@@ -13,7 +13,6 @@ struct Camera {
 const CHAR_W: f32 = 6.0;
 const LINE_H: f32 = 12.0;
 const BAR: f32 = 0.72;
-const FOLD_LINES: f32 = 2048.0;
 
 struct Out {
     @builtin(position) clip: vec4<f32>,
@@ -34,8 +33,9 @@ fn vs_main(
     let cols = f32(col_cols >> 16u);
 
     let o = origins[file];
-    let fold = floor(line / FOLD_LINES);
-    let row = line - fold * FOLD_LINES;
+    let per = max(o.w, 1.0);
+    let fold = floor(line / per);
+    let row = line - fold * per;
     let top = o.y + row * LINE_H + LINE_H * (1.0 - BAR) * 0.5;
     let world_size = vec2<f32>(cols * CHAR_W, (span - 1.0) * LINE_H + LINE_H * BAR);
     let p0 = (vec2<f32>(o.x + fold * o.z + col * CHAR_W, top) - cam.offset) * cam.zoom;

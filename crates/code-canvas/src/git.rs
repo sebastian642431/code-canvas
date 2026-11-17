@@ -104,6 +104,8 @@ pub enum RowKind {
     Added,
     Removed,
     Gap,
+    Before,
+    Blank,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,23 +114,67 @@ pub struct Row {
     pub line: u32,
 }
 
-pub fn unified(old: &str, new: &str, around: Option<u32>) -> Option<(String, Vec<Row>)> {
+pub struct DiffText {
+    pub text: String,
+    pub rows: Vec<Row>,
+    pub lines: Vec<u32>,
+    pub fold: usize,
+}
+
+impl DiffText {
+    fn new(shown: Vec<(RowKind, u32, &str)>, lines_in_file: usize, fold: usize) -> DiffText {
+        let text = shown.iter().map(|(_, _, content)| *content).collect::<Vec<_>>().join("\n");
+        let rows: Vec<Row> = shown.iter().map(|(kind, line, _)| Row { kind: *kind, line: *line }).collect();
+        DiffText { text, lines: rows_of_lines(&rows, lines_in_file), rows, fold }
+    }
+
+    #[cfg(test)]
+    fn row(&self, line: u32) -> u32 {
+        row_of(&self.lines, self.rows.len(), line)
+    }
+}
+
+pub fn row_of(lines: &[u32], rows: usize, line: u32) -> u32 {
+    lines.get(line as usize).copied().unwrap_or(rows.saturating_sub(1) as u32)
+}
+
+fn rows_of_lines(rows: &[Row], lines_in_file: usize) -> Vec<u32> {
+    const UNSET: u32 = u32::MAX;
+    let mut at = vec![UNSET; lines_in_file];
+    for (i, row) in rows.iter().enumerate() {
+        if let (RowKind::Same | RowKind::Added, Some(slot)) = (row.kind, at.get_mut(row.line as usize)) {
+            *slot = i as u32;
+        }
+    }
+    for (i, row) in rows.iter().enumerate().rev().filter(|(_, row)| row.kind == RowKind::Gap) {
+        for slot in at.iter_mut().skip(row.line as usize).take_while(|slot| **slot == UNSET) {
+            *slot = i as u32;
+        }
+    }
+    let mut last = 0;
+    for slot in &mut at {
+        if *slot == UNSET {
+            *slot = last;
+        }
+        last = *slot;
+    }
+    at
+}
+
+enum Piece<'a> {
+    Same(&'a str),
+    Gap(String),
+    Change(&'a [&'a str], &'a [&'a str]),
+}
+
+fn pieces<'a>(before: &'a [&'a str], after: &'a [&'a str], around: Option<u32>) -> Option<Vec<(u32, Piece<'a>)>> {
     use similar::DiffOp;
-    let (before, after): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
     let deadline = Instant::now() + std::time::Duration::from_millis(60);
-    let ops = similar::capture_diff_slices_deadline(similar::Algorithm::Myers, &before, &after, Some(deadline));
+    let ops = similar::capture_diff_slices_deadline(similar::Algorithm::Myers, before, after, Some(deadline));
     if ops.iter().all(|op| matches!(op, DiffOp::Equal { .. })) {
         return None;
     }
-    let mut text = String::new();
-    let mut rows: Vec<Row> = Vec::new();
-    let mut put = |kind: RowKind, line: usize, content: &str| {
-        if !rows.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(content);
-        rows.push(Row { kind, line: line as u32 });
-    };
+    let mut out = Vec::new();
     let last = ops.len() - 1;
     for (i, op) in ops.iter().enumerate() {
         match *op {
@@ -137,48 +183,80 @@ pub fn unified(old: &str, new: &str, around: Option<u32>) -> Option<(String, Vec
                 let (head, tail) = (if i == 0 { 0 } else { keep }, if i == last { 0 } else { keep });
                 let folded = around.is_some() && len > head + tail + 1;
                 for k in 0..len {
+                    let line = (new_index + k) as u32;
                     if folded && k == head {
-                        put(RowKind::Gap, new_index + k, &format!("··· {} unchanged lines ···", len - head - tail));
+                        out.push((line, Piece::Gap(format!("··· {} unchanged lines ···", len - head - tail))));
                     }
                     if !folded || k < head || k >= len - tail {
-                        put(RowKind::Same, new_index + k, after[new_index + k]);
+                        out.push((line, Piece::Same(after[new_index + k])));
                     }
                 }
             }
             DiffOp::Delete { old_index, old_len, new_index } => {
-                for k in 0..old_len {
-                    put(RowKind::Removed, new_index, before[old_index + k]);
-                }
+                out.push((new_index as u32, Piece::Change(&before[old_index..old_index + old_len], &[])));
             }
             DiffOp::Insert { new_index, new_len, .. } => {
-                for k in 0..new_len {
-                    put(RowKind::Added, new_index + k, after[new_index + k]);
-                }
+                out.push((new_index as u32, Piece::Change(&[], &after[new_index..new_index + new_len])));
             }
             DiffOp::Replace { old_index, old_len, new_index, new_len } => {
-                for k in 0..old_len {
-                    put(RowKind::Removed, new_index, before[old_index + k]);
-                }
-                for k in 0..new_len {
-                    put(RowKind::Added, new_index + k, after[new_index + k]);
+                let (old, new) = (&before[old_index..old_index + old_len], &after[new_index..new_index + new_len]);
+                out.push((new_index as u32, Piece::Change(old, new)));
+            }
+        }
+    }
+    Some(out)
+}
+
+pub fn unified(old: &str, new: &str, around: Option<u32>) -> Option<DiffText> {
+    let (before, after): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let pieces = pieces(&before, &after, around)?;
+    let mut shown: Vec<(RowKind, u32, &str)> = Vec::new();
+    for (line, piece) in &pieces {
+        match piece {
+            Piece::Same(text) => shown.push((RowKind::Same, *line, text)),
+            Piece::Gap(text) => shown.push((RowKind::Gap, *line, text)),
+            Piece::Change(old, new) => {
+                shown.extend(old.iter().map(|text| (RowKind::Removed, *line, *text)));
+                shown.extend(new.iter().enumerate().map(|(k, text)| (RowKind::Added, line + k as u32, *text)));
+            }
+        }
+    }
+    Some(DiffText::new(shown, after.len(), 0))
+}
+
+pub fn side_by_side(old: &str, new: &str, around: Option<u32>) -> Option<DiffText> {
+    let (before, after): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let pieces = pieces(&before, &after, around)?;
+    let mut left: Vec<(RowKind, u32, &str)> = Vec::new();
+    let mut right: Vec<(RowKind, u32, &str)> = Vec::new();
+    for (line, piece) in &pieces {
+        match piece {
+            Piece::Same(text) => {
+                left.push((RowKind::Before, *line, text));
+                right.push((RowKind::Same, *line, text));
+            }
+            Piece::Gap(text) => {
+                left.push((RowKind::Gap, *line, text));
+                right.push((RowKind::Gap, *line, text));
+            }
+            Piece::Change(old, new) => {
+                for k in 0..old.len().max(new.len()) {
+                    let at = line + k.min(new.len()) as u32;
+                    left.push(old.get(k).map_or((RowKind::Blank, at, ""), |text| (RowKind::Removed, at, *text)));
+                    right.push(new.get(k).map_or((RowKind::Blank, at, ""), |text| (RowKind::Added, at, *text)));
                 }
             }
         }
     }
-    Some((text, rows))
-}
-
-pub fn row_of(rows: Option<&[Row]>, line: u32) -> u32 {
-    let Some(rows) = rows else { return line };
-    let mut at = rows.partition_point(|row| row.line < line);
-    while rows.get(at).is_some_and(|row| row.kind == RowKind::Removed && row.line == line) {
-        at += 1;
+    let per = left.len().clamp(1, canvas_core::layout::FOLD_LINES);
+    let mut shown: Vec<(RowKind, u32, &str)> = Vec::new();
+    for (was, is) in left.chunks(per).zip(right.chunks(per)) {
+        shown.extend_from_slice(was);
+        let line = was.last().map_or(0, |row| row.1);
+        shown.extend(std::iter::repeat_n((RowKind::Blank, line, ""), per - was.len()));
+        shown.extend_from_slice(is);
     }
-    let exact = rows.get(at).is_some_and(|row| row.line == line && row.kind != RowKind::Gap);
-    if !exact && at > 0 && rows[at - 1].kind == RowKind::Gap {
-        at -= 1;
-    }
-    at.min(rows.len().saturating_sub(1)) as u32
+    Some(DiffText::new(shown, after.len(), per))
 }
 
 pub fn line_of(rows: Option<&[Row]>, row: u32) -> Option<u32> {
@@ -628,24 +706,42 @@ mod tests {
     fn a_file_with_what_was_removed_and_the_rest_folded() {
         let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
         let new = "a\nb\nc\nd\nE\nf\ng\nh\ni\nj\nk\n";
-        let (text, rows) = unified(old, new, None).expect("they differ");
-        assert_eq!(text, "a\nb\nc\nd\ne\nE\nf\ng\nh\ni\nj\nk");
-        assert_eq!(rows[4], Row { kind: RowKind::Removed, line: 4 });
-        assert_eq!(rows[5], Row { kind: RowKind::Added, line: 4 });
-        assert_eq!(rows[11], Row { kind: RowKind::Added, line: 10 });
-        let all = Some(rows.as_slice());
-        assert_eq!((row_of(all, 3), row_of(all, 4), row_of(all, 5), row_of(all, 10)), (3, 5, 6, 11));
-        assert_eq!((line_of(all, 4), line_of(all, 5), line_of(all, 6)), (None, Some(4), Some(5)));
+        let all = unified(old, new, None).expect("they differ");
+        assert_eq!(all.text, "a\nb\nc\nd\ne\nE\nf\ng\nh\ni\nj\nk");
+        assert_eq!(all.rows[4], Row { kind: RowKind::Removed, line: 4 });
+        assert_eq!(all.rows[5], Row { kind: RowKind::Added, line: 4 });
+        assert_eq!(all.rows[11], Row { kind: RowKind::Added, line: 10 });
+        assert_eq!((all.row(3), all.row(4), all.row(5), all.row(10), all.row(99)), (3, 5, 6, 11, 11));
+        let rows = Some(all.rows.as_slice());
+        assert_eq!((line_of(rows, 4), line_of(rows, 5), line_of(rows, 6)), (None, Some(4), Some(5)));
 
-        let (text, rows) = unified(old, new, Some(1)).expect("they differ");
-        assert_eq!(text, "··· 3 unchanged lines ···\nd\ne\nE\nf\n··· 3 unchanged lines ···\nj\nk");
-        let folded = Some(rows.as_slice());
-        assert_eq!(rows[0], Row { kind: RowKind::Gap, line: 0 });
-        assert_eq!((row_of(folded, 1), row_of(folded, 3), row_of(folded, 4), row_of(folded, 7)), (0, 1, 3, 5));
-        assert_eq!((row_of(folded, 9), row_of(folded, 10)), (6, 7));
-        assert_eq!((line_of(folded, 0), line_of(folded, 1), line_of(folded, 2)), (None, Some(3), None));
-        assert_eq!((row_of(None, 7), line_of(None, 7)), (7, Some(7)));
+        let folded = unified(old, new, Some(1)).expect("they differ");
+        assert_eq!(folded.text, "··· 3 unchanged lines ···\nd\ne\nE\nf\n··· 3 unchanged lines ···\nj\nk");
+        assert_eq!(folded.rows[0], Row { kind: RowKind::Gap, line: 0 });
+        assert_eq!((folded.row(1), folded.row(3), folded.row(4), folded.row(7)), (0, 1, 3, 5));
+        assert_eq!((folded.row(6), folded.row(9), folded.row(10)), (5, 6, 7));
+        let rows = Some(folded.rows.as_slice());
+        assert_eq!((line_of(rows, 0), line_of(rows, 1), line_of(rows, 2)), (None, Some(3), None));
+        assert_eq!(line_of(None, 7), Some(7));
         assert!(unified(old, old, Some(3)).is_none(), "nothing to show for a file that did not change");
+    }
+
+    #[test]
+    fn old_and_new_next_to_each_other() {
+        let split = side_by_side("a\nb\nc\n", "a\nB\nc\nd\n", None).expect("they differ");
+        assert_eq!(split.text, "a\nb\nc\n\na\nB\nc\nd");
+        assert_eq!(split.fold, 4, "one column for what it was, one for what it is");
+        let kinds: Vec<RowKind> = split.rows.iter().map(|row| row.kind).collect();
+        use RowKind::*;
+        assert_eq!(kinds, [Before, Removed, Before, Blank, Same, Added, Same, Added]);
+        assert_eq!((split.row(0), split.row(1), split.row(3)), (4, 5, 7));
+        let rows = Some(split.rows.as_slice());
+        assert_eq!((line_of(rows, 1), line_of(rows, 5), line_of(rows, 3)), (None, Some(1), None));
+        assert_eq!(split.rows[1].line, 1, "a click on the old side lands on the line that replaced it");
+
+        let folded = side_by_side("x\n1\n2\n3\n4\n5\n", "y\n1\n2\n3\n4\n5\n", Some(1)).expect("they differ");
+        assert_eq!(folded.text, "x\n1\n··· 4 unchanged lines ···\ny\n1\n··· 4 unchanged lines ···");
+        assert_eq!((folded.row(0), folded.row(1), folded.row(4)), (3, 4, 5));
     }
 
     #[test]

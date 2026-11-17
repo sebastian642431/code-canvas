@@ -73,9 +73,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   card, in the explorer, in the status bar), its changed lines washed in colour,
   and the file listed in Source Control. Staging or committing it saves it.
 - **See what changed inside the files** (Source Control): each changed file shows
-  its removed lines in red above what replaced them, and the lines that did not
-  change folded away, so a long file is only its changes. With *Show only changed
-  files* the canvas becomes the change itself.
+  its removed lines in red above what replaced them, or what it was and what it is
+  **side by side** in two columns of the same card. The lines that did not change
+  fold away, so a long file is only its changes. With *Show only changed files*
+  the canvas becomes the change itself.
 - With the pencil, dragging over code selects it; the hand, or the right button,
   moves the canvas.
 - `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
@@ -236,9 +237,10 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       huge repository, arrowheads, backwards edges, arranging by namespace.
 - [x] Git: changed files and lines on the canvas, file timeline.
 - [x] Git: staging, committing and syncing from the source control panel.
-- [x] Git: the diff inside each file (removed lines too), with the lines that did
-      not change folded; discarding changes, switching branches, stashes.
-- [ ] Git: old and new side by side; staging part of a file; the diff of a commit.
+- [x] Git: the diff inside each file (removed lines too), together or with what it
+      was and what it is side by side, with the lines that did not change folded;
+      discarding changes, switching branches, stashes.
+- [ ] Git: staging part of a file; the diff of a commit.
 - [ ] Text read on demand instead of kept in memory (Chromium uses ~4 GB today).
 - [ ] A scan cache for instant re-open of huge folders; cheaper single-file updates
       on them (today they rebuild the whole layout).

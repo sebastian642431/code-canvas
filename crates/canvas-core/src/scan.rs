@@ -61,6 +61,7 @@ pub struct SourceFile {
     pub analysis: Analysis,
     pub max_cols: u32,
     pub note: Option<String>,
+    pub fold: usize,
 }
 
 impl SourceFile {
@@ -109,6 +110,7 @@ impl SourceFile {
             analysis: Analysis::default(),
             max_cols: 0,
             note: Some(note),
+            fold: 0,
         }
     }
 }
@@ -266,7 +268,7 @@ fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
     let lang = Lang::from_path(&rel_path);
     let analysis = syntax::analyze(&text, &line_starts, lang, crate::symbols::Dialect::from_path(&rel_path));
     text.shrink_to_fit();
-    SourceFile { name: file_name(&rel_path), rel_path, lang, text, line_starts, analysis, max_cols, note }
+    SourceFile { name: file_name(&rel_path), rel_path, lang, text, line_starts, analysis, max_cols, note, fold: 0 }
 }
 
 type Found = (PathBuf, String, Option<u64>);

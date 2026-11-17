@@ -212,6 +212,10 @@ Resolution rules per language:
 
 ### crates/canvas-core/src/layout.rs
 
+- `Node::fold` is how many lines a column of the card holds before the text goes
+  on in the next column: `FOLD_LINES` for every file, unless `SourceFile::fold`
+  says less (`rows_per_column`). The shader gets it per file in the fourth value
+  of its origin. It is what puts the two sides of a diff next to each other.
 - `FOLD_LINES` (2048) must stay a multiple of `CHUNK_LINES` and `BLOCK_LINES`, so
   chunks and blocks never straddle two columns of a folded file. The shader has
   its own copy, see [shaders](#cratescanvas-rendersrcshaders).
@@ -334,6 +338,10 @@ the same data types.
 
 ### crates/canvas-render/src/lib.rs
 
+- Code text is shaped in chunks of `CHUNK_LINES` lines that know nothing about
+  columns, so each column is clipped to its own rows as well as to its width: a
+  chunk that straddles the end of a column would otherwise show its next lines in
+  the padding under it.
 - One render pass, in this order: frames (directory boxes, file cards) → `under`
   rectangles (symbol bodies, outline regions) → code bars at the current `Lod` →
   text (code chunks, file and folder names) → relation curves → `over` rectangles
@@ -938,9 +946,16 @@ Details:
   asked, and both pipes are small.
 - `unified` is a file with its removed lines put back above what replaced them,
   and with `around` the unchanged stretches replaced by one `Gap` row. `Row::line`
-  is the line of the real file the row is, or for a removed or gap row the next
-  real line. `row_of` and `line_of` go from one numbering to the other; a line
-  hidden in a fold is its `Gap` row.
+  is the line of the real file the row is, or for a row that is not one the next
+  real line. `DiffText::lines` says which row each line of the file is on (a line
+  hidden in a fold is on its `Gap` row); `line_of` goes back.
+- `side_by_side` is the same pieces as two aligned lists, written one after the
+  other: all the rows of what the file was, then all the rows of what it is, with
+  `DiffText::fold` rows each. A card whose column is that tall (`SourceFile::fold`)
+  shows them next to each other, and each side is highlighted as the code it is.
+  `Before` is an unchanged line on the old side, `Blank` the filler opposite a
+  line the other side has alone. Past `FOLD_LINES` rows the two lists alternate
+  in blocks of that many.
 - Everything runs the user's `git`, off the UI thread. A folder outside a
   repository, or a missing git, simply means no changes (`load` returns `None`).
 - **`GIT_OPTIONAL_LOCKS=0` in `command` is load-bearing.** Reading the status must
@@ -1115,6 +1130,8 @@ Details:
   tell what an outside change touched (`App::on_disk_changes`).
 - `heads` are thrown away only when `HEAD` moves (`heads_at` against
   `GitState::head`), not at every look at git.
+- Side by side, a line to travel to is aimed at the same row of the old column,
+  so both sides are on screen (`App::follow_now`).
 - `diff_settled`: whether a file already looks the way it is going to. Travelling
   to a changed line waits for it (`App::follow_now`), or the fold that arrives a
   moment later would move the line away from where the camera went.
@@ -1219,7 +1236,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `type` | `type <text>` | Type at the caret. |
 | `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
-| `diff` | `diff on\|off\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |

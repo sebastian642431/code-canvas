@@ -983,7 +983,14 @@ impl App {
             return true;
         }
         let file = page.ready().and_then(|r| r.repo.file_index(&rel));
-        let row = page.row_of(&rel, line);
+        let mut row = page.row_of(&rel, line);
+        let column = page.ready().zip(file).and_then(|(r, file)| {
+            let node = r.layout.file_node.get(file).filter(|&&node| node != canvas_core::layout::NONE)?;
+            Some(r.layout.nodes[*node as usize].fold)
+        });
+        if let (true, Some(rows)) = (page.diff.split && page.rows(&rel).is_some(), column) {
+            row -= rows.min(row);
+        }
         if let (Some(file), true) = (file, index == self.active) {
             self.frame_site(Site { file: file as u32, line: row, col: 0, len: 0 });
         }
@@ -2433,8 +2440,10 @@ impl App {
                     ("off", _) => view.on = false,
                     ("fold", _) => view.fold = true,
                     ("unfold", _) => view.fold = false,
+                    ("split", _) => view.split = true,
+                    ("together", _) => view.split = false,
                     ("around", lines) => view.around = lines.trim().parse().unwrap_or(view.around),
-                    _ => log::warn!("script: diff needs on|off|fold|unfold|around <lines>"),
+                    _ => log::warn!("script: diff needs on|off|split|together|fold|unfold|around <lines>"),
                 }
                 self.apply(Action::SetDiff(view));
             }

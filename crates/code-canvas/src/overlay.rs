@@ -6,8 +6,12 @@ use canvas_render::text::TextLayer;
 use canvas_render::{push_curve, theme, CurveVertex, Label, RectInstance, View};
 
 use crate::ext::{Extensions, Severity};
-use crate::git::{row_of, Change, HunkKind, RowKind};
-use crate::page::{DepFilters, Page, PageState, Ready, RelFilters, Selection};
+use crate::git::{Change, HunkKind, RowKind};
+use crate::page::{DepFilters, Diffed, Page, PageState, Ready, RelFilters, Selection};
+
+fn row_of(shown: Option<&Diffed>, line: u32) -> u32 {
+    shown.map_or(line, |shown| shown.row(line))
+}
 
 const MAX_WORLD_LABELS: usize = 600;
 const MAX_CHIPS: usize = 260;
@@ -516,13 +520,14 @@ pub fn build(
                         RowKind::Added => Some((theme::get().git_added, wash)),
                         RowKind::Removed => Some((theme::get().git_removed, wash * 1.2)),
                         RowKind::Gap => Some((theme::get().ui_text_dim, 0.08)),
-                        RowKind::Same => None,
+                        RowKind::Blank => Some((0x000000ff, 0.16)),
+                        RowKind::Same | RowKind::Before => None,
                     };
                     for mut rect in n.line_rects(first as u32..(end as u32).min(lines)) {
                         let Some((c, alpha)) = tint.filter(|_| rect.intersects(&seen)) else { continue };
                         rect.h = rect.h.max(1.5 / z);
                         out.under.push(RectInstance::new(rect, with_alpha(c, alpha), 0, 0.0, 0.0));
-                        if readable && kind != RowKind::Gap {
+                        if readable && matches!(kind, RowKind::Added | RowKind::Removed) {
                             let edge = Rect::new(rect.x - CARD_PAD * 0.75, rect.y, bar, rect.h);
                             out.over.push(RectInstance::new(edge, c, 0, 0.0, 0.0));
                         }
@@ -572,7 +577,7 @@ pub fn build(
         let lines = repo.files[fi].line_count() as u32;
         let glow = theme::get().accent;
         out.over.push(RectInstance::new(n.rect.expand(2.0 / z), 0, with_alpha(glow, strength), 3.0, 2.0));
-        let rows = page.rows(&touch.path);
+        let rows = page.diffs.get(&touch.path);
         for &(first, count) in touch.lines.iter().take(200) {
             let first = row_of(rows, first);
             for mut rect in n.line_rects(first.min(lines)..(first + count).min(lines)) {
@@ -599,7 +604,7 @@ pub fn build(
         out.over.push(RectInstance::new(n.rect, 0, color, 3.0, 1.5));
         if readable {
             let f = &repo.files[fi];
-            let rows = page.rows(rel);
+            let rows = page.diffs.get(rel);
             for d in found.items.iter().take(500) {
                 let line = row_of(rows, d.line);
                 if line as usize >= f.line_count() {
@@ -641,7 +646,7 @@ pub fn build(
             let mut next_col: std::collections::HashMap<u32, u32> = Default::default();
             let mut types: Vec<_> = found.by_type.iter().collect();
             types.sort_by(|a, b| a.0.cmp(b.0));
-            let rows = page.rows(rel);
+            let rows = page.diffs.get(rel);
             for d in types.into_iter().flat_map(|(_, items)| items) {
                 let line = row_of(rows, d.line);
                 if line as usize >= f.line_count() || drawn >= MAX_DECORATIONS {
