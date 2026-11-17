@@ -399,6 +399,7 @@ pub enum Action {
     OpenMedia(std::path::PathBuf),
     Preview(String),
     PreviewSelected,
+    OpenIgnored(String),
     ShowSource(std::path::PathBuf),
     OpenExternally(std::path::PathBuf),
     CheckUpdates,
@@ -1325,7 +1326,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         return;
     };
     if r.tree_dirty {
-        r.tree = build_tree(&r.repo, &page.tree_open, &page.filter.hidden);
+        let ignored = page.git.as_ref().map_or(&[][..], |git| git.ignored.as_slice());
+        r.tree = build_tree(&r.repo, &page.tree_open, &page.filter.hidden, ignored);
         r.tree_dirty = false;
     }
 
@@ -1355,26 +1357,21 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, ROW_H, rows, |ui, range| {
         for i in range {
-            let (depth, is_dir, open, hidden, locked, name, path, count) = match &matches {
+            let (depth, open, name, path, count, state) = match &matches {
                 Some(m) => {
                     let f = &r.repo.files[m[i]];
                     let hidden = page.filter.hidden.contains(&f.rel_path);
-                    (0u16, false, false, hidden, false, f.rel_path.as_str(), f.rel_path.as_str(), 0)
+                    let state = RowState { is_dir: false, hidden, locked: false, ignored: false };
+                    (0u16, false, f.rel_path.as_str(), f.rel_path.as_str(), 0, state)
                 }
                 None => {
                     let row = &r.tree[i];
-                    (
-                        row.depth,
-                        row.is_dir,
-                        row.open,
-                        row.hidden,
-                        row.locked,
-                        row.name.as_str(),
-                        row.path.as_str(),
-                        row.count,
-                    )
+                    let state =
+                        RowState { is_dir: row.is_dir, hidden: row.hidden, locked: row.locked, ignored: row.ignored };
+                    (row.depth, row.open, row.name.as_str(), row.path.as_str(), row.count, state)
                 }
             };
+            let RowState { is_dir, hidden, locked, ignored } = state;
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
             if !ui.is_rect_visible(rect) {
                 continue;
@@ -1392,7 +1389,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 painter.vline(gx, rect.y_range(), Stroke::new(1.0, pal().raised));
             }
             let x0 = rect.left() + 14.0 + depth as f32 * 16.0;
-            if is_dir {
+            if is_dir && !ignored {
                 let chevron = if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
                 painter.text(
                     Pos2::new(x0 + 8.0, mid),
@@ -1404,7 +1401,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             }
             let on = !hidden && !locked;
             let cb = Rect::from_center_size(Pos2::new(x0 + 27.0, mid), Vec2::splat(15.0));
-            painter.rect_filled(cb, 4.0, pal().raised);
+            if !ignored {
+                painter.rect_filled(cb, 4.0, pal().raised);
+            }
             if on {
                 painter.text(cb.center(), Align2::CENTER_CENTER, icons::CHECK, FontId::proportional(11.0), pal().text);
             }
@@ -1420,8 +1419,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             let icon_at = Rect::from_center_size(Pos2::new(text_x + 7.0, mid), Vec2::splat(16.0));
             if st.file_icons.paint(ui, base, is_dir, open, icon_at, !on) {
                 text_x += 20.0;
-            } else if !is_dir {
-                let glyph = file_glyph(name);
+            } else if !is_dir || ignored {
+                let glyph = if is_dir { icons::FOLDER } else { file_glyph(name) };
                 let ic = if on { pal().text_dim } else { pal().text_faint };
                 painter.text(
                     Pos2::new(text_x + 7.0, mid),
@@ -1432,10 +1431,10 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 );
                 text_x += 20.0;
             }
-            let right_pad = if is_dir { 44.0 } else { 10.0 };
+            let right_pad = if is_dir && !ignored { 44.0 } else { 10.0 };
             let room = rect.right() - right_pad - text_x;
             text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
-            if is_dir {
+            if is_dir && !ignored {
                 let at = Pos2::new(rect.right() - 14.0, mid);
                 painter.text(at, Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.0), pal().text_faint);
             }
@@ -1443,7 +1442,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             if resp.hovered() && on {
                 actions.push(Action::HoverPath(path.to_string()));
             }
-            if resp.clicked() {
+            if resp.clicked() && ignored {
+                actions.push(Action::OpenIgnored(path.to_string()));
+            } else if resp.clicked() {
                 let x = resp.interact_pointer_pos().map(|p| p.x).unwrap_or(text_x);
                 if is_dir && x < x0 + 17.0 {
                     actions.push(Action::ToggleTreeOpen(path.to_string()));
@@ -1463,7 +1464,10 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             if resp.double_clicked() && is_dir && on {
                 actions.push(Action::ToggleCollapsed(path.to_string()));
             }
-            resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, is_dir, hidden, locked, actions));
+            resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, state, actions));
+            if ignored {
+                resp.on_hover_text("Git ignores it, so it is not on the canvas");
+            }
         }
     });
 }
@@ -1552,15 +1556,16 @@ fn menu_gap(ui: &mut egui::Ui) {
     ui.add_space(3.0);
 }
 
-fn file_menu(
-    ui: &mut egui::Ui,
-    naming: &mut Option<Naming>,
-    path: &str,
+#[derive(Clone, Copy)]
+struct RowState {
     is_dir: bool,
     hidden: bool,
     locked: bool,
-    actions: &mut Vec<Action>,
-) {
+    ignored: bool,
+}
+
+fn file_menu(ui: &mut egui::Ui, naming: &mut Option<Naming>, path: &str, row: RowState, actions: &mut Vec<Action>) {
+    let RowState { is_dir, hidden, locked, ignored } = row;
     ui.set_width(236.0);
     ui.spacing_mut().item_spacing.y = 1.0;
     let dir = if is_dir { path } else { path.rsplit_once('/').map_or("", |(dir, _)| dir) };
@@ -1607,17 +1612,17 @@ fn file_menu(
     if markdown && menu_row(ui, crate::codicons::glyph("open-preview").unwrap_or(icons::EYE), "Open preview") {
         canvas = Some(Action::Preview(path.to_string()));
     }
-    if !is_dir && menu_row(ui, icons::WAND_SPARKLES, "Format") {
+    if !is_dir && !ignored && menu_row(ui, icons::WAND_SPARKLES, "Format") {
         canvas = Some(Action::FormatFile(Some(path.to_string())));
     }
-    if !locked {
+    if !locked && !ignored {
         let (glyph, label) =
             if hidden { (icons::EYE, "Show on the canvas") } else { (icons::EYE_OFF, "Hide from the canvas") };
         if menu_row(ui, glyph, label) {
             canvas = Some(Action::ToggleHidden(path.to_string()));
         }
     }
-    if is_dir && !hidden && menu_row(ui, icons::FOLD_VERTICAL, "Collapse or expand on the canvas") {
+    if is_dir && !hidden && !ignored && menu_row(ui, icons::FOLD_VERTICAL, "Collapse or expand on the canvas") {
         canvas = Some(Action::ToggleCollapsed(path.to_string()));
     }
 

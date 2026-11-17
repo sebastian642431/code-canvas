@@ -29,7 +29,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Archivos**: clic derecho en el explorador para crear, renombrar, borrar (a la
   papelera), copiar la ruta, mostrar en el explorador del sistema o abrir una
   terminal. Soltá un archivo en la ventana para copiarlo a la carpeta seleccionada;
-  si es un video, una imagen o un PDF se abre en el visor al terminar.
+  si es un video, una imagen o un PDF se abre en el visor al terminar. Lo que git
+  ignora no va al lienzo, pero el explorador lo lista atenuado.
 - **Markdown como se lee**: *Preview*, al lado del nombre de un `.md` en el lienzo (o
   en el menú del explorador), lo muestra renderizado como en GitHub, en el visor, y
   sigue lo que vas escribiendo. Los enlaces a otros archivos los abren; los de la web

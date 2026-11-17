@@ -42,6 +42,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   file manager, open a terminal there.
 - Drop a file on the window to copy it into the selected folder; a video, image or
   PDF opens in the viewer when it has arrived.
+- What git ignores stays off the canvas but is listed, dimmed, in the file tree.
 - **Updates**: a newer release is offered in a notice when the app starts and in the
   status bar, next to the version; *Update and restart* downloads it and restarts into
   it. Settings shows the version and has *Check for updates*.

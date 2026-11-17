@@ -429,9 +429,12 @@ impl App {
         if !target.is_file() {
             return false;
         }
-        let unlisted = self
-            .locate_file(target)
-            .is_some_and(|(i, rel)| crate::git::not_ignored(&self.pages[i].root, vec![rel]).is_empty());
+        let inside = self.locate_file(target);
+        if let Some((i, _)) = &inside {
+            self.pages[*i].refresh_git();
+        }
+        let unlisted =
+            inside.is_some_and(|(i, rel)| crate::git::not_ignored(&self.pages[i].root, vec![rel]).is_empty());
         let opened = self.open_media(target);
         if !unlisted && !opened {
             return false;
@@ -440,7 +443,7 @@ impl App {
         let place: PathBuf = target.parent().unwrap_or(target).components().collect();
         let mut text = format!("\"{name}\" {arrival} {}.", place.display());
         if unlisted {
-            text.push_str(" Git ignores it there, so the canvas and the file list do not show it.");
+            text.push_str(" Git ignores it there: it is not on the canvas, and the file list shows it dimmed.");
         }
         if opened {
             text.push_str(" It is open in the viewer.");
@@ -1532,6 +1535,15 @@ impl App {
                 _ => self.ext.notice(ext::Level::Info, "markdown", "Select a Markdown file first.".to_string()),
             },
             Action::ShowSource(path) => self.reveal_file(&path),
+            Action::OpenIgnored(rel) => {
+                if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&rel)) {
+                    if !self.open_media(&file) && !self.open_preview(&file) {
+                        if let Err(why) = crate::files::reveal(&file) {
+                            self.ext.notice(ext::Level::Warn, "files", format!("It could not be shown: {why}."));
+                        }
+                    }
+                }
+            }
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
             Action::FlyToPath(path) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {

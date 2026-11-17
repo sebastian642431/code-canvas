@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -27,6 +27,7 @@ pub struct TreeRow {
     pub open: bool,
     pub hidden: bool,
     pub locked: bool,
+    pub ignored: bool,
     pub name: String,
     pub path: String,
     pub count: u32,
@@ -377,6 +378,9 @@ impl Page {
             Ok(state) => {
                 self.git = state;
                 self.git_rx = None;
+                if let PageState::Ready(r) = &mut self.state {
+                    r.tree_dirty = true;
+                }
                 true
             }
             Err(TryRecvError::Empty) => false,
@@ -602,6 +606,32 @@ struct TreeView<'a> {
     repo: &'a Repo,
     open: &'a HashSet<String>,
     hidden: &'a HashSet<String>,
+    ignored: HashMap<String, Vec<(String, bool)>>,
+}
+
+fn folders_of(dir: &Dir, folders: &mut HashSet<String>) {
+    folders.insert(dir.rel_path.clone());
+    for inner in &dir.dirs {
+        folders_of(inner, folders);
+    }
+}
+
+fn ignored_by_folder(tree: &Dir, ignored: &[String]) -> HashMap<String, Vec<(String, bool)>> {
+    let mut folders = HashSet::new();
+    folders_of(tree, &mut folders);
+    folders.insert(String::new());
+    let mut by_folder: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    for entry in ignored {
+        let path = entry.trim_end_matches('/');
+        let up = |path: &str| path.rsplit_once('/').map_or(String::new(), |(parent, _)| parent.to_string());
+        let mut parent = up(path);
+        while !folders.contains(&parent) {
+            parent = up(&parent);
+        }
+        let name = if parent.is_empty() { path } else { &path[parent.len() + 1..] };
+        by_folder.entry(parent).or_default().push((name.to_string(), entry.ends_with('/')));
+    }
+    by_folder
 }
 
 fn push_dir(dir: &Dir, depth: u16, locked: bool, view: &TreeView, rows: &mut Vec<TreeRow>) {
@@ -614,6 +644,7 @@ fn push_dir(dir: &Dir, depth: u16, locked: bool, view: &TreeView, rows: &mut Vec
             open,
             hidden,
             locked,
+            ignored: false,
             name: d.name.clone(),
             path: d.rel_path.clone(),
             count: count_files(d),
@@ -630,15 +661,56 @@ fn push_dir(dir: &Dir, depth: u16, locked: bool, view: &TreeView, rows: &mut Vec
             open: false,
             hidden: view.hidden.contains(&f.rel_path),
             locked,
+            ignored: false,
             name: f.name.clone(),
             path: f.rel_path.clone(),
             count: 0,
         });
     }
+    for (name, is_dir) in view.ignored.get(&dir.rel_path).into_iter().flatten() {
+        let path = if dir.rel_path.is_empty() { name.clone() } else { format!("{}/{name}", dir.rel_path) };
+        rows.push(TreeRow {
+            depth,
+            is_dir: *is_dir,
+            open: false,
+            hidden: false,
+            locked: true,
+            ignored: true,
+            name: name.clone(),
+            path,
+            count: 0,
+        });
+    }
 }
 
-pub fn build_tree(repo: &Repo, open: &HashSet<String>, hidden: &HashSet<String>) -> Vec<TreeRow> {
+pub fn build_tree(repo: &Repo, open: &HashSet<String>, hidden: &HashSet<String>, ignored: &[String]) -> Vec<TreeRow> {
     let mut rows = Vec::new();
-    push_dir(&repo.tree, 0, false, &TreeView { repo, open, hidden }, &mut rows);
+    let view = TreeView { repo, open, hidden, ignored: ignored_by_folder(&repo.tree, ignored) };
+    push_dir(&repo.tree, 0, false, &view, &mut rows);
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(rel_path: &str, dirs: Vec<Dir>) -> Dir {
+        let name = rel_path.rsplit('/').next().unwrap_or_default().to_string();
+        Dir { name, rel_path: rel_path.to_string(), dirs, files: Vec::new() }
+    }
+
+    #[test]
+    fn ignored_paths_hang_from_the_nearest_folder_on_the_canvas() {
+        let tree = folder("", vec![folder("docs", vec![folder("docs/img", Vec::new())]), folder("src", Vec::new())]);
+        let ignored: Vec<String> =
+            ["clip.mp4", "target/", "docs/img/shot.png", "media/raw/take.mov"].map(String::from).to_vec();
+        let by_folder = ignored_by_folder(&tree, &ignored);
+        let at = |parent: &str| by_folder.get(parent).cloned().unwrap_or_default();
+        assert_eq!(
+            at(""),
+            [("clip.mp4".to_string(), false), ("target".to_string(), true), ("media/raw/take.mov".to_string(), false)]
+        );
+        assert_eq!(at("docs/img"), [("shot.png".to_string(), false)]);
+        assert!(at("docs").is_empty() && at("src").is_empty());
+    }
 }

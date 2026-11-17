@@ -70,6 +70,7 @@ pub struct GitState {
     pub graph: Vec<GraphCommit>,
     pub branches: Vec<String>,
     pub changes: Vec<FileChange>,
+    pub ignored: Vec<String>,
     pub truncated: bool,
     pub ms: u32,
 }
@@ -216,7 +217,7 @@ fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    let (status, prefix, diff, log, list) = std::thread::scope(|s| {
+    let (status, prefix, diff, log, list, ignored) = std::thread::scope(|s| {
         let status =
             s.spawn(|| git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."]));
         let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
@@ -224,8 +225,11 @@ pub fn load(root: &Path) -> Option<GitState> {
             s.spawn(|| git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]));
         let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
         let list = s.spawn(|| git(root, &["branch", "--format=%(refname:short)"]));
+        let ignored = s.spawn(|| {
+            git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
+        });
         let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
-        (done(status), done(prefix), done(diff), done(log), done(list))
+        (done(status), done(prefix), done(diff), done(log), done(list), done(ignored))
     });
     let status = status?;
     let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
@@ -239,8 +243,17 @@ pub fn load(root: &Path) -> Option<GitState> {
     if let Some(list) = list {
         state.branches = String::from_utf8_lossy(&list).lines().map(str::to_string).filter(|b| !b.is_empty()).collect();
     }
+    if let Some(ignored) = ignored {
+        state.ignored = parse_ignored(&String::from_utf8_lossy(&ignored));
+    }
     state.ms = started.elapsed().as_millis() as u32;
     Some(state)
+}
+
+const MAX_IGNORED: usize = 400;
+
+fn parse_ignored(text: &str) -> Vec<String> {
+    text.split('\0').filter(|path| !path.is_empty() && *path != "./").take(MAX_IGNORED).map(str::to_string).collect()
 }
 
 fn parse_status(text: &str, prefix: &str) -> GitState {
@@ -423,6 +436,13 @@ pub fn ago(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignored_paths_keep_the_mark_of_a_folder() {
+        assert_eq!(parse_ignored("clip.mp4\0target/\0docs/shot.png\0"), ["clip.mp4", "target/", "docs/shot.png"]);
+        assert!(parse_ignored("").is_empty());
+        assert_eq!(parse_ignored(&"a\0".repeat(MAX_IGNORED + 50)).len(), MAX_IGNORED);
+    }
 
     #[test]
     fn staged_and_unstaged_sides() {
