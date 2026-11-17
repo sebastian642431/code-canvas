@@ -503,6 +503,11 @@ impl Page {
                 Some(shown) => {
                     r.repo.replace_source(index, &shown.text, &options);
                     r.repo.files[index].fold = shown.fold;
+                    let numbered = |row: &Row| match row.kind {
+                        crate::git::RowKind::Same | crate::git::RowKind::Added => row.line + 1,
+                        _ => 0,
+                    };
+                    r.repo.files[index].numbers = Some(shown.rows.iter().map(numbered).collect());
                     let plain = canvas_core::scan::normalise(&text).0;
                     self.diffs.insert(rel.clone(), Diffed { stamp, rows: shown.rows, lines: shown.lines, plain });
                 }

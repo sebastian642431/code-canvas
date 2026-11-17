@@ -16,7 +16,22 @@ pub const MAX_COLS: u32 = 160;
 pub const ASPECT: f32 = 1.6;
 pub const FOLD_LINES: usize = 2048;
 pub const FOLD_GAP: f32 = 24.0;
+pub const GUTTER_COLS: u32 = 6;
 pub const NONE: u32 = u32::MAX;
+
+static LINE_NUMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_line_numbers(on: bool) {
+    LINE_NUMBERS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn gutter_of(f: &crate::scan::SourceFile) -> f32 {
+    let numbered = f.note.as_ref().is_none_or(|note| note.starts_with("truncated"));
+    match numbered && LINE_NUMBERS.load(std::sync::atomic::Ordering::Relaxed) {
+        true => GUTTER_COLS as f32 * CHAR_W,
+        false => 0.0,
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutFilter {
@@ -42,6 +57,7 @@ pub struct Node {
     pub subtree_end: u32,
     pub col_stride: f32,
     pub fold: u32,
+    pub gutter: f32,
     pub collapsed: bool,
     pub files: u32,
     pub lines: u64,
@@ -60,7 +76,7 @@ impl Node {
     }
 
     pub fn code_origin(&self) -> [f32; 2] {
-        [self.rect.x + CARD_PAD, self.rect.y + CARD_PAD]
+        [self.rect.x + CARD_PAD + self.gutter, self.rect.y + CARD_PAD]
     }
 
     pub fn cell_rect(&self, line: u32, col: u32, cols: u32) -> Rect {
@@ -81,7 +97,7 @@ impl Node {
             return out;
         }
         let o = self.code_origin();
-        let width = (self.col_stride - FOLD_GAP).max(CHAR_W);
+        let width = (self.col_stride - FOLD_GAP - self.gutter).max(CHAR_W);
         let per = self.fold as usize;
         let (first, last) = (lines.start as usize / per, (lines.end as usize - 1) / per);
         for fold in first..=last {
@@ -105,7 +121,7 @@ impl Node {
         }
         let fold = (dx / self.col_stride) as usize;
         let in_col = dx - fold as f32 * self.col_stride;
-        if in_col > self.col_stride - FOLD_GAP {
+        if in_col > self.col_stride - FOLD_GAP - self.gutter {
             return None;
         }
         let row = (dy / LINE_H) as usize;
@@ -127,7 +143,7 @@ impl Node {
         }
         for c in 0..line_count.div_ceil(per).max(1) {
             let x0 = o[0] + c as f32 * self.col_stride;
-            let x1 = x0 + self.col_stride - FOLD_GAP;
+            let x1 = x0 + self.col_stride - FOLD_GAP - self.gutter;
             if x1 < view.x || x0 > view.right() {
                 continue;
             }
@@ -167,7 +183,7 @@ struct Laid {
 
 fn card_size(repo: &Repo, idx: usize) -> (f32, f32, f32) {
     let f = &repo.files[idx];
-    let col_w = f.max_cols.clamp(MIN_COLS, MAX_COLS) as f32 * CHAR_W;
+    let col_w = f.max_cols.clamp(MIN_COLS, MAX_COLS) as f32 * CHAR_W + gutter_of(f);
     let lines = f.line_count().max(1);
     let per = rows_per_column(f.fold);
     let folds = lines.div_ceil(per) as f32;
@@ -381,6 +397,7 @@ fn flatten(l: Laid, x: f32, y: f32, depth: u16, parent: Option<u32>, out: &mut L
         subtree_end: 0,
         col_stride: l.col_stride,
         fold: FOLD_LINES as u32,
+        gutter: 0.0,
         collapsed: l.collapsed,
         files: l.files,
         lines: l.lines,
@@ -409,6 +426,7 @@ impl Layout {
         let Layout { nodes, file_node, .. } = &mut out;
         for (file, &node) in file_node.iter().enumerate().filter(|(_, node)| **node != NONE) {
             nodes[node as usize].fold = rows_per_column(repo.files[file].fold) as u32;
+            nodes[node as usize].gutter = gutter_of(&repo.files[file]);
         }
         out
     }

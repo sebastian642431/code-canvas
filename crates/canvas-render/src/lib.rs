@@ -6,7 +6,7 @@ pub mod theme;
 
 use bytemuck::{Pod, Zeroable};
 use canvas_core::layout::{NodeKind, FOLD_GAP};
-use canvas_core::{Layout, Rect, Repo, TokenCache, LINE_H};
+use canvas_core::{Layout, Rect, Repo, TokenCache, CHAR_W, LINE_H};
 
 pub use curve::{push_curve, CurveVertex};
 pub use scene::{CodeInstance, Lod, RectInstance, SceneData, SceneGpu};
@@ -385,7 +385,8 @@ impl Renderer {
                             let top_line = (col * n.fold as usize) as f32 * LINE_H;
                             let so = view.to_screen([cx, o[1] - top_line]);
                             let col_l = view.to_screen([cx, 0.0])[0];
-                            let col_r = view.to_screen([cx + n.col_stride - FOLD_GAP, 0.0])[0];
+                            let col_r = view.to_screen([cx + n.col_stride - FOLD_GAP - n.gutter, 0.0])[0];
+                            let numbers_l = view.to_screen([cx - n.gutter, 0.0])[0];
                             let rows_top = view.to_screen([0.0, o[1]])[1];
                             let rows_bottom = view.to_screen([0.0, o[1] + n.fold as f32 * LINE_H])[1];
                             code_texts.push(CodeText {
@@ -402,6 +403,10 @@ impl Renderer {
                                     br[0].min(col_r + 2.0).min(clip[2]) as i32,
                                     br[1].min(rows_bottom + 2.0).min(clip[3]) as i32,
                                 ],
+                                numbers: (n.gutter > 0.0).then_some([
+                                    numbers_l.max(clip[0]) as i32,
+                                    (col_l - view.zoom * CHAR_W * 0.5).min(clip[2]) as i32,
+                                ]),
                             });
                         }
                     }

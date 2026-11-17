@@ -126,6 +126,7 @@ pub struct SourceFile {
     pub max_cols: u32,
     pub note: Option<String>,
     pub fold: usize,
+    pub numbers: Option<Box<[u32]>>,
 }
 
 fn ident_bits(ident: &[u8], bits: usize) -> [usize; 3] {
@@ -309,6 +310,7 @@ impl SourceFile {
             max_cols,
             note: None,
             fold: 0,
+            numbers: None,
         }
     }
 

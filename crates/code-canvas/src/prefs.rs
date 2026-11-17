@@ -10,6 +10,7 @@ pub struct Prefs {
     pub follow_changes: bool,
     pub edit: bool,
     pub unwanted: Vec<String>,
+    pub line_numbers: bool,
 }
 
 impl Default for Prefs {
@@ -22,6 +23,7 @@ impl Default for Prefs {
             follow_changes: true,
             edit: false,
             unwanted: Vec::new(),
+            line_numbers: true,
         }
     }
 }

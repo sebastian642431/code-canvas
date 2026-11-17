@@ -272,7 +272,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] The symbol index is made in parallel, with no string kept per name.
 - [ ] Memory-mapped sources for 1M+ file monorepos.
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
-- [ ] Line numbers, configurable skip lists.
+- [x] Line numbers (the file's own, also where a card shows a diff).
+- [ ] Configurable skip lists.
 - [ ] Linux / macOS packaging, a web build (WebGPU).
 
 ## Project layout

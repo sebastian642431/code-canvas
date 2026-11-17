@@ -216,6 +216,11 @@ Resolution rules per language:
 
 ### crates/canvas-core/src/layout.rs
 
+- `Node::gutter` is the room for line numbers to the left of *each* column of a
+  card (`GUTTER_COLS` cells, none for a card that is not text). It is inside
+  `col_stride` and before `code_origin`, so everything that goes from a cell to a
+  place or back keeps working; what measures a column's width takes it off.
+  `set_line_numbers` is for the whole app: the layout reads it when it is built.
 - `Node::fold` is how many lines a column of the card holds before the text goes
   on in the next column: `FOLD_LINES` for every file, unless `SourceFile::fold`
   says less (`rows_per_column`). The shader gets it per file in the fourth value
@@ -417,6 +422,10 @@ the same data types.
 
 ### crates/canvas-render/src/lib.rs
 
+- Line numbers are one shaped block per chunk, shared by every file: lines 129 to
+  256 read the same in all of them. A file with `SourceFile::numbers` (a card
+  showing a diff: the line of the real file each row is, 0 for none) gets blocks
+  of its own.
 - Code text is shaped in chunks of `CHUNK_LINES` lines that know nothing about
   columns, so each column is clipped to its own rows as well as to its width: a
   chunk that straddles the end of a column would otherwise show its next lines in
@@ -1327,6 +1336,7 @@ Details:
 | `follow_changes` | Travel to the lines a file changed from outside (an assistant, another editor) has new, and light them (`App::follow_change`). |
 | `edit` | The tool of the toolbar: `false` is the hand (clicks select, nothing is edited), `true` the pencil (a click in readable code puts the caret there). |
 | `unwanted` | Extensions offered for a language and answered "Do not ask again" (`App::offer_checker`). |
+| `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
 
 ### crates/code-canvas/src/script.rs
 

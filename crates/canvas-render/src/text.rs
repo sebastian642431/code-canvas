@@ -29,6 +29,7 @@ pub struct CodeText<'a> {
     pub top: f32,
     pub zoom: f32,
     pub clip: [i32; 4],
+    pub numbers: Option<[i32; 2]>,
 }
 
 pub struct Label<'a> {
@@ -54,6 +55,7 @@ pub struct TextLayer {
     world: TextRenderer,
     ui: TextRenderer,
     chunks: HashMap<ChunkKey, Cached>,
+    numbers: HashMap<ChunkKey, Cached>,
     labels: HashMap<u64, Cached>,
     frame: u64,
     code_font_size: f32,
@@ -101,6 +103,7 @@ impl TextLayer {
             world,
             ui,
             chunks: HashMap::new(),
+            numbers: HashMap::new(),
             labels: HashMap::new(),
             frame: 0,
             code_font_size,
@@ -138,6 +141,28 @@ impl TextLayer {
         buffer.set_wrap(Wrap::None);
         buffer.set_size(None, None);
         buffer.set_rich_text(spans, &default, Shaping::Basic, None);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        buffer
+    }
+
+    fn shape_numbers(&mut self, file: &SourceFile, chunk: usize) -> Buffer {
+        let first = chunk * CHUNK_LINES;
+        let width = canvas_core::layout::GUTTER_COLS as usize - 1;
+        let mut text = String::with_capacity(CHUNK_LINES * (width + 1));
+        for row in first..first + CHUNK_LINES {
+            let number = match &file.numbers {
+                Some(own) => own.get(row).copied().unwrap_or(0),
+                None => row as u32 + 1,
+            };
+            match number {
+                0 => text.push('\n'),
+                n => text.push_str(&format!("{n:>width$}\n")),
+            }
+        }
+        let mut buffer = Buffer::new_empty(Metrics::new(self.code_font_size, LINE_H));
+        buffer.set_wrap(Wrap::None);
+        buffer.set_size(None, None);
+        buffer.set_text(&text, &Attrs::new().family(Family::Monospace), Shaping::Basic, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
         buffer
     }
@@ -186,6 +211,7 @@ impl TextLayer {
         let mut budget = NEW_CHUNKS_PER_FRAME;
         self.pending = false;
         let mut areas_code: Vec<(ChunkKey, f32, f32, f32, TextBounds)> = Vec::new();
+        let mut areas_numbers: Vec<(ChunkKey, f32, f32, f32, TextBounds)> = Vec::new();
         for c in code {
             if c.lines.is_empty() {
                 continue;
@@ -193,6 +219,24 @@ impl TextLayer {
             let first_chunk = c.lines.start / CHUNK_LINES;
             let last_chunk = (c.lines.end - 1) / CHUNK_LINES;
             for chunk in first_chunk..=last_chunk {
+                if let Some([left, right]) = c.numbers.filter(|[left, right]| right > left) {
+                    let own = c.file.numbers.is_some();
+                    let key = ChunkKey {
+                        page: if own { c.page } else { u32::MAX },
+                        file: if own { c.file_index as u32 } else { u32::MAX },
+                        chunk: chunk as u32,
+                    };
+                    if !self.numbers.contains_key(&key) {
+                        let buffer = self.shape_numbers(c.file, chunk);
+                        self.numbers.insert(key, Cached { buffer, last_used: frame });
+                    }
+                    if let Some(shaped) = self.numbers.get_mut(&key) {
+                        shaped.last_used = frame;
+                    }
+                    let top = c.top + (chunk * CHUNK_LINES) as f32 * LINE_H * c.zoom;
+                    let bounds = TextBounds { left, top: c.clip[1], right, bottom: c.clip[3] };
+                    areas_numbers.push((key, left as f32, top, c.zoom, bounds));
+                }
                 let key = ChunkKey { page: c.page, file: c.file_index as u32, chunk: chunk as u32 };
                 if let Some(e) = self.chunks.get_mut(&key) {
                     e.last_used = frame;
@@ -246,6 +290,18 @@ impl TextLayer {
                 custom_glyphs: &[],
             });
         }
+        let numbers_color = theme::glyph_color(theme::mix(theme::get().ui_text_dim, theme::get().card_fill, 0.3));
+        for (key, left, top, scale, bounds) in &areas_numbers {
+            world_areas.push(TextArea {
+                buffer: &self.numbers[key].buffer,
+                left: *left,
+                top: *top,
+                scale: *scale,
+                bounds: *bounds,
+                default_color: numbers_color,
+                custom_glyphs: &[],
+            });
+        }
         for (l, k) in world_labels.iter().zip(&world_keys) {
             world_areas.push(label_area(&self.labels[k].buffer, l));
         }
@@ -293,17 +349,20 @@ impl TextLayer {
         if self.frame.is_multiple_of(60) {
             let frame = self.frame;
             self.chunks.retain(|_, c| frame - c.last_used < EVICT_AFTER);
+            self.numbers.retain(|_, c| frame - c.last_used < EVICT_AFTER);
             self.labels.retain(|_, c| frame - c.last_used < EVICT_AFTER);
         }
     }
 
     pub fn clear(&mut self) {
         self.chunks.clear();
+        self.numbers.clear();
         self.labels.clear();
     }
 
     pub fn drop_page(&mut self, page: u32) {
         self.chunks.retain(|k, _| k.page != page);
+        self.numbers.retain(|k, _| k.page != page);
     }
 
     pub fn cached_chunks(&self) -> usize {

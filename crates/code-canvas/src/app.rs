@@ -207,6 +207,7 @@ impl App {
         let mut ui = UiState::default();
         ui.theme = chosen;
         ui.prefs = crate::prefs::load();
+        canvas_core::layout::set_line_numbers(ui.prefs.line_numbers);
         let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
         let updates = (ui.prefs.check_updates && !quiet) || std::env::var_os("CODE_CANVAS_CHECK_UPDATES").is_some();
         let follow_chat = ui.prefs.follow_chat;
@@ -2338,7 +2339,15 @@ impl App {
                     }
                     self.completion = None;
                 }
+                let numbered = prefs.line_numbers != self.ui.prefs.line_numbers;
                 self.ui.prefs = prefs;
+                if let (true, Some(g)) = (numbered, self.gfx.as_mut()) {
+                    canvas_core::layout::set_line_numbers(self.ui.prefs.line_numbers);
+                    for page in &mut self.pages {
+                        g.renderer.text.drop_page(page.id);
+                        page.relayout(&g.renderer, &g.device, &self.ui.filters);
+                    }
+                }
                 if versions {
                     self.versions_due = self.pages.iter().map(|p| p.id).collect();
                     for path in std::mem::take(&mut self.manifests).into_keys() {
