@@ -1,5 +1,7 @@
-title: A commit of one file is shown, the file is opened in the editor and left with Escape (nothing typed): picture 3 must show the commit's diff again and the banner '1 file', as picture 6 does for a commit of five files (manual check of pictures 3 and 6)
+title: A commit of one file is shown, the file is opened in the editor and left with Escape (nothing typed): picture 3 must show the commit's diff again and the banner '1 file', as picture 6 does for a commit of five files; then a file is opened first and its only commit shown: the diff must come when the editor is left (the log says so)
 folders: git-history
+expect-log: commit 'a label': what changed is shown in 0 of its 1 files
+expect-log: commit 'a label': what changed is shown in 1 of its 1 files
 forbid-log: script: ignoring
 forbid-log: commit needs off
 
@@ -28,6 +30,18 @@ wait 500
 key escape
 wait 1500
 mark 6-after-escape
+wait 500
+commit off
+wait 1500
+edit src/util.rs 1 1
+wait 1000
+commit 5
+wait 1800
+mark 7-edited-before-its-commit
+wait 500
+key escape
+wait 1500
+mark 8-after-escape
 wait 500
 commit off
 wait 1500

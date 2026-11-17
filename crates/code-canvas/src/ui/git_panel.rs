@@ -52,7 +52,10 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>, actions: &mut Vec<Action
             };
             let shown = page.showing.as_ref().map(|showing| showing.commit.hash.as_str());
             if let Some(ch) = pending {
-                let detail = format!("+{} −{}", ch.insertions, ch.deletions);
+                let detail = match ch.insertions + ch.deletions {
+                    0 => ch.change.label().to_string(),
+                    _ => format!("+{} −{}", ch.insertions, ch.deletions),
+                };
                 row(
                     ui,
                     change_color(ch.change),

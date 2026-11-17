@@ -132,6 +132,7 @@ pub struct Page {
     message_rx: Option<Receiver<Result<String, String>>>,
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
+    timeline_stale: bool,
     heads: HashMap<String, Option<String>>,
     heads_asked: HashSet<String>,
     heads_round: u32,
@@ -353,6 +354,7 @@ impl Page {
             message_rx: None,
             timeline: Timeline::default(),
             timeline_rx: None,
+            timeline_stale: false,
             heads: HashMap::new(),
             heads_asked: HashSet::new(),
             heads_round: 0,
@@ -569,7 +571,7 @@ impl Page {
         if self.showing.as_ref().is_some_and(|showing| showing.loading) {
             return false;
         }
-        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed {
+        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed && self.showing.is_none() {
             self.diff_stale = false;
         }
         self.diff_stale && self.ready().is_some()
@@ -698,6 +700,10 @@ impl Page {
         }
         if let Some(showing) = self.showing.as_mut().filter(|showing| !showing.loading) {
             showing.here = here;
+            if changed || laid {
+                let (subject, with_diff) = (&showing.commit.subject, self.diffs.len());
+                log::info!("commit '{subject}': what changed is shown in {with_diff} of its {} files", showing.total);
+            }
         }
         if changed || laid {
             self.relayout(renderer, device, filters);
@@ -930,6 +936,7 @@ impl Page {
                     self.heads.clear();
                     self.heads_asked.clear();
                     self.heads_round += 1;
+                    self.timeline_stale = true;
                 }
                 let moved = self.git.iter().flat_map(|git| &git.changes).filter(|change| change.from.is_some());
                 let moved: Vec<String> = moved.map(|change| change.path.clone()).collect();
@@ -957,10 +964,14 @@ impl Page {
     }
 
     pub fn want_timeline(&mut self, path: Option<String>) {
-        if self.timeline.path == path || self.no_git {
+        let same = self.timeline.path == path;
+        if (same && !self.timeline_stale) || self.no_git {
             return;
         }
-        self.timeline = Timeline { path: path.clone(), commits: Vec::new(), loading: path.is_some() };
+        self.timeline_stale = false;
+        if !same {
+            self.timeline = Timeline { path: path.clone(), commits: Vec::new(), loading: path.is_some() };
+        }
         self.timeline_rx = None;
         let Some(path) = path else { return };
         let (tx, rx) = mpsc::channel();
@@ -978,6 +989,7 @@ impl Page {
         let Ok((path, commits)) = rx.try_recv() else { return false };
         self.timeline_rx = None;
         if self.timeline.path.as_deref() == Some(path.as_str()) {
+            log::info!("timeline of {path}: {} commits", commits.len());
             self.timeline.commits = commits;
             self.timeline.loading = false;
         }
