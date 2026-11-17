@@ -178,6 +178,7 @@ pub struct App {
     next_repaint: Option<Instant>,
     script: Option<Script>,
     exit_requested: bool,
+    exit_confirmed: bool,
     resize_edge: Option<ResizeDirection>,
     session_dirty: bool,
     last_save: Instant,
@@ -287,6 +288,7 @@ impl App {
             next_repaint: None,
             script: Script::from_env(),
             exit_requested: false,
+            exit_confirmed: false,
             resize_edge: None,
             session_dirty: false,
             last_save: Instant::now(),
@@ -596,17 +598,16 @@ impl App {
             }
             FileOp::Rename { path, name } => at(&path).and_then(|p| crate::files::rename(&p, &name)).map(|_| ()),
             FileOp::Delete(path) if path.is_empty() => Err("the open folder itself is not deleted from here".into()),
-            FileOp::Delete(path) => at(&path).and_then(|p| {
-                let answer = rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Warning)
-                    .set_title("Code Canvas")
-                    .set_description(format!("Move \"{path}\" to the recycle bin?"))
-                    .set_buttons(rfd::MessageButtons::YesNo)
-                    .show();
-                match answer {
-                    rfd::MessageDialogResult::Yes => crate::files::recycle(&p),
-                    _ => Ok(()),
-                }
+            FileOp::Delete(path) => at(&path).map(|p| {
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                let what = if p.is_dir() { "the folder and everything in it" } else { "the file" };
+                let bin = if cfg!(windows) { "the Recycle Bin" } else { "the trash" };
+                let text = format!("It moves {what} to {bin}, where it can be brought back from.");
+                let mut ask = ui::Ask::new(ui::Asked::Delete(path.clone()), &format!("Delete {name}?"), text)
+                    .choice("Delete", ui::ChoiceLook::Danger, ui::Answer::Yes)
+                    .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+                ask.items = vec![path];
+                self.ui.ask = Some(ask);
             }),
         };
         if let Err(why) = done {
@@ -629,7 +630,11 @@ impl App {
     }
 
     fn pick_folder(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().set_title("Open another folder").pick_folder() {
+        let mut dialog = rfd::FileDialog::new().set_title("Open another folder");
+        if let Some(g) = &self.gfx {
+            dialog = dialog.set_parent(&g.window);
+        }
+        if let Some(path) = dialog.pick_folder() {
             self.open_folder(path, None);
             self.save_session();
         }
@@ -1416,11 +1421,7 @@ impl App {
         self.watcher.expect(&path);
         if let Err(e) = std::fs::write(&path, editor.text()) {
             log::error!("cannot save {}: {e}", path.display());
-            rfd::MessageDialog::new()
-                .set_level(rfd::MessageLevel::Error)
-                .set_title("Code Canvas")
-                .set_description(format!("{} could not be saved:\n{e}", path.display()))
-                .show();
+            self.ext.notice(ext::Level::Error, "Files", format!("{} could not be saved: {e}", path.display()));
             return false;
         }
         editor.mark_saved();
@@ -1486,33 +1487,81 @@ impl App {
 
     fn confirm_exit(&mut self) -> bool {
         let unsaved = self.unsaved();
-        if unsaved.is_empty() {
+        if unsaved.is_empty() || self.exit_confirmed {
             return true;
         }
-        let names: Vec<&str> = unsaved.iter().take(8).map(|(_, rel)| rel.as_str()).collect();
-        let answer = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Code Canvas")
-            .set_description(format!("Save the changes to {} file(s)?\n\n{}", unsaved.len(), names.join("\n")))
-            .set_buttons(rfd::MessageButtons::YesNoCancel)
-            .show();
-        match answer {
-            rfd::MessageDialogResult::Yes => {
-                for (i, rel) in unsaved {
-                    if let Some(page) = self.pages.get_mut(i) {
-                        if let Some(editor) = page.editors.get_mut(&rel) {
-                            match std::fs::write(page.root.join(&rel), editor.text()) {
-                                Ok(()) => editor.mark_saved(),
-                                Err(e) => log::error!("cannot save {rel}: {e}"),
-                            }
+        if self.ui.ask.as_ref().is_none_or(|ask| ask.about != ui::Asked::Exit) {
+            let (title, text) = match unsaved.len() {
+                1 => ("Save the changes before closing?".to_string(), "One file has changes that are not saved."),
+                n => {
+                    (format!("Save the changes to {n} files before closing?"), "They have changes that are not saved.")
+                }
+            };
+            let mut ask = ui::Ask::new(ui::Asked::Exit, &title, format!("{text} Without saving they are lost."))
+                .choice("Save and close", ui::ChoiceLook::Main, ui::Answer::Yes)
+                .choice("Close without saving", ui::ChoiceLook::Plain, ui::Answer::Other)
+                .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+            ask.items = unsaved.into_iter().map(|(_, rel)| rel).collect();
+            ask.danger = false;
+            self.ui.ask = Some(ask);
+            self.ui.settings.open = false;
+            self.request_redraw();
+        }
+        false
+    }
+
+    fn answered(&mut self, about: ui::Asked, answer: ui::Answer) {
+        match (about, answer) {
+            (ui::Asked::Delete(path), ui::Answer::Yes) => {
+                let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
+                let done = crate::files::inside(&root, &path).and_then(|p| crate::files::recycle(&p));
+                if let Err(why) = done {
+                    self.ext.notice(ext::Level::Error, "files", why);
+                }
+            }
+            (ui::Asked::Git(op), ui::Answer::Yes) => self.run_git(op),
+            (ui::Asked::Exit, ui::Answer::Yes) => {
+                for (i, rel) in self.unsaved() {
+                    let Some(page) = self.pages.get_mut(i) else { continue };
+                    let Some(editor) = page.editors.get_mut(&rel) else { continue };
+                    match std::fs::write(page.root.join(&rel), editor.text()) {
+                        Ok(()) => editor.mark_saved(),
+                        Err(e) => {
+                            let text = format!("{rel} could not be saved: {e}");
+                            self.ext.notice(ext::Level::Error, "Files", text);
                         }
                     }
                 }
-                self.unsaved().is_empty()
+                self.exit_requested = self.unsaved().is_empty();
+                if !self.exit_requested {
+                    self.restart_as = None;
+                }
             }
-            rfd::MessageDialogResult::No => true,
-            _ => false,
+            (ui::Asked::Exit, ui::Answer::Other) => {
+                self.exit_confirmed = true;
+                self.exit_requested = true;
+            }
+            (ui::Asked::Exit, ui::Answer::Cancel) => self.restart_as = None,
+            _ => {}
         }
+        self.request_redraw();
+    }
+
+    fn run_git(&mut self, op: crate::git::GitOp) {
+        use crate::git::GitOp;
+        let active = self.active;
+        let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
+        match &op {
+            GitOp::Stage(path) => self.save_these(unsaved.into_iter().filter(|(_, rel)| rel == path).collect(), false),
+            GitOp::StageAll | GitOp::Stash | GitOp::Commit { all: true, .. } => self.save_these(unsaved, false),
+            GitOp::Discard(path) => self.drop_edits(active, Some(path)),
+            GitOp::DiscardAll => self.drop_edits(active, None),
+            _ => {}
+        }
+        if let Some(page) = self.pages.get_mut(self.active) {
+            page.run_git(op);
+        }
+        self.request_redraw();
     }
 
     fn edit_key(&mut self, event: &KeyEvent) -> bool {
@@ -2507,41 +2556,28 @@ impl App {
                 self.ext.run_command(&id, &title);
                 self.request_redraw();
             }
+            Action::Answered(about, answer) => self.answered(about, answer),
             Action::Git(op) => {
+                use crate::git::{GitOp, Part};
                 let lost = match &op {
-                    crate::git::GitOp::Discard(path) => Some(format!("the changes in {path}")),
-                    crate::git::GitOp::Part { path, what: crate::git::Part::Discard, .. } => {
-                        Some(format!("this change in {path}"))
+                    GitOp::Discard(path) => Some(("Discard the changes of this file?", vec![path.clone()])),
+                    GitOp::Part { path, what: Part::Discard, .. } => Some(("Discard this change?", vec![path.clone()])),
+                    GitOp::DiscardAll => {
+                        let changed = self.pages.get(self.active).and_then(|page| page.git.as_ref());
+                        let tracked = |c: &&crate::git::FileChange| c.change != crate::git::Change::Untracked;
+                        let files =
+                            changed.map(|git| git.changes.iter().filter(tracked).map(|c| c.path.clone()).collect());
+                        Some(("Discard every change?", files.unwrap_or_default()))
                     }
-                    crate::git::GitOp::DiscardAll => Some("ALL the changes in tracked files".to_string()),
                     _ => None,
                 };
-                if let Some(what) = lost {
-                    let answer = rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Warning)
-                        .set_title("Code Canvas")
-                        .set_description(format!("Discard {what}?\n\nThis cannot be undone."))
-                        .set_buttons(rfd::MessageButtons::YesNo)
-                        .show();
-                    if answer != rfd::MessageDialogResult::Yes {
-                        return;
-                    }
-                }
-                use crate::git::GitOp;
-                let active = self.active;
-                let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
-                match &op {
-                    GitOp::Stage(path) => {
-                        self.save_these(unsaved.into_iter().filter(|(_, rel)| rel == path).collect(), false)
-                    }
-                    GitOp::StageAll | GitOp::Stash | GitOp::Commit { all: true, .. } => self.save_these(unsaved, false),
-                    GitOp::Discard(path) => self.drop_edits(active, Some(path)),
-                    GitOp::DiscardAll => self.drop_edits(active, None),
-                    _ => {}
-                }
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.run_git(op);
-                }
+                let Some((title, files)) = lost else { return self.run_git(op) };
+                let text = "The files go back to how the last commit left them. This cannot be undone.".to_string();
+                let mut ask = ui::Ask::new(ui::Asked::Git(op), title, text)
+                    .choice("Discard", ui::ChoiceLook::Danger, ui::Answer::Yes)
+                    .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+                ask.items = files;
+                self.ui.ask = Some(ask);
                 self.request_redraw();
             }
             Action::WriteCommitMessage => {
@@ -2671,11 +2707,13 @@ impl App {
                 self.keys_changed();
             }
             Action::InstallVsix => {
-                let picked = rfd::FileDialog::new()
+                let mut dialog = rfd::FileDialog::new()
                     .set_title("Install an extension from a .vsix file")
-                    .add_filter("VS Code extension", &["vsix"])
-                    .pick_file();
-                if let Some(file) = picked {
+                    .add_filter("VS Code extension", &["vsix"]);
+                if let Some(g) = &self.gfx {
+                    dialog = dialog.set_parent(&g.window);
+                }
+                if let Some(file) = dialog.pick_file() {
                     self.ext.install_vsix(file);
                 }
                 self.request_redraw();
@@ -2765,8 +2803,17 @@ impl App {
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
             Step::Answer(choice) => {
-                if !self.ext.answer_with(&choice) {
-                    log::warn!("script: no notice offers '{choice}'");
+                let asked = self.ui.ask.as_ref().and_then(|ask| {
+                    let said = ask.choices.iter().find(|(label, ..)| label.eq_ignore_ascii_case(&choice))?;
+                    Some((ask.about.clone(), said.2))
+                });
+                match asked {
+                    Some((about, answer)) => {
+                        self.ui.ask = None;
+                        self.answered(about, answer);
+                    }
+                    None if self.ext.answer_with(&choice) => {}
+                    None => log::warn!("script: nothing offers '{choice}'"),
                 }
             }
             Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
@@ -2852,11 +2899,13 @@ impl App {
                     "unstage" if arg.is_empty() => Some(GitOp::UnstageAll),
                     "unstage" => Some(GitOp::Unstage(arg.to_string())),
                     "commit" if !arg.is_empty() => Some(GitOp::commit(arg)),
+                    "discard" if arg.is_empty() => Some(GitOp::DiscardAll),
+                    "discard" => Some(GitOp::Discard(arg.to_string())),
                     _ => None,
                 };
                 match op {
                     Some(op) => self.apply(Action::Git(op)),
-                    None => log::warn!("script: git needs stage|unstage [path] or commit <message>"),
+                    None => log::warn!("script: git needs stage|unstage|discard [path] or commit <message>"),
                 }
             }
             Step::Right(which) => match which.as_str() {
@@ -2950,6 +2999,8 @@ impl App {
             Step::Back => self.travel(true),
             Step::Forward => self.travel(false),
             Step::Menu(x, y) => self.card_menu([x, y]),
+            Step::Delete(path) => self.apply(Action::File(FileOp::Delete(path))),
+            Step::Ignored(path) => self.apply(Action::OpenIgnored(path)),
             Step::Part(asked) => {
                 let mut words = asked.split_whitespace();
                 let what = match words.next() {
@@ -3323,11 +3374,13 @@ impl App {
         if changed {
             g.window.request_redraw();
         }
-        if let Some((path, at)) = self.show_when_read.take().filter(|_| !made.is_empty() || changed) {
-            match self.locate_file(&path).map(|(i, _)| self.pages[i].ready().is_some()) {
-                Some(false) => self.show_when_read = Some((path, at)),
-                _ => self.show_path(&path, at),
-            }
+        let read = self
+            .show_when_read
+            .as_ref()
+            .is_some_and(|(path, _)| self.locate_file(path).is_none_or(|(i, _)| self.pages[i].ready().is_some()));
+        if let Some((path, at)) = self.show_when_read.take_if(|_| read) {
+            self.open_media(&path);
+            self.show_path(&path, at);
         }
         for (index, rel) in made {
             let lines = self.pages[index]
@@ -4106,7 +4159,7 @@ impl ApplicationHandler for App {
         self.request_redraw();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match &event {
             WindowEvent::CursorMoved { position, .. } => {
                 let edge = self.edge_at([position.x as f32, position.y as f32]);
@@ -4137,12 +4190,7 @@ impl ApplicationHandler for App {
             }
         }
         match event {
-            WindowEvent::CloseRequested => {
-                if self.confirm_exit() {
-                    self.save_session();
-                    event_loop.exit();
-                }
-            }
+            WindowEvent::CloseRequested => self.exit_requested = true,
             WindowEvent::Resized(size) => {
                 if let Some(g) = self.gfx.as_mut().filter(|_| can_show(size)) {
                     g.config.width = size.width;
@@ -4275,12 +4323,10 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_requested && !self.confirm_exit() {
+            self.exit_requested = false;
+        }
         if self.exit_requested {
-            if !self.confirm_exit() {
-                self.exit_requested = false;
-                self.restart_as = None;
-                return;
-            }
             self.save_session();
             if let Some(program) = self.restart_as.take() {
                 if let Err(e) = std::process::Command::new(&program).spawn() {

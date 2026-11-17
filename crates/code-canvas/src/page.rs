@@ -1229,7 +1229,9 @@ fn push_dir(dir: &Dir, depth: u16, locked: bool, view: &TreeView, rows: &mut Vec
 
 pub fn build_tree(repo: &Repo, open: &HashSet<String>, hidden: &HashSet<String>, ignored: &[String]) -> Vec<TreeRow> {
     let mut rows = Vec::new();
-    let view = TreeView { repo, open, hidden, ignored: ignored_by_folder(&repo.tree, ignored) };
+    let aside: Vec<String> =
+        ignored.iter().filter(|path| repo.file_index(path.trim_end_matches('/')).is_none()).cloned().collect();
+    let view = TreeView { repo, open, hidden, ignored: ignored_by_folder(&repo.tree, &aside) };
     push_dir(&repo.tree, 0, false, &view, &mut rows);
     rows
 }

@@ -50,6 +50,8 @@ pub enum Step {
     Commit(String),
     Theme(String),
     Menu(f32, f32),
+    Delete(String),
+    Ignored(String),
     Part(String),
     Find(String),
     Quit,
@@ -115,6 +117,8 @@ fn parse_step(text: &str) -> Option<Step> {
         "commit" => Step::Commit(arg.into()),
         "theme" => Step::Theme(arg.into()),
         "part" => Step::Part(arg.into()),
+        "delete" => Step::Delete(arg.into()),
+        "ignored" => Step::Ignored(arg.into()),
         "menu" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             Step::Menu(parts.next()?.ok()?, parts.next()?.ok()?)

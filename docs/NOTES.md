@@ -715,6 +715,20 @@ Graphics and the frame
     when they are next shown: their cameras were looking at the active one.
 - When the canvas's part of the window moves (a panel opens), what was in the
   middle of it stays in the middle (`Page::pane_center`).
+- **Questions are asked inside the window** (`ui::Ask`, drawn by `ask_modal`):
+  deleting a file, discarding changes, closing with files not saved. A dialog of
+  the system stops the event loop until it is answered and can end up behind the
+  window, which looks like a frozen app. An `Ask` stops nothing: the action that
+  needs the answer puts it in `UiState::ask` and returns, and the answer comes
+  back as `Action::Answered(Asked, Answer)`, where `App::answered` does the rest.
+  Closing is the one with a state: `confirm_exit` puts the question and says no;
+  the answer sets `exit_requested` again, with `exit_confirmed` when the files
+  are to be left as they are. Only the panic hook and the pickers of files are
+  still the system's, and the pickers have the window as their parent.
+- `show_when_read` waits for the page of the file to be read and is only then
+  taken: taking it first and looking after lost it whenever the scan ended a
+  frame later, and the canvas never went to a file just let in (a video picked
+  among the ignored ones, say).
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1456,18 +1470,20 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
+| `delete` | `delete <path>` | Ask to delete a file or folder (answer with `answer Delete` or `answer Cancel`). |
+| `ignored` | `ignored <path>` | A click on a file git ignores, in the explorer: it comes onto the canvas. |
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
-| `git` | `git stage [path]`, `git unstage [path]`, `git commit <message>` | Source control. |
+| `git` | `git stage [path]`, `git unstage [path]`, `git discard [path]`, `git commit <message>` | Source control. Discarding asks first. |
 | `install` | `install <publisher.name>` | Install an extension from Open VSX. |
 | `ext-search` | `ext-search <text>` | Search the extension registry. |
 | `format` | `format <path>` | Format a file with the installed formatter. |
 | `command` | `command <id>` | Run an extension's command. |
-| `answer` | `answer <choice>` | Press that button of the notice that is asking. |
+| `answer` | `answer <choice>` | Press that button of the question the app is asking, or of the notice that is. |
 | `open` | `open <path>` | Show an image, video or PDF in the viewer; a path in the folder, or anywhere on the disk. |
 | `focus` | `focus page\|app` | Give the keyboard to the webview on screen, or back to the window: what clicking one or the other does. |
 | `updates` | `updates` | Look for a newer version of the app now. |

@@ -257,6 +257,7 @@ pub struct UiState {
     pub completion: Option<CompletionView>,
     pub find: Option<Find>,
     pub card_menu: Option<CardMenu>,
+    pub ask: Option<Ask>,
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
     pub commit_ai: crate::commit_ai::Settings,
@@ -299,6 +300,7 @@ impl Default for UiState {
             completion: None,
             find: None,
             card_menu: None,
+            ask: None,
             can_go: (false, false),
             pictures: Vec::new(),
             commit_ai: Default::default(),
@@ -469,6 +471,7 @@ pub enum Action {
     Forward,
     SetDiff(crate::page::DiffView),
     ShowCommit(Option<crate::git::Commit>),
+    Answered(Asked, Answer),
     InstallVsix,
     SetTheme(String),
     SetColor(&'static str, u32),
@@ -727,6 +730,7 @@ pub fn build(
     completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     settings::settings_modal(&ctx, st, ext, actions);
+    ask_modal(&ctx, st, actions);
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
     canvas
@@ -2279,6 +2283,144 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                 });
         });
     st.floating.push(resp.response.rect);
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Asked {
+    Delete(String),
+    Git(crate::git::GitOp),
+    Exit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    Other,
+    Cancel,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceLook {
+    Main,
+    Danger,
+    Plain,
+}
+
+pub struct Ask {
+    pub about: Asked,
+    pub danger: bool,
+    pub title: String,
+    pub text: String,
+    pub items: Vec<String>,
+    pub choices: Vec<(&'static str, ChoiceLook, Answer)>,
+    pub fresh: bool,
+}
+
+impl Ask {
+    pub fn new(about: Asked, title: &str, text: String) -> Ask {
+        Ask { about, danger: true, title: title.to_string(), text, items: Vec::new(), choices: Vec::new(), fresh: true }
+    }
+
+    pub fn choice(mut self, label: &'static str, look: ChoiceLook, answer: Answer) -> Ask {
+        self.choices.push((label, look, answer));
+        self
+    }
+}
+
+fn ask_button(ui: &mut egui::Ui, label: &str, look: ChoiceLook) -> bool {
+    let font = FontId::proportional(13.0);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, pal().text);
+    let size = Vec2::new((galley.size().x + 28.0).max(84.0), 30.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let danger = c(theme::get().git_removed);
+    let (fill, text, stroke) = match (look, resp.hovered()) {
+        (ChoiceLook::Main, hot) => (pal().accent.gamma_multiply(if hot { 1.0 } else { 0.88 }), pal().on_accent, None),
+        (ChoiceLook::Danger, hot) => (danger.gamma_multiply(if hot { 1.0 } else { 0.86 }), Color32::WHITE, None),
+        (ChoiceLook::Plain, true) => (pal().hover, pal().text, Some(pal().border_strong)),
+        (ChoiceLook::Plain, false) => (pal().raised, pal().text, Some(pal().border)),
+    };
+    ui.painter().rect_filled(rect, 8.0, fill);
+    if let Some(stroke) = stroke {
+        ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    }
+    ui.painter().galley(rect.center() - galley.size() * 0.5, galley, text);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    const WIDTH: f32 = 440.0;
+    const SHOWN: usize = 8;
+    let Some(ask) = st.ask.as_mut() else { return };
+    st.floating.push(ctx.content_rect());
+    st.page_places.clear();
+    let fresh = std::mem::take(&mut ask.fresh);
+    let (entered, escaped) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+    let mut answer = None;
+    if escaped {
+        answer = Some(Answer::Cancel);
+    } else if entered && !fresh {
+        answer = ask.choices.iter().find(|choice| choice.1 != ChoiceLook::Plain).map(|choice| choice.2);
+    }
+    let frame = Frame::NONE
+        .fill(pal().card)
+        .stroke(Stroke::new(1.0, pal().border_strong))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::same(20));
+    let tint = if ask.danger { c(theme::get().git_removed) } else { pal().accent };
+    egui::Modal::new(egui::Id::unique("ask")).backdrop_color(Color32::from_black_alpha(150)).frame(frame).show(
+        ctx,
+        |ui| {
+            ui.set_width(WIDTH);
+            ui.spacing_mut().item_spacing = Vec2::new(12.0, 6.0);
+            ui.horizontal_top(|ui| {
+                let (badge, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+                ui.painter().rect_filled(badge, 12.0, tint.gamma_multiply(0.16));
+                let glyph = if ask.danger { icons::TRIANGLE_ALERT } else { icons::CIRCLE_ALERT };
+                ui.painter().text(badge.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(20.0), tint);
+                ui.vertical(|ui| {
+                    ui.set_width(WIDTH - 52.0);
+                    ui.add_space(1.0);
+                    ui.label(RichText::new(&ask.title).size(15.5).strong().color(pal().text));
+                    if !ask.text.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(&ask.text).size(13.0).color(pal().text_dim)).wrap());
+                    }
+                });
+            });
+            if !ask.items.is_empty() {
+                ui.add_space(6.0);
+                Frame::NONE
+                    .fill(pal().well)
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(WIDTH - 24.0);
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        for item in ask.items.iter().take(SHOWN) {
+                            let text = RichText::new(item).font(FontId::monospace(12.0)).color(pal().text);
+                            ui.add(egui::Label::new(text).truncate());
+                        }
+                        if ask.items.len() > SHOWN {
+                            let more = format!("… and {} more", ask.items.len() - SHOWN);
+                            ui.label(RichText::new(more).size(11.5).color(pal().text_faint));
+                        }
+                    });
+            }
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for (label, look, choice) in ask.choices.iter() {
+                    if ask_button(ui, label, *look) {
+                        answer = Some(*choice);
+                    }
+                }
+            });
+        },
+    );
+    if let Some(answer) = answer {
+        if let Some(ask) = st.ask.take() {
+            actions.push(Action::Answered(ask.about, answer));
+        }
+    }
 }
 
 pub struct CardMenu {
