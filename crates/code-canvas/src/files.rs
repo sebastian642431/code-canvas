@@ -1,5 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::Receiver;
 
 pub fn inside(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel_path = Path::new(rel);
@@ -71,19 +72,27 @@ pub fn recycle(path: &Path) -> Result<(), String> {
     trash::delete(path).map_err(|e| e.to_string())
 }
 
-pub fn copy_into(file: PathBuf, dir: &Path) -> Result<PathBuf, String> {
+pub struct Copying {
+    pub target: PathBuf,
+    pub finished: Receiver<Result<(), String>>,
+}
+
+pub fn copy_into(file: PathBuf, dir: &Path) -> Result<Copying, String> {
     let name = file.file_name().ok_or("it has no name")?.to_os_string();
     if file.parent().is_some_and(|p| p == dir) {
         return Err(String::new());
     }
     let target = fresh(dir.join(name))?;
     let to = target.clone();
+    let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        if let Err(e) = std::fs::copy(&file, &to) {
+        let result = std::fs::copy(&file, &to).map(|_| ()).map_err(|e| e.to_string());
+        if let Err(e) = &result {
             log::error!("could not copy {} to {}: {e}", file.display(), to.display());
         }
+        let _ = done.send(result);
     });
-    Ok(target)
+    Ok(Copying { target, finished })
 }
 
 pub fn reveal(path: &Path) -> Result<(), String> {
@@ -186,14 +195,10 @@ mod tests {
         let (from, to) = (scratch("drop-from"), scratch("drop-to"));
         let file = from.join("clip.mp4");
         std::fs::write(&file, b"video").unwrap();
-        let target = copy_into(file.clone(), &to).unwrap();
-        for _ in 0..200 {
-            if std::fs::read(&target).is_ok_and(|b| b == b"video") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert_eq!(std::fs::read(&target).unwrap(), b"video");
+        let copying = copy_into(file.clone(), &to).unwrap();
+        let finished = copying.finished.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(finished, Ok(Ok(())));
+        assert_eq!(std::fs::read(&copying.target).unwrap(), b"video");
         assert!(file.exists(), "the original stays where it was");
         assert!(copy_into(file.clone(), &to).is_err_and(|e| !e.is_empty()));
         assert!(copy_into(file, &from).is_err_and(|e| e.is_empty()));

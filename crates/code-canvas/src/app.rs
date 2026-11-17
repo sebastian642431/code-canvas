@@ -135,6 +135,7 @@ pub struct App {
     auto_rescan: Option<Instant>,
     webviews: crate::webview::WebViews,
     webview_roots: Vec<PathBuf>,
+    copies: Vec<crate::files::Copying>,
     updater: crate::update::Updater,
     restart_as: Option<PathBuf>,
     completion: Option<Completion>,
@@ -226,6 +227,7 @@ impl App {
                 webviews
             },
             webview_roots: Vec::new(),
+            copies: Vec::new(),
             updater: crate::update::Updater::new(updates, ext::wake_ui),
             restart_as: None,
             completion: None,
@@ -373,15 +375,70 @@ impl App {
         let dir = crate::files::inside(&page.root, &rel).unwrap_or_else(|_| page.root.clone());
         let shown = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let place: PathBuf = dir.components().collect();
+        let already_there = dir.join(&shown);
         match crate::files::copy_into(file, &dir) {
-            Ok(_) => {
+            Ok(copying) => {
                 let text = format!("Copying \"{shown}\" into {}", place.display());
-                self.ext.notice(ext::Level::Info, "files", text)
+                self.ext.notice(ext::Level::Info, "files", text);
+                self.copies.push(copying);
             }
             Err(why) if why.is_empty() => {}
-            Err(why) => self.ext.notice(ext::Level::Warn, "files", format!("\"{shown}\" was not copied: {why}.")),
+            Err(why) => {
+                if !self.show_dropped(&already_there, "was already in") {
+                    self.ext.notice(ext::Level::Warn, "files", format!("\"{shown}\" was not copied: {why}."));
+                }
+            }
         }
         self.request_redraw();
+    }
+
+    fn show_dropped(&mut self, target: &Path, arrival: &str) -> bool {
+        if !target.is_file() {
+            return false;
+        }
+        let unlisted = self
+            .locate_file(target)
+            .is_some_and(|(i, rel)| crate::git::not_ignored(&self.pages[i].root, vec![rel]).is_empty());
+        let opened = self.open_media(target);
+        if !unlisted && !opened {
+            return false;
+        }
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let place: PathBuf = target.parent().unwrap_or(target).components().collect();
+        let mut text = format!("\"{name}\" {arrival} {}.", place.display());
+        if unlisted {
+            text.push_str(" Git ignores it there, so the canvas and the file list do not show it.");
+        }
+        if opened {
+            text.push_str(" It is open in the viewer.");
+        }
+        self.ext.notice(ext::Level::Info, "files", text);
+        true
+    }
+
+    fn poll_copies(&mut self) -> bool {
+        let mut arrived = Vec::new();
+        self.copies.retain(|copying| match copying.finished.try_recv() {
+            Ok(result) => {
+                arrived.push((copying.target.clone(), result));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        });
+        for (target, result) in arrived {
+            match result {
+                Ok(()) => {
+                    self.show_dropped(&target, "is now in");
+                }
+                Err(why) => {
+                    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    self.ext.notice(ext::Level::Warn, "files", format!("\"{name}\" was not copied: {why}."));
+                }
+            }
+            self.request_redraw();
+        }
+        !self.copies.is_empty()
     }
 
     fn file_op(&mut self, op: FileOp) {
@@ -1844,6 +1901,7 @@ impl App {
             }
         }
         busy |= self.symbols_stale.is_some();
+        busy |= self.poll_copies();
         if self.unsent_edit.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(250)) {
             if let Some((path, _)) = self.unsent_edit.take() {
                 let text =
