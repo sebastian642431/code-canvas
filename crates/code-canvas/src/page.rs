@@ -221,7 +221,9 @@ pub fn forget_old_scans() {
     });
 }
 
-static NEVER_READ: std::sync::Mutex<(Option<Vec<String>>, Option<Vec<String>>)> = std::sync::Mutex::new((None, None));
+type Skipped = (Option<Vec<String>>, Option<Vec<String>>);
+
+static NEVER_READ: std::sync::Mutex<Skipped> = std::sync::Mutex::new((None, None));
 
 pub fn never_read(dirs: Option<Vec<String>>, files: Option<Vec<String>>) {
     *NEVER_READ.lock().unwrap() = (dirs, files);

@@ -1152,7 +1152,7 @@ impl Extensions {
         let Some(extension) = view.strip_prefix(TABS) else { return self.webviews.iter().find(|w| w.key == view) };
         let front = self.front_tab.get(extension);
         let tabs = self.webviews.iter().filter(|w| w.tab && w.extension == extension);
-        tabs.clone().find(|w| Some(&w.key) == front).or_else(|| tabs.last())
+        tabs.clone().find(|w| Some(&w.key) == front).or_else(|| tabs.clone().next_back())
     }
 
     pub fn show_tab(&mut self, extension: &str, handle: &str) {

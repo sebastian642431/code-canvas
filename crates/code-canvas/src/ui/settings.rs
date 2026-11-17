@@ -134,7 +134,7 @@ fn group_icon(group: &str) -> &'static str {
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.5).color(pal().text_faint));
+    ui.add(egui::Label::new(RichText::new(text).size(11.5).color(pal().text_faint)).wrap());
 }
 
 fn option(ui: &mut egui::Ui, filter: &str, on: &mut bool, (label, about): (&str, &str)) {
@@ -142,9 +142,13 @@ fn option(ui: &mut egui::Ui, filter: &str, on: &mut bool, (label, about): (&str,
         return;
     }
     check(ui, on, label, true, false);
+    let width = (ui.available_width() - 24.0).max(80.0);
     ui.horizontal(|ui| {
         ui.add_space(24.0);
-        note(ui, about);
+        ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_max_width(width);
+            ui.add(egui::Label::new(RichText::new(about).size(11.5).color(pal().text_faint)).wrap());
+        });
     });
     ui.add_space(4.0);
 }

@@ -375,7 +375,7 @@ impl Repo {
         if let Some(index) = f.analysis.symbols.iter().position(|s| s.name_start == t.start) {
             return Some((SymRef { file, index: index as u32 }, site));
         }
-        let call = is_call(&f.text(), toks, k);
+        let call = is_call(f.text(), toks, k);
         if t.kind == TokenKind::Keyword && !call {
             return None;
         }
@@ -502,7 +502,7 @@ impl Repo {
                             continue;
                         }
                     }
-                    let call = is_call(&f.text(), toks, k);
+                    let call = is_call(f.text(), toks, k);
                     let enclosing = symbol_at_line(&f.analysis.symbols, line as u32)
                         .map(|index| SymRef { file: fi, index: index as u32 });
                     out.push(Relation {
@@ -539,7 +539,7 @@ impl Repo {
             }
             let toks = chunk_cache.as_ref().unwrap().1.line(line as usize - chunk * CHUNK_LINES);
             for (k, t) in toks.iter().enumerate() {
-                if !is_call(&f.text(), toks, k) {
+                if !is_call(f.text(), toks, k) {
                     continue;
                 }
                 if f.analysis.symbols.iter().any(|s| s.name_start == t.start) {
@@ -603,7 +603,7 @@ impl Repo {
                 tokens = Some(((file, chunk), f.tokenize_chunk(chunk)));
             }
             let toks = tokens.as_ref().unwrap().1.line(line as usize - chunk * CHUNK_LINES);
-            let call = toks.iter().position(|t| t.col == col).is_some_and(|k| is_call(&f.text(), toks, k));
+            let call = toks.iter().position(|t| t.col == col).is_some_and(|k| is_call(f.text(), toks, k));
             let enclosing = symbol_at_line(&f.analysis.symbols, line).map(|index| SymRef { file, index: index as u32 });
             rel.items.push(Relation {
                 kind: if call { RelKind::IncomingCall } else { RelKind::Reference },

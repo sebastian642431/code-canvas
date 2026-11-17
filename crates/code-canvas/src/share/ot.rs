@@ -278,6 +278,8 @@ mod tests {
         assert!(TextOp::transform(&a, &TextOp::between("other text", "x")).is_none());
     }
 
+    type Sent = Vec<(TextOp, u64, u64)>;
+
     fn next(seed: &mut u64) -> usize {
         *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (*seed >> 33) as usize
@@ -306,8 +308,7 @@ mod tests {
             let mut host = String::from("fn main() {\n    println!(\"hi\");\n}\n");
             let mut guest = host.clone();
             let (mut at_host, mut at_guest) = (Link::default(), Link::default());
-            let (mut to_guest, mut to_host): (Vec<(TextOp, u64, u64)>, Vec<(TextOp, u64, u64)>) =
-                (Vec::new(), Vec::new());
+            let (mut to_guest, mut to_host): (Sent, Sent) = (Vec::new(), Vec::new());
             for _ in 0..40 {
                 match next(&mut seed) % 4 {
                     0 => {

@@ -730,6 +730,9 @@ Graphics and the frame
   taken: taking it first and looking after lost it whenever the scan ended a
   frame later, and the canvas never went to a file just let in (a video picked
   among the ignored ones, say).
+- A description under an option of the settings wraps at the width of its box
+  (`settings::option`): in a row laid out sideways a label does not wrap by
+  itself, and one long sentence pushed every box of the page out of the window.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest

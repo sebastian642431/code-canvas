@@ -326,20 +326,20 @@ impl SourceFile {
         if note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
             (file.root, file.loaded, file.lines) = (Some(root), OnceLock::new(), lines);
         } else {
-            file = file.as_tall_as(lines);
+            file = file.tall_as(lines);
         }
         (file.note, file.analysis) = (note, analysis);
         file
     }
 
-    fn as_tall_as(mut self, lines: u32) -> Self {
+    fn tall_as(mut self, lines: u32) -> Self {
         let empty = Loaded::new(String::new(), vec![0]).with_lines(lines as usize);
         (self.lines, self.loaded) = (lines, OnceLock::from(empty));
         self
     }
 
     fn media(rel_path: String, what: &str) -> Self {
-        let mut file = SourceFile::placeholder(rel_path, what.to_string()).as_tall_as(MEDIA_LINES);
+        let mut file = SourceFile::placeholder(rel_path, what.to_string()).tall_as(MEDIA_LINES);
         file.max_cols = MEDIA_COLS;
         file
     }

@@ -346,16 +346,8 @@ impl Session {
         self.to(id, msg);
     }
 
-    fn edit(
-        &mut self,
-        from: u32,
-        folder: u32,
-        path: String,
-        epoch: u32,
-        number: u64,
-        seen: u64,
-        op: TextOp,
-    ) -> Option<Event> {
+    fn edit(&mut self, from: u32, folder: u32, path: String, at: (u32, u64, u64), op: TextOp) -> Option<Event> {
+        let (epoch, number, seen) = at;
         let (host, allowed) = (self.host, !self.host || self.person(from).is_some_and(|person| person.writer));
         let key = (folder, path.clone());
         let doc = self.docs.get_mut(&key)?;
@@ -527,7 +519,7 @@ impl Session {
                 events.push(Event::Gone { folder, path });
             }
             Msg::Edit { folder, path, epoch, number, seen, op } => {
-                events.extend(self.edit(from, folder, path, epoch, number, seen, op));
+                events.extend(self.edit(from, folder, path, (epoch, number, seen), op));
             }
             Msg::Save { folder, path } if self.host => {
                 if self.person(from).is_some_and(|person| person.writer) {

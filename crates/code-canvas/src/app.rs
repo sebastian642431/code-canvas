@@ -128,6 +128,8 @@ fn theme_of_extension(ext: &Extensions, key: &str) -> Option<canvas_render::them
     made
 }
 
+type Awaited = (PathBuf, Option<(u32, u32, u32)>);
+
 fn can_show(size: winit::dpi::PhysicalSize<u32>) -> bool {
     size.width >= 320 && size.height >= 200
 }
@@ -207,7 +209,7 @@ pub struct App {
     checkers_offered: HashSet<&'static str>,
     following: Option<(usize, String, u32, Instant)>,
     text_checked: Instant,
-    show_when_read: Option<(PathBuf, Option<(u32, u32, u32)>)>,
+    show_when_read: Option<Awaited>,
     back: Vec<Place>,
     forward: Vec<Place>,
     moved_by_itself: bool,
