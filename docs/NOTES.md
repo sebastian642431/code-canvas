@@ -739,6 +739,10 @@ Graphics and the frame
   Ctrl, at the pointer. A touchpad's two fingers come as the same event with both
   directions and move the canvas as they go; its pinch zooms. `WHEEL_NOTCH` is
   how far one notch of a mouse goes.
+- The wheel with the right button held zooms too, with one hand. That press is
+  a drag already (`Drag::button`); the wheel marks it as moved, so letting the
+  button go does not open the menu of the card. The menu, if it is open, closes
+  as soon as the canvas moves by any means.
 - Over a video playing in its card the wheel belongs to the page of the player,
   not to the window: the page sends it on (`media::WHEEL`, `PageWheel`) and
   `App::wheel` does with it what it does with the window's own.

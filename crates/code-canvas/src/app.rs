@@ -1516,6 +1516,7 @@ impl App {
     fn wheel(&mut self, moved: [f32; 2], at: [f32; 2], zooming: bool, sideways: bool) {
         let (vp, notch) = (self.viewport(), WHEEL_NOTCH * self.scale());
         let [across, along] = moved;
+        self.ui.card_menu = None;
         self.share_let_go();
         if let Some(page) = self.pages.get_mut(self.active) {
             page.target = None;
@@ -4461,6 +4462,7 @@ impl ApplicationHandler for App {
                     d.last = p;
                     if (p[0] - d.start[0]).abs() + (p[1] - d.start[1]).abs() > 4.0 {
                         d.moved = true;
+                        self.ui.card_menu = None;
                         self.sharing.following = None;
                         self.agents.following = None;
                     }
@@ -4519,7 +4521,11 @@ impl ApplicationHandler for App {
             },
             WindowEvent::MouseWheel { delta, .. } => {
                 self.focus_folder_at(self.cursor);
-                if self.over_ui(self.cursor) {
+                let had_menu = self.ui.card_menu.take().is_some();
+                if had_menu {
+                    self.request_redraw();
+                }
+                if self.over_ui(self.cursor) && !(had_menu && self.canvas.contains(self.cursor)) {
                     return;
                 }
                 self.last_input = Instant::now();
@@ -4528,14 +4534,17 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(x, y) => [x * notch, y * notch],
                     MouseScrollDelta::PixelDelta(p) => [p.x as f32, p.y as f32],
                 };
-                let (zooming, sideways) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
-                self.wheel(moved, self.cursor, zooming, sideways);
+                let held = self.drag.as_mut().filter(|drag| drag.button == MouseButton::Right);
+                let with_button = held.map(|drag| drag.moved = true).is_some();
+                let zooming = with_button || self.mods.control_key() || self.mods.super_key();
+                self.wheel(moved, self.cursor, zooming, self.mods.shift_key());
             }
             WindowEvent::PinchGesture { delta, .. } => {
                 self.focus_folder_at(self.cursor);
                 if self.over_ui(self.cursor) {
                     return;
                 }
+                self.ui.card_menu = None;
                 let vp = self.viewport();
                 let cursor = self.cursor;
                 if let Some(page) = self.pages.get_mut(self.active) {

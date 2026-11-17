@@ -233,7 +233,7 @@ Without arguments the previous session is restored. Folders can also be opened w
 | Action | Input |
 |---|---|
 | Up and down / left and right | Wheel / `Shift` + wheel |
-| Zoom | `Ctrl` + wheel, pinch, `+` `-` |
+| Zoom | `Ctrl` + wheel, the wheel with the right button held, pinch, `+` `-` |
 | Pan | Drag, arrow keys |
 | Fly to a file or folder | Double-click, or click it in the files panel |
 | Show everything / go to the selection | `F` or `Home` / `L` |
