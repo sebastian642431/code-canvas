@@ -3,8 +3,10 @@
 # a picture of ITS window only, not of the screen. For checking how a change
 # looks without clicking around:
 #
-#   scriptsscreenshot.ps1 -Exe targetdebugde-canvas.exe -Data $env:TEMP-test `
-#       -Script "left settings; wait 4000; quit" -Out shot.png -After 4500 -Folders "C:someolder"
+#   scripts\screenshot.ps1 -Exe target\debug\code-canvas.exe -Data $env:TEMP\cc-test `
+#       -Script "left settings; wait 4000; quit" -Out shot.png -After 4500 -Folders "C:\some\folder"
+#
+# Several folders go in one -Folders value, separated by commas.
 param(
     [string]$Exe,
     [string]$Data,
