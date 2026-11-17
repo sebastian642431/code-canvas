@@ -42,8 +42,8 @@ function Save-Window($process, $file) {
 }
 
 $head = @{}
-$many = @{ 'expect-log' = @(); 'forbid-log' = @(); 'allow-log' = @(); 'expect-file' = @(); 'absent-file' = @(); 'guest-expect-log' = @() }
-$steps = @{ host = @(); guest = @() }
+$many = @{ 'expect-log' = @(); 'forbid-log' = @(); 'allow-log' = @(); 'expect-file' = @(); 'absent-file' = @(); 'guest-expect-log' = @(); 'again-expect-log' = @(); 'again-forbid-log' = @() }
+$steps = @{ host = @(); guest = @(); again = @() }
 $part = 'head'
 foreach ($line in Get-Content -LiteralPath $Scenario -Encoding UTF8) {
     $text = $line.Trim()
@@ -56,6 +56,7 @@ foreach ($line in Get-Content -LiteralPath $Scenario -Encoding UTF8) {
         continue
     }
     if ($text -eq '=== guest') { $part = 'guest'; continue }
+    if ($text -eq '=== again') { $part = 'again'; continue }
     if ($text -ne '') { $steps[$part] += $text }
 }
 if ($steps.host.Count -eq 0) { Write-Output "FAIL $name`: no steps"; exit 2 }
@@ -91,21 +92,40 @@ function Fill([string]$step) {
 }
 $hostScript = (@($steps.host) | ForEach-Object { Fill $_ }) -join '; '
 $guestScript = (@($steps.guest) | ForEach-Object { Fill $_ }) -join '; '
+$againScript = (@($steps.again) | ForEach-Object { Fill $_ }) -join '; '
+
+function Read-Log($dir) {
+    $file = Join-Path $dir 'code-canvas.log'
+    if (Test-Path $file) { return @(Get-Content -LiteralPath $file -Encoding UTF8) }
+    return @()
+}
 
 $env:CODE_CANVAS_SHARE_ON = '127.0.0.1'
 $env:CLAUDE_CONFIG_DIR = Join-Path $Work 'claude'
-$env:CODE_CANVAS_DATA_DIR = $data
-$env:CODE_CANVAS_SCRIPT = $hostScript
-$running = @()
-if ($folders.Count -gt 0) { $first = Start-Process -FilePath $Exe -ArgumentList $folders -PassThru } else { $first = Start-Process -FilePath $Exe -PassThru }
-$running += , @($first, $data, '')
 $problems = @()
-
-$invite = Join-Path $data 'invite.txt'
-$guestDue = $steps.guest.Count -gt 0
-$inviteBy = (Get-Date).AddSeconds(30)
 $seen = @{}
 $pictures = 0
+$logs = @{ '' = @(); 'again-' = @() }
+$rounds = @('')
+if ($steps.again.Count -gt 0) { $rounds += 'again-' }
+foreach ($round in $rounds) {
+$env:CODE_CANVAS_DATA_DIR = $data
+$running = @()
+if ($round -eq '') {
+    $env:CODE_CANVAS_SCRIPT = $hostScript
+    if ($folders.Count -gt 0) { $first = Start-Process -FilePath $Exe -ArgumentList $folders -PassThru } else { $first = Start-Process -FilePath $Exe -PassThru }
+} else {
+    if ($problems.Count -gt 0) { break }
+    $old = Join-Path $data 'marks'
+    if (Test-Path $old) { Remove-Item -Recurse -Force $old }
+    $env:CODE_CANVAS_SCRIPT = $againScript
+    $first = Start-Process -FilePath $Exe -PassThru
+}
+$running += , @($first, $data, $round)
+
+$invite = Join-Path $data 'invite.txt'
+$guestDue = $round -eq '' -and $steps.guest.Count -gt 0
+$inviteBy = (Get-Date).AddSeconds(30)
 $deadline = (Get-Date).AddSeconds($limit)
 while (@($running | Where-Object { -not $_[0].HasExited }).Count -gt 0 -and (Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 100
@@ -141,16 +161,15 @@ foreach ($one in $running) {
         $problems += "$($one[2])instance ended with code $($one[0].ExitCode)"
     }
 }
-
-function Read-Log($dir) {
-    $file = Join-Path $dir 'code-canvas.log'
-    if (Test-Path $file) { return @(Get-Content -LiteralPath $file -Encoding UTF8) }
-    return @()
+$logs[$round] = Read-Log $data
 }
-$log = Read-Log $data
+
+$log = $logs['']
+$againLog = $logs['again-']
 $guestLog = Read-Log $guestData
-$forbidden = @('panicked', 'panic:', '\] ERROR ') + $many['forbid-log']
-foreach ($pair in @(@('', $log), @('guest ', $guestLog))) {
+$always = @('panicked', 'panic:', '\] ERROR ')
+foreach ($pair in @(@('', $log, 'forbid-log'), @('guest ', $guestLog, 'forbid-log'), @('again ', $againLog, 'again-forbid-log'))) {
+    $forbidden = $always + $many[$pair[2]]
     foreach ($line in $pair[1]) {
         $allowed = $false
         foreach ($ok in $many['allow-log']) { if ($line -match $ok) { $allowed = $true } }
@@ -165,6 +184,9 @@ foreach ($want in $many['expect-log']) {
 }
 foreach ($want in $many['guest-expect-log']) {
     if (-not ($guestLog | Where-Object { $_ -match $want })) { $problems += "the guest's log never said /$want/" }
+}
+foreach ($want in $many['again-expect-log']) {
+    if (-not ($againLog | Where-Object { $_ -match $want })) { $problems += "the log of the second start never said /$want/" }
 }
 foreach ($want in $many['expect-file']) {
     $at = $want.IndexOf('::')
