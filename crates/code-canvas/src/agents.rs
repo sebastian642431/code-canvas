@@ -1,0 +1,575 @@
+use std::io::Read;
+use std::net::UdpSocket;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+const PORT_FILE: &str = "agents.port";
+const LARGEST: usize = 60_000;
+const KEPT_OF_A_TEXT: usize = 600;
+const QUIET_AFTER: Duration = Duration::from_secs(45);
+const GONE_AFTER: Duration = Duration::from_secs(15 * 60);
+const LEAVING: Duration = Duration::from_secs(6);
+
+pub const NAMES: [&str; 16] = [
+    "Nova", "Rusty", "Juno", "Kiro", "Saffi", "Mint", "Bolt", "Coral", "Hoot", "Blaze", "Indi", "Gloop", "Teo",
+    "Raven", "Newton", "Ember",
+];
+pub const COLORS: [u32; 16] = [
+    0x7cc4ffff, 0xff9f43ff, 0xb48cffff, 0x2ac3a8ff, 0xff8a3dff, 0x7be0a0ff, 0xffd166ff, 0xff7eb6ff, 0xd9e2ecff,
+    0xff5d5dff, 0x6c8cffff, 0x5bc0ebff, 0xc9a26bff, 0xe84a5fff, 0xaab4c4ff, 0xa66bffff,
+];
+
+fn shortened(value: &Value, depth: u8) -> Value {
+    match value {
+        Value::String(text) if text.chars().count() > KEPT_OF_A_TEXT => {
+            Value::String(text.chars().take(KEPT_OF_A_TEXT).collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().take(6).map(|item| shortened(item, depth + 1)).collect()),
+        Value::Object(_) if depth > 3 => Value::Null,
+        Value::Object(fields) => {
+            let kept = fields.iter().filter(|(key, _)| key.as_str() != "tool_response" || depth > 0);
+            Value::Object(kept.map(|(key, value)| (key.clone(), shortened(value, depth + 1))).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn port_file() -> PathBuf {
+    crate::session::data_dir().join(PORT_FILE)
+}
+
+pub fn hook(source: &str) -> i32 {
+    let mut said = String::new();
+    if std::io::stdin().take(8 << 20).read_to_string(&mut said).is_err() {
+        return 0;
+    }
+    let Ok(event) = serde_json::from_str::<Value>(&said) else { return 0 };
+    let Some(port) = std::fs::read_to_string(port_file()).ok().and_then(|port| port.trim().parse::<u16>().ok()) else {
+        return 0;
+    };
+    let mut packed = json!({ "source": source, "hook": shortened(&event, 0) }).to_string();
+    if packed.len() > LARGEST {
+        let mut small = event.clone();
+        if let Some(fields) = small.get_mut("tool_input").and_then(Value::as_object_mut) {
+            fields.retain(|_, value| value.as_str().is_none_or(|text| text.len() < 400));
+        }
+        packed = json!({ "source": source, "hook": shortened(&small, 0) }).to_string();
+    }
+    if packed.len() <= LARGEST {
+        if let Ok(socket) = UdpSocket::bind(("127.0.0.1", 0)) {
+            let _ = socket.send_to(packed.as_bytes(), ("127.0.0.1", port));
+        }
+    }
+    0
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Doing {
+    Reading,
+    Editing,
+    Searching,
+    Running,
+    Thinking,
+    Waiting,
+    Leaving,
+}
+
+impl Doing {
+    pub fn said(self) -> &'static str {
+        match self {
+            Doing::Reading => "reading",
+            Doing::Editing => "editing",
+            Doing::Searching => "searching",
+            Doing::Running => "running a command",
+            Doing::Thinking => "thinking",
+            Doing::Waiting => "waiting for you",
+            Doing::Leaving => "done",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Agent {
+    pub key: String,
+    pub session: String,
+    pub avatar: usize,
+    pub role: String,
+    pub doing: Doing,
+    pub note: String,
+    pub path: Option<PathBuf>,
+    pub lines: Option<(u32, u32)>,
+    pub find: Option<String>,
+    pub at: Instant,
+    pub moved: u64,
+}
+
+impl Agent {
+    pub fn name(&self) -> &'static str {
+        NAMES[self.avatar % NAMES.len()]
+    }
+
+    pub fn color(&self) -> u32 {
+        COLORS[self.avatar % COLORS.len()]
+    }
+
+    pub fn quiet(&self) -> bool {
+        self.at.elapsed() > QUIET_AFTER || matches!(self.doing, Doing::Waiting | Doing::Leaving)
+    }
+
+    pub fn busy(&self) -> bool {
+        self.at.elapsed() < Duration::from_millis(1600) && !matches!(self.doing, Doing::Waiting | Doing::Leaving)
+    }
+}
+
+pub const AVATARS: [&[u8]; 16] = [
+    include_bytes!("../assets/agents/00.png"),
+    include_bytes!("../assets/agents/01.png"),
+    include_bytes!("../assets/agents/02.png"),
+    include_bytes!("../assets/agents/03.png"),
+    include_bytes!("../assets/agents/04.png"),
+    include_bytes!("../assets/agents/05.png"),
+    include_bytes!("../assets/agents/06.png"),
+    include_bytes!("../assets/agents/07.png"),
+    include_bytes!("../assets/agents/08.png"),
+    include_bytes!("../assets/agents/09.png"),
+    include_bytes!("../assets/agents/10.png"),
+    include_bytes!("../assets/agents/11.png"),
+    include_bytes!("../assets/agents/12.png"),
+    include_bytes!("../assets/agents/13.png"),
+    include_bytes!("../assets/agents/14.png"),
+    include_bytes!("../assets/agents/15.png"),
+];
+
+const HOOKED: [(&str, bool); 8] = [
+    ("PreToolUse", true),
+    ("PostToolUse", true),
+    ("UserPromptSubmit", false),
+    ("Stop", false),
+    ("SubagentStart", false),
+    ("SubagentStop", false),
+    ("SessionStart", false),
+    ("SessionEnd", false),
+];
+const HOOK_FLAG: &str = "--agent-hook";
+
+fn claude_settings() -> Option<PathBuf> {
+    let dir =
+        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| Some(dirs::home_dir()?.join(".claude")))?;
+    Some(dir.join("settings.json"))
+}
+
+fn ours(entry: &Value) -> bool {
+    let hooks = entry.get("hooks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    hooks.iter().any(|hook| {
+        let args = hook.get("args").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        args.iter().any(|arg| arg.as_str() == Some(HOOK_FLAG))
+    })
+}
+
+pub fn with_hooks(mut settings: Value, program: Option<&Path>) -> Value {
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    let hooks = settings.as_object_mut().unwrap().entry("hooks").or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        *hooks = json!({});
+    }
+    let hooks = hooks.as_object_mut().unwrap();
+    for (event, of_tools) in HOOKED {
+        let mut entries: Vec<Value> = hooks.get(event).and_then(Value::as_array).cloned().unwrap_or_default();
+        entries.retain(|entry| !ours(entry));
+        if let Some(program) = program {
+            let run = json!({ "type": "command", "command": program, "args": [HOOK_FLAG, "claude"], "async": true, "timeout": 5 });
+            entries.push(match of_tools {
+                true => json!({ "matcher": "*", "hooks": [run] }),
+                false => json!({ "hooks": [run] }),
+            });
+        }
+        match entries.is_empty() {
+            true => hooks.remove(event),
+            false => hooks.insert(event.to_string(), Value::Array(entries)),
+        };
+    }
+    if hooks.is_empty() {
+        settings.as_object_mut().unwrap().remove("hooks");
+    }
+    settings
+}
+
+pub fn claude_connected() -> bool {
+    let read = claude_settings().and_then(|file| std::fs::read_to_string(file).ok());
+    let settings: Value = read.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Value::Null);
+    let entries =
+        settings.pointer("/hooks/PreToolUse").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    entries.iter().any(ours)
+}
+
+pub fn connect_claude(on: bool) -> Result<(), String> {
+    let file = claude_settings().ok_or("the folder of Claude Code's settings was not found")?;
+    let settings = match std::fs::read_to_string(&file) {
+        Ok(text) if text.trim().is_empty() => json!({}),
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("{} is not readable as JSON ({e}): it was left as it is", file.display()))?,
+        Err(_) => json!({}),
+    };
+    let program = std::env::current_exe().map_err(|e| e.to_string())?;
+    let changed = with_hooks(settings.clone(), on.then_some(program.as_path()));
+    if changed == settings {
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    if file.is_file() {
+        let _ = std::fs::copy(&file, file.with_extension("json.before-code-canvas"));
+    }
+    let text = serde_json::to_string_pretty(&changed).map_err(|e| e.to_string())?;
+    std::fs::write(&file, text + "\n").map_err(|e| format!("{} could not be written: {e}", file.display()))
+}
+
+pub struct Agents {
+    heard: Option<Receiver<Value>>,
+    pub list: Vec<Agent>,
+    pub following: Option<String>,
+    moves: u64,
+}
+
+fn text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| value.get(*key).and_then(Value::as_str)).filter(|text| !text.is_empty())
+}
+
+fn first_line(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|line| line.len() > 3).unwrap_or(text.trim());
+    line.chars().take(200).collect()
+}
+
+fn brief(text: &str, most: usize) -> String {
+    let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one.chars().count() > most {
+        true => format!("{}…", one.chars().take(most).collect::<String>()),
+        false => one,
+    }
+}
+
+impl Agents {
+    pub fn listen() -> Agents {
+        let socket = UdpSocket::bind(("127.0.0.1", 0)).ok();
+        let heard = match socket.as_ref().and_then(|socket| socket.local_addr().ok()) {
+            Some(address) => {
+                let _ = std::fs::create_dir_all(crate::session::data_dir());
+                let _ = std::fs::write(port_file(), address.port().to_string());
+                let (tx, heard) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let (Some(socket), mut bytes) = (socket, vec![0u8; 65_536]) else { return };
+                    while let Ok((length, _)) = socket.recv_from(&mut bytes) {
+                        let Ok(event) = serde_json::from_slice::<Value>(&bytes[..length]) else { continue };
+                        if tx.send(event).is_err() {
+                            return;
+                        }
+                        crate::ext::wake_ui();
+                    }
+                });
+                Some(heard)
+            }
+            None => {
+                log::warn!("assistants will not be seen on the canvas: no port to listen on");
+                None
+            }
+        };
+        Agents { heard, list: Vec::new(), following: None, moves: 0 }
+    }
+
+    pub fn find(&self, key: &str) -> Option<&Agent> {
+        self.list.iter().find(|agent| agent.key == key)
+    }
+
+    fn agent(&mut self, key: &str, session: &str, role: &str) -> &mut Agent {
+        if let Some(at) = self.list.iter().position(|agent| agent.key == key) {
+            return &mut self.list[at];
+        }
+        let free = (0..NAMES.len()).find(|avatar| self.list.iter().all(|agent| agent.avatar != *avatar));
+        self.list.push(Agent {
+            key: key.to_string(),
+            session: session.to_string(),
+            avatar: free.unwrap_or(self.list.len() % NAMES.len()),
+            role: role.to_string(),
+            doing: Doing::Thinking,
+            note: String::new(),
+            path: None,
+            lines: None,
+            find: None,
+            at: Instant::now(),
+            moved: 0,
+        });
+        self.list.last_mut().unwrap()
+    }
+
+    pub fn poll(&mut self) -> bool {
+        let heard: Vec<Value> = self.heard.as_ref().map(|heard| heard.try_iter().collect()).unwrap_or_default();
+        let before = self.list.len();
+        let mut changed = !heard.is_empty();
+        for event in heard {
+            self.hear(&event);
+        }
+        self.list.retain(|agent| match agent.doing {
+            Doing::Leaving => agent.at.elapsed() < LEAVING,
+            _ => agent.at.elapsed() < GONE_AFTER,
+        });
+        changed |= before != self.list.len();
+        if self.following.as_ref().is_some_and(|key| self.find(key).is_none()) {
+            self.following = None;
+        }
+        changed
+    }
+
+    pub fn lively(&self) -> bool {
+        self.list.iter().any(|agent| agent.at.elapsed() < Duration::from_secs(3))
+    }
+
+    pub fn hear(&mut self, event: &Value) {
+        match event.get("hook") {
+            Some(hook) => self.hear_hook(text(event, &["source"]).unwrap_or("assistant"), hook),
+            None => self.hear_plain(event),
+        }
+    }
+
+    fn hear_plain(&mut self, event: &Value) {
+        let Some(key) = text(event, &["agent"]) else { return };
+        let role = text(event, &["name"]).unwrap_or("assistant").to_string();
+        self.moves += 1;
+        let moves = self.moves;
+        let agent = self.agent(key, key, &role);
+        agent.role = role;
+        agent.at = Instant::now();
+        agent.note = text(event, &["note"]).map(|note| brief(note, 90)).unwrap_or_default();
+        agent.doing = match text(event, &["action"]).unwrap_or("read") {
+            "edit" | "write" => Doing::Editing,
+            "search" => Doing::Searching,
+            "run" => Doing::Running,
+            "think" => Doing::Thinking,
+            "wait" => Doing::Waiting,
+            "done" | "leave" => Doing::Leaving,
+            _ => Doing::Reading,
+        };
+        if let Some(path) = text(event, &["path"]) {
+            let line = event.get("line").and_then(Value::as_u64).map(|line| line.saturating_sub(1) as u32);
+            let lines = event.get("lines").and_then(Value::as_u64).unwrap_or(1).max(1) as u32;
+            agent.path = Some(PathBuf::from(path));
+            agent.lines = line.map(|line| (line, lines));
+            agent.find = None;
+            agent.moved = moves;
+        }
+    }
+
+    fn hear_hook(&mut self, source: &str, hook: &Value) {
+        let Some(session) = text(hook, &["session_id"]) else { return };
+        let inner = text(hook, &["agent_id", "subagent_id"]);
+        let key = match inner {
+            Some(inner) => format!("{session}/{inner}"),
+            None => session.to_string(),
+        };
+        let role = match (inner, text(hook, &["agent_type", "subagent_type"])) {
+            (Some(_), Some(kind)) => kind.to_string(),
+            (Some(_), None) => "agent".to_string(),
+            (None, _) => match source {
+                "claude" => "Claude Code".to_string(),
+                other => other.to_string(),
+            },
+        };
+        let event = text(hook, &["hook_event_name"]).unwrap_or_default();
+        if event == "SessionEnd" {
+            for agent in self.list.iter_mut().filter(|agent| agent.session == session) {
+                (agent.doing, agent.at) = (Doing::Leaving, Instant::now());
+            }
+            return;
+        }
+        let cwd = text(hook, &["cwd"]).map(PathBuf::from);
+        self.moves += 1;
+        let moves = self.moves;
+        let agent = self.agent(&key, session, &role);
+        agent.at = Instant::now();
+        match event {
+            "SubagentStop" => (agent.doing, agent.note) = (Doing::Leaving, String::new()),
+            "Stop" => (agent.doing, agent.note) = (Doing::Waiting, String::new()),
+            "UserPromptSubmit" | "SessionStart" | "SubagentStart" => {
+                (agent.doing, agent.note) = (Doing::Thinking, String::new())
+            }
+            "PreToolUse" | "PostToolUse" => {
+                let empty = json!({});
+                let input = hook.get("tool_input").unwrap_or(&empty);
+                let tool = text(hook, &["tool_name"]).unwrap_or_default();
+                let whole = |path: &str| {
+                    let path = PathBuf::from(path);
+                    match (path.is_absolute(), &cwd) {
+                        (false, Some(cwd)) => cwd.join(path),
+                        _ => path,
+                    }
+                };
+                let file = text(input, &["file_path", "notebook_path"]).map(whole);
+                let number = |key: &str| input.get(key).and_then(Value::as_u64);
+                match tool {
+                    "Read" | "NotebookRead" => {
+                        agent.doing = Doing::Reading;
+                        agent.note = String::new();
+                        agent.find = None;
+                        agent.lines = Some((
+                            number("offset").unwrap_or(1).saturating_sub(1) as u32,
+                            number("limit").unwrap_or(60).clamp(1, 400) as u32,
+                        ));
+                        (agent.path, agent.moved) = (file, moves);
+                    }
+                    "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
+                        agent.doing = Doing::Editing;
+                        agent.note = String::new();
+                        let written = text(input, &["new_string", "content", "new_source"]);
+                        let before = text(input, &["old_string"]);
+                        let look_for = if event == "PostToolUse" { written.or(before) } else { before.or(written) };
+                        agent.find = look_for.map(first_line).filter(|line| !line.is_empty());
+                        agent.lines = None;
+                        (agent.path, agent.moved) = (file, moves);
+                    }
+                    "Grep" | "Glob" | "LS" => {
+                        agent.doing = Doing::Searching;
+                        let what = text(input, &["pattern", "glob"]).unwrap_or_default();
+                        agent.note = if what.is_empty() { String::new() } else { format!("for {}", brief(what, 60)) };
+                        let place = text(input, &["path"]).map(whole).or_else(|| cwd.clone());
+                        (agent.find, agent.lines) = (None, None);
+                        (agent.path, agent.moved) = (place, moves);
+                    }
+                    "Bash" | "PowerShell" => {
+                        agent.doing = Doing::Running;
+                        agent.note = brief(text(input, &["description", "command"]).unwrap_or_default(), 80);
+                    }
+                    "Agent" | "Task" => {
+                        agent.doing = Doing::Thinking;
+                        let about = text(input, &["description"]).unwrap_or("a task");
+                        agent.note = format!("hands over: {}", brief(about, 70));
+                    }
+                    other => {
+                        agent.doing = Doing::Thinking;
+                        agent.note = brief(other, 40);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn heard(events: &[Value]) -> Agents {
+        let mut agents = Agents { heard: None, list: Vec::new(), following: None, moves: 0 };
+        for event in events {
+            agents.hear(event);
+        }
+        agents
+    }
+
+    #[test]
+    fn what_an_assistant_reads_edits_and_searches_is_where_it_is() {
+        let hook = |event: &str, tool: &str, input: Value| {
+            json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": event, "cwd": "C:/work/app",
+                    "tool_name": tool, "tool_input": input } })
+        };
+        let agents = heard(&[hook(
+            "PreToolUse",
+            "Read",
+            json!({ "file_path": "C:/work/app/src/a.rs", "offset": 40, "limit": 20 }),
+        )]);
+        let agent = &agents.list[0];
+        assert_eq!((agent.name(), agent.role.as_str(), agent.doing), ("Nova", "Claude Code", Doing::Reading));
+        assert_eq!(agent.path.as_deref(), Some(std::path::Path::new("C:/work/app/src/a.rs")));
+        assert_eq!(agent.lines, Some((39, 20)));
+
+        let agents = heard(&[
+            hook("PreToolUse", "Read", json!({ "file_path": "src/b.rs" })),
+            hook(
+                "PostToolUse",
+                "Edit",
+                json!({ "file_path": "src/b.rs", "old_string": "let a = 1;", "new_string": "\n\n    let a = 2;\nmore" }),
+            ),
+        ]);
+        let agent = &agents.list[0];
+        assert_eq!(agents.list.len(), 1, "one session is one assistant");
+        assert_eq!(
+            agent.path.as_deref(),
+            Some(std::path::Path::new("C:/work/app/src/b.rs")),
+            "a relative path is the session's"
+        );
+        assert_eq!((agent.doing, agent.find.as_deref(), agent.lines), (Doing::Editing, Some("let a = 2;"), None));
+
+        let agents =
+            heard(&[hook("PreToolUse", "Grep", json!({ "pattern": "fn main", "path": "C:/work/app/crates" }))]);
+        assert_eq!((agents.list[0].doing, agents.list[0].note.as_str()), (Doing::Searching, "for fn main"));
+        let agents = heard(&[hook("PreToolUse", "Bash", json!({ "command": "cargo   build\n --release" }))]);
+        assert_eq!((agents.list[0].doing, agents.list[0].note.as_str()), (Doing::Running, "cargo build --release"));
+    }
+
+    #[test]
+    fn each_helper_of_a_session_is_someone_else_and_leaves_when_done() {
+        let hook = |event: &str, inner: Option<&str>| {
+            let mut hook = json!({ "session_id": "s1", "hook_event_name": event, "tool_name": "Read",
+                                   "tool_input": { "file_path": "C:/a.rs" } });
+            if let Some(inner) = inner {
+                hook["agent_id"] = json!(inner);
+                hook["agent_type"] = json!("Explore");
+            }
+            json!({ "source": "claude", "hook": hook })
+        };
+        let mut agents =
+            heard(&[hook("PreToolUse", None), hook("PreToolUse", Some("a1")), hook("PreToolUse", Some("a2"))]);
+        let seen: Vec<(&str, &str)> = agents.list.iter().map(|agent| (agent.name(), agent.role.as_str())).collect();
+        assert_eq!(seen, [("Nova", "Claude Code"), ("Rusty", "Explore"), ("Juno", "Explore")]);
+        agents.hear(&hook("SubagentStop", Some("a1")));
+        assert_eq!(agents.list[1].doing, Doing::Leaving);
+        agents.hear(&hook("Stop", None));
+        assert!(agents.list[0].quiet() && agents.list[0].doing == Doing::Waiting);
+        agents.hear(&json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": "SessionEnd" } }));
+        assert!(agents.list.iter().all(|agent| agent.doing == Doing::Leaving));
+    }
+
+    #[test]
+    fn any_program_can_say_where_it_is_in_plain_words() {
+        let agents = heard(&[
+            json!({ "agent": "codex-1", "name": "Codex", "action": "edit", "path": "C:/a.rs", "line": 12, "lines": 3, "note": "fixing   the parser" }),
+        ]);
+        let agent = &agents.list[0];
+        assert_eq!((agent.role.as_str(), agent.doing, agent.lines), ("Codex", Doing::Editing, Some((11, 3))));
+        assert_eq!(agent.note, "fixing the parser");
+        assert!(heard(&[json!({ "note": "nobody" })]).list.is_empty());
+    }
+
+    #[test]
+    fn the_hooks_of_claude_code_are_added_and_taken_out_without_touching_the_rest() {
+        let before = json!({ "model": "opus", "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "mine.sh" }] }] } });
+        let program = Path::new("C:/Program Files/Code Canvas/code-canvas.exe");
+        let on = with_hooks(before.clone(), Some(program));
+        assert_eq!(on["model"], "opus");
+        let tools = on["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(tools.len(), 2, "theirs stays, ours is added");
+        assert_eq!(tools[1]["matcher"], "*");
+        assert_eq!(tools[1]["hooks"][0]["args"], json!(["--agent-hook", "claude"]));
+        assert_eq!(tools[1]["hooks"][0]["async"], true);
+        assert!(on["hooks"]["SessionEnd"][0].get("matcher").is_none());
+        assert_eq!(with_hooks(on.clone(), Some(program)), on, "adding twice adds once");
+        assert_eq!(with_hooks(on, None), before, "and taking out leaves what was there");
+        assert_eq!(with_hooks(json!({}), None), json!({}));
+    }
+
+    #[test]
+    fn a_long_event_is_cut_to_what_matters_before_it_is_sent() {
+        let event = json!({ "session_id": "s", "tool_input": { "content": "x".repeat(50_000), "file_path": "a.rs" },
+                            "tool_response": { "stdout": "y".repeat(90_000) } });
+        let cut = shortened(&event, 0);
+        assert_eq!(cut["tool_input"]["content"].as_str().unwrap().len(), KEPT_OF_A_TEXT);
+        assert_eq!(cut["tool_input"]["file_path"], "a.rs");
+        assert!(cut.get("tool_response").is_none());
+        assert!(cut.to_string().len() < 2000);
+    }
+}

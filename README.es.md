@@ -87,6 +87,11 @@ muy grandes. Código abierto: cualquiera puede aportar.
   archivos como están.
 - **Clic derecho sobre una línea cambiada**: prepara (*stage*), saca del *stage* o
   descarta solo ese cambio; el mismo menú prepara el archivo entero o copia su ruta.
+- **IAs en el lienzo**: cada asistente que trabaja sobre tus archivos aparece en el
+  lienzo con su propio avatar y nombre: qué líneas está leyendo, qué busca, qué
+  acaba de cambiar. Una sesión de Claude Code es un avatar y cada agente que lanza
+  es otro. Clic en su cara (arriba) para **seguirlo**. Se activa en Ajustes,
+  *Assistants on the canvas*, *Connect Claude Code*.
 - **Workspace**: cada carpeta que abrís queda en la lista *Workspace* del panel de
   archivos. Arrastrás una al lienzo (o le hacés clic) y aparece junto a las demás;
   la cruz, o el clic derecho en el lienzo, la saca sin olvidarla.

@@ -23,6 +23,7 @@ use crate::script::{Script, Step};
 use crate::session::{self, PageSession, Session};
 use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState};
 
+mod assistants;
 mod sharing;
 
 struct Gfx {
@@ -222,6 +223,9 @@ pub struct App {
     sharing: sharing::Sharing,
     workspace: Vec<session::Known>,
     frame_all_when_read: bool,
+    agents: crate::agents::Agents,
+    agent_followed: Option<(u64, Option<u32>)>,
+    claude_checked: Option<Instant>,
     last_move_by_itself: bool,
 }
 
@@ -339,6 +343,9 @@ impl App {
             sharing: Default::default(),
             workspace: saved.workspace.iter().filter(|known| known.path.is_dir()).cloned().collect(),
             frame_all_when_read: false,
+            agents: crate::agents::Agents::listen(),
+            agent_followed: None,
+            claude_checked: None,
             last_move_by_itself: false,
         };
         app.share_setup();
@@ -2408,7 +2415,7 @@ impl App {
         }
         let Some(chord) = chord else { return };
         if chord.key == "escape" {
-            if self.sharing.following.is_some() {
+            if self.sharing.following.is_some() || self.agents.following.is_some() {
                 self.share_let_go();
                 self.request_redraw();
             } else if self.playing.is_some() {
@@ -2698,6 +2705,7 @@ impl App {
             Action::Answered(about, answer) => self.answered(about, answer),
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
+            Action::Agent(op) => self.agent_op(op),
             Action::Git(op) => {
                 use crate::git::{GitOp, Part};
                 let lost = match &op {
@@ -3194,6 +3202,19 @@ impl App {
                     None => log::warn!("script: share needs start [writers], stop, join <invitation> [name], follow|writer|reader <name>, unfollow or panel"),
                 }
             }
+            Step::Agent(said) => match serde_json::from_str(&said) {
+                Ok(event) => {
+                    self.agents.hear(&event);
+                    self.request_redraw();
+                }
+                Err(_) => match self.agents.list.iter().find(|agent| agent.name().eq_ignore_ascii_case(said.trim())) {
+                    Some(agent) => {
+                        let key = agent.key.clone();
+                        self.agent_op(ui::AgentOp::Follow(Some(key)));
+                    }
+                    None => log::warn!("script: agent needs the JSON of an event, or the name of one to follow"),
+                },
+            },
             Step::Workspace(asked) => {
                 let (verb, rest) = asked.split_once(' ').unwrap_or((asked.as_str(), ""));
                 let path = PathBuf::from(rest.trim());
@@ -3369,6 +3390,7 @@ impl App {
         }
         busy |= self.unsent_edit.is_some();
         busy |= self.poll_share();
+        busy |= self.poll_agents();
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
@@ -3867,6 +3889,7 @@ impl App {
             })
         });
         self.share_view();
+        self.agents_view();
         self.know_folders();
         self.ui.workspace = self.workspace_rows();
         let mut travelling = false;
@@ -4439,6 +4462,7 @@ impl ApplicationHandler for App {
                     if (p[0] - d.start[0]).abs() + (p[1] - d.start[1]).abs() > 4.0 {
                         d.moved = true;
                         self.sharing.following = None;
+                        self.agents.following = None;
                     }
                     if let (true, Some(rel)) = (d.moved, &d.select) {
                         selecting = Some((rel.clone(), d.start, !std::mem::replace(&mut d.anchored, true)));

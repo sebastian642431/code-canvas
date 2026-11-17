@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod agents;
 mod app;
 mod bench;
 mod camera;
@@ -101,6 +102,10 @@ fn install_extensions(args: &[String]) -> i32 {
 }
 
 fn main() -> anyhow::Result<()> {
+    let asked: Vec<String> = std::env::args().skip(1).take(2).collect();
+    if asked.first().is_some_and(|flag| flag == "--agent-hook") {
+        std::process::exit(agents::hook(asked.get(1).map_or("assistant", String::as_str)));
+    }
     init_logging();
     log::info!("Code Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
     update::clean_up();

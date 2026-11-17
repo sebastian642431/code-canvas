@@ -104,8 +104,8 @@ impl App {
                 }
             }
             ShareOp::Follow(who) => {
+                self.share_let_go();
                 self.sharing.following = who;
-                self.sharing.followed = None;
             }
             ShareOp::Panel => self.ui.share.open = true,
             ShareOp::CallEveryone => {
@@ -557,6 +557,8 @@ impl App {
     pub(super) fn share_let_go(&mut self) {
         self.sharing.following = None;
         self.sharing.followed = None;
+        self.agents.following = None;
+        self.agent_followed = None;
     }
 
     pub(super) fn poll_share(&mut self) -> bool {

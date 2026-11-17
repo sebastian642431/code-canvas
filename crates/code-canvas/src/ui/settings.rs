@@ -318,6 +318,29 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.line_numbers, EDITING[4]);
         });
     }
+    let assistants = ["Assistants on the canvas", "Claude Code", "agents", "avatar", "hooks"];
+    let seen = hit(f, &assistants);
+    if seen {
+        section(ui, icons::EYE, "Assistants on the canvas");
+        well(ui, |ui| {
+            note(ui, "Each assistant working on your files shows on the canvas with a face of its own: where it reads, what it searches and what it changes. Click a face at the top to follow it.");
+            ui.add_space(4.0);
+            let connected = st.claude_connected;
+            let state =
+                if connected { "Claude Code tells the canvas what it does." } else { "Claude Code is not connected." };
+            ui.label(RichText::new(state).size(12.5).color(pal().text));
+            ui.add_space(2.0);
+            if super::ext_panels::pill(
+                ui,
+                if connected { "Disconnect Claude Code" } else { "Connect Claude Code" },
+                !connected,
+            ) {
+                actions.push(Action::Agent(super::AgentOp::ConnectClaude(!connected)));
+            }
+            ui.add_space(4.0);
+            note(ui, "Connecting adds a hook to Claude Code's own settings (~/.claude/settings.json, a copy of the file is kept beside it) that runs after each tool it uses and says which file it touched. Nothing leaves this computer. Every session started anywhere, and each of its agents, shows here while the app is open.");
+        });
+    }
     let never = ["Folders never read", "Files never read", "skip", "ignore", "node_modules"];
     let reading = hit(f, &never);
     if reading {
@@ -352,7 +375,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
     if next != st.prefs {
         actions.push(Action::SetPrefs(next));
     }
-    about || editing || reading
+    about || editing || reading || seen
 }
 
 fn appearance(

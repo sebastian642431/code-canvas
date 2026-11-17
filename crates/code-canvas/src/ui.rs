@@ -260,6 +260,10 @@ pub struct UiState {
     pub ask: Option<Ask>,
     pub share: ShareView,
     pub workspace: Vec<WorkspaceRow>,
+    pub agents: Vec<AgentView>,
+    pub agent_marks: Vec<AgentMark>,
+    pub claude_connected: bool,
+    faces: Vec<egui::TextureHandle>,
     pub workspace_shut: bool,
     workspace_drag: Option<(std::path::PathBuf, String)>,
     canvas_was: Rect,
@@ -308,6 +312,10 @@ impl Default for UiState {
             ask: None,
             share: ShareView::default(),
             workspace: Vec::new(),
+            agents: Vec::new(),
+            agent_marks: Vec::new(),
+            claude_connected: false,
+            faces: Vec::new(),
             workspace_shut: false,
             workspace_drag: None,
             canvas_was: Rect::NOTHING,
@@ -484,6 +492,7 @@ pub enum Action {
     Answered(Asked, Answer),
     Share(ShareOp),
     Workspace(WorkspaceOp),
+    Agent(AgentOp),
     InstallVsix,
     SetTheme(String),
     SetColor(&'static str, u32),
@@ -738,6 +747,7 @@ pub fn build(
     toolbar(&ctx, st, canvas, info, actions);
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
+    agent_marks(&ctx, &on_canvas, st, canvas);
     peer_marks(&on_canvas, st, canvas);
     workspace_drop(&ctx, st, canvas);
     following_bar(&ctx, st, canvas, actions);
@@ -2604,6 +2614,15 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
     }
     st.share.button = Some(rect);
     ui.add_space(2.0);
+    load_faces(ui.ctx(), st);
+    for agent in st.agents.iter().take(8) {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+        face(ui.painter(), &st.faces, agent.avatar, rect.center(), 11.0, c(agent.color), agent.quiet, agent.followed);
+        let how = if agent.followed { "You follow it. Click to stop." } else { "Click to follow it on the canvas." };
+        if resp.on_hover_text(format!("{} · {}\n{}\n{how}", agent.name, agent.role, agent.said)).clicked() {
+            actions.push(Action::Agent(AgentOp::Follow((!agent.followed).then(|| agent.key.clone()))));
+        }
+    }
     let following = st.share.following;
     for person in st.share.people.iter().filter(|person| !person.me).take(6) {
         let followed = following == Some(person.id);
@@ -2655,9 +2674,112 @@ fn peer_marks(painter: &egui::Painter, st: &UiState, canvas: Rect) {
     }
 }
 
-fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
-    let Some(person) = st.share.following.and_then(|id| st.share.people.iter().find(|person| person.id == id)) else {
+pub struct AgentView {
+    pub key: String,
+    pub name: &'static str,
+    pub role: String,
+    pub said: String,
+    pub color: u32,
+    pub avatar: usize,
+    pub quiet: bool,
+    pub followed: bool,
+}
+
+pub struct AgentMark {
+    pub avatar: usize,
+    pub color: u32,
+    pub name: &'static str,
+    pub said: String,
+    pub at: Pos2,
+    pub lines: Vec<Rect>,
+    pub busy: bool,
+    pub quiet: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentOp {
+    Follow(Option<String>),
+    ConnectClaude(bool),
+}
+
+fn load_faces(ctx: &egui::Context, st: &mut UiState) {
+    if !st.faces.is_empty() || st.agents.is_empty() {
         return;
+    }
+    for (i, bytes) in crate::agents::AVATARS.iter().enumerate() {
+        let Ok(picture) = image::load_from_memory(bytes) else { continue };
+        let picture = picture.to_rgba8();
+        let size = [picture.width() as usize, picture.height() as usize];
+        let pixels = egui::ColorImage::from_rgba_unmultiplied(size, picture.as_raw());
+        st.faces.push(ctx.load_texture(format!("assistant {i}"), pixels, egui::TextureOptions::LINEAR));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn face(
+    painter: &egui::Painter,
+    faces: &[egui::TextureHandle],
+    avatar: usize,
+    center: Pos2,
+    radius: f32,
+    color: Color32,
+    quiet: bool,
+    ringed: bool,
+) {
+    let rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+    if ringed {
+        painter.circle_stroke(center, radius + 3.5, Stroke::new(1.5, color));
+    }
+    painter.circle_filled(center, radius + 1.5, if quiet { color.gamma_multiply(0.45) } else { color });
+    let tint = if quiet { Color32::from_gray(150) } else { Color32::WHITE };
+    match faces.get(avatar % faces.len().max(1)) {
+        Some(picture) => {
+            let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            let round = CornerRadius::same(radius.min(120.0) as u8);
+            painter.add(egui::epaint::RectShape::filled(rect, round, tint).with_texture(picture.id(), whole));
+        }
+        None => {
+            painter.circle_filled(center, radius, color);
+        }
+    }
+}
+
+fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, canvas: Rect) {
+    load_faces(ctx, st);
+    let beat = (ctx.input(|i| i.time) * 4.0).sin() as f32 * 0.5 + 0.5;
+    for mark in &st.agent_marks {
+        let color = c(mark.color);
+        for line in mark.lines.iter().filter(|line| line.intersects(canvas)) {
+            painter.rect_filled(*line, 1.0, color.gamma_multiply(0.13));
+            let edge = Rect::from_min_max(line.left_top(), Pos2::new(line.left() + 2.0, line.bottom()));
+            painter.rect_filled(edge, 0.0, color.gamma_multiply(0.8));
+        }
+        let center = mark.at + Vec2::new(-20.0, 12.0);
+        if !canvas.expand(40.0).contains(center) {
+            continue;
+        }
+        if mark.busy {
+            painter.circle_stroke(center, 17.0 + beat * 4.0, Stroke::new(2.0, color.gamma_multiply(0.75 - beat * 0.5)));
+        }
+        face(painter, &st.faces, mark.avatar, center, 14.0, color, mark.quiet, false);
+        let tag = if mark.quiet { mark.name.to_string() } else { format!("{} · {}", mark.name, mark.said) };
+        let tint = if mark.quiet { color.gamma_multiply(0.55) } else { color };
+        name_tag(painter, center + Vec2::new(-14.0, 18.0), &tag, tint);
+    }
+    if st.agent_marks.iter().any(|mark| mark.busy) {
+        ctx.request_repaint();
+    }
+}
+
+fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
+    let person = st.share.following.and_then(|id| st.share.people.iter().find(|person| person.id == id));
+    let agent = st.agents.iter().find(|agent| agent.followed);
+    let (name, color, stop) = match (person, agent) {
+        (Some(person), _) => (person.name.clone(), person.color, Action::Share(ShareOp::Follow(None))),
+        (None, Some(agent)) => {
+            (format!("{} ({})", agent.name, agent.role), agent.color, Action::Agent(AgentOp::Follow(None)))
+        }
+        (None, None) => return,
     };
     let area = egui::Area::new(egui::Id::unique("following"))
         .pivot(Align2::LEFT_TOP)
@@ -2666,18 +2788,18 @@ fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &
     let resp = area.show(ctx, |ui| {
         let frame = Frame::NONE
             .fill(pal().card)
-            .stroke(Stroke::new(1.0, c(person.color)))
+            .stroke(Stroke::new(1.0, c(color)))
             .corner_radius(CornerRadius::same(10))
             .inner_margin(Margin::symmetric(10, 6));
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 5.0, c(person.color));
-                ui.label(RichText::new(format!("Following {}", person.name)).size(12.5).color(pal().text));
+                ui.painter().circle_filled(dot.center(), 5.0, c(color));
+                ui.label(RichText::new(format!("Following {name}")).size(12.5).color(pal().text));
                 ui.label(RichText::new("Esc, or move the canvas, to stop").size(11.5).color(pal().text_faint));
                 if small_icon(ui, icons::X, "Stop following") {
-                    actions.push(Action::Share(ShareOp::Follow(None)));
+                    actions.push(stop);
                 }
             });
         });

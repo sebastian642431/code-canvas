@@ -129,6 +129,20 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Checked so far with ESLint, Prettier, Error Lens, Claude Code and TypeScript. Tree views are
   not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
+**Assistants on the canvas**
+- Every assistant working on your files is **on the canvas with a face of its
+  own**: where it is reading (the lines washed in its colour), what it is
+  searching, what it has just changed, and what it is running. A session of
+  Claude Code is one face and each agent it starts is another, with a name.
+- Their faces are also at the top of the window: click one to **follow** it, and
+  the canvas goes wherever it goes until you move it or press Esc.
+- *Settings, Assistants on the canvas, Connect Claude Code* turns it on: it adds a
+  hook to Claude Code's own settings that tells the app which file each tool
+  touched. Nothing leaves the computer. It works for sessions in a terminal, in
+  an editor, or in the panel inside the app.
+- Any other program can say where it is with one line of JSON
+  (see [docs/NOTES.md](docs/NOTES.md), `agents.rs`).
+
 **Workspace**
 - Every folder you open is remembered in the **Workspace** list at the top of the
   files panel, with how many files it has. A folder on the canvas has a dot; one
@@ -328,6 +342,10 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
 - [x] Line numbers (the file's own, also where a card shows a diff).
 - [x] The folders and files never read can be chosen (Settings, "Never read").
+- [x] Assistants shown on the canvas as they work, each with its own face; following one.
+- [ ] Assistants of a shared session shown to those who joined; a trail of where
+      one has been; other assistants connected out of the box (Codex).
+- [x] A workspace: folders dragged onto the canvas and taken off it.
 - [x] Sharing a session: others see and edit your folders live from their own app,
       as readers or writers, with everyone's pointer, caret and view, and following.
 - [ ] Sharing across networks without a VPN or a forwarded port (a relay); files

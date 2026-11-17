@@ -59,6 +59,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [prefs.rs](#cratescode-canvassrcprefsrs) ·
   [script.rs](#cratescode-canvassrcscriptrs) ·
   [session.rs](#cratescode-canvassrcsessionrs) ·
+  [agents.rs](#cratescode-canvassrcagentsrs) ·
   [share](#cratescode-canvassrcshare) ·
   [themes.rs](#cratescode-canvassrcthemesrs) ·
   [ui.rs](#cratescode-canvassrcuirs) ·
@@ -1492,6 +1493,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived; or follow the one with that name. |
 | `workspace` | `workspace put\|off\|forget <folder>`, `workspace all` | Put a folder of the workspace on the canvas, take it off, forget it, or put them all. |
 | `share` | `share start [writers]`, `share stop`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
@@ -1531,6 +1533,40 @@ the menu with.
   `Session::right_last` are keys of panels (`Panel::key`). `Session::rails` is the
   order of the icons of each bar. `Session::single` shows one folder at a time
   instead of all on one canvas.
+
+### crates/code-canvas/src/agents.rs
+
+Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
+
+- **The app listens, it does not ask.** At startup it takes a UDP port of this
+  computer only and writes its number to `<data dir>/agents.port`. Whoever wants
+  to be seen sends one JSON object per datagram to it. Nothing is kept: an
+  assistant that says nothing for `GONE_AFTER` is gone.
+- **The plain form**, for any program:
+  `{"agent": "<an id of its own>", "name": "Codex", "action": "read|edit|search|run|think|wait|done", "path": "<file or folder>", "line": 120, "lines": 30, "note": "why"}`.
+  Only `agent` is needed; `line` counts from 1.
+- **Claude Code** is heard through its hooks. `code-canvas --agent-hook claude`
+  is the command of the hook: it reads the hook's JSON from its input, cuts the
+  long texts out of it (`shortened`: a datagram holds 64 KB and an edit can be
+  larger), sends it wrapped as `{"source", "hook"}` and ends, before anything of
+  the app proper starts. `connect_claude` writes the hooks into
+  `~/.claude/settings.json` (`with_hooks`: only the entries whose arguments have
+  `--agent-hook` are ours, the rest of the file is kept, and a copy of the file is
+  left beside it), as commands run without a shell and `async`, so a tool of
+  Claude never waits for the app.
+- One session is one assistant; a tool used inside an agent of the session comes
+  with `agent_id` and `agent_type`, and is another one. `PreToolUse` says where
+  it is going (`Read` with its `offset` and `limit` is a range of lines, `Grep`
+  and `Glob` a folder), `PostToolUse` of an edit what it wrote, `Stop` that it
+  waits for the user, `SubagentStop` and `SessionEnd` that it leaves.
+- **An edit has no line**: the hook gives the text written, not where. The first
+  line worth looking for is kept in `Agent::find` and `poll_agents` looks for it
+  in the file the canvas has, for `LOOKED_FOR`: the file on the canvas changes a
+  moment after the hook says so.
+- Faces: sixteen pictures drawn for the app (`assets/agents`), names and colours
+  in the same order. An assistant takes the first face nobody has.
+- Following one sets `App::following`, the same travel a change on disk causes,
+  each time it moves (`Agent::moved`) or its line is found.
 
 ### crates/code-canvas/src/share
 
