@@ -17,13 +17,17 @@ pub struct Session {
     pub right_panel: u8,
     /// Logical window size.
     pub window: Option<[f32; 2]>,
+    /// Show one folder at a time, instead of all of them side by side.
+    pub single: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 #[serde(default)]
 pub struct PageSession {
     pub path: PathBuf,
-    /// Camera centre and zoom (zoom in logical pixels per world unit).
+    /// What the camera looks at: the point of the world in the middle of the
+    /// page's part of the window, and the zoom in logical pixels per world
+    /// unit (`Page::portable_camera`).
     pub camera: Option<([f32; 2], f32)>,
     pub collapsed: Vec<String>,
     pub hidden: Vec<String>,

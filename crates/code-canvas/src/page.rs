@@ -133,6 +133,10 @@ pub struct Page {
     pub framed: bool,
     /// Camera to restore from the previous session instead of framing.
     pub restore_camera: Option<Camera>,
+    /// The middle of the part of the window this page was last drawn in:
+    /// when that moves (a panel opens, another folder is shown beside it)
+    /// the camera moves with it, so the same code stays in the middle.
+    pub pane_center: Option<[f32; 2]>,
     /// Collapsed and hidden paths (the user's choice; `only_files` is derived).
     pub filter: LayoutFilter,
     /// Directories expanded in the explorer.
@@ -205,6 +209,7 @@ impl Page {
             hover_cell: None,
             framed: false,
             restore_camera: None,
+            pane_center: None,
             filter: LayoutFilter::default(),
             tree_open: HashSet::new(),
             selections: Vec::new(),
@@ -255,7 +260,34 @@ impl Page {
         self.git_rx.is_some() && self.git.is_none()
     }
 
-    pub fn to_session(&self, scale: f32) -> PageSession {
+    /// The camera in a form that does not depend on where on the window the
+    /// page is drawn: the point of the world in the middle of its pane, and
+    /// the zoom in logical pixels. [`Page::place_camera`] turns it back, for
+    /// wherever the page is drawn then.
+    pub fn portable_camera(&self, scale: f32, viewport: [f32; 2]) -> Option<Camera> {
+        if !self.framed {
+            return None;
+        }
+        let z = self.camera.zoom;
+        let half = [viewport[0] * 0.5, viewport[1] * 0.5];
+        let middle = self.pane_center.unwrap_or(half);
+        let center =
+            [self.camera.center[0] + (middle[0] - half[0]) / z, self.camera.center[1] + (middle[1] - half[1]) / z];
+        Some(Camera { center, zoom: z / scale })
+    }
+
+    /// The camera that shows what `portable` (see [`Page::portable_camera`])
+    /// showed, with the page drawn around `middle` of the window.
+    pub fn place_camera(portable: Camera, scale: f32, viewport: [f32; 2], middle: [f32; 2]) -> Camera {
+        let z = portable.zoom * scale;
+        let center = [
+            portable.center[0] - (middle[0] - viewport[0] * 0.5) / z,
+            portable.center[1] - (middle[1] - viewport[1] * 0.5) / z,
+        ];
+        Camera { center, zoom: z }
+    }
+
+    pub fn to_session(&self, scale: f32, viewport: [f32; 2]) -> PageSession {
         let sorted = |set: &HashSet<String>| {
             let mut v: Vec<String> = set.iter().cloned().collect();
             v.sort();
@@ -263,7 +295,7 @@ impl Page {
         };
         PageSession {
             path: self.root.clone(),
-            camera: self.framed.then_some((self.camera.center, self.camera.zoom / scale)),
+            camera: self.portable_camera(scale, viewport).map(|c| (c.center, c.zoom)),
             collapsed: sorted(&self.filter.collapsed),
             hidden: sorted(&self.filter.hidden),
             tree_open: sorted(&self.tree_open),

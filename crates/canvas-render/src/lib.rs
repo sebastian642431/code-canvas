@@ -74,6 +74,26 @@ pub struct ScenePass<'a> {
     pub clip: [f32; 4],
 }
 
+/// The part of the target one call to [`Renderer::render`] draws in. Several
+/// pages can share a frame, side by side, each in its own pane.
+///
+/// The calls share buffers, so each needs an encoder of its own that is
+/// submitted before the next call.
+#[derive(Clone, Copy, Debug)]
+pub struct Pane {
+    /// Left, top, right, bottom in pixels; `None` for the whole target.
+    pub area: Option<[f32; 4]>,
+    /// Clear the target first: for the first call of a frame.
+    pub clear: bool,
+    /// Draw the relation curves: they belong to one page (`set_curves`).
+    pub curves: bool,
+}
+
+impl Pane {
+    /// One page on the whole target.
+    pub const WHOLE: Pane = Pane { area: None, clear: true, curves: true };
+}
+
 /// Everything drawn on top of (or just under) the code this frame.
 #[derive(Default)]
 pub struct Overlay<'a> {
@@ -334,8 +354,9 @@ impl Renderer {
         SceneGpu::new(device, &self.origins_layout, name, data)
     }
 
-    /// Record the canvas pass into `encoder` (clearing `target`). The caller
-    /// submits the encoder and then calls [`Renderer::end_frame`].
+    /// Record the canvas pass of one page into `encoder`, in `pane` of
+    /// `target`. The caller submits the encoder (before calling this again
+    /// for another pane) and, once per frame, calls [`Renderer::end_frame`].
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -344,6 +365,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         view: View,
+        pane: Pane,
         mut scene: Option<ScenePass>,
         overlay: &Overlay,
     ) -> FrameStats {
@@ -462,7 +484,11 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: bg[0], g: bg[1], b: bg[2], a: 1.0 }),
+                        load: if pane.clear {
+                            wgpu::LoadOp::Clear(wgpu::Color { r: bg[0], g: bg[1], b: bg[2], a: 1.0 })
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -472,6 +498,13 @@ impl Renderer {
                 multiview_mask: None,
             });
 
+            if let Some([left, top, right, bottom]) = pane.area {
+                // Nothing of this page outside its pane; inside the target.
+                let (w, h) = (view.viewport[0].max(1.0), view.viewport[1].max(1.0));
+                let (x, y) = (left.clamp(0.0, w - 1.0).floor(), top.clamp(0.0, h - 1.0).floor());
+                let (r, b) = (right.clamp(x + 1.0, w).ceil(), bottom.clamp(y + 1.0, h).ceil());
+                pass.set_scissor_rect(x as u32, y as u32, (r - x) as u32, (b - y) as u32);
+            }
             let rect_pipeline = &self.rect_pipeline;
             let mut extra_draws = 0u32;
             let mut rects = |pass: &mut wgpu::RenderPass, bind: &wgpu::BindGroup, buf: &DynBuffer, n: usize| {
@@ -506,7 +539,7 @@ impl Renderer {
                 stats.draw_calls += (g.frame_ranges.len() + g.code_ranges.len()) as u32;
             }
             self.text.render_world(&mut pass);
-            if self.curve_vertices > 0 {
+            if self.curve_vertices > 0 && pane.curves {
                 pass.set_pipeline(&self.curve_pipeline);
                 pass.set_bind_group(0, &self.world_bind, &[]);
                 pass.set_vertex_buffer(0, self.curves.buf.slice(..));

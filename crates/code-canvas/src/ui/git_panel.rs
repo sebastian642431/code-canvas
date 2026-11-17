@@ -2,7 +2,9 @@
 
 use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Vec2};
 
-use super::{c, check, icon, menu_gap, menu_row, pal, panel_title, small_icon, Action, FileIcons, FileOp, ROW_H};
+use super::{
+    c, check, icon, menu_gap, menu_row, pal, panel_title, small_icon, text_fit, Action, FileIcons, FileOp, ROW_H,
+};
 use crate::git::{After, Change, FileChange, GitOp};
 use crate::icons;
 use crate::page::Page;
@@ -48,15 +50,8 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
                 let rg = painter.layout_no_wrap(right.to_string(), FontId::proportional(11.0), pal().text_faint);
                 let rx = rect.right() - 12.0 - rg.size().x;
                 painter.galley(Pos2::new(rx, mid - rg.size().y * 0.5), rg, pal().text_faint);
-                let clip =
-                    Rect::from_min_max(Pos2::new(rect.left() + 30.0, rect.top()), Pos2::new(rx - 8.0, rect.bottom()));
-                painter.with_clip_rect(clip).text(
-                    clip.left_center(),
-                    Align2::LEFT_CENTER,
-                    title,
-                    FontId::proportional(12.0),
-                    pal().text,
-                );
+                let from = rect.left() + 30.0;
+                text_fit(painter, Pos2::new(from, mid), title, FontId::proportional(12.0), pal().text, rx - 8.0 - from);
                 resp.on_hover_text(tip);
             };
             if let Some(ch) = pending {
@@ -233,22 +228,13 @@ fn change_row(
     }
     let painter = ui.painter();
     let name_color = if deleted { pal().text_dim } else { color.lerp_to_gamma(pal().text, 0.35) };
-    let ng = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.5), name_color);
-    let clip = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(right, rect.bottom()));
-    let name_w = ng.size().x;
-    let name_at = Pos2::new(x, mid - ng.size().y * 0.5);
-    let clipped = painter.with_clip_rect(clip);
-    clipped.galley(name_at, ng, name_color);
+    // The name first; the folder gets what is left of the row.
+    let name_w = text_fit(painter, Pos2::new(x, mid), name, FontId::proportional(12.5), name_color, right - x);
     if deleted {
-        clipped.line_segment([Pos2::new(name_at.x, mid), Pos2::new(name_at.x + name_w, mid)], (1.0, pal().text_dim));
+        painter.line_segment([Pos2::new(x, mid), Pos2::new(x + name_w, mid)], (1.0, pal().text_dim));
     }
-    clipped.text(
-        Pos2::new(name_at.x + name_w + 8.0, mid),
-        Align2::LEFT_CENTER,
-        dir,
-        FontId::proportional(11.5),
-        pal().text_faint,
-    );
+    let dir_x = x + name_w + 8.0;
+    text_fit(painter, Pos2::new(dir_x, mid), dir, FontId::proportional(11.5), pal().text_faint, right - dir_x);
     if action.is_none() && resp.clicked() && !deleted {
         action = Some(Action::FlyToPath(change.path.clone()));
     }
@@ -661,14 +647,8 @@ pub fn changes_panel(
                     painter.galley(badge.center() - galley.size() * 0.5, galley, pal().on_accent);
                     right = badge.left() - 5.0;
                 }
-                let clip = Rect::from_min_max(Pos2::new(x + 12.0, rect.top()), Pos2::new(right, rect.bottom()));
-                painter.with_clip_rect(clip).text(
-                    clip.left_center(),
-                    Align2::LEFT_CENTER,
-                    &node.commit.subject,
-                    FontId::proportional(12.0),
-                    pal().text,
-                );
+                let subject = &node.commit.subject;
+                text_fit(painter, Pos2::new(x + 12.0, mid), subject, FontId::proportional(12.0), pal().text, right - x - 12.0);
                 let hash = &node.commit.hash[..node.commit.hash.len().min(10)];
                 resp.on_hover_text(format!(
                     "{}\n{} · {} · {hash}",

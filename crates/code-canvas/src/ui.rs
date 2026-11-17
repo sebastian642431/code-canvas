@@ -190,6 +190,8 @@ pub struct UiState {
     pub rebinding: Option<Command>,
     /// The name the explorer is asking for, if it is asking.
     pub naming: Option<Naming>,
+    /// Show one folder at a time, instead of all of them side by side.
+    pub single: bool,
     /// Who writes commit messages when asked (`commit_ai.rs`).
     pub commit_ai: crate::commit_ai::Settings,
     /// The file icon theme in use.
@@ -221,6 +223,7 @@ impl Default for UiState {
             key_file: Default::default(),
             rebinding: None,
             naming: None,
+            single: false,
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
@@ -309,6 +312,8 @@ pub enum Action {
     ResetColors,
     /// Use this file icon theme (an id, or `"none"` for the app's own).
     SetIconTheme(String),
+    /// Folders side by side, or one at a time.
+    ToggleSideBySide,
     /// Give a command its own shortcuts back.
     ResetKey(Command),
     /// Leave a command without a shortcut.
@@ -390,6 +395,32 @@ const ROW_H: f32 = 24.0;
 const HEADER_H: f32 = 40.0;
 const RAIL_W: f32 = 44.0;
 const GAP: i8 = 6;
+
+/// Space between two folders shown side by side, in points.
+const PANE_GAP: f32 = 8.0;
+
+/// How many folders the canvas shows at once.
+pub fn pane_count(single: bool, folders: usize) -> usize {
+    if single {
+        1
+    } else {
+        folders.max(1)
+    }
+}
+
+/// The canvas divided into `count` panes side by side, with a gap between
+/// them: where each open folder is drawn. Works in any unit; `gap` is the
+/// space between two panes in that unit.
+pub fn pane_rects(canvas: egui::Rect, count: usize, gap: f32) -> Vec<egui::Rect> {
+    let count = count.max(1);
+    let width = ((canvas.width() - gap * (count - 1) as f32) / count as f32).max(1.0);
+    (0..count)
+        .map(|i| {
+            let left = canvas.left() + i as f32 * (width + gap);
+            egui::Rect::from_min_size(Pos2::new(left, canvas.top()), Vec2::new(width, canvas.height()))
+        })
+        .collect()
+}
 
 /// Fonts and the app's look (call once).
 pub fn style(ctx: &egui::Context) {
@@ -580,8 +611,22 @@ pub fn build(
 
     let canvas = ui.available_rect_before_wrap();
     let ctx = ui.ctx().clone();
-    center_message(ui, canvas, pages.get(active), &st.keys);
-    toolbar(&ctx, st, canvas, info, actions);
+    // One pane per folder shown: its message while it has no canvas yet,
+    // and with several, a frame that says which one the keyboard is on.
+    let panes = pane_rects(canvas, pane_count(st.single, pages.len()), PANE_GAP);
+    if panes.len() > 1 {
+        for (i, pane) in panes.iter().enumerate() {
+            center_message(ui, *pane, pages.get(i), &st.keys);
+            let color = if i == active { pal().border_strong } else { pal().border };
+            let frame = egui::Stroke::new(1.0, color);
+            ui.painter().rect_stroke(pane.shrink(0.5), 6.0, frame, egui::StrokeKind::Inside);
+        }
+    } else {
+        center_message(ui, canvas, pages.get(active), &st.keys);
+    }
+    // The zoom buttons act on the active folder: they sit in its pane.
+    let active_pane = if panes.len() > 1 { panes.get(active).copied().unwrap_or(canvas) } else { canvas };
+    toolbar(&ctx, st, active_pane, info, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
@@ -1086,6 +1131,12 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
                 if small_icon(ui, icons::PLUS, &st.keys.hint("Open a folder in a new canvas", Command::OpenFolder)) {
                     actions.push(Action::OpenFolder);
                 }
+                let split = if st.single { "Show every open folder side by side" } else { "Show one folder at a time" };
+                if pages.len() > 1
+                    && small_icon(ui, icons::LAYOUT_GRID, &st.keys.hint(split, Command::ToggleSideBySide))
+                {
+                    actions.push(Action::ToggleSideBySide);
+                }
                 if small_icon(ui, icons::EYE, "Put every hidden file back on the canvas") {
                     actions.push(Action::ShowAll);
                 }
@@ -1242,15 +1293,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 text_x += 20.0;
             }
             let right_pad = if is_dir { 44.0 } else { 10.0 };
-            let clip =
-                Rect::from_min_max(Pos2::new(text_x, rect.top()), Pos2::new(rect.right() - right_pad, rect.bottom()));
-            painter.with_clip_rect(clip).text(
-                Pos2::new(text_x, mid),
-                Align2::LEFT_CENTER,
-                name,
-                FontId::proportional(13.0),
-                color,
-            );
+            let room = rect.right() - right_pad - text_x;
+            text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
             if is_dir {
                 // How many files are inside.
                 let at = Pos2::new(rect.right() - 14.0, mid);
@@ -1283,6 +1327,24 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, is_dir, hidden, locked, actions));
         }
     });
+}
+
+/// One line of text starting at `at` (its left end, vertically centred)
+/// that has `width` to fit in: what does not fit is cut at the end, which
+/// then reads "…". Returns the width it took.
+fn text_fit(painter: &egui::Painter, at: Pos2, text: &str, font: FontId, color: Color32, width: f32) -> f32 {
+    if width <= 1.0 {
+        return 0.0;
+    }
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap =
+        egui::text::TextWrapping {
+            max_width: width, max_rows: 1, break_anywhere: true, overflow_character: Some('…')
+        };
+    let galley = painter.layout_job(job);
+    let size = galley.size();
+    painter.galley(Pos2::new(at.x, at.y - size.y * 0.5), galley, color);
+    size.x
 }
 
 /// A row of a menu: an icon and what it does. True when it was chosen.
@@ -1533,6 +1595,7 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                 ("Close the canvas", key(Command::CloseFolder)),
                 ("Reload from disk", key(Command::Rescan)),
                 ("Toggle the left panel", key(Command::ToggleLeftPanel)),
+                ("Folders side by side, or one at a time", key(Command::ToggleSideBySide)),
                 ("Settings", key(Command::Settings)),
             ],
         ),
@@ -1873,6 +1936,7 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("View: Keyboard Shortcuts".into(), Action::ShowLeft(LeftPanel::Help)),
         ("Preferences: Settings".into(), Action::ShowLeft(LeftPanel::Settings)),
         ("Preferences: Colour Theme".into(), Action::ShowLeft(LeftPanel::Settings)),
+        ("View: Folders Side by Side, or One at a Time".into(), Action::ToggleSideBySide),
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),
         ("View: Reload the Folder from Disk".into(), Action::Rescan),

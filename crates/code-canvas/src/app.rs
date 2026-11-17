@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use canvas_core::layout::{NodeKind, FILE_LABEL_H};
 use canvas_core::{Rect, Site, SymRef, LINE_H};
-use canvas_render::{FrameStats, Label, Lod, Overlay, Renderer, ScenePass};
+use canvas_render::{FrameStats, Label, Lod, Overlay, Pane, Renderer, ScenePass};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -113,8 +113,13 @@ pub struct App {
     mods: ModifiersState,
     last_click: Option<(Instant, [f32; 2])>,
     ui: UiState,
-    /// Canvas area in physical pixels (the window minus the panels).
+    /// The part of the window the active folder is drawn in, in physical
+    /// pixels: the whole canvas, or its pane when folders are side by side.
     canvas: Rect,
+    /// The whole canvas (the window minus the panels), in physical pixels.
+    canvas_full: Rect,
+    /// How many folders were side by side in the last frame.
+    pane_count: usize,
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
     /// Page whose relation curves are on the GPU.
@@ -198,6 +203,7 @@ impl App {
         ui.keys = Keymap::new(&ui.key_file);
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
         ui.last_right = RightPanel::Symbols;
+        ui.single = saved.single;
         ui.left = saved.left_open.then_some(ui.last_left);
         ui.right = saved.right_open.then_some(ui.last_right);
         Self {
@@ -214,6 +220,8 @@ impl App {
             last_click: None,
             ui,
             canvas: Rect::new(0.0, 0.0, 1.0, 1.0),
+            canvas_full: Rect::new(0.0, 0.0, 1.0, 1.0),
+            pane_count: 1,
             chip_hits: Vec::new(),
             toggle_hits: Vec::new(),
             curves_for: None,
@@ -261,6 +269,36 @@ impl App {
                 None => "Code Canvas".into(),
             };
             g.window.set_title(&title);
+        }
+    }
+
+    /// The folders on screen and where each is drawn (physical pixels): all
+    /// of them side by side, or only the active one.
+    fn panes(&self) -> Vec<(usize, Rect)> {
+        let count = ui::pane_count(self.ui.single, self.pages.len());
+        if count <= 1 {
+            return vec![(self.active, self.canvas_full)];
+        }
+        let c = self.canvas_full;
+        let whole = egui::Rect::from_min_size(egui::pos2(c.x, c.y), egui::vec2(c.w, c.h));
+        // The same division the UI draws its frames with, in pixels.
+        ui::pane_rects(whole, count, 8.0 * self.scale())
+            .into_iter()
+            .map(|r| Rect::new(r.left(), r.top(), r.width(), r.height()))
+            .enumerate()
+            .collect()
+    }
+
+    /// The pointer is about to do something on the canvas at `p`: the folder
+    /// it is over becomes the active one.
+    fn focus_pane_at(&mut self, p: [f32; 2]) {
+        let over = self.panes().into_iter().find(|(_, rect)| rect.contains(p));
+        if let Some((i, rect)) = over {
+            if i != self.active {
+                self.switch_to(i);
+                self.canvas = rect;
+                self.session_dirty = true;
+            }
         }
     }
 
@@ -314,13 +352,14 @@ impl App {
             [size.width, size.height]
         });
         session::save(&Session {
-            pages: self.pages.iter().map(|p| p.to_session(s)).collect(),
+            pages: self.pages.iter().map(|p| p.to_session(s, self.viewport())).collect(),
             active: self.active,
             left_open: self.ui.left.is_some(),
             right_open: self.ui.right.is_some(),
             left_panel: LEFT_PANELS.iter().position(|p| *p == self.ui.last_left).unwrap_or(0) as u8,
             right_panel: 0,
             window,
+            single: self.ui.single,
         });
     }
 
@@ -470,11 +509,11 @@ impl App {
     }
 
     fn rescan(&mut self) {
-        let s = self.scale();
+        let (s, vp) = (self.scale(), self.viewport());
         if let Some(p) = self.pages.get_mut(self.active) {
             if !p.is_loading() {
                 // Keep looking at the same place once the scan finishes.
-                p.restore_camera = p.framed.then_some(Camera { center: p.camera.center, zoom: p.camera.zoom / s });
+                p.restore_camera = p.portable_camera(s, vp);
                 p.framed = false;
                 p.start_scan();
                 self.request_redraw();
@@ -612,9 +651,9 @@ impl App {
                 if !big && !recent && !self.pages[i].is_loading() && self.pages[i].editors.values().all(|e| !e.dirty) {
                     log::info!("{}: files were added or removed, scanning again", root.display());
                     self.auto_rescan = Some(Instant::now());
-                    let s = self.scale();
+                    let (s, vp) = (self.scale(), self.viewport());
                     let p = &mut self.pages[i];
-                    p.restore_camera = p.framed.then_some(Camera { center: p.camera.center, zoom: p.camera.zoom / s });
+                    p.restore_camera = p.portable_camera(s, vp);
                     p.framed = false;
                     p.editors.clear();
                     p.editing = None;
@@ -1231,6 +1270,7 @@ impl App {
             Command::SearchInFiles => self.ui.show_left(LeftPanel::Search),
             Command::Settings => self.ui.show_left(LeftPanel::Settings),
             Command::ToggleLeftPanel => self.ui.toggle_left(),
+            Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::FormatFile => self.format_file(None),
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
@@ -1520,6 +1560,10 @@ impl App {
             Action::ResetColors => {
                 self.ui.theme.colors.clear();
                 self.theme_changed();
+            }
+            Action::ToggleSideBySide => {
+                self.ui.single = !self.ui.single;
+                self.request_redraw();
             }
             Action::SetIconTheme(id) => {
                 self.ui.theme.icons = id;
@@ -2027,7 +2071,7 @@ impl App {
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
         let mut actions = Vec::new();
-        let (full, canvas_pts) = {
+        let (mut full, canvas_pts) = {
             let g = self.gfx.as_mut().unwrap();
             let raw = g.egui_state.take_egui_input(&g.window);
             let info = FrameInfo { stats: &self.stats, frame_ms: self.frame_ms, zoom, tooltip, status };
@@ -2043,11 +2087,30 @@ impl App {
             g.egui_state.handle_platform_output(&g.window, full.platform_output);
         }
         if canvas_pts.is_positive() {
-            self.canvas =
+            self.canvas_full =
                 Rect::new(canvas_pts.left() * s, canvas_pts.top() * s, canvas_pts.width() * s, canvas_pts.height() * s);
         }
         for a in actions {
             self.apply(a);
+        }
+        // Where each folder on screen goes. With another number of them the
+        // room each has changed: every one is framed again.
+        let panes = self.panes();
+        if panes.len() != self.pane_count {
+            self.pane_count = panes.len();
+            let first_frame = self.pages.iter().all(|p| !p.framed);
+            for page in &mut self.pages {
+                // At start-up the saved cameras are still to be used.
+                if !first_frame {
+                    page.restore_camera = None;
+                }
+                page.framed = false;
+                page.target = None;
+                page.pane_center = None;
+            }
+        }
+        if let Some((_, rect)) = panes.iter().find(|(i, _)| *i == self.active) {
+            self.canvas = *rect;
         }
         // The webview on screen, if any: a browser view over its panel.
         {
@@ -2068,16 +2131,32 @@ impl App {
 
         // 2. Frame newly loaded pages; advance camera animations.
         let mut animating = false;
-        if let Some(page) = self.pages.get_mut(self.active) {
+        for (i, area) in panes.iter().copied() {
+            let active = i == self.active;
+            let Some(page) = self.pages.get_mut(i) else { continue };
+            // A folder beside the active one is on screen too: read it.
+            page.ensure_scanned();
             if let PageState::Ready(r) = &page.state {
                 if !page.framed {
                     page.camera = match page.restore_camera.take() {
-                        Some(c) => Camera { center: c.center, zoom: c.zoom * s },
+                        Some(c) => Page::place_camera(c, s, vp, area.center()),
                         None => Camera::fit(r.layout.bounds, area, vp, 24.0 * s),
                     };
                     page.framed = true;
+                    page.pane_center = Some(area.center());
                 }
-                if let Some(bench) = self.bench.as_mut() {
+                // Its part of the window moved: what was in the middle of it stays there.
+                let middle = area.center();
+                if let Some(old) = page.pane_center.replace(middle) {
+                    let z = page.camera.zoom;
+                    let (dx, dy) = ((old[0] - middle[0]) / z, (old[1] - middle[1]) / z);
+                    page.camera.center = [page.camera.center[0] + dx, page.camera.center[1] + dy];
+                    if let Some(t) = page.target.as_mut() {
+                        t.center =
+                            [t.center[0] + (old[0] - middle[0]) / t.zoom, t.center[1] + (old[1] - middle[1]) / t.zoom];
+                    }
+                }
+                if let Some(bench) = self.bench.as_mut().filter(|_| active) {
                     let fit = Camera::fit(r.layout.bounds, area, vp, 24.0 * s);
                     bench.drive(&mut page.camera, fit, 1.6 * s, vp);
                     page.target = None;
@@ -2134,11 +2213,21 @@ impl App {
         let build_ms = now.elapsed().as_secs_f32() * 1000.0;
         let any_loading = self.pages.iter().any(|p| p.is_loading());
         let g = self.gfx.as_mut().unwrap();
-        // egui's texture updates must not be lost when a frame is skipped.
-        for (id, deltas) in &full.textures_delta.set {
+        // egui's texture updates must not be lost when a frame is skipped:
+        // new and changed ones go to the GPU now. The ones it no longer needs
+        // are freed after the frame that may still show them (or right away
+        // when there is no frame). Taken out of `full`, which checks that
+        // none is forgotten.
+        let textures = std::mem::take(&mut full.textures_delta);
+        for (id, deltas) in &textures.set {
             for delta in deltas {
                 g.egui_renderer.update_texture(&g.device, &g.queue, *id, delta);
             }
+        }
+        let unused_textures = textures.free.clone();
+        {
+            let mut done = textures;
+            done.clear();
         }
         let t_acquire = Instant::now();
         let acquired = g.surface.get_current_texture();
@@ -2153,30 +2242,77 @@ impl App {
             // a surface while one of its textures is held is an error that
             // takes the app down. The resize event reconfigures it.
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                g.window.request_redraw();
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                g.surface.configure(&g.device, &g.config);
-                g.window.request_redraw();
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                match g.instance.create_surface(g.window.clone()) {
-                    Ok(surface) => g.surface = surface,
-                    Err(e) => log::error!("recreate surface: {e}"),
+            skipped => {
+                // No frame this time: nothing will show those textures again.
+                for id in &unused_textures {
+                    g.egui_renderer.free_texture(id);
                 }
-                g.surface.configure(&g.device, &g.config);
-                g.window.request_redraw();
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                log::error!("surface validation error");
+                match skipped {
+                    wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                        g.window.request_redraw();
+                    }
+                    wgpu::CurrentSurfaceTexture::Outdated => {
+                        g.surface.configure(&g.device, &g.config);
+                        g.window.request_redraw();
+                    }
+                    wgpu::CurrentSurfaceTexture::Lost => {
+                        match g.instance.create_surface(g.window.clone()) {
+                            Ok(surface) => g.surface = surface,
+                            Err(e) => log::error!("recreate surface: {e}"),
+                        }
+                        g.surface.configure(&g.device, &g.config);
+                        g.window.request_redraw();
+                    }
+                    _ => log::error!("surface validation error"),
+                }
                 return;
             }
         };
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // The folders beside the active one first, each in its own pane and
+        // with an encoder of its own (the calls share buffers, so one has to
+        // be submitted before the next is recorded).
+        let side_by_side = panes.len() > 1;
+        let edges = |r: Rect| [r.x, r.y, r.right(), r.bottom()];
+        let mut first = true;
+        let mut others_pending = false;
+        for (i, pane) in panes.iter().copied().filter(|(i, _)| *i != self.active) {
+            let Some(page) = self.pages.get_mut(i) else { continue };
+            let view = page.camera.view(vp);
+            let over = overlay::build(page, view, pane, s, &filters, &self.ext, &mut g.renderer.text);
+            let labels: Vec<Label> = over.labels.iter().map(|l| l.as_label()).collect();
+            let chip_labels: Vec<Label> = over.chip_labels.iter().map(|l| l.as_label()).collect();
+            let id = page.id;
+            let scene = match &mut page.state {
+                PageState::Ready(r) => {
+                    let Ready { repo, layout, gpu, tokens, .. } = &mut **r;
+                    Some(ScenePass { page: id, gpu, repo, layout, tokens, clip: edges(pane) })
+                }
+                _ => None,
+            };
+            let mut encoder = g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pane") });
+            let stats = g.renderer.render(
+                &g.device,
+                &g.queue,
+                &mut encoder,
+                &target,
+                view,
+                // The relation curves are the active folder's.
+                Pane { area: Some(edges(pane)), clear: first, curves: false },
+                scene,
+                &Overlay {
+                    under: &over.under,
+                    labels: &labels,
+                    over: &over.over,
+                    chips: &over.chips,
+                    chip_labels: &chip_labels,
+                },
+            );
+            g.queue.submit(Some(encoder.finish()));
+            first = false;
+            others_pending |= stats.text_pending;
+        }
 
         let (view, scene) = match self.pages.get_mut(self.active) {
             Some(page) => {
@@ -2210,6 +2346,7 @@ impl App {
             &mut encoder,
             &target,
             view,
+            Pane { area: side_by_side.then(|| edges(area)), clear: first, curves: true },
             scene,
             &Overlay {
                 under: &canvas_overlay.under,
@@ -2219,6 +2356,9 @@ impl App {
                 chip_labels: &chip_labels,
             },
         );
+
+        // Text still being shaped in any pane keeps the frames coming.
+        self.stats.text_pending |= others_pending;
 
         let ppp = full.pixels_per_point;
         let prims = g.egui.tessellate(full.shapes, ppp);
@@ -2241,7 +2381,7 @@ impl App {
             });
             g.egui_renderer.render(&mut pass.forget_lifetime(), &prims, &screen);
         }
-        for id in &full.textures_delta.free {
+        for id in &unused_textures {
             g.egui_renderer.free_texture(id);
         }
         g.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
@@ -2387,6 +2527,7 @@ impl ApplicationHandler for App {
             log::info!("benchmark mode: present {:?}, display {:?} Hz", config.present_mode, hz);
         }
         self.canvas = Rect::new(0.0, 0.0, config.width as f32, config.height as f32);
+        self.canvas_full = self.canvas;
         self.gfx = Some(Gfx {
             renderer,
             egui_renderer,
@@ -2512,6 +2653,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => {
+                    self.focus_pane_at(self.cursor);
                     // Only presses that start on the canvas belong to the canvas.
                     if self.drag.is_none() && !self.over_ui(self.cursor) {
                         self.drag = Some(Drag { last: self.cursor, start: self.cursor, moved: false, button });
@@ -2531,6 +2673,7 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                self.focus_pane_at(self.cursor);
                 if self.over_ui(self.cursor) {
                     return;
                 }
@@ -2549,6 +2692,7 @@ impl ApplicationHandler for App {
                 self.request_redraw();
             }
             WindowEvent::PinchGesture { delta, .. } => {
+                self.focus_pane_at(self.cursor);
                 if self.over_ui(self.cursor) {
                     return;
                 }

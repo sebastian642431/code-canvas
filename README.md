@@ -41,6 +41,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   new file or folder, rename, delete (to the recycle bin), copy path, reveal in the
   file manager, open a terminal there.
 - Drop a file on the window to copy it into the selected folder.
+- Several folders open are shown **side by side**, each in its own pane with its own
+  zoom; click one to work in it. `Ctrl+E` (or the grid icon) goes back to one at a time.
 - `Ctrl+P` go to a file or folder; `Ctrl+Shift+F` search text in every file, with the
   hits marked on the canvas.
 
