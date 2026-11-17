@@ -9,7 +9,7 @@
 use canvas_render::theme;
 use egui::{Align, Frame, Layout, Margin, RichText};
 
-use super::{check, pal, panel_title, section, small_icon, well, Action, UiState};
+use super::{check, pal, panel_title, search_field, section, small_icon, well, Action, UiState};
 use crate::icons;
 use crate::keys::{self, Scope};
 
@@ -64,6 +64,32 @@ pub(super) fn settings_panel(
                 if ext.icon_themes().next().is_none() {
                     let note = "Install an icon theme extension (Symbols, Material Icon Theme) for more.";
                     ui.label(RichText::new(note).size(11.5).color(pal().text_faint));
+                }
+            });
+
+            section(ui, icons::SPARKLES, "Commit messages");
+            well(ui, |ui| {
+                let note = "Who writes the message when you press the sparkle in source control.";
+                ui.label(RichText::new(note).size(11.5).color(pal().text_faint));
+                let mut next = st.commit_ai.clone();
+                for (id, label) in [
+                    ("auto", "Claude Code, or Codex without it"),
+                    ("claude", "Claude Code"),
+                    ("codex", "Codex"),
+                    ("custom", "A command of mine"),
+                ] {
+                    let mut on = st.commit_ai.provider == id;
+                    if check(ui, &mut on, label, true, false).clicked() && on {
+                        next.provider = id.to_string();
+                    }
+                }
+                if next.provider == "custom" {
+                    search_field(ui, &mut next.custom, "ollama run llama3", icons::CODE);
+                    let note = "It gets the request on its standard input and prints the message.";
+                    ui.label(RichText::new(note).size(11.5).color(pal().text_faint));
+                }
+                if next != st.commit_ai {
+                    actions.push(Action::SetCommitAi(next));
                 }
             });
 

@@ -190,6 +190,8 @@ pub struct UiState {
     pub rebinding: Option<Command>,
     /// The name the explorer is asking for, if it is asking.
     pub naming: Option<Naming>,
+    /// Who writes commit messages when asked (`commit_ai.rs`).
+    pub commit_ai: crate::commit_ai::Settings,
     /// The file icon theme in use.
     file_icons: FileIcons,
 }
@@ -219,6 +221,7 @@ impl Default for UiState {
             key_file: Default::default(),
             rebinding: None,
             naming: None,
+            commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
     }
@@ -290,6 +293,10 @@ pub enum Action {
     Git(crate::git::GitOp),
     /// Ask git again what changed in the active page.
     RefreshGit,
+    /// Have an assistant write the commit message of the active page.
+    WriteCommitMessage,
+    /// Change who writes commit messages.
+    SetCommitAi(crate::commit_ai::Settings),
     /// Show only the files git reports as changed.
     SetOnlyChanged(bool),
     /// Pick a `.vsix` file and install it.
@@ -556,7 +563,7 @@ pub fn build(
             LeftPanel::Search => search_panel(ui, st, pages.get(active), actions),
             LeftPanel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
             LeftPanel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
-            LeftPanel::Changes => git_panel::changes_panel(ui, pages.get_mut(active), actions),
+            LeftPanel::Changes => git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions),
             LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
             LeftPanel::Help => help_panel(ui, &st.keys),
             LeftPanel::Settings => settings_panel::settings_panel(ui, st, ext, actions),

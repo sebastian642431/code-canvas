@@ -193,6 +193,7 @@ impl App {
         }
         let mut ui = UiState::default();
         ui.theme = chosen;
+        ui.commit_ai = crate::commit_ai::load();
         ui.key_file = crate::keys::load();
         ui.keys = Keymap::new(&ui.key_file);
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
@@ -1464,11 +1465,16 @@ impl App {
             }
             Action::Git(op) => {
                 // Discarding cannot be undone: ask first.
-                if let crate::git::GitOp::Discard(path) = &op {
+                let lost = match &op {
+                    crate::git::GitOp::Discard(path) => Some(format!("the changes in {path}")),
+                    crate::git::GitOp::DiscardAll => Some("ALL the changes in tracked files".to_string()),
+                    _ => None,
+                };
+                if let Some(what) = lost {
                     let answer = rfd::MessageDialog::new()
                         .set_level(rfd::MessageLevel::Warning)
                         .set_title("Code Canvas")
-                        .set_description(format!("Discard the changes in {path}?\n\nThis cannot be undone."))
+                        .set_description(format!("Discard {what}?\n\nThis cannot be undone."))
                         .set_buttons(rfd::MessageButtons::YesNo)
                         .show();
                     if answer != rfd::MessageDialogResult::Yes {
@@ -1479,6 +1485,17 @@ impl App {
                     page.run_git(op);
                 }
                 self.request_redraw();
+            }
+            Action::WriteCommitMessage => {
+                let settings = self.ui.commit_ai.clone();
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.write_message(settings);
+                }
+                self.request_redraw();
+            }
+            Action::SetCommitAi(settings) => {
+                crate::commit_ai::save(&settings);
+                self.ui.commit_ai = settings;
             }
             Action::RefreshGit => {
                 if let Some(page) = self.pages.get_mut(self.active) {
@@ -1678,7 +1695,7 @@ impl App {
                     "stage" => Some(GitOp::Stage(arg.to_string())),
                     "unstage" if arg.is_empty() => Some(GitOp::UnstageAll),
                     "unstage" => Some(GitOp::Unstage(arg.to_string())),
-                    "commit" if !arg.is_empty() => Some(GitOp::Commit(arg.to_string())),
+                    "commit" if !arg.is_empty() => Some(GitOp::commit(arg)),
                     _ => None,
                 };
                 match op {
@@ -1763,6 +1780,7 @@ impl App {
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
+            changed |= page.poll_message();
             if page.poll_git() {
                 changed = true;
                 git_relayout |= i == self.active && page.only_changed;

@@ -162,6 +162,8 @@ pub struct Page {
     git_op: Option<Receiver<(crate::git::GitOp, Result<String, String>)>>,
     /// How the last one went: `(ok, text)`.
     pub git_note: Option<(bool, String)>,
+    /// The commit message an assistant is writing, when it arrives.
+    message_rx: Option<Receiver<Result<String, String>>>,
     /// History of the selected file.
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
@@ -219,6 +221,7 @@ impl Page {
             commit_message: String::new(),
             git_op: None,
             git_note: None,
+            message_rx: None,
             timeline: Timeline::default(),
             timeline_rx: None,
         };
@@ -351,17 +354,56 @@ impl Page {
         self.git_note = None;
     }
 
+    /// An assistant is writing the commit message.
+    pub fn writing_message(&self) -> bool {
+        self.message_rx.is_some()
+    }
+
+    /// Ask an assistant for a commit message, on a background thread.
+    pub fn write_message(&mut self, settings: crate::commit_ai::Settings) {
+        if self.message_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::commit_ai::write(&root, &settings));
+            crate::ext::wake_ui();
+        });
+        self.message_rx = Some(rx);
+        self.git_note = None;
+    }
+
+    /// Take in the message an assistant wrote. True when one arrived.
+    pub fn poll_message(&mut self) -> bool {
+        let Some(rx) = &self.message_rx else { return false };
+        match rx.try_recv() {
+            Ok(Ok(message)) => self.commit_message = message,
+            Ok(Err(why)) => self.git_note = Some((false, why)),
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => {}
+        }
+        self.message_rx = None;
+        true
+    }
+
     /// Take in a finished `run_git`. True when one finished.
     pub fn poll_git_op(&mut self) -> bool {
         let Some(rx) = &self.git_op else { return false };
         let Ok((op, result)) = rx.try_recv() else { return false };
         self.git_op = None;
         match (&op, result) {
-            (crate::git::GitOp::Commit(_) | crate::git::GitOp::CommitAll(_), Ok(line)) => {
+            (crate::git::GitOp::Commit { .. }, Ok(line)) => {
                 self.commit_message.clear();
                 self.git_note = Some((true, line));
             }
             (crate::git::GitOp::Sync, Ok(_)) => self.git_note = Some((true, "Synced with the remote.".into())),
+            (crate::git::GitOp::Push | crate::git::GitOp::Publish(_), Ok(_)) => {
+                self.git_note = Some((true, "Pushed.".into()))
+            }
+            (crate::git::GitOp::Pull, Ok(_)) => self.git_note = Some((true, "Pulled.".into())),
+            (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some((true, "Fetched.".into())),
+            (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some((true, "Changes stashed.".into())),
             (crate::git::GitOp::Switch(branch), Ok(_)) => self.git_note = Some((true, format!("On branch {branch}."))),
             (_, Ok(_)) => {}
             (_, Err(e)) => self.git_note = Some((false, e)),

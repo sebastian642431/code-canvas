@@ -2,8 +2,8 @@
 
 use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Vec2};
 
-use super::{c, check, icon, pal, panel_title, small_icon, Action, ROW_H};
-use crate::git::{Change, FileChange, GitOp};
+use super::{c, check, icon, menu_gap, menu_row, pal, panel_title, small_icon, Action, FileIcons, FileOp, ROW_H};
+use crate::git::{After, Change, FileChange, GitOp};
 use crate::icons;
 use crate::page::Page;
 use canvas_render::theme;
@@ -93,15 +93,25 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
     });
 }
 
-/// A section header like VS Code's: a chevron, a title, and a count.
-fn group_header(ui: &mut egui::Ui, title: &str, count: Option<usize>, button: Option<(&str, &str)>) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+/// A section header like VS Code's: a chevron, a title, a count, and maybe
+/// a button that shows with the pointer. A click folds the section; whether
+/// it is open is kept by its `key`. Returns `(open, the button was clicked)`.
+fn group_header(
+    ui: &mut egui::Ui,
+    title: &str,
+    key: &str,
+    count: Option<usize>,
+    button: Option<(&str, &str)>,
+) -> (bool, bool) {
+    let id = egui::Id::unique(("source control section", key));
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(true);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     let painter = ui.painter();
     let mid = rect.center().y;
     painter.text(
         Pos2::new(rect.left() + 8.0, mid),
         Align2::LEFT_CENTER,
-        icons::CHEVRON_DOWN,
+        if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT },
         FontId::proportional(12.0),
         pal().text_dim,
     );
@@ -122,9 +132,9 @@ fn group_header(ui: &mut egui::Ui, title: &str, count: Option<usize>, button: Op
     }
     let mut clicked = false;
     if let Some((glyph, tip)) = button {
-        if resp.hovered() || ui.rect_contains_pointer(rect) {
+        if ui.rect_contains_pointer(rect) {
             let at = Rect::from_center_size(Pos2::new(right - 11.0, mid), Vec2::splat(22.0));
-            let r = ui.interact(at, ui.scope_id().with(("group", title)), Sense::click());
+            let r = ui.interact(at, ui.scope_id().with(("group", key)), Sense::click());
             if r.hovered() {
                 ui.painter().rect_filled(at, 5.0, pal().hover);
             }
@@ -132,11 +142,41 @@ fn group_header(ui: &mut egui::Ui, title: &str, count: Option<usize>, button: Op
             clicked = r.on_hover_text(tip).clicked();
         }
     }
-    clicked
+    if resp.clicked() && !clicked {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    (open, clicked)
+}
+
+/// A small button that shows on a row while the pointer is on it. `right`
+/// is where the next one to the left goes.
+fn row_button(
+    ui: &mut egui::Ui,
+    right: &mut f32,
+    mid: f32,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    glyph: &str,
+    tip: &str,
+) -> bool {
+    let at = Rect::from_center_size(Pos2::new(*right - 11.0, mid), Vec2::splat(22.0));
+    let r = ui.interact(at, ui.scope_id().with(id), Sense::click());
+    if r.hovered() {
+        ui.painter().rect_filled(at, 5.0, pal().hover);
+    }
+    ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), pal().text);
+    *right = at.left() - 2.0;
+    r.on_hover_text(tip).clicked()
 }
 
 /// One changed file in a group. Returns what the user asked for.
-fn change_row(ui: &mut egui::Ui, change: &FileChange, side: Change, staged: bool) -> Option<Action> {
+fn change_row(
+    ui: &mut egui::Ui,
+    file_icons: &mut FileIcons,
+    change: &FileChange,
+    side: Change,
+    staged: bool,
+) -> Option<Action> {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     if !ui.is_rect_visible(rect) {
         return None;
@@ -158,41 +198,45 @@ fn change_row(ui: &mut egui::Ui, change: &FileChange, side: Change, staged: bool
     let mut right = rect.right() - 32.0;
     let mut action = None;
     if hovered {
-        // Stage or unstage, shown while the pointer is on the row.
-        let at = Rect::from_center_size(Pos2::new(right - 11.0, mid), Vec2::splat(22.0));
+        // As in VS Code, from the right: stage or unstage, discard, open.
+        let path = &change.path;
         let (glyph, tip) = if staged { (icons::MINUS, "Unstage") } else { (icons::PLUS, "Stage") };
-        let r = ui.interact(at, ui.scope_id().with(("stage", staged, &change.path)), Sense::click());
-        if r.hovered() {
-            ui.painter().rect_filled(at, 5.0, pal().hover);
-        }
-        ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), pal().text);
-        if r.on_hover_text(tip).clicked() {
-            let op = if staged { GitOp::Unstage(change.path.clone()) } else { GitOp::Stage(change.path.clone()) };
+        if row_button(ui, &mut right, mid, ("stage", staged, path), glyph, tip) {
+            let op = if staged { GitOp::Unstage(path.clone()) } else { GitOp::Stage(path.clone()) };
             action = Some(Action::Git(op));
         }
-        right = at.left() - 2.0;
-        if !staged && side != Change::Untracked {
-            let at = Rect::from_center_size(Pos2::new(right - 11.0, mid), Vec2::splat(22.0));
-            let r = ui.interact(at, ui.scope_id().with(("discard", &change.path)), Sense::click());
-            if r.hovered() {
-                ui.painter().rect_filled(at, 5.0, pal().hover);
-            }
+        if !staged {
             let glyph = crate::codicons::glyph("discard").unwrap_or(icons::ARROW_LEFT);
-            ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), pal().text);
-            if r.on_hover_text("Discard changes").clicked() {
-                action = Some(Action::Git(GitOp::Discard(change.path.clone())));
+            if side == Change::Untracked {
+                // Nothing to go back to: discarding a new file removes it.
+                if row_button(ui, &mut right, mid, ("discard", path), glyph, "Delete (to the recycle bin)") {
+                    action = Some(Action::File(FileOp::Delete(path.clone())));
+                }
+            } else if row_button(ui, &mut right, mid, ("discard", path), glyph, "Discard changes") {
+                action = Some(Action::Git(GitOp::Discard(path.clone())));
             }
-            right = at.left() - 2.0;
+        }
+        if !deleted {
+            let glyph = crate::codicons::glyph("go-to-file").unwrap_or(icons::FILE);
+            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, "Go to the file") {
+                action = Some(Action::FlyToPath(path.clone()));
+            }
         }
         right -= 2.0;
     }
-    let painter = ui.painter();
     let (dir, name) = change.path.rsplit_once('/').unwrap_or(("", &change.path));
+    // The file's icon, then its name, then the folder it is in.
+    let mut x = rect.left() + 26.0;
+    let icon_at = Rect::from_center_size(Pos2::new(x + 8.0, mid), Vec2::splat(16.0));
+    if file_icons.paint(ui, name, false, false, icon_at, deleted) {
+        x += 22.0;
+    }
+    let painter = ui.painter();
     let name_color = if deleted { pal().text_dim } else { color.lerp_to_gamma(pal().text, 0.35) };
     let ng = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.5), name_color);
-    let clip = Rect::from_min_max(Pos2::new(rect.left() + 26.0, rect.top()), Pos2::new(right, rect.bottom()));
+    let clip = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(right, rect.bottom()));
     let name_w = ng.size().x;
-    let name_at = Pos2::new(rect.left() + 26.0, mid - ng.size().y * 0.5);
+    let name_at = Pos2::new(x, mid - ng.size().y * 0.5);
     let clipped = painter.with_clip_rect(clip);
     clipped.galley(name_at, ng, name_color);
     if deleted {
@@ -212,12 +256,78 @@ fn change_row(ui: &mut egui::Ui, change: &FileChange, side: Change, staged: bool
     action
 }
 
+/// What the big button does when pressed, and what it says.
+enum Primary {
+    Commit,
+    /// The branch is on no remote yet.
+    Publish,
+    /// Nothing to commit, but the remote and this branch differ.
+    Sync,
+    /// Nothing to do.
+    Idle,
+}
+
 /// Source control, laid out like VS Code's view: the repository and its
 /// branch, the commit message and button, staged and unstaged changes, and
 /// the latest commits.
-pub fn changes_panel(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut Vec<Action>) {
+pub fn changes_panel(
+    ui: &mut egui::Ui,
+    file_icons: &mut FileIcons,
+    page: Option<&mut Page>,
+    actions: &mut Vec<Action>,
+) {
+    let busy = page.as_ref().is_some_and(|p| p.git_busy());
+    let in_repository = page.as_ref().is_some_and(|p| p.git.is_some());
     Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 10, bottom: 2 }).show(ui, |ui| {
         panel_title(ui, "Source control", |ui| {
+            if in_repository {
+                // "…": what does not have a button of its own.
+                let more = ui
+                    .scope(|ui| {
+                        ui.visuals_mut().button_frame = false;
+                        ui.menu_button(icon(icons::ELLIPSIS_VERTICAL, 14.0, pal().text_dim), |ui| {
+                            ui.set_width(210.0);
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            let mut op = None;
+                            for (glyph, label, what) in [
+                                (icons::DOWNLOAD, "Pull", GitOp::Pull),
+                                (icons::ARROW_UP, "Push", GitOp::Push),
+                                (icons::REFRESH_CW, "Fetch", GitOp::Fetch),
+                            ] {
+                                if menu_row(ui, glyph, label) {
+                                    op = Some(what);
+                                }
+                            }
+                            menu_gap(ui);
+                            for (glyph, label, what) in [
+                                (icons::PLUS, "Stage all changes", GitOp::StageAll),
+                                (icons::MINUS, "Unstage all changes", GitOp::UnstageAll),
+                                (icons::ARROW_LEFT, "Discard all changes", GitOp::DiscardAll),
+                            ] {
+                                if menu_row(ui, glyph, label) {
+                                    op = Some(what);
+                                }
+                            }
+                            menu_gap(ui);
+                            for (glyph, label, what) in [
+                                (icons::FILE_ARCHIVE, "Stash (with new files)", GitOp::Stash),
+                                (icons::HISTORY, "Pop the latest stash", GitOp::StashPop),
+                            ] {
+                                if menu_row(ui, glyph, label) {
+                                    op = Some(what);
+                                }
+                            }
+                            if let Some(op) = op {
+                                if !busy {
+                                    actions.push(Action::Git(op));
+                                }
+                                ui.close();
+                            }
+                        })
+                    })
+                    .inner;
+                more.response.on_hover_text("More actions");
+            }
             if small_icon(ui, icons::REFRESH_CW, "Ask git again") {
                 actions.push(Action::RefreshGit);
             }
@@ -227,11 +337,11 @@ pub fn changes_panel(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut V
         ui.label(RichText::new("    Open a folder to see its changes.").size(11.5).color(pal().text_dim));
         return;
     };
-    let busy = page.git_busy();
     if page.git_loading() {
         ui.label(RichText::new("    Reading the repository …").size(11.5).color(pal().text_dim));
         return;
     }
+    let writing = page.writing_message();
     let Page { git, commit_message, only_changed, git_note, title, .. } = page;
     let Some(g) = git.as_ref() else {
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(pal().text_dim));
@@ -243,215 +353,333 @@ pub fn changes_panel(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut V
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         // --- the repository and its branch ---------------------------------
-        group_header(ui, "Repositories", None, None);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
-        let mid = rect.center().y;
-        ui.painter().text(
-            Pos2::new(rect.left() + 26.0, mid),
-            Align2::LEFT_CENTER,
-            icons::BOOK_MARKED,
-            FontId::proportional(13.0),
-            pal().text_dim,
-        );
-        ui.painter().text(
-            Pos2::new(rect.left() + 46.0, mid),
-            Align2::LEFT_CENTER,
-            title.as_str(),
-            FontId::proportional(12.5),
-            pal().text,
-        );
-        let sync_at = Rect::from_center_size(Pos2::new(rect.right() - 20.0, mid), Vec2::splat(22.0));
-        let sync = ui.interact(sync_at, ui.scope_id().with("sync"), Sense::click());
-        if sync.hovered() {
-            ui.painter().rect_filled(sync_at, 5.0, pal().hover);
-        }
-        ui.painter().text(
-            sync_at.center(),
-            Align2::CENTER_CENTER,
-            icons::REPEAT_2,
-            FontId::proportional(13.0),
-            pal().text_dim,
-        );
-        if sync.on_hover_text("Sync: pull (fast-forward only), then push").clicked() && !busy {
-            actions.push(Action::Git(GitOp::Sync));
-        }
-        let mut branch = format!("{}  {}{}", icons::GIT_BRANCH, g.branch, if g.changes.is_empty() { "" } else { "*" });
-        if g.ahead > 0 {
-            branch.push_str(&format!("  ↑{}", g.ahead));
-        }
-        if g.behind > 0 {
-            branch.push_str(&format!("  ↓{}", g.behind));
-        }
-        // The branch, on the right of the row; a click lists the others.
-        let galley = ui.painter().layout_no_wrap(branch.clone(), FontId::proportional(12.0), pal().text_dim);
-        let at = Rect::from_min_size(
-            Pos2::new(sync_at.left() - 12.0 - galley.size().x, rect.top() + 1.0),
-            Vec2::new(galley.size().x + 8.0, ROW_H - 2.0),
-        );
-        let mut inner =
-            ui.new_child(egui::UiBuilder::new().max_rect(at).layout(egui::Layout::right_to_left(egui::Align::Center)));
-        inner
-            .menu_button(RichText::new(branch).size(12.0).color(pal().text_dim), |ui| {
-                ui.set_min_width(200.0);
-                ui.label(RichText::new("Switch to a branch").size(11.0).color(pal().text_faint));
-                for name in &g.branches {
-                    if ui.selectable_label(*name == g.branch, name).clicked() {
-                        if *name != g.branch && !busy {
-                            actions.push(Action::Git(GitOp::Switch(name.clone())));
+        if group_header(ui, "Repositories", "repositories", None, None).0 {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+            let mid = rect.center().y;
+            ui.painter().text(
+                Pos2::new(rect.left() + 26.0, mid),
+                Align2::LEFT_CENTER,
+                icons::BOOK_MARKED,
+                FontId::proportional(13.0),
+                pal().text_dim,
+            );
+            let sync_at = Rect::from_center_size(Pos2::new(rect.right() - 20.0, mid), Vec2::splat(22.0));
+            let sync = ui.interact(sync_at, ui.scope_id().with("sync"), Sense::click());
+            if sync.hovered() {
+                ui.painter().rect_filled(sync_at, 5.0, pal().hover);
+            }
+            ui.painter().text(
+                sync_at.center(),
+                Align2::CENTER_CENTER,
+                icons::REPEAT_2,
+                FontId::proportional(13.0),
+                pal().text_dim,
+            );
+            if sync.on_hover_text("Sync: pull (fast-forward only), then push").clicked() && !busy {
+                actions.push(Action::Git(GitOp::Sync));
+            }
+            let mut branch =
+                format!("{}  {}{}", icons::GIT_BRANCH, g.branch, if g.changes.is_empty() { "" } else { "*" });
+            if g.ahead > 0 {
+                branch.push_str(&format!("  ↑{}", g.ahead));
+            }
+            if g.behind > 0 {
+                branch.push_str(&format!("  ↓{}", g.behind));
+            }
+            // The branch, on the right of the row; a click lists the others.
+            let galley = ui.painter().layout_no_wrap(branch.clone(), FontId::proportional(12.0), pal().text_dim);
+            let at = Rect::from_min_size(
+                Pos2::new(sync_at.left() - 12.0 - galley.size().x, rect.top() + 1.0),
+                Vec2::new(galley.size().x + 8.0, ROW_H - 2.0),
+            );
+            // The repository's name takes what the branch leaves.
+            let name_clip =
+                Rect::from_min_max(Pos2::new(rect.left() + 46.0, rect.top()), Pos2::new(at.left() - 6.0, rect.bottom()));
+            ui.painter().with_clip_rect(name_clip).text(
+                name_clip.left_center(),
+                Align2::LEFT_CENTER,
+                title.as_str(),
+                FontId::proportional(12.5),
+                pal().text,
+            );
+            let mut inner = ui
+                .new_child(egui::UiBuilder::new().max_rect(at).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            inner
+                .menu_button(RichText::new(branch).size(12.0).color(pal().text_dim), |ui| {
+                    ui.set_min_width(200.0);
+                    ui.label(RichText::new("Switch to a branch").size(11.0).color(pal().text_faint));
+                    for name in &g.branches {
+                        if ui.selectable_label(*name == g.branch, name).clicked() {
+                            if *name != g.branch && !busy {
+                                actions.push(Action::Git(GitOp::Switch(name.clone())));
+                            }
+                            ui.close();
                         }
-                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Branch: click to switch");
+        }
+
+        // --- message, commit, and the changes --------------------------------
+        if group_header(ui, "Changes", "changes", None, None).0 {
+            Frame::NONE.inner_margin(Margin { left: 26, right: 10, top: 2, bottom: 6 }).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                let mut commit = false;
+                let hint = format!("Message (Ctrl+Enter to commit on \"{}\")", g.branch);
+                Frame::NONE
+                    .fill(pal().well)
+                    .stroke(egui::Stroke::new(1.0, pal().border))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(Margin { left: 8, right: 3, top: 5, bottom: 5 })
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let edit = ui.add(
+                                egui::TextEdit::multiline(commit_message)
+                                    .hint_text(if writing { "Writing the message …".to_string() } else { hint })
+                                    .frame(Frame::NONE)
+                                    .desired_rows(1)
+                                    .desired_width(ui.available_width() - 26.0),
+                            );
+                            commit |= edit.has_focus()
+                                && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+                            // An assistant writes the message from the change.
+                            let (at, spark) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                            let can = !writing && !g.changes.is_empty();
+                            if spark.hovered() && can {
+                                ui.painter().rect_filled(at, 5.0, pal().hover);
+                            }
+                            let color = match (writing, can, spark.hovered()) {
+                                (true, _, _) => pal().accent,
+                                (_, false, _) => pal().text_faint,
+                                (_, true, true) => pal().text,
+                                (_, true, false) => pal().text_dim,
+                            };
+                            let glyph = if writing { icons::ELLIPSIS_VERTICAL } else { icons::SPARKLES };
+                            ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), color);
+                            let tip = if writing {
+                                "An assistant is writing the message"
+                            } else {
+                                "Write the message from the change (Claude Code, Codex or your own command: see Settings)"
+                            };
+                            if spark.on_hover_text(tip).clicked() && can {
+                                actions.push(Action::WriteCommitMessage);
+                            }
+                        });
+                    });
+
+                // The button: commit when there is something to, else what
+                // is left to do with the remote.
+                let has_message = !commit_message.trim().is_empty();
+                let primary = match (g.changes.is_empty(), g.upstream) {
+                    (false, _) => Primary::Commit,
+                    (true, false) if !g.branch.is_empty() && !g.graph.is_empty() => Primary::Publish,
+                    (true, true) if g.ahead + g.behind > 0 => Primary::Sync,
+                    _ => Primary::Idle,
+                };
+                let all = staged.is_empty();
+                let ready = !busy
+                    && match primary {
+                        Primary::Commit => has_message,
+                        Primary::Publish | Primary::Sync => true,
+                        Primary::Idle => false,
+                    };
+                let label = match (&primary, busy) {
+                    (_, true) => "Working …".to_string(),
+                    (Primary::Commit | Primary::Idle, _) => format!("{}  Commit", icons::CHECK),
+                    (Primary::Publish, _) => format!("{}  Publish Branch", icons::ARROW_UP),
+                    (Primary::Sync, _) => {
+                        format!("{}  Sync Changes  {}↓ {}↑", icons::REPEAT_2, g.behind, g.ahead)
+                    }
+                };
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+                // The arrow at its right end opens the other ways to commit.
+                let with_menu = matches!(primary, Primary::Commit);
+                let menu_w = if with_menu { 26.0 } else { 0.0 };
+                let main_at = Rect::from_min_max(rect.min, Pos2::new(rect.right() - menu_w, rect.bottom()));
+                let menu_at = Rect::from_min_max(Pos2::new(rect.right() - menu_w, rect.top()), rect.max);
+                let main = ui.interact(main_at, ui.scope_id().with("commit"), Sense::click());
+                let fill = |hovered: bool| match (ready, hovered) {
+                    (false, _) => pal().raised,
+                    (true, false) => pal().accent.gamma_multiply(0.85),
+                    (true, true) => pal().accent,
+                };
+                let text_color = if ready { pal().on_accent } else { pal().text_faint };
+                ui.painter().rect_filled(rect, 6.0, fill(false));
+                if main.hovered() && ready {
+                    let round = egui::CornerRadius { nw: 6, sw: 6, ne: if with_menu { 0 } else { 6 }, se: if with_menu { 0 } else { 6 } };
+                    ui.painter().rect_filled(main_at, round, fill(true));
+                }
+                ui.painter().text(main_at.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), text_color);
+                let tip = match primary {
+                    Primary::Commit if all => "Nothing is staged: this stages every change and commits it",
+                    Primary::Commit => "Commit the staged changes",
+                    Primary::Publish => "Push this branch to the remote for the first time",
+                    Primary::Sync => "Pull (fast-forward only), then push",
+                    Primary::Idle => "Nothing to commit",
+                };
+                commit |= main.on_hover_text(tip).clicked();
+                let commit_op = |amend: bool, then: After| {
+                    Action::Git(GitOp::Commit { message: commit_message.trim().to_string(), all, amend, then })
+                };
+                if commit && ready {
+                    actions.push(match primary {
+                        Primary::Commit => commit_op(false, After::Nothing),
+                        Primary::Publish => Action::Git(GitOp::Publish(g.branch.clone())),
+                        Primary::Sync | Primary::Idle => Action::Git(GitOp::Sync),
+                    });
+                }
+                if with_menu {
+                    let arrow = ui.interact(menu_at, ui.scope_id().with("commit menu"), Sense::click());
+                    if arrow.hovered() && !busy {
+                        let round = egui::CornerRadius { nw: 0, sw: 0, ne: 6, se: 6 };
+                        ui.painter().rect_filled(menu_at, round, pal().accent);
+                    }
+                    let line = if ready { pal().on_accent.gamma_multiply(0.35) } else { pal().border };
+                    ui.painter().vline(menu_at.left(), menu_at.shrink(5.0).y_range(), (1.0, line));
+                    let color = if ready || arrow.hovered() { pal().on_accent } else { pal().text_faint };
+                    ui.painter().text(
+                        menu_at.center(),
+                        Align2::CENTER_CENTER,
+                        icons::CHEVRON_DOWN,
+                        FontId::proportional(12.0),
+                        if busy { pal().text_faint } else { color },
+                    );
+                    egui::Popup::menu(&arrow).show(|ui| {
+                        ui.set_width(200.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        let mut chosen = None;
+                        // The first three need a message; amending can keep the old one.
+                        if has_message {
+                            if menu_row(ui, icons::CHECK, "Commit") {
+                                chosen = Some(commit_op(false, After::Nothing));
+                            }
+                            if menu_row(ui, icons::ARROW_UP, "Commit & Push") {
+                                chosen = Some(commit_op(false, After::Push));
+                            }
+                            if menu_row(ui, icons::REPEAT_2, "Commit & Sync") {
+                                chosen = Some(commit_op(false, After::Sync));
+                            }
+                            menu_gap(ui);
+                        }
+                        let amend = if has_message { "Commit (Amend)" } else { "Amend with the same message" };
+                        if menu_row(ui, icons::HISTORY, amend) {
+                            chosen = Some(commit_op(true, After::Nothing));
+                        }
+                        if let Some(action) = chosen {
+                            if !busy {
+                                actions.push(action);
+                            }
+                            ui.close();
+                        }
+                    });
+                    arrow.on_hover_text("More ways to commit");
+                }
+
+                if let Some((ok, text)) = git_note.as_ref() {
+                    let color = if *ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
+                    ui.label(RichText::new(text).size(11.5).color(color));
+                }
+                if !g.changes.is_empty() {
+                    let mut only = *only_changed;
+                    if check(ui, &mut only, "Show only changed files on canvas", true, true).clicked() {
+                        actions.push(Action::SetOnlyChanged(only));
                     }
                 }
-            })
-            .response
-            .on_hover_text("Branch: click to switch");
+            });
 
-        // --- message and commit ---------------------------------------------
-        group_header(ui, "Changes", None, None);
-        let mut commit = false;
-        Frame::NONE.inner_margin(Margin { left: 26, right: 10, top: 2, bottom: 6 }).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 6.0;
-            let hint = format!("Message (Ctrl+Enter to commit on \"{}\")", g.branch);
-            let edit = Frame::NONE
-                .fill(pal().well)
-                .stroke(egui::Stroke::new(1.0, pal().border))
-                .corner_radius(egui::CornerRadius::same(6))
-                .inner_margin(Margin::symmetric(8, 5))
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(commit_message)
-                            .hint_text(hint)
-                            .frame(Frame::NONE)
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY),
-                    )
-                })
-                .inner;
-            commit |= edit.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
-            let ready = !busy && !commit_message.trim().is_empty() && !g.changes.is_empty();
-            let label = match (busy, staged.is_empty()) {
-                (true, _) => "Working …".to_string(),
-                (false, true) => format!("{}  Commit all changes", icons::CHECK),
-                (false, false) => format!("{}  Commit", icons::CHECK),
-            };
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
-            let fill = match (ready, resp.hovered()) {
-                (false, _) => pal().raised,
-                (true, false) => pal().accent.gamma_multiply(0.85),
-                (true, true) => pal().accent,
-            };
-            ui.painter().rect_filled(rect, 6.0, fill);
-            let text_color = if ready { pal().on_accent } else { pal().text_faint };
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), text_color);
-            let tip = if staged.is_empty() {
-                "Nothing is staged: this stages every change and commits it"
-            } else {
-                "Commit the staged changes"
-            };
-            commit |= resp.on_hover_text(tip).clicked();
-            if commit && ready {
-                let message = commit_message.trim().to_string();
-                if staged.is_empty() {
-                    actions.push(Action::Git(GitOp::CommitAll(message)));
-                } else {
-                    actions.push(Action::Git(GitOp::Commit(message)));
+            // --- staged and unstaged changes --------------------------------
+            if !staged.is_empty() {
+                let (open, all) =
+                    group_header(ui, "Staged Changes", "staged", Some(staged.len()), Some((icons::MINUS, "Unstage all")));
+                if all && !busy {
+                    actions.push(Action::Git(GitOp::UnstageAll));
+                }
+                if open {
+                    for ch in &staged {
+                        actions.extend(change_row(ui, file_icons, ch, ch.staged.unwrap_or(ch.change), true));
+                    }
                 }
             }
-            if let Some((ok, text)) = git_note.as_ref() {
-                let color = if *ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
-                ui.label(RichText::new(text).size(11.5).color(color));
-            }
-            if !g.changes.is_empty() {
-                let mut only = *only_changed;
-                if check(ui, &mut only, "Show only changed files on canvas", true, true).clicked() {
-                    actions.push(Action::SetOnlyChanged(only));
+            if !unstaged.is_empty() || staged.is_empty() {
+                let (open, all) =
+                    group_header(ui, "Changes", "unstaged", Some(unstaged.len()), Some((icons::PLUS, "Stage all")));
+                if all && !busy {
+                    actions.push(Action::Git(GitOp::StageAll));
+                }
+                if open {
+                    for ch in &unstaged {
+                        actions.extend(change_row(ui, file_icons, ch, ch.unstaged.unwrap_or(ch.change), false));
+                    }
                 }
             }
-        });
-
-        // --- staged and unstaged changes ------------------------------------
-        if !staged.is_empty() {
-            if group_header(ui, "Staged Changes", Some(staged.len()), Some((icons::MINUS, "Unstage all"))) && !busy {
-                actions.push(Action::Git(GitOp::UnstageAll));
+            if g.truncated {
+                ui.label(RichText::new("        More changes than are listed here.").size(11.5).color(pal().text_faint));
             }
-            for ch in &staged {
-                actions.extend(change_row(ui, ch, ch.staged.unwrap_or(ch.change), true));
-            }
-        }
-        if group_header(ui, "Changes", Some(unstaged.len()), Some((icons::PLUS, "Stage all"))) && !busy {
-            actions.push(Action::Git(GitOp::StageAll));
-        }
-        for ch in &unstaged {
-            actions.extend(change_row(ui, ch, ch.unstaged.unwrap_or(ch.change), false));
-        }
-        if g.changes.is_empty() {
-            ui.label(RichText::new("        Nothing to commit.").size(11.5).color(pal().text_faint));
-        }
-        if g.truncated {
-            ui.label(RichText::new("        More changes than are listed here.").size(11.5).color(pal().text_faint));
         }
 
         // --- the latest commits -----------------------------------------------
         ui.add_space(8.0);
-        group_header(ui, "Graph", None, None);
-        let now =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        for (i, node) in g.graph.iter().enumerate() {
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
-            if !ui.is_rect_visible(rect) {
-                continue;
-            }
-            let painter = ui.painter();
-            if resp.hovered() {
-                painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
-            }
-            let mid = rect.center().y;
-            let x = rect.left() + 18.0;
-            // The line of history, with a ring for the commit the branch is on.
-            let top = if i == 0 { mid } else { rect.top() };
-            let bottom = if i + 1 == g.graph.len() { mid } else { rect.bottom() };
-            painter.line_segment([Pos2::new(x, top), Pos2::new(x, bottom)], (1.5, pal().accent.gamma_multiply(0.7)));
-            if i == 0 {
-                painter.circle_filled(Pos2::new(x, mid), 4.5, pal().card);
-                painter.circle_stroke(Pos2::new(x, mid), 4.5, (1.5, pal().accent));
-            } else {
-                painter.circle_filled(Pos2::new(x, mid), 3.5, pal().accent);
-            }
-            // Branch and tag names on the right, the subject in what is left.
-            let mut right = rect.right() - 10.0;
-            for name in node.refs.iter().take(2) {
-                let galley = painter.layout_no_wrap(name.clone(), FontId::proportional(10.5), pal().on_accent);
-                let badge = Rect::from_min_size(
-                    Pos2::new(right - galley.size().x - 12.0, mid - 8.0),
-                    Vec2::new(galley.size().x + 12.0, 16.0),
+        if group_header(ui, "Graph", "graph", None, None).0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            for (i, node) in g.graph.iter().enumerate() {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                if !ui.is_rect_visible(rect) {
+                    continue;
+                }
+                let painter = ui.painter();
+                if resp.hovered() {
+                    painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
+                }
+                let mid = rect.center().y;
+                let x = rect.left() + 18.0;
+                // The line of history, with a ring for the commit the branch is on.
+                let top = if i == 0 { mid } else { rect.top() };
+                let bottom = if i + 1 == g.graph.len() { mid } else { rect.bottom() };
+                painter.line_segment([Pos2::new(x, top), Pos2::new(x, bottom)], (1.5, pal().accent.gamma_multiply(0.7)));
+                if i == 0 {
+                    painter.circle_filled(Pos2::new(x, mid), 4.5, pal().card);
+                    painter.circle_stroke(Pos2::new(x, mid), 4.5, (1.5, pal().accent));
+                } else {
+                    painter.circle_filled(Pos2::new(x, mid), 3.5, pal().accent);
+                }
+                // Branch and tag names on the right, the subject in what is
+                // left. Who and when are in the tooltip, as in VS Code.
+                let mut right = rect.right() - 10.0;
+                for name in node.refs.iter().take(2) {
+                    let galley = painter.layout_no_wrap(name.clone(), FontId::proportional(10.5), pal().on_accent);
+                    let badge = Rect::from_min_size(
+                        Pos2::new(right - galley.size().x - 12.0, mid - 8.0),
+                        Vec2::new(galley.size().x + 12.0, 16.0),
+                    );
+                    let fill = if name.contains('/') { c(theme::get().git_added) } else { pal().accent };
+                    painter.rect_filled(badge, 8.0, fill);
+                    painter.galley(badge.center() - galley.size() * 0.5, galley, pal().on_accent);
+                    right = badge.left() - 5.0;
+                }
+                let clip = Rect::from_min_max(Pos2::new(x + 12.0, rect.top()), Pos2::new(right, rect.bottom()));
+                painter.with_clip_rect(clip).text(
+                    clip.left_center(),
+                    Align2::LEFT_CENTER,
+                    &node.commit.subject,
+                    FontId::proportional(12.0),
+                    pal().text,
                 );
-                let fill = if name.contains('/') { c(theme::get().git_added) } else { pal().accent };
-                painter.rect_filled(badge, 8.0, fill);
-                painter.galley(badge.center() - galley.size() * 0.5, galley, pal().on_accent);
-                right = badge.left() - 5.0;
+                let hash = &node.commit.hash[..node.commit.hash.len().min(10)];
+                resp.on_hover_text(format!(
+                    "{}\n{} · {} · {hash}",
+                    node.commit.subject,
+                    node.commit.author,
+                    crate::git::ago(now - node.commit.time)
+                ));
             }
-            let clip = Rect::from_min_max(Pos2::new(x + 12.0, rect.top()), Pos2::new(right, rect.bottom()));
-            let clipped = painter.with_clip_rect(clip);
-            let sg = clipped.layout_no_wrap(node.commit.subject.clone(), FontId::proportional(12.0), pal().text);
-            let sw = sg.size().x;
-            clipped.galley(Pos2::new(clip.left(), mid - sg.size().y * 0.5), sg, pal().text);
-            clipped.text(
-                Pos2::new(clip.left() + sw + 8.0, mid),
-                Align2::LEFT_CENTER,
-                &node.commit.author,
-                FontId::proportional(11.0),
-                pal().text_faint,
-            );
-            let hash = &node.commit.hash[..node.commit.hash.len().min(10)];
-            resp.on_hover_text(format!(
-                "{}\n{} · {} · {hash}",
-                node.commit.subject,
-                node.commit.author,
-                crate::git::ago(now - node.commit.time)
-            ));
-        }
-        if g.graph.is_empty() {
-            ui.label(RichText::new("        No commits yet.").size(11.5).color(pal().text_faint));
+            if g.graph.is_empty() {
+                ui.label(RichText::new("        No commits yet.").size(11.5).color(pal().text_faint));
+            }
         }
         ui.add_space(8.0);
     });

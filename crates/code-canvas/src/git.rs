@@ -80,6 +80,8 @@ pub struct GitState {
     /// Commits here that the remote does not have, and the other way round.
     pub ahead: u32,
     pub behind: u32,
+    /// The branch follows one on a remote (else it has to be published).
+    pub upstream: bool,
     /// The latest commits of the branch, newest first.
     pub graph: Vec<GraphCommit>,
     /// Local branches.
@@ -99,6 +101,15 @@ pub struct GraphCommit {
     pub refs: Vec<String>,
 }
 
+/// What follows a commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum After {
+    Nothing,
+    Push,
+    /// Pull (fast-forward only), then push.
+    Sync,
+}
+
 /// Something the user does from the source control panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitOp {
@@ -106,33 +117,89 @@ pub enum GitOp {
     Unstage(String),
     StageAll,
     UnstageAll,
-    /// Commit what is staged with this message.
-    Commit(String),
-    /// Stage every change, then commit.
-    CommitAll(String),
+    Commit {
+        message: String,
+        /// Stage every change first.
+        all: bool,
+        /// Change the last commit instead of adding one. With an empty
+        /// message it keeps the one it had.
+        amend: bool,
+        then: After,
+    },
     /// Pull (fast-forward only) and push.
     Sync,
+    Push,
+    /// Fast-forward only: histories that diverged are the user's to merge.
+    Pull,
+    Fetch,
+    /// Push a branch that no remote has yet, and follow it.
+    Publish(String),
     /// Throw away the changes of a tracked file (back to the last commit).
     Discard(String),
+    /// The same for every tracked file. Untracked files stay.
+    DiscardAll,
+    /// Put every change away, untracked files included.
+    Stash,
+    StashPop,
     /// Switch to another branch.
     Switch(String),
 }
 
-/// Run `op` in `root`. The error is what git printed.
+impl GitOp {
+    /// A plain commit of what is staged.
+    pub fn commit(message: &str) -> GitOp {
+        GitOp::Commit { message: message.to_string(), all: false, amend: false, then: After::Nothing }
+    }
+}
+
+/// The git commands of `op`, in order.
+fn steps(op: &GitOp) -> Vec<Vec<String>> {
+    let s = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<String>>();
+    match op {
+        GitOp::Stage(path) => vec![s(&["add", "--", path])],
+        GitOp::Unstage(path) => vec![s(&["reset", "-q", "--", path])],
+        GitOp::StageAll => vec![s(&["add", "-A", "--", "."])],
+        GitOp::UnstageAll => vec![s(&["reset", "-q", "--", "."])],
+        GitOp::Commit { message, all, amend, then } => {
+            let mut steps = Vec::new();
+            if *all {
+                steps.push(s(&["add", "-A", "--", "."]));
+            }
+            let mut commit = s(&["commit"]);
+            if *amend {
+                commit.push("--amend".into());
+            }
+            if message.trim().is_empty() && *amend {
+                commit.push("--no-edit".into());
+            } else {
+                commit.extend(s(&["-m", message]));
+            }
+            steps.push(commit);
+            match then {
+                After::Nothing => {}
+                After::Push => steps.push(s(&["push"])),
+                After::Sync => steps.extend([s(&["pull", "--ff-only"]), s(&["push"])]),
+            }
+            steps
+        }
+        GitOp::Sync => vec![s(&["pull", "--ff-only"]), s(&["push"])],
+        GitOp::Push => vec![s(&["push"])],
+        GitOp::Pull => vec![s(&["pull", "--ff-only"])],
+        GitOp::Fetch => vec![s(&["fetch", "--prune"])],
+        GitOp::Publish(branch) => vec![s(&["push", "-u", "origin", branch])],
+        GitOp::Discard(path) => vec![s(&["checkout", "HEAD", "--", path])],
+        GitOp::DiscardAll => vec![s(&["checkout", "HEAD", "--", "."])],
+        GitOp::Stash => vec![s(&["stash", "push", "--include-untracked"])],
+        GitOp::StashPop => vec![s(&["stash", "pop"])],
+        GitOp::Switch(branch) => vec![s(&["switch", branch])],
+    }
+}
+
+/// Run `op` in `root`. The error is what git printed; the answer is the
+/// first thing it said (the summary of a commit, say).
 pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
-    let steps: Vec<Vec<&str>> = match op {
-        GitOp::Stage(path) => vec![vec!["add", "--", path]],
-        GitOp::Unstage(path) => vec![vec!["reset", "-q", "--", path]],
-        GitOp::StageAll => vec![vec!["add", "-A", "--", "."]],
-        GitOp::UnstageAll => vec![vec!["reset", "-q", "--", "."]],
-        GitOp::Commit(message) => vec![vec!["commit", "-m", message]],
-        GitOp::CommitAll(message) => vec![vec!["add", "-A", "--", "."], vec!["commit", "-m", message]],
-        GitOp::Sync => vec![vec!["pull", "--ff-only"], vec!["push"]],
-        GitOp::Discard(path) => vec![vec!["checkout", "HEAD", "--", path]],
-        GitOp::Switch(branch) => vec![vec!["switch", branch]],
-    };
-    let mut last = String::new();
-    for args in steps {
+    let mut said = String::new();
+    for args in steps(op) {
         let mut c = command(root);
         let out = c.args(&args).stdin(Stdio::null()).output().map_err(|e| format!("git could not be run: {e}"))?;
         let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
@@ -140,9 +207,34 @@ pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
             let err = text(&out.stderr);
             return Err(if err.is_empty() { text(&out.stdout) } else { err });
         }
-        last = text(&out.stdout);
+        if said.is_empty() {
+            said = text(&out.stdout).lines().next().unwrap_or_default().to_string();
+        }
     }
-    Ok(last.lines().next().unwrap_or_default().to_string())
+    Ok(said)
+}
+
+/// What a commit message has to describe: the diff of what is staged, or of
+/// everything when nothing is (new files by name), and the latest subjects
+/// for the style. `None` when there is nothing to commit.
+pub fn change_for_message(root: &Path) -> Option<crate::commit_ai::Change> {
+    let text = |args: &[&str]| git(root, args).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let flags = ["--no-color", "--no-ext-diff"];
+    let mut diff = text(&[&["diff", "--cached"][..], &flags[..]].concat());
+    let staged = !diff.trim().is_empty();
+    if !staged {
+        diff = text(&[&["diff"][..], &flags[..]].concat());
+        let new = text(&["ls-files", "--others", "--exclude-standard"]);
+        if !new.trim().is_empty() {
+            diff.push_str("\n\nUntracked files:\n");
+            diff.push_str(new.trim_end());
+        }
+    }
+    if diff.trim().is_empty() {
+        return None;
+    }
+    let recent = text(&["log", "-n", "10", "--format=%s"]).lines().map(str::to_string).collect();
+    Some(crate::commit_ai::Change { staged, diff, recent })
 }
 
 /// Changes kept at most (a fresh `node_modules` that is not ignored…).
@@ -220,6 +312,7 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
             };
             state.ahead = count("ahead ");
             state.behind = count("behind ");
+            state.upstream = head.contains("...");
             continue;
         }
         if entry.len() < 4 {
@@ -414,6 +507,28 @@ mod tests {
                 ("d.rs", None, Some(Change::Modified)),
             ]
         );
+    }
+
+    #[test]
+    fn what_a_commit_runs() {
+        let run = |op: GitOp| steps(&op).iter().map(|s| s.join(" ")).collect::<Vec<_>>();
+        assert_eq!(run(GitOp::commit("Fix it")), vec!["commit -m Fix it"]);
+        let all = GitOp::Commit { message: "Fix it".into(), all: true, amend: false, then: After::Sync };
+        assert_eq!(run(all), vec!["add -A -- .", "commit -m Fix it", "pull --ff-only", "push"]);
+        // Amending without a message keeps the one the commit had.
+        let amend = GitOp::Commit { message: "  ".into(), all: false, amend: true, then: After::Push };
+        assert_eq!(run(amend), vec!["commit --amend --no-edit", "push"]);
+        let reword = GitOp::Commit { message: "Better".into(), all: false, amend: true, then: After::Nothing };
+        assert_eq!(run(reword), vec!["commit --amend -m Better"]);
+        assert_eq!(run(GitOp::Publish("feature".into())), vec!["push -u origin feature"]);
+        assert_eq!(run(GitOp::Pull), vec!["pull --ff-only"]);
+    }
+
+    #[test]
+    fn a_branch_without_a_remote() {
+        assert!(parse_status("## main...origin/main\0", "").upstream);
+        assert!(!parse_status("## feature\0 M a.rs\0", "").upstream);
+        assert!(!parse_status("## No commits yet on main\0", "").upstream);
     }
 
     #[test]

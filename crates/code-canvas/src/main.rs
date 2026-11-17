@@ -10,6 +10,7 @@ mod app;
 mod bench;
 mod camera;
 mod codicons;
+mod commit_ai;
 mod editor;
 mod ext;
 mod files;

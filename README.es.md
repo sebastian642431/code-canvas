@@ -42,7 +42,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
   preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas
   marcadas en el lienzo, "mostrar solo lo que cambió" y el historial (*timeline*) del
-  archivo seleccionado.
+  archivo seleccionado. El botón Commit tiene push, sync y amend; el menú "…" tiene
+  pull, push, fetch y stash; y la chispa del cuadro de mensaje le pide el mensaje a
+  Claude Code, a Codex o a un comando tuyo.
 - **Claude Code**: la extensión oficial, instalada desde el panel de extensiones; su
   panel se abre a la derecha de la ventana.
 - **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y

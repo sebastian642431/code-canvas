@@ -71,6 +71,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - A panel laid out like VS Code's: the repository and its branch, a message box and
   Commit, *Staged Changes* and *Changes* with stage / unstage, sync, and the latest
   commits. On the canvas a strip marks each changed file and a bar each changed line.
+- The Commit button's arrow: commit and push, commit and sync, amend. With nothing to
+  commit it becomes *Sync Changes* or *Publish Branch*. The "…" menu has pull, push,
+  fetch, discard all and stash.
+- The sparkle in the message box has an assistant write the message from the change:
+  Claude Code, Codex, or a command of your own (set in the settings panel).
 - **Show only changed files** re-lays the canvas out with just your work in progress.
 - Timeline: the commits that touched the selected file, under the file tree.
 
