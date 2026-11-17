@@ -1,13 +1,5 @@
-//! Looking at files that are not text: images, video, audio and PDF.
-//!
-//! The canvas draws code; these files are shown in a panel instead, by the
-//! same browser view that shows extensions' webviews (`webview.rs`), which
-//! already knows every common format. The page is a few lines of HTML that
-//! point at the file through the app's own protocol.
-
 use std::path::Path;
 
-/// The handle of the viewer's page among the webviews.
 pub const HANDLE: &str = "media-viewer";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -18,7 +10,6 @@ pub enum Kind {
     Pdf,
 }
 
-/// What kind of media `path` is, by its extension.
 pub fn kind(path: &Path) -> Option<Kind> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
@@ -34,7 +25,6 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// The address of a file for a page (`webview.rs` serves it).
 pub fn file_url(path: &Path) -> String {
     let unified = path.to_string_lossy().replace('\\', "/");
     let encoded: Vec<String> = unified
@@ -53,8 +43,6 @@ pub fn file_url(path: &Path) -> String {
     format!("https://ccres.localhost/file/{}", encoded.join("/"))
 }
 
-/// The page that shows `path`. Images fit the panel and a click switches to
-/// their real size; video and audio get the browser's own controls.
 pub fn page(path: &Path, kind: Kind) -> String {
     let url = escape(&file_url(path));
     let body = match kind {

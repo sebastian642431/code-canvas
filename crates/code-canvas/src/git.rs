@@ -1,7 +1,3 @@
-//! What changed in a folder according to git: the files of `git status` and
-//! the lines of `git diff HEAD`. Read by running the user's `git`, off the
-//! UI thread; a folder that is not in a repository simply has no changes.
-
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -17,7 +13,6 @@ pub enum Change {
 }
 
 impl Change {
-    /// The letter source-control lists show.
     pub fn letter(self) -> &'static str {
         match self {
             Change::Modified => "M",
@@ -43,15 +38,11 @@ impl Change {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HunkKind {
-    /// New lines.
     Added,
-    /// Lines that replace older ones.
     Modified,
-    /// Lines were removed just before `line`.
     Removed,
 }
 
-/// A run of changed lines in the file as it is now (0-based).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Hunk {
     pub line: u32,
@@ -61,13 +52,9 @@ pub struct Hunk {
 
 #[derive(Clone, Debug)]
 pub struct FileChange {
-    /// Relative to the folder, `/` separators.
     pub path: String,
-    /// What happened to the file overall.
     pub change: Change,
-    /// Its change in the index ("Staged Changes"), if any.
     pub staged: Option<Change>,
-    /// Its change in the working tree ("Changes"), if any.
     pub unstaged: Option<Change>,
     pub hunks: Vec<Hunk>,
     pub insertions: u32,
@@ -77,82 +64,54 @@ pub struct FileChange {
 #[derive(Clone, Debug, Default)]
 pub struct GitState {
     pub branch: String,
-    /// Commits here that the remote does not have, and the other way round.
     pub ahead: u32,
     pub behind: u32,
-    /// The branch follows one on a remote (else it has to be published).
     pub upstream: bool,
-    /// The latest commits of the branch, newest first.
     pub graph: Vec<GraphCommit>,
-    /// Local branches.
     pub branches: Vec<String>,
-    /// Sorted by path.
     pub changes: Vec<FileChange>,
-    /// More changes existed than are kept.
     pub truncated: bool,
     pub ms: u32,
 }
 
-/// A commit in the history list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphCommit {
     pub commit: Commit,
-    /// Branches and tags pointing at it (`main`, `origin/main`, `tag: v1`).
     pub refs: Vec<String>,
 }
 
-/// What follows a commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum After {
     Nothing,
     Push,
-    /// Pull (fast-forward only), then push.
     Sync,
 }
 
-/// Something the user does from the source control panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitOp {
     Stage(String),
     Unstage(String),
     StageAll,
     UnstageAll,
-    Commit {
-        message: String,
-        /// Stage every change first.
-        all: bool,
-        /// Change the last commit instead of adding one. With an empty
-        /// message it keeps the one it had.
-        amend: bool,
-        then: After,
-    },
-    /// Pull (fast-forward only) and push.
+    Commit { message: String, all: bool, amend: bool, then: After },
     Sync,
     Push,
-    /// Fast-forward only: histories that diverged are the user's to merge.
     Pull,
     Fetch,
-    /// Push a branch that no remote has yet, and follow it.
     Publish(String),
-    /// Throw away the changes of a tracked file (back to the last commit).
     Discard(String),
-    /// The same for every tracked file. Untracked files stay.
     DiscardAll,
-    /// Put every change away, untracked files included.
     Stash,
     StashPop,
-    /// Switch to another branch.
     Switch(String),
 }
 
 impl GitOp {
-    /// A plain commit of what is staged.
     pub fn commit(message: &str) -> GitOp {
         GitOp::Commit { message: message.to_string(), all: false, amend: false, then: After::Nothing }
     }
 }
 
-/// The git commands of `op`, in order.
 fn steps(op: &GitOp) -> Vec<Vec<String>> {
     let s = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<String>>();
     match op {
@@ -195,8 +154,6 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
     }
 }
 
-/// Run `op` in `root`. The error is what git printed; the answer is the
-/// first thing it said (the summary of a commit, say).
 pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
     let mut said = String::new();
     for args in steps(op) {
@@ -214,9 +171,6 @@ pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
     Ok(said)
 }
 
-/// What a commit message has to describe: the diff of what is staged, or of
-/// everything when nothing is (new files by name), and the latest subjects
-/// for the style. `None` when there is nothing to commit.
 pub fn change_for_message(root: &Path) -> Option<crate::commit_ai::Change> {
     let text = |args: &[&str]| git(root, args).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let flags = ["--no-color", "--no-ext-diff"];
@@ -237,14 +191,10 @@ pub fn change_for_message(root: &Path) -> Option<crate::commit_ai::Change> {
     Some(crate::commit_ai::Change { staged, diff, recent })
 }
 
-/// Changes kept at most (a fresh `node_modules` that is not ignored…).
 const MAX_CHANGES: usize = 5000;
 
-/// `git -C root`, without a console window.
 fn command(root: &Path) -> Command {
     let mut c = Command::new("git");
-    // No optional locks: reading the status must not rewrite `.git/index`,
-    // or the file watcher would see a change and ask for the status again.
     c.env("GIT_OPTIONAL_LOCKS", "0").arg("-C").arg(root).args(["-c", "core.quotepath=off"]);
     #[cfg(windows)]
     {
@@ -264,11 +214,8 @@ fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     Some(out.stdout)
 }
 
-/// `None` when `root` is not inside a git repository (or git is missing).
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    // The reads do not depend on each other: run them side by side (starting
-    // git costs more than what it then does, on Windows above all).
     let (status, prefix, diff, log, list) = std::thread::scope(|s| {
         let status =
             s.spawn(|| git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."]));
@@ -281,7 +228,6 @@ pub fn load(root: &Path) -> Option<GitState> {
         (done(status), done(prefix), done(diff), done(log), done(list))
     });
     let status = status?;
-    // Paths in the status are relative to the repository, not to `root`.
     let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
     let mut state = parse_status(&String::from_utf8_lossy(&status), &prefix);
     if let Some(diff) = diff {
@@ -302,10 +248,8 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
     let mut entries = text.split('\0');
     while let Some(entry) = entries.next() {
         if let Some(head) = entry.strip_prefix("## ") {
-            // `main...origin/main [ahead 1]`, or `No commits yet on main`.
             let name = head.strip_prefix("No commits yet on ").unwrap_or(head);
             state.branch = name.split("...").next().unwrap_or(name).split(' ').next().unwrap_or(name).to_string();
-            // `[ahead 1, behind 2]`
             let count = |word: &str| -> u32 {
                 let after = head.split(word).nth(1).unwrap_or("");
                 after.trim_start().split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok()).unwrap_or(0)
@@ -321,7 +265,7 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
         let (x, y) = (entry.as_bytes()[0], entry.as_bytes()[1]);
         let path = &entry[3..];
         if x == b'R' || x == b'C' {
-            entries.next(); // the path it was renamed or copied from
+            entries.next();
         }
         let change = match (x, y) {
             (b'?', b'?') => Change::Untracked,
@@ -348,7 +292,6 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
         state.changes.push(FileChange {
             path: rel.to_string(),
             change,
-            // Untracked files are `??`: they only exist in the working tree.
             staged: if x == b'?' { None } else { side(x) },
             unstaged: side(y),
             hunks: Vec::new(),
@@ -360,7 +303,6 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
     state
 }
 
-/// Fill in the changed lines from a `git diff -U0` (paths relative to the folder).
 fn apply_diff(state: &mut GitState, diff: &str) {
     let mut current: Option<usize> = None;
     for line in diff.lines() {
@@ -370,7 +312,6 @@ fn apply_diff(state: &mut GitState, diff: &str) {
         } else if line.starts_with("diff --git ") {
             current = None;
         } else if let (Some(i), Some(rest)) = (current, line.strip_prefix("@@ -")) {
-            // `@@ -old_start,old_count +new_start,new_count @@`; a count of 1 is left out.
             let mut parts = rest.split(' ');
             let pair = |s: &str| -> (u32, u32) {
                 let mut it = s.split(',');
@@ -383,7 +324,6 @@ fn apply_diff(state: &mut GitState, diff: &str) {
             c.insertions += new_count;
             c.deletions += old_count;
             c.hunks.push(match (old_count, new_count) {
-                // A pure removal sits after line `new_start`.
                 (_, 0) => Hunk { line: new_start, count: 0, kind: HunkKind::Removed },
                 (0, n) => Hunk { line: new_start.saturating_sub(1), count: n, kind: HunkKind::Added },
                 (_, n) => Hunk { line: new_start.saturating_sub(1), count: n, kind: HunkKind::Modified },
@@ -392,8 +332,6 @@ fn apply_diff(state: &mut GitState, diff: &str) {
     }
 }
 
-/// Of `paths` (relative to `root`), those git does not ignore. Outside a
-/// repository nothing is ignored.
 pub fn not_ignored(root: &Path, paths: Vec<String>) -> Vec<String> {
     use std::io::Write;
     let mut c = command(root);
@@ -406,7 +344,6 @@ pub fn not_ignored(root: &Path, paths: Vec<String>) -> Vec<String> {
         }
     }
     let Ok(out) = child.wait_with_output() else { return paths };
-    // 0: some are ignored (listed), 1: none is; anything else: not a repository.
     if !matches!(out.status.code(), Some(0) | Some(1)) {
         return paths;
     }
@@ -415,18 +352,14 @@ pub fn not_ignored(root: &Path, paths: Vec<String>) -> Vec<String> {
     paths.into_iter().filter(|p| !ignored.contains(p.as_str())).collect()
 }
 
-/// One commit of a file's history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub hash: String,
     pub author: String,
-    /// Seconds since the Unix epoch.
     pub time: i64,
     pub subject: String,
 }
 
-/// The last `max` commits that touched `rel_path` (following renames),
-/// newest first. Empty outside a repository or for a file never committed.
 pub fn log(root: &Path, rel_path: &str, max: usize) -> Vec<Commit> {
     let count = max.to_string();
     let args = ["log", "--follow", "-n", &count, "--format=%H%x1f%an%x1f%at%x1f%s", "--", rel_path];
@@ -458,7 +391,6 @@ fn parse_graph(text: &str) -> Vec<GraphCommit> {
                 time: time.parse().ok()?,
                 subject: parts.next().unwrap_or_default().to_string(),
             };
-            // `HEAD -> main, origin/main, tag: v1`
             let refs = refs
                 .split(", ")
                 .map(|r| r.strip_prefix("HEAD -> ").unwrap_or(r).trim())
@@ -470,7 +402,6 @@ fn parse_graph(text: &str) -> Vec<GraphCommit> {
         .collect()
 }
 
-/// "3 days ago", for a moment `seconds` in the past.
 pub fn ago(seconds: i64) -> String {
     let units = [
         (365 * 86400, "year"),
@@ -515,7 +446,6 @@ mod tests {
         assert_eq!(run(GitOp::commit("Fix it")), vec!["commit -m Fix it"]);
         let all = GitOp::Commit { message: "Fix it".into(), all: true, amend: false, then: After::Sync };
         assert_eq!(run(all), vec!["add -A -- .", "commit -m Fix it", "pull --ff-only", "push"]);
-        // Amending without a message keeps the one the commit had.
         let amend = GitOp::Commit { message: "  ".into(), all: false, amend: true, then: After::Push };
         assert_eq!(run(amend), vec!["commit --amend --no-edit", "push"]);
         let reword = GitOp::Commit { message: "Better".into(), all: false, amend: true, then: After::Nothing };
@@ -561,7 +491,6 @@ mod tests {
         assert_eq!(ago(800 * 86400), "2 years ago");
     }
 
-    /// `GIT_LOAD_TEST=<folder> cargo test -p code-canvas load_a_real -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn load_a_real_repository() {

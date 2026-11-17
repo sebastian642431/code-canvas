@@ -1,41 +1,22 @@
-//! Colours. Everything is `0xRRGGBBAA` in sRGB; the surface is non-sRGB so
-//! values go to the screen untouched (same blending as most UI toolkits).
-//!
-//! The colours in use are one [`Theme`], read with [`get`] and replaced with
-//! [`set`]. Two are built in: [`DARK`], the default, and [`MIDNIGHT`], the
-//! near-black look the app started with. [`FIELDS`] lists every colour by
-//! key and name, which is what the settings file and the settings panel use.
-//!
-//! Colours end up baked into GPU buffers and shaped text, so whoever keeps
-//! such a copy compares [`revision`] with the one it was built at.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
 use canvas_core::TokenKind;
 
-/// One colour of a [`Theme`], for code that goes through all of them.
 pub struct Field {
-    /// Its name in the settings file: `"card_border"`.
     pub key: &'static str,
-    /// Its name on screen.
     pub label: &'static str,
-    /// The heading it is listed under.
     pub group: &'static str,
     pub get: fn(&Theme) -> u32,
     pub set: fn(&mut Theme, u32),
 }
 
-/// Declares [`Theme`], the built-in themes and [`FIELDS`] from one table:
-/// `key: "Name" = <dark>, <midnight>;` under a group heading.
 macro_rules! theme {
     ($( $group:literal { $( $field:ident : $label:literal = $dark:literal, $midnight:literal; )* } )*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub struct Theme { $( $( pub $field: u32, )* )* }
 
-        /// The default: neutral dark greys with One Dark's syntax colours.
         pub const DARK: Theme = Theme { $( $( $field: $dark, )* )* };
-        /// Near-black with a blue cast; needs a bright screen.
         pub const MIDNIGHT: Theme = Theme { $( $( $field: $midnight, )* )* };
 
         pub const FIELDS: &[Field] = &[ $( $( Field {
@@ -121,8 +102,6 @@ theme! {
     }
 }
 
-/// The built-in themes: `(key in the settings file, name on screen, colours)`.
-/// The first one is the default.
 pub const PRESETS: &[(&str, &str, Theme)] = &[("dark", "Dark", DARK), ("midnight", "Midnight", MIDNIGHT)];
 
 impl Default for Theme {
@@ -132,7 +111,6 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// Syntax colours, indexed by [`kind_index`] (the shader's palette has 16).
     pub fn token_colors(&self) -> [u32; 16] {
         let mut out = [0xffffffff; 16];
         out[..11].copy_from_slice(&[
@@ -151,13 +129,10 @@ impl Theme {
         out
     }
 
-    /// Directory borders cycle through four colours by depth.
     pub fn dir_border(&self, depth: usize) -> u32 {
         [self.dir_border_0, self.dir_border_1, self.dir_border_2, self.dir_border_3][depth % 4]
     }
 
-    /// Relation colours, indexed by `RelKind::index()`: definitions,
-    /// implementations, references, incoming calls, outgoing calls.
     pub fn rel_colors(&self) -> [u32; 5] {
         [self.rel_def, self.rel_impl, self.rel_ref, self.rel_in, self.rel_out]
     }
@@ -166,12 +141,10 @@ impl Theme {
 static CURRENT: RwLock<Theme> = RwLock::new(DARK);
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
-/// The colours in use. Cheap, but take it once per function, not per item.
 pub fn get() -> Theme {
     *CURRENT.read().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Replace the colours in use. Nothing happens if they are the same.
 pub fn set(theme: Theme) {
     let mut current = CURRENT.write().unwrap_or_else(|e| e.into_inner());
     if *current != theme {
@@ -180,7 +153,6 @@ pub fn set(theme: Theme) {
     }
 }
 
-/// Goes up every time [`set`] changes a colour.
 pub fn revision() -> u64 {
     REVISION.load(Ordering::Relaxed)
 }
@@ -215,14 +187,12 @@ pub fn glyph_color(c: u32) -> glyphon::Color {
     glyphon::Color::rgba(r, g, b, a)
 }
 
-/// `a` moved towards `b` by `t` (0 = `a`, 1 = `b`), channel by channel.
 pub fn mix(a: u32, b: u32, t: f32) -> u32 {
     let (a, b) = (unpack(a), unpack(b));
     let ch = |i: usize| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t.clamp(0.0, 1.0)).round() as u32;
     (ch(0) << 24) | (ch(1) << 16) | (ch(2) << 8) | ch(3)
 }
 
-/// `#rrggbb` or `#rrggbbaa`, as the settings file writes colours.
 pub fn to_hex(c: u32) -> String {
     if c & 0xff == 0xff {
         format!("#{:06x}", c >> 8)
@@ -231,7 +201,6 @@ pub fn to_hex(c: u32) -> String {
     }
 }
 
-/// Reads `#rgb`, `#rrggbb` and `#rrggbbaa` (the `#` is optional).
 pub fn parse_hex(text: &str) -> Option<u32> {
     let hex = text.trim().trim_start_matches('#');
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -274,7 +243,6 @@ mod tests {
         let total = keys.len();
         keys.dedup();
         assert_eq!(keys.len(), total);
-        // Writing every field of one theme into another makes them equal.
         let mut copy = MIDNIGHT;
         for f in FIELDS {
             (f.set)(&mut copy, (f.get)(&DARK));

@@ -1,7 +1,3 @@
-// Code "minimap" bars: one instance per block of lines, per line, or per
-// token depending on the level of detail. Instances are 12 bytes and are
-// positioned relative to their file's origin, read from a storage buffer.
-
 struct Camera {
     offset: vec2<f32>,
     zoom: f32,
@@ -12,13 +8,12 @@ struct Camera {
 
 @group(0) @binding(0) var<uniform> cam: Camera;
 @group(0) @binding(1) var<uniform> palette: array<vec4<f32>, 16>;
-// x, y: first character of the file; z: x distance between folded columns.
 @group(1) @binding(0) var<storage, read> origins: array<vec4<f32>>;
 
 const CHAR_W: f32 = 6.0;
 const LINE_H: f32 = 12.0;
-const BAR: f32 = 0.72; // fraction of the line height covered by a bar
-const FOLD_LINES: f32 = 2048.0; // must match canvas_core::layout::FOLD_LINES
+const BAR: f32 = 0.72;
+const FOLD_LINES: f32 = 2048.0;
 
 struct Out {
     @builtin(position) clip: vec4<f32>,
@@ -29,8 +24,8 @@ struct Out {
 fn vs_main(
     @builtin(vertex_index) vi: u32,
     @location(0) file: u32,
-    @location(1) line_kind: u32, // line:20 | kind:4 | span:8
-    @location(2) col_cols: u32,  // col:16 | cols:16
+    @location(1) line_kind: u32,
+    @location(2) col_cols: u32,
 ) -> Out {
     let line = f32(line_kind & 0xfffffu);
     let kind = (line_kind >> 20u) & 0xfu;

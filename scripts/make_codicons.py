@@ -1,12 +1,3 @@
-# Generates crates/code-canvas/src/codicons.rs from the Codicons CSS.
-#
-#   python scripts/make_codicons.py path/to/codicon.css
-#
-# Codicons are VS Code's icon set. Extensions name them in their texts
-# (`$(check) Prettier`), so the app needs the same names. The font
-# (crates/code-canvas/assets/codicon.ttf) and the CSS come from the
-# `@vscode/codicons` npm package; the icons are CC BY 4.0, see
-# assets/CODICON-LICENSE.txt.
 import re
 import sys
 

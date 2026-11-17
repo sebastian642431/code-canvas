@@ -1,9 +1,3 @@
-//! Walk a folder and load every text file into memory, in parallel.
-//!
-//! The walk respects `.gitignore`, `.ignore` and global git excludes (via the
-//! `ignore` crate, the same engine ripgrep uses). File reading and
-//! tokenisation run on all cores with `rayon`.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,15 +10,10 @@ use crate::TAB_WIDTH;
 
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
-    /// Files bigger than this are shown as an empty card.
     pub max_file_bytes: u64,
-    /// Files longer than this are truncated (the card says so).
     pub max_lines: usize,
-    /// Hard cap on the number of files loaded.
     pub max_files: usize,
-    /// Directory names that are always skipped, even when not git-ignored.
     pub skip_dirs: Vec<String>,
-    /// File names that are always skipped (lockfiles: huge and rarely useful).
     pub skip_files: Vec<String>,
 }
 
@@ -57,7 +46,6 @@ impl Default for ScanOptions {
     }
 }
 
-/// Progress counters shared with the UI thread while a scan runs.
 #[derive(Default, Debug)]
 pub struct ScanProgress {
     pub discovered: AtomicUsize,
@@ -65,20 +53,13 @@ pub struct ScanProgress {
 }
 
 pub struct SourceFile {
-    /// Path relative to the repository root, always with `/` separators.
     pub rel_path: String,
     pub name: String,
     pub lang: Lang,
-    /// Normalised text: `\n` line endings, tabs expanded.
     pub text: String,
-    /// Byte offset of every line in `text`.
     pub line_starts: Vec<u32>,
-    /// Block summaries and chunk states; tokens themselves are produced on
-    /// demand with [`SourceFile::tokenize_chunk`].
     pub analysis: Analysis,
-    /// Widest line, in character cells.
     pub max_cols: u32,
-    /// Why the file is shown without (all of) its contents, if it is.
     pub note: Option<String>,
 }
 
@@ -91,19 +72,16 @@ impl SourceFile {
         self.line_count().div_ceil(CHUNK_LINES)
     }
 
-    /// Lines covered by chunk `c`.
     pub fn chunk_lines(&self, c: usize) -> std::ops::Range<usize> {
         let first = c * CHUNK_LINES;
         first..(first + CHUNK_LINES).min(self.line_count())
     }
 
-    /// Tokenize one chunk. Tokens keep absolute byte offsets into `text`.
     pub fn tokenize_chunk(&self, c: usize) -> Tokens {
         let in_comment = self.analysis.chunk_in_comment.get(c).copied().unwrap_or(false);
         syntax::tokenize_range(&self.text, &self.line_starts, self.lang, self.chunk_lines(c), in_comment)
     }
 
-    /// Approximate heap memory used by this file.
     pub fn heap_bytes(&self) -> usize {
         self.text.capacity()
             + self.line_starts.capacity() * 4
@@ -140,7 +118,6 @@ pub struct Dir {
     pub name: String,
     pub rel_path: String,
     pub dirs: Vec<Dir>,
-    /// Indices into [`Repo::files`].
     pub files: Vec<usize>,
 }
 
@@ -160,21 +137,14 @@ pub struct Repo {
     pub total_lines: usize,
     pub scan_ms: u128,
     pub timings: ScanTimings,
-    /// Definitions of the whole repository, by name.
     pub symbols: crate::refs::SymbolIndex,
 }
 
 impl Repo {
-    /// Index in [`Repo::files`] of the file at `rel_path` (`/` separators).
-    /// Files are kept sorted by path, so this is a binary search.
     pub fn file_index(&self, rel_path: &str) -> Option<usize> {
         self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(rel_path))).ok()
     }
 
-    /// Show `source` as the contents of file `index` without touching the
-    /// disk: an edit that is not saved yet. The symbol index is left as it
-    /// was (rebuilding it per keystroke would be slow); call
-    /// [`Repo::reindex_symbols`] when the typing pauses.
     pub fn replace_source(&mut self, index: usize, source: &str, opts: &ScanOptions) {
         let rel = self.files[index].rel_path.clone();
         self.files[index] = build_file(rel, source, opts);
@@ -185,8 +155,6 @@ impl Repo {
         self.symbols = crate::refs::SymbolIndex::build(&self.files);
     }
 
-    /// Read one file again (it changed on disk) and refresh what is derived
-    /// from the files: line totals and the symbol index.
     pub fn reload_file(&mut self, index: usize, opts: &ScanOptions) {
         let rel = self.files[index].rel_path.clone();
         let path = self.root.join(&rel);
@@ -196,7 +164,6 @@ impl Repo {
     }
 }
 
-/// `canonicalize` on Windows returns `\\?\C:\...`; strip that prefix.
 pub fn clean_path(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();
     match s.strip_prefix(r"\\?\") {
@@ -209,7 +176,6 @@ fn file_name(rel: &str) -> String {
     rel.rsplit('/').next().unwrap_or(rel).to_string()
 }
 
-/// Expand tabs, drop `\r`, and compute line starts.
 pub fn normalise(raw: &str) -> (String, Vec<u32>, u32) {
     let mut text = String::with_capacity(raw.len());
     let mut starts = vec![0u32];
@@ -238,7 +204,6 @@ pub fn normalise(raw: &str) -> (String, Vec<u32>, u32) {
         }
     }
     max_cols = max_cols.max(col);
-    // A trailing newline should not create an extra empty line.
     if starts.len() > 1 && *starts.last().unwrap() as usize == text.len() {
         starts.pop();
         text.pop();
@@ -246,8 +211,6 @@ pub fn normalise(raw: &str) -> (String, Vec<u32>, u32) {
     (text, starts, max_cols as u32)
 }
 
-/// CPU time spent per loading step, summed over all threads, in
-/// nanoseconds: `[stat, read, normalise, analyse]`. For `scan_bench`.
 pub static LOAD_PROFILE: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
 
 fn lap(step: usize, since: &mut Instant) {
@@ -256,7 +219,6 @@ fn lap(step: usize, since: &mut Instant) {
     *since = now;
 }
 
-/// Read a whole file whose size is known: one open, no question about its size.
 fn read_sized(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut bytes = Vec::with_capacity(size as usize + 1);
@@ -290,7 +252,6 @@ fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOption
     file
 }
 
-/// Normalise and analyse a file's contents.
 fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
     let mut t = Instant::now();
     let (mut text, mut line_starts, max_cols) = normalise(raw);
@@ -308,15 +269,8 @@ fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
     SourceFile { name: file_name(&rel_path), rel_path, lang, text, line_starts, analysis, max_cols, note }
 }
 
-/// Parallel directory walk: every walker thread gets a [`Visitor`] that
-/// collects paths locally and hands them over in batches.
-/// A file found by the walk: its path, its path relative to the root, and
-/// its size when the directory listing gave it for free (it does on Windows;
-/// asking again costs one system call per file, which adds up to seconds).
 type Found = (PathBuf, String, Option<u64>);
 
-/// Extensions of files that are never text: they become a card without the
-/// file being opened at all.
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "ico", "icns", "cur", "webp", "avif", "tif", "tiff", "psd", "woff", "woff2",
     "ttf", "otf", "eot", "pdf", "zip", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar", "jar", "war", "apk", "aab", "crx",
@@ -368,7 +322,6 @@ impl ignore::ParallelVisitor for Visitor<'_> {
             return ignore::WalkState::Continue;
         }
         let rel = entry.path().strip_prefix(self.c.root).unwrap_or(entry.path()).to_string_lossy().replace('\\', "/");
-        // Free where the listing carries it; never an extra system call.
         let size = if cfg!(windows) { entry.metadata().ok().map(|m| m.len()) } else { None };
         self.local.push((entry.into_path(), rel, size));
         if let Some(p) = self.c.progress {
@@ -389,8 +342,6 @@ impl Drop for Visitor<'_> {
     }
 }
 
-/// Scan `root`. Safe to call from a background thread; `progress` lets the UI
-/// show counters while it runs.
 pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>) -> Repo {
     let started = Instant::now();
     let root = clean_path(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
@@ -399,12 +350,9 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.to_string_lossy().into_owned());
 
-    // Two cores stay free: a scan of a huge folder must not starve the
-    // window that is showing its progress (or anything else on the machine).
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_sub(2).max(1);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(workers).thread_name(|i| format!("scan {i}")).build();
 
-    // 1. Discover paths (fast, single-threaded, sorted for a stable layout).
     let skip = opts.skip_dirs.clone();
     let walker = ignore::WalkBuilder::new(&root)
         .hidden(false)
@@ -421,7 +369,6 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
     let mut builder = Collector { root: &root, opts, progress: progress.as_deref(), shared: &shared };
     walker.visit(&mut builder);
     let mut paths = shared.into_inner().unwrap();
-    // Component-wise order (like a file explorer), independent of thread timing.
     paths.sort_unstable_by(|a, b| Path::new(&a.1).cmp(Path::new(&b.1)));
     if paths.len() > opts.max_files {
         log::warn!("file limit {} reached, the rest is skipped", opts.max_files);
@@ -430,7 +377,6 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
 
     let walk_ms = started.elapsed().as_millis();
     let t_load = Instant::now();
-    // 2. Read + tokenise in parallel, keeping the original order.
     let load = || -> Vec<SourceFile> {
         paths
             .par_iter()
@@ -450,12 +396,11 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
 
     let load_ms = t_load.elapsed().as_millis();
     let t_tree = Instant::now();
-    // 3. Build the directory tree.
     let mut tree = Dir { name: name.clone(), rel_path: String::new(), ..Default::default() };
     for (idx, f) in files.iter().enumerate() {
         let mut dir = &mut tree;
         let mut parts: Vec<&str> = f.rel_path.split('/').collect();
-        parts.pop(); // the file name
+        parts.pop();
         let mut rel = String::new();
         for part in parts {
             if !rel.is_empty() {

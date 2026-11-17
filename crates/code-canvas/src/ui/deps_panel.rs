@@ -1,7 +1,3 @@
-//! The dependencies panel: which file imports which, read from the import
-//! statements. Totals for the folder, what to draw, and the dependencies of
-//! the selected file or folder as two lists.
-
 use std::collections::HashMap;
 
 use canvas_core::deps::DepKind;
@@ -25,8 +21,6 @@ fn thousands(n: usize) -> String {
     out
 }
 
-/// Files outside `node` that it depends on (`outgoing`) or that depend on it,
-/// with how many edges each, most first.
 fn neighbours(r: &Ready, node: usize, outgoing: bool, kinds: &[bool; 5]) -> Vec<(u32, u32)> {
     let Some(n) = r.layout.nodes.get(node) else { return Vec::new() };
     let range = node as u32..n.subtree_end;

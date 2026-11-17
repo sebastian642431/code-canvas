@@ -1,20 +1,11 @@
-//! Finding and installing extensions.
-//!
-//! Extensions come from [Open VSX](https://open-vsx.org), the open registry
-//! of VS Code extensions (Microsoft's marketplace may only be used by
-//! Microsoft's own products), or from a `.vsix` file on disk. A `.vsix` is a
-//! zip; the extension is the `extension/` folder inside.
-
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 const API: &str = "https://open-vsx.org/api";
-/// Largest download accepted (extensions that bundle a language server are big).
 const MAX_VSIX: u64 = 400 * 1024 * 1024;
 
-/// One search result.
 #[derive(Clone, Debug)]
 pub struct MarketItem {
     pub namespace: String,
@@ -27,7 +18,6 @@ pub struct MarketItem {
 }
 
 impl MarketItem {
-    /// `publisher.name`, lower case: how extensions are identified.
     pub fn id(&self) -> String {
         format!("{}.{}", self.namespace, self.name).to_lowercase()
     }
@@ -54,7 +44,6 @@ fn encode(query: &str) -> String {
     out
 }
 
-/// Search the registry; an empty query lists the most downloaded.
 pub fn search(query: &str) -> Result<Vec<MarketItem>, String> {
     let sort = if query.trim().is_empty() { "downloadCount" } else { "relevance" };
     let url = format!("{API}/-/search?query={}&size=40&sortBy={sort}&sortOrder=desc", encode(query.trim()));
@@ -75,7 +64,6 @@ pub fn search(query: &str) -> Result<Vec<MarketItem>, String> {
         .collect())
 }
 
-/// Open VSX name of the platform this build runs on, e.g. `win32-x64`.
 fn platform() -> String {
     let os = match std::env::consts::OS {
         "windows" => "win32",
@@ -91,9 +79,6 @@ fn platform() -> String {
     format!("{os}-{arch}")
 }
 
-/// Download `namespace.name` (latest version, the build for this platform
-/// when the extension ships one per platform) and unpack it under `dir`.
-/// Returns the extension's folder.
 pub fn install(namespace: &str, name: &str, dir: &Path) -> Result<PathBuf, String> {
     let meta = get_json(&format!("{API}/{}/{}/latest", encode(namespace), encode(name)))?;
     if let Some(error) = meta.get("error").and_then(Value::as_str) {
@@ -111,7 +96,6 @@ pub fn install(namespace: &str, name: &str, dir: &Path) -> Result<PathBuf, Strin
     install_vsix_bytes(&bytes, dir)
 }
 
-/// Unpack a `.vsix` file from disk under `dir`.
 pub fn install_vsix(file: &Path, dir: &Path) -> Result<PathBuf, String> {
     let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
     install_vsix_bytes(&bytes, dir)
@@ -139,7 +123,6 @@ fn install_vsix_bytes(bytes: &[u8], dir: &Path) -> Result<PathBuf, String> {
     let unpack = |zip: &mut zip::ZipArchive<Cursor<&[u8]>>| -> Result<(), String> {
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-            // `enclosed_name` refuses paths that would leave the folder.
             let Some(path) = entry.enclosed_name() else { continue };
             let Ok(rel) = path.strip_prefix("extension") else { continue };
             if rel.as_os_str().is_empty() {
@@ -168,7 +151,6 @@ fn install_vsix_bytes(bytes: &[u8], dir: &Path) -> Result<PathBuf, String> {
         return Err(e);
     }
 
-    // Replace other versions of the same extension.
     for old in installed_dirs(dir) {
         if dir_id(&old).as_deref() == Some(id.as_str()) {
             std::fs::remove_dir_all(&old).map_err(|e| format!("cannot replace the installed version: {e}"))?;
@@ -179,7 +161,6 @@ fn install_vsix_bytes(bytes: &[u8], dir: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// Folders under `dir` that hold an unpacked extension.
 pub fn installed_dirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<PathBuf> = read
@@ -193,7 +174,6 @@ pub fn installed_dirs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// `publisher.name` of the extension unpacked in `dir`, from its manifest.
 pub fn dir_id(dir: &Path) -> Option<String> {
     let v: Value =
         serde_json::from_str(std::fs::read_to_string(dir.join("package.json")).ok()?.trim_start_matches('\u{feff}'))
@@ -238,7 +218,6 @@ mod tests {
         assert!(!target.join("extension.vsixmanifest").exists());
         assert_eq!(dir_id(&target).as_deref(), Some("acme.demo"));
 
-        // A newer version replaces the old one.
         let newer = vsix(&[("extension/package.json", &manifest.replace("1.2.3", "2.0.0"))]);
         install_vsix_bytes(&newer, &dir).unwrap();
         assert_eq!(installed_dirs(&dir), vec![dir.join("acme.demo-2.0.0")]);

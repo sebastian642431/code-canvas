@@ -1,19 +1,3 @@
-//! Commit messages written by an assistant: the sparkle button of the source
-//! control panel.
-//!
-//! The change (what is staged, or everything when nothing is) and the latest
-//! commit subjects go to a command-line assistant, and what it prints
-//! becomes the message. Three ways, chosen in `commit.json` in the data
-//! directory (the settings panel edits it):
-//!
-//! * `claude`: Claude Code (`claude -p`), with no tools and no session.
-//! * `codex`: Codex (`codex exec`), read-only and without a session.
-//! * `custom`: any command of yours. It gets the request on its standard
-//!   input and prints the message: `ollama run llama3`, a script, anything.
-//!
-//! `auto`, the default, is the first of Claude Code and Codex that is
-//! installed.
-
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,27 +5,20 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-/// The diff is cut at this many characters: enough to see what changed.
 const MAX_DIFF: usize = 30_000;
-/// An assistant that has not answered by then is stopped.
 const LIMIT: Duration = Duration::from_secs(120);
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
-    /// `auto`, `claude`, `codex` or `custom`.
     pub provider: String,
-    /// The model Claude Code is asked for; empty for its own default.
     pub claude_model: String,
-    /// The model Codex is asked for; empty for its own default.
     pub codex_model: String,
-    /// The command of `custom`, as typed in a terminal.
     pub custom: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        // A small, fast model is plenty for one line.
         Settings {
             provider: "auto".into(),
             claude_model: "haiku".into(),
@@ -68,16 +45,12 @@ pub fn save(settings: &Settings) {
     }
 }
 
-/// What the assistant is told about the change.
 pub struct Change {
-    /// The diff is of what is staged (else of the whole working tree).
     pub staged: bool,
     pub diff: String,
-    /// Subjects of the latest commits, newest first.
     pub recent: Vec<String>,
 }
 
-/// The request: the rules, the latest subjects for the style, the diff.
 pub fn prompt(repository: &str, change: &Change) -> String {
     let mut diff = change.diff.as_str();
     let mut cut = "";
@@ -111,8 +84,6 @@ pub fn prompt(repository: &str, change: &Change) -> String {
     )
 }
 
-/// The message in what an assistant printed: its first line that says
-/// something, without the fences or quotes some add anyway.
 pub fn clean(output: &str) -> String {
     let line = output.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("```")).unwrap_or_default();
     let quoted = line.len() >= 2
@@ -124,7 +95,6 @@ pub fn clean(output: &str) -> String {
     }
 }
 
-/// A command line as typed, into its words: spaces separate, quotes group.
 pub fn words(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
@@ -152,8 +122,6 @@ pub fn words(line: &str) -> Vec<String> {
     out
 }
 
-/// Where a program called `name` is, looking through `PATH` as the system
-/// does. On Windows that includes `.cmd` shims, which is what `npm` installs.
 pub fn find_program(name: &str) -> Option<PathBuf> {
     let given = Path::new(name);
     if given.components().count() > 1 {
@@ -167,25 +135,20 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     };
     let folders = std::env::var_os("PATH")?;
     std::env::split_paths(&folders).find_map(|folder| {
-        endings.iter().map(|ending| folder.join(format!("{name}{ending}"))).find(|candidate| {
-            // Without an ending it has to be something Windows can start.
-            candidate.is_file() && (!cfg!(windows) || candidate.extension().is_some())
-        })
+        endings
+            .iter()
+            .map(|ending| folder.join(format!("{name}{ending}")))
+            .find(|candidate| candidate.is_file() && (!cfg!(windows) || candidate.extension().is_some()))
     })
 }
 
-/// A command to run: the request goes to its standard input.
 #[derive(Debug, PartialEq)]
 pub struct Invocation {
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// The file the message is written to, when the program does not simply
-    /// print it.
     pub answer_file: Option<PathBuf>,
 }
 
-/// The command `settings` asks for. `find` says where a program is (see
-/// [`find_program`]); `scratch` is a file that may be written.
 pub fn invocation(
     settings: &Settings,
     find: &dyn Fn(&str) -> Option<PathBuf>,
@@ -210,8 +173,6 @@ pub fn invocation(
         Invocation { program, args, answer_file: None }
     };
     let codex = |program: PathBuf| {
-        // Nothing may be changed, no session is kept, and the answer goes to
-        // a file: what it prints also carries its progress.
         let mut args = text(&["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral"]);
         if !settings.codex_model.is_empty() {
             args.extend(text(&["--model", &settings.codex_model]));
@@ -236,8 +197,6 @@ pub fn invocation(
     }
 }
 
-/// Run `invocation` in `root` with `request` on its standard input, and
-/// return the message it gives.
 fn run(invocation: &Invocation, root: &Path, request: &str) -> Result<String, String> {
     let mut command = Command::new(&invocation.program);
     command.args(&invocation.args).current_dir(root);
@@ -250,7 +209,6 @@ fn run(invocation: &Invocation, root: &Path, request: &str) -> Result<String, St
     }
     let name = invocation.program.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut child = command.spawn().map_err(|e| format!("{name} could not be started: {e}"))?;
-    // Fed and drained on threads of their own: a full pipe would stall it.
     let mut stdin = child.stdin.take();
     let request = request.to_string();
     let feed = std::thread::spawn(move || {
@@ -284,7 +242,6 @@ fn run(invocation: &Invocation, root: &Path, request: &str) -> Result<String, St
     let (printed, complaints) = (joined(out), joined(err));
     if !status.success() {
         let why = [complaints.trim(), printed.trim()].into_iter().find(|t| !t.is_empty()).unwrap_or("it failed");
-        // The last lines are the ones that say what went wrong.
         let tail: Vec<&str> = why.lines().rev().take(3).collect();
         return Err(format!("{name}: {}", tail.into_iter().rev().collect::<Vec<_>>().join(" ")));
     }
@@ -304,8 +261,6 @@ fn run(invocation: &Invocation, root: &Path, request: &str) -> Result<String, St
     }
 }
 
-/// Write a commit message for what changed in `root`. Blocks until the
-/// assistant answers: call it off the UI thread.
 pub fn write(root: &Path, settings: &Settings) -> Result<String, String> {
     let change = crate::git::change_for_message(root).ok_or("there is nothing to commit")?;
     let repository = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -366,7 +321,6 @@ mod tests {
         };
         let settings = |provider: &str| Settings { provider: provider.into(), ..Default::default() };
 
-        // Whatever is installed, Claude Code first.
         let both = invocation(&settings("auto"), &found(&["claude", "codex"]), scratch).unwrap();
         assert_eq!(both.program, PathBuf::from("/bin/claude"));
         assert!(both.args.starts_with(&["-p".to_string()]) && both.args.contains(&"haiku".to_string()));
@@ -393,8 +347,6 @@ mod tests {
         assert!(invocation(&own, &found(&[]), scratch).unwrap_err().contains("ollama"));
     }
 
-    /// Asks the real assistant for a message about this repository:
-    /// `COMMIT_AI_TEST=claude cargo test -p code-canvas real_assistant -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn a_real_assistant_answers() {

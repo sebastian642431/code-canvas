@@ -1,6 +1,3 @@
-//! Panels for extensions: the registry and what is installed, the problems
-//! extensions report, and their messages.
-
 use canvas_core::Site;
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
@@ -28,7 +25,6 @@ fn severity_glyph(s: Severity) -> &'static str {
     }
 }
 
-/// A small rounded button with a label.
 pub(super) fn pill(ui: &mut egui::Ui, label: &str, strong: bool) -> bool {
     let font = FontId::proportional(12.0);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, pal().text);
@@ -60,7 +56,6 @@ enum Op {
     Install(String, String),
 }
 
-/// The square an extension's icon goes in (a placeholder when it has none).
 fn icon_slot(ui: &egui::Ui, slot: Rect, texture: Option<&egui::TextureHandle>, enabled: bool) {
     match texture {
         Some(t) => {
@@ -137,7 +132,6 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
             }
             for e in &ext.installed {
                 let texture = extension_icon(ui.ctx(), &mut st.ext_icons, e);
-                // Right of the name, like VS Code: how long it took to start, or what is wrong.
                 let (state, color) = match e.status {
                     Status::Active => (format!("{}  {} ms", icons::HISTORY, e.activation_ms), pal().text_faint),
                     Status::Activating => ("starting …".to_string(), pal().text_dim),
@@ -378,7 +372,6 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
     });
 }
 
-/// The extension's own icon as a texture, decoded the first time it is shown.
 pub fn extension_icon(
     ctx: &egui::Context,
     cache: &mut std::collections::HashMap<String, Option<egui::TextureHandle>>,
@@ -396,7 +389,6 @@ pub fn extension_icon(
         .clone()
 }
 
-/// One extension's place in the side bar: what it is, and what it offers.
 pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
     let Some(e) = ext.installed.iter().find(|e| e.id == st.extension) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
@@ -477,8 +469,6 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
     }
 }
 
-/// The media viewer: a header with the file's name, and under it the place
-/// where the app puts the browser view that shows the file.
 pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     let Some(path) = st.media.clone() else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
@@ -519,11 +509,7 @@ pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
     st.webview_rect = Some(rect);
 }
 
-/// The panel an extension's webview is shown in. The page itself is a
-/// browser view the app places over this panel; here its place is reserved
-/// and the extension is asked to fill it the first time.
 pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
-    // A view of a manifest whose extension has not started has no entry yet.
     ext.ensure_view(&st.webview);
     let Some(entry) = ext.webviews.iter().find(|w| w.key == st.webview) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
@@ -553,8 +539,6 @@ pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) 
     st.webview_rect = Some(rect);
 }
 
-/// Messages from extensions, stacked in the canvas corner. Plain ones fade
-/// by themselves; those that ask something show their choices as buttons.
 pub fn notices(ctx: &egui::Context, st: &mut UiState, canvas: Rect, ext: &mut Extensions) {
     if ext.notices.is_empty() {
         return;
@@ -602,7 +586,6 @@ pub fn notices(ctx: &egui::Context, st: &mut UiState, canvas: Rect, ext: &mut Ex
                     });
             }
         });
-    // Only questions take clicks; plain notices let them through to the canvas.
     if ext.notices.iter().any(|n| !n.actions.is_empty()) {
         st.floating.push(resp.response.rect);
     }

@@ -1,16 +1,3 @@
-//! Heuristic symbol extraction: functions, methods, types and their bodies.
-//!
-//! This is the built-in, zero-setup provider behind the outline and the
-//! "where is this used" relations. It works on the token stream of
-//! [`crate::syntax`], one line at a time, while a file is being loaded:
-//!
-//! * a small per-language pattern matcher recognises definitions
-//!   (`fn name`, `class Name`, `const f = () =>`, `def name`, `func (r) name` …);
-//! * bodies are found by brace matching (or indentation for Python).
-//!
-//! It is intentionally approximate. Precise answers are the job of language
-//! servers, which can replace this provider behind the same data types.
-
 use crate::syntax::{Token, TokenKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -29,7 +16,6 @@ pub enum SymbolKind {
 }
 
 impl SymbolKind {
-    /// Short badge shown next to the name.
     pub fn badge(&self) -> &'static str {
         match self {
             SymbolKind::Function => "fn",
@@ -50,7 +36,6 @@ impl SymbolKind {
         matches!(self, SymbolKind::Function | SymbolKind::Method)
     }
 
-    /// Kinds whose members are methods.
     pub fn is_container(&self) -> bool {
         matches!(
             self,
@@ -59,20 +44,14 @@ impl SymbolKind {
     }
 }
 
-/// A definition inside one file. 20 bytes; the name is a slice of the file text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Symbol {
     pub kind: SymbolKind,
-    /// Byte offset of the name in the file's normalised text.
     pub name_start: u32,
     pub name_len: u16,
-    /// Column of the name.
     pub col: u16,
-    /// Line of the name.
     pub line: u32,
-    /// One past the last line of the body (`line + 1` when there is no body).
     pub body_end: u32,
-    /// Index of the enclosing symbol in the same file, or `u32::MAX`.
     pub parent: u32,
 }
 
@@ -86,7 +65,6 @@ impl Symbol {
     }
 }
 
-/// Which family of definition patterns applies to a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dialect {
     Rust,
@@ -115,19 +93,13 @@ impl Dialect {
 
 struct Open {
     sym: u32,
-    /// Brace depth before the body opened (brace languages).
     depth: i32,
-    /// Indentation of the definition line (Python).
     indent: u32,
 }
 
 struct Pending {
     sym: u32,
-    /// Removed again if the statement ends with `;` before any `{`
-    /// (C prototypes, forward declarations).
     tentative: bool,
-    /// Dropped at the end of a line that clearly ends the statement
-    /// (JavaScript without semicolons).
     expirable: bool,
 }
 
@@ -136,7 +108,6 @@ struct Det {
     name: usize,
     tentative: bool,
     expirable: bool,
-    /// For `impl Trait for Type`: token index of the trait name.
     trait_name: Option<usize>,
 }
 
@@ -146,7 +117,6 @@ impl Det {
     }
 }
 
-/// Feeds on lines + tokens and produces the symbols of one file.
 pub struct SymbolScanner {
     dialect: Dialect,
     depth: i32,
@@ -154,7 +124,6 @@ pub struct SymbolScanner {
     open: Vec<Open>,
     pending: Option<Pending>,
     out: Vec<Symbol>,
-    /// `(impl symbol, trait name start, trait name len)`.
     impl_traits: Vec<(u32, u32, u16)>,
     last_code_line: u32,
 }
@@ -163,9 +132,6 @@ fn is_name(t: &Token) -> bool {
     matches!(t.kind, TokenKind::Ident | TokenKind::Function | TokenKind::Type)
 }
 
-/// A token that can be a name right after a definition keyword. The
-/// tokenizer is language-agnostic, so `new`, `default`, `type`, `match` …
-/// may be tagged as keywords even where they are plain identifiers.
 fn name_like(text: &str, t: &Token) -> bool {
     matches!(t.kind, TokenKind::Ident | TokenKind::Function | TokenKind::Type | TokenKind::Keyword)
         && text[t.range()].chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
@@ -199,7 +165,6 @@ impl SymbolScanner {
         if kind == SymbolKind::Function && self.parent().is_some_and(|p| p.kind.is_container()) {
             kind = SymbolKind::Method;
         }
-        // `println!` style names keep the bang out of the symbol name.
         let len = if t.kind == TokenKind::Macro { t.len.saturating_sub(1) } else { t.len };
         self.out.push(Symbol {
             kind,
@@ -213,7 +178,6 @@ impl SymbolScanner {
         (self.out.len() - 1) as u32
     }
 
-    /// Feed one line. `text` is the whole file, `tokens` the tokens of the line.
     pub fn feed(&mut self, line: u32, text: &str, tokens: &[Token]) {
         if self.dialect == Dialect::None || tokens.is_empty() {
             return;
@@ -231,7 +195,6 @@ impl SymbolScanner {
 
     fn feed_python(&mut self, line: u32, text: &str, tokens: &[Token]) {
         let indent = tokens[0].col as u32;
-        // Lines inside brackets (continuations) do not close anything.
         if self.paren == 0 {
             while let Some(top) = self.open.last() {
                 if indent <= top.indent {
@@ -324,8 +287,6 @@ impl SymbolScanner {
                 }
             }
         }
-        // JavaScript without semicolons: a statement that visibly ended
-        // must not capture a later, unrelated `{`.
         if self.paren == 0 && self.pending.as_ref().is_some_and(|p| p.expirable) {
             let last = &text[tokens[tokens.len() - 1].range()];
             let continues = [",", "(", "[", "=", "=>", "|", "&", "+", "-", "*", ":", "?", "<", "."]
@@ -405,7 +366,6 @@ impl SymbolScanner {
             }
             _ => {}
         }
-        // Members of a class / interface body.
         let top = self.open.last()?;
         let parent = &self.out[top.sym as usize];
         if !matches!(parent.kind, SymbolKind::Class | SymbolKind::Interface) || self.depth != top.depth + 1 {
@@ -444,7 +404,6 @@ impl SymbolScanner {
         }
         let mut d = Det::new(SymbolKind::Method, i);
         d.expirable = true;
-        // `foo(): void;` in an interface is a declaration, keep it.
         Some(d)
     }
 
@@ -495,10 +454,8 @@ impl SymbolScanner {
             _ => None,
         };
         if let Some(kind) = kind {
-            // `enum class X` / `enum struct X`.
             let at = if matches!(s(i + 1), Some("class" | "struct")) { i + 2 } else { i + 1 };
             let t = tokens.get(at).filter(|t| is_name(t))?;
-            // `struct foo *make(void) {` is a function returning a struct.
             if t.kind == TokenKind::Function {
                 return None;
             }
@@ -507,13 +464,11 @@ impl SymbolScanner {
             return Some(d);
         }
         if matches!(word, "fun" | "func" | "function" | "def" | "fn") {
-            // Kotlin extension functions: `fun Type.name(`.
             let at = (i + 1..tokens.len())
                 .find(|&j| tokens[j].kind == TokenKind::Function)
                 .or_else(|| tokens.get(i + 1).filter(|t| name_like(text, t)).map(|_| i + 1))?;
             return Some(Det::new(SymbolKind::Function, at));
         }
-        // C-style `Type name(args) {`, only outside function bodies.
         if let Some(top) = self.open.last() {
             let p = &self.out[top.sym as usize];
             if !(p.kind.is_container() || matches!(p.kind, SymbolKind::Module | SymbolKind::Enum))
@@ -557,7 +512,6 @@ impl SymbolScanner {
         }) {
             return None;
         }
-        // The name must follow a type, unless it is a constructor.
         if j == i {
             let ctor = self.parent().is_some_and(|p| p.name(text) == word);
             if !ctor {
@@ -569,8 +523,6 @@ impl SymbolScanner {
         Some(d)
     }
 
-    /// Close everything still open and return the symbols and
-    /// `(impl symbol, trait name start, len)` pairs.
     pub fn finish(mut self, line_count: u32) -> (Vec<Symbol>, Vec<(u32, u32, u16)>) {
         let end = if self.dialect == Dialect::Python { self.last_code_line + 1 } else { line_count };
         for o in self.open.drain(..) {
@@ -612,7 +564,6 @@ fn detect_rust(text: &str, tokens: &[Token]) -> Option<Det> {
         "macro_rules!" => named(SymbolKind::Function, i + 1),
         "impl" => {
             let mut j = i + 1;
-            // Skip `<T: Bound<U>>`.
             if s(j).is_some_and(|w| w.starts_with('<')) {
                 let mut angle = 0i32;
                 while let Some(w) = s(j) {
@@ -625,7 +576,6 @@ fn detect_rust(text: &str, tokens: &[Token]) -> Option<Det> {
                     }
                 }
             }
-            // Last identifier of a path, stopping at generics, `for`, `where` or `{`.
             let path_end = |from: usize| -> (Option<usize>, usize) {
                 let mut last = None;
                 let mut k = from;
@@ -644,7 +594,6 @@ fn detect_rust(text: &str, tokens: &[Token]) -> Option<Det> {
                 (last, k)
             };
             let (first, mut k) = path_end(j);
-            // Skip the generic arguments of the first path, if any.
             let mut angle = 0i32;
             while let Some(w) = s(k) {
                 if w == "for" && angle <= 0 {
@@ -675,7 +624,6 @@ fn detect_go(text: &str, tokens: &[Token]) -> Option<Det> {
     let s = |i: usize| tokens.get(i).map(|t| &text[t.range()]);
     match s(0)? {
         "func" => {
-            // `func (r *T) name(` has a receiver first.
             if s(1).is_some_and(|w| w.starts_with('(')) {
                 let close = (1..tokens.len())
                     .find(|&j| tokens[j].kind == TokenKind::Punct && text[tokens[j].range()].contains(')'))?;
@@ -693,7 +641,6 @@ fn detect_go(text: &str, tokens: &[Token]) -> Option<Det> {
                 _ => SymbolKind::Type,
             };
             let mut d = Det::new(kind, 1);
-            // `type X int` has no body: do not grab the next `{`.
             d.expirable = true;
             Some(d)
         }
@@ -701,12 +648,7 @@ fn detect_go(text: &str, tokens: &[Token]) -> Option<Det> {
     }
 }
 
-/// Innermost symbol whose range contains `line`. `symbols` must be in
-/// source order (as produced by [`SymbolScanner`]).
 pub fn symbol_at_line(symbols: &[Symbol], line: u32) -> Option<usize> {
-    // Start from the last symbol that begins at or before `line`. Anything
-    // else containing `line` also contains that symbol's first line, so it
-    // is one of its ancestors: walk up the parent chain.
     let mut i = symbols.partition_point(|s| s.line <= line).checked_sub(1)?;
     loop {
         if symbols[i].contains_line(line) {

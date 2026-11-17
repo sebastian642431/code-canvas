@@ -1,9 +1,3 @@
-# Generates crates/code-canvas/src/icons.rs from the Lucide icon font's CSS.
-#
-#   python scripts/make_icons.py path/to/lucide.css
-#
-# The font itself (crates/code-canvas/assets/lucide.ttf) and the CSS come from
-# the `lucide-static` npm package (ISC license).
 import re
 import sys
 

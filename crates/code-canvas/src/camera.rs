@@ -4,8 +4,6 @@ use canvas_render::View;
 pub const MIN_ZOOM: f32 = 0.0002;
 pub const MAX_ZOOM: f32 = 12.0;
 
-/// Camera of one page. `center` is the world point shown at the centre of
-/// the window; `zoom` is physical pixels per world unit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub center: [f32; 2],
@@ -27,7 +25,6 @@ impl Camera {
         }
     }
 
-    /// Zoom by `factor` keeping the world point under `screen` fixed.
     pub fn zoom_at(&mut self, screen: [f32; 2], viewport: [f32; 2], factor: f32) {
         let anchor = self.view(viewport).to_world(screen);
         self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -42,8 +39,6 @@ impl Camera {
         self.center[1] -= dy / self.zoom;
     }
 
-    /// Camera showing `rect` inside the screen area `area` (physical pixels)
-    /// of a window of size `viewport`.
     pub fn fit(rect: Rect, area: Rect, viewport: [f32; 2], margin_px: f32) -> Camera {
         let aw = (area.w - margin_px * 2.0).max(10.0);
         let ah = (area.h - margin_px * 2.0).max(10.0);
@@ -53,8 +48,6 @@ impl Camera {
         Camera { center: [c[0] - (ac[0] - viewport[0] * 0.5) / zoom, c[1] - (ac[1] - viewport[1] * 0.5) / zoom], zoom }
     }
 
-    /// Smooth step towards `target` (zoom interpolated in log space).
-    /// Returns true when it arrived.
     pub fn approach(&mut self, target: &Camera, dt: f32) -> bool {
         let t = 1.0 - (-dt * 14.0).exp();
         let lz = self.zoom.ln() + (target.zoom.ln() - self.zoom.ln()) * t;

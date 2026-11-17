@@ -1,10 +1,3 @@
-//! A deliberately small, language-agnostic tokenizer.
-//!
-//! It is not a parser: it only needs to be good enough to colour code on the
-//! canvas, both as readable text and as the zoomed-out "minimap" bars. Precise
-//! semantic information (definitions, references, calls) will come from
-//! language servers — see the roadmap in the README.
-
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -22,17 +15,11 @@ pub enum TokenKind {
     Text,
 }
 
-/// A coloured run inside one line. 12 bytes: large repositories have tens of
-/// millions of these, so keep it small.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Token {
-    /// Byte offset inside the file's (normalised) text.
     pub start: u32,
-    /// Byte length (saturates at 65535; only the colouring is affected).
     pub len: u16,
-    /// Column of the first character (tabs are already expanded; saturates).
     pub col: u16,
-    /// Width in character cells (saturates).
     pub cols: u16,
     pub kind: TokenKind,
 }
@@ -47,8 +34,6 @@ impl Token {
     }
 }
 
-/// Tokens of a whole file, stored flat: line `i` owns
-/// `tokens[line_start[i]..line_start[i + 1]]`.
 #[derive(Clone, Debug, Default)]
 pub struct Tokens {
     pub tokens: Vec<Token>,
@@ -155,26 +140,132 @@ impl Lang {
 fn is_keyword(word: &str) -> bool {
     matches!(
         word,
-        // Rust
-        "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else"
-            | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop"
-            | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
-            | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use"
-            | "where" | "while" | "yield"
-            // C family / JS / TS / Java / Go / Swift / C#
-            | "auto" | "case" | "catch" | "class" | "default" | "delete" | "do" | "export"
-            | "extends" | "final" | "finally" | "from" | "func" | "function" | "go" | "goto"
-            | "implements" | "import" | "include" | "interface" | "instanceof" | "namespace"
-            | "new" | "null" | "nil" | "override" | "package" | "private" | "protected"
-            | "public" | "sizeof" | "switch" | "template" | "this" | "throw" | "throws" | "try"
-            | "typedef" | "typename" | "typeof" | "undefined" | "union" | "var" | "virtual"
-            | "void" | "volatile" | "defer" | "chan" | "select" | "guard" | "readonly"
-            | "#include" | "#define" | "#ifdef" | "#ifndef" | "#endif" | "#if" | "#pragma"
-            // Python / Ruby / Lua / shell
-            | "and" | "def" | "del" | "elif" | "except" | "global" | "is" | "lambda" | "not"
-            | "or" | "pass" | "raise" | "with" | "None" | "True" | "False" | "end" | "then"
-            | "local" | "elseif" | "require" | "module" | "begin" | "unless" | "until" | "fi"
-            | "done" | "esac" | "echo" | "export_"
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "yield"
+            | "auto"
+            | "case"
+            | "catch"
+            | "class"
+            | "default"
+            | "delete"
+            | "do"
+            | "export"
+            | "extends"
+            | "final"
+            | "finally"
+            | "from"
+            | "func"
+            | "function"
+            | "go"
+            | "goto"
+            | "implements"
+            | "import"
+            | "include"
+            | "interface"
+            | "instanceof"
+            | "namespace"
+            | "new"
+            | "null"
+            | "nil"
+            | "override"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "sizeof"
+            | "switch"
+            | "template"
+            | "this"
+            | "throw"
+            | "throws"
+            | "try"
+            | "typedef"
+            | "typename"
+            | "typeof"
+            | "undefined"
+            | "union"
+            | "var"
+            | "virtual"
+            | "void"
+            | "volatile"
+            | "defer"
+            | "chan"
+            | "select"
+            | "guard"
+            | "readonly"
+            | "#include"
+            | "#define"
+            | "#ifdef"
+            | "#ifndef"
+            | "#endif"
+            | "#if"
+            | "#pragma"
+            | "and"
+            | "def"
+            | "del"
+            | "elif"
+            | "except"
+            | "global"
+            | "is"
+            | "lambda"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "with"
+            | "None"
+            | "True"
+            | "False"
+            | "end"
+            | "then"
+            | "local"
+            | "elseif"
+            | "require"
+            | "module"
+            | "begin"
+            | "unless"
+            | "until"
+            | "fi"
+            | "done"
+            | "esac"
+            | "echo"
+            | "export_"
     )
 }
 
@@ -222,47 +313,30 @@ enum State {
     BlockComment,
 }
 
-/// Tokens are produced lazily, [`CHUNK_LINES`] lines at a time, and cached by
-/// whoever needs them (see [`crate::TokenCache`]).
 pub const CHUNK_LINES: usize = 128;
-/// Lines summarised by one [`Block`].
 pub const BLOCK_LINES: usize = 8;
 
-/// Summary of [`BLOCK_LINES`] lines, enough to draw the far-away minimap
-/// without keeping tokens in memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Block {
-    /// First and last column covered by code (`hi <= lo` means empty).
     pub lo: u16,
     pub hi: u16,
     pub kind: TokenKind,
 }
 
-/// What is kept per file after loading: block summaries for the minimap and
-/// the tokenizer state at the start of every chunk, so any chunk can be
-/// tokenized on demand without starting from the top of the file.
 #[derive(Clone, Debug, Default)]
 pub struct Analysis {
     pub blocks: Vec<Block>,
-    /// `true` when chunk `i` starts inside a block comment.
     pub chunk_in_comment: Vec<bool>,
-    /// Definitions found in the file, in source order.
     pub symbols: Vec<crate::symbols::Symbol>,
-    /// For Rust `impl Trait for Type`: `(impl symbol, trait name start, len)`.
     pub impl_traits: Vec<(u32, u32, u16)>,
 }
 
 fn line_bounds(text: &str, line_starts: &[u32], i: usize) -> (usize, usize) {
     let start = line_starts[i] as usize;
-    let end = line_starts
-        .get(i + 1)
-        .map(|&s| s as usize - 1) // drop the '\n'
-        .unwrap_or(text.len());
+    let end = line_starts.get(i + 1).map(|&s| s as usize - 1).unwrap_or(text.len());
     (start, end)
 }
 
-/// The kind that best represents a run: most character cells wins, with
-/// comments and punctuation only winning when little else is there.
 pub fn dominant_kind(cells: &[u32; 11]) -> TokenKind {
     const KINDS: [TokenKind; 11] = [
         TokenKind::Keyword,
@@ -289,7 +363,6 @@ pub fn dominant_kind(cells: &[u32; 11]) -> TokenKind {
     best
 }
 
-/// One pass over a whole file: block summaries, chunk start states and symbols.
 pub fn analyze(text: &str, line_starts: &[u32], lang: Lang, dialect: crate::symbols::Dialect) -> Analysis {
     let n = line_starts.len();
     let mut out = Analysis {
@@ -324,9 +397,6 @@ pub fn analyze(text: &str, line_starts: &[u32], lang: Lang, dialect: crate::symb
     out
 }
 
-/// Tokenize `lines` of normalised text (no `\r`, no tabs). `line_starts[i]`
-/// is the byte offset of line `i`; `in_comment` is the state at the first
-/// line (see [`Analysis::chunk_in_comment`]).
 pub fn tokenize_range(text: &str, line_starts: &[u32], lang: Lang, lines: Range<usize>, in_comment: bool) -> Tokens {
     let mut out =
         Tokens { tokens: Vec::with_capacity(lines.len() * 6), line_start: Vec::with_capacity(lines.len() + 1) };
@@ -341,7 +411,6 @@ pub fn tokenize_range(text: &str, line_starts: &[u32], lang: Lang, lines: Range<
     out
 }
 
-/// Tokenize a whole text (convenience for tests and tools).
 pub fn tokenize(text: &str, line_starts: &[u32], lang: Lang) -> Tokens {
     tokenize_range(text, line_starts, lang, 0..line_starts.len(), false)
 }
@@ -357,7 +426,6 @@ fn tokenize_line(
     if line.is_empty() {
         return;
     }
-    // Collect (byte_offset, char) once so we can look ahead cheaply.
     chars.clear();
     chars.extend(line.char_indices());
     let chars = &*chars;
@@ -436,10 +504,8 @@ fn tokenize_line(
         if let Some((open, _)) = block {
             if rest.starts_with(open) {
                 *state = State::BlockComment;
-                // Consume the opener so `/*/` isn't treated as open+close.
                 i += open.chars().count();
                 let s = i - open.chars().count();
-                // Continue scanning for the close on the same line.
                 let (_, close) = block.unwrap();
                 match rest_at(i).find(close) {
                     Some(off) => {
@@ -456,7 +522,6 @@ fn tokenize_line(
             }
         }
 
-        // Rust lifetimes ('a) vs char literals ('a').
         if c == '\'' && lang == Lang::Rust {
             let is_char_lit = (i + 2 < n && chars[i + 2].1 == '\'') || (i + 1 < n && chars[i + 1].1 == '\\');
             if !is_char_lit {
@@ -516,7 +581,7 @@ fn tokenize_line(
             let kind = if c == '@' || c == '#' {
                 TokenKind::Macro
             } else if lang == Lang::Rust && next == Some('!') && i < n && chars[i].1 == '!' {
-                i += 1; // include the bang: println!
+                i += 1;
                 TokenKind::Macro
             } else if is_keyword(word) {
                 TokenKind::Keyword
@@ -537,7 +602,6 @@ fn tokenize_line(
             continue;
         }
 
-        // Punctuation run.
         let s = i;
         while i < n {
             let ch = chars[i].1;

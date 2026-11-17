@@ -1,14 +1,3 @@
-//! `when` clauses: the conditions manifests put on views and menus, such as
-//! `myExt.ready && !isWeb` or `resourceLangId == rust`.
-//!
-//! They are evaluated against the context keys extensions set with the
-//! `setContext` command. A key nobody set is false, and so is anything this
-//! does not understand (a regular expression, say): the caller then treats
-//! the thing as not shown, and has to cope with that.
-//!
-//! Supported: `!`, `&&`, `||`, parentheses, `==` `!=` (also `===` `!==`),
-//! `<` `<=` `>` `>=` on numbers, `true` and `false`.
-
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,12 +7,8 @@ enum Token {
     Not,
     And,
     Or,
-    /// A comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, or one we do not
-    /// evaluate (`=~`, `in`).
     Op(&'static str),
-    /// A key, a number or an unquoted value.
     Word(String),
-    /// `'a quoted value'`.
     Quoted(String),
 }
 
@@ -65,7 +50,6 @@ fn tokens(text: &str) -> Vec<Token> {
             i = end + 1;
             continue;
         }
-        // A word runs until something above starts.
         let mut end = i;
         while end < chars.len() {
             let stop = chars[end].is_whitespace()
@@ -100,7 +84,6 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-/// A context value as the text `==` compares it with.
 fn as_text(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::Null => None,
@@ -115,7 +98,6 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     at: usize,
     get: &'a dyn Fn(&str) -> Option<Value>,
-    /// Something could not be read: the whole clause is false.
     bad: bool,
 }
 
@@ -134,7 +116,6 @@ impl Parser<'_> {
         let mut value = self.and();
         while self.peek() == Some(&Token::Or) {
             self.at += 1;
-            // Both sides are always read: the position has to move on.
             let right = self.and();
             value = value || right;
         }
@@ -170,7 +151,6 @@ impl Parser<'_> {
         }
     }
 
-    /// `key`, or `key <op> value`.
     fn operand(&mut self, key: &str) -> bool {
         let Some(Token::Op(op)) = self.peek().cloned() else {
             return match key {
@@ -191,7 +171,6 @@ impl Parser<'_> {
         let text = as_text(left.as_ref());
         let numbers = || Some((text.as_deref()?.parse::<f64>().ok()?, right.parse::<f64>().ok()?));
         match op {
-            // A key nobody set equals nothing, and so differs from everything.
             "==" => text.as_deref() == Some(right.as_str()),
             "!=" => text.as_deref() != Some(right.as_str()),
             "<" => numbers().is_some_and(|(a, b)| a < b),
@@ -206,8 +185,6 @@ impl Parser<'_> {
     }
 }
 
-/// Is the clause true, with `get` giving the value of a context key? An
-/// empty clause is: it is what "no condition" looks like.
 pub fn eval(clause: &str, get: &dyn Fn(&str) -> Option<Value>) -> bool {
     let tokens = tokens(clause);
     if tokens.is_empty() {
@@ -251,7 +228,6 @@ mod tests {
         assert!(check("ready && !off"));
         assert!(!check("ready && off"));
         assert!(check("off || ready"));
-        // `&&` binds tighter than `||`.
         assert!(check("ready || off && off"));
         assert!(!check("(ready || off) && off"));
         assert!(check("!(off || nobodySetThis)"));
@@ -269,18 +245,15 @@ mod tests {
         assert!(check("count == 3"));
         assert!(check("count >= 3 && count < 4"));
         assert!(!check("count > 3"));
-        // A key nobody set equals nothing.
         assert!(!check("nobodySetThis == x"));
         assert!(check("nobodySetThis != x"));
     }
 
     #[test]
     fn clauses_from_real_manifests() {
-        // Claude Code: the same view offered in two places, one of them shown.
         assert!(!check("claude-code:doesNotSupportSecondarySidebar"));
         assert!(check("!claude-code:doesNotSupportSecondarySidebar"));
         assert!(!check("claude-vscode.sessionsListEnabled"));
-        // GitHub Pull Requests.
         assert!(check("(ReposManagerStateContext == NeedsAuthentication) && !isSessionsWindow"));
         assert!(!check(
             "(ReposManagerStateContext != NeedsAuthentication && !github:resolvingConflicts) && !isSessionsWindow"

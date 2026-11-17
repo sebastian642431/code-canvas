@@ -1,11 +1,3 @@
-//! Repository-wide symbol index and "where is this used" relations.
-//!
-//! Name-based and heuristic (no type information): a usage is bound to the
-//! *closest* definition with that name — same file first, then an explicit
-//! `Type::name` / `this.name` qualifier, then the nearest folder. It answers
-//! instantly and needs no setup; language servers can later provide exact
-//! results through the same [`Relation`] type.
-
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -15,14 +7,12 @@ use crate::scan::{Repo, SourceFile};
 use crate::symbols::{symbol_at_line, Symbol, SymbolKind};
 use crate::syntax::{Token, TokenKind, Tokens, CHUNK_LINES};
 
-/// A symbol of a repository: file index + index into that file's symbols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymRef {
     pub file: u32,
     pub index: u32,
 }
 
-/// A place in the code: `len` character cells starting at `(line, col)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Site {
     pub file: u32,
@@ -70,25 +60,17 @@ impl RelKind {
     }
 }
 
-/// One edge to draw: a curve from `from` to `to`.
-///
-/// * `Definition`: the clicked usage → the definition.
-/// * `Reference` / `IncomingCall`: the usage (inside `other`) → the definition.
-/// * `OutgoingCall`: a call inside the symbol's body → the callee (`other`).
-/// * `Implementation`: an `impl` block (`other`) → the type or trait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Relation {
     pub kind: RelKind,
     pub from: Site,
     pub to: Site,
-    /// The symbol at the far end (caller, callee, impl block), if known.
     pub other: Option<SymRef>,
 }
 
 pub struct Relations {
     pub target: SymRef,
     pub items: Vec<Relation>,
-    /// Some results were dropped because a limit was hit.
     pub truncated: bool,
     pub search_ms: f32,
 }
@@ -99,13 +81,11 @@ impl Relations {
     }
 }
 
-/// Maximum relations kept per symbol and kind.
 pub const MAX_PER_KIND: usize = 1500;
 
 #[derive(Default)]
 pub struct SymbolIndex {
     by_name: HashMap<Box<str>, Vec<SymRef>>,
-    /// Rust `impl` blocks by type name and by trait name.
     impls: HashMap<Box<str>, Vec<SymRef>>,
     pub count: usize,
 }
@@ -145,8 +125,6 @@ fn ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
 }
 
-/// Byte offsets where `needle` occurs in `hay`. With `ignore_case` the
-/// comparison ignores ASCII case (`needle` must already be lowercase).
 fn find_all(hay: &[u8], needle: &[u8], ignore_case: bool, mut found: impl FnMut(usize) -> bool) {
     let n = needle.len();
     if n == 0 || hay.len() < n {
@@ -173,7 +151,6 @@ fn find_all(hay: &[u8], needle: &[u8], ignore_case: bool, mut found: impl FnMut(
     }
 }
 
-/// Number of leading path components two files share.
 fn shared_dirs(a: &str, b: &str) -> usize {
     let (a, b) = (a.rsplit_once('/').map(|x| x.0).unwrap_or(""), b.rsplit_once('/').map(|x| x.0).unwrap_or(""));
     if a.is_empty() || b.is_empty() {
@@ -186,9 +163,6 @@ fn usable(t: &Token) -> bool {
     matches!(t.kind, TokenKind::Ident | TokenKind::Function | TokenKind::Type | TokenKind::Macro | TokenKind::Keyword)
 }
 
-/// Is token `k` of a line the callee of a call? Names that the
-/// language-agnostic tokenizer tags as keywords (`new`, `default`, …) count
-/// when they are qualified (`X::new(`, `x.default(`).
 fn is_call(text: &str, toks: &[Token], k: usize) -> bool {
     let t = &toks[k];
     match t.kind {
@@ -220,9 +194,6 @@ impl Repo {
         Site { file: r.file, line: s.line, col: s.col, len }
     }
 
-    /// The start of the line a symbol is defined on (its indentation column,
-    /// zero width). Curves and name chips attach here so they do not run
-    /// over the text in front of the name (`pub fn`, `export function` …).
     pub fn sym_line_start(&self, r: SymRef) -> Site {
         let f = &self.files[r.file as usize];
         let s = self.sym(r);
@@ -230,7 +201,6 @@ impl Repo {
         Site { file: r.file, line: s.line, col: indent.min(u16::MAX as usize) as u16, len: 0 }
     }
 
-    /// Name of the type / class / impl a symbol is a member of.
     pub fn sym_container(&self, r: SymRef) -> Option<&str> {
         let f = &self.files[r.file as usize];
         let mut p = self.sym(r).parent;
@@ -244,7 +214,6 @@ impl Repo {
         None
     }
 
-    /// First line(s) of a definition, up to its opening brace: a readable signature.
     pub fn sym_signature(&self, r: SymRef) -> String {
         let f = &self.files[r.file as usize];
         let s = self.sym(r);
@@ -269,13 +238,11 @@ impl Repo {
         out
     }
 
-    /// Innermost symbol containing `line` of `file`.
     pub fn sym_at(&self, file: u32, line: u32) -> Option<SymRef> {
         symbol_at_line(&self.files[file as usize].analysis.symbols, line)
             .map(|index| SymRef { file, index: index as u32 })
     }
 
-    /// The identifier under `(line, col)`, if any.
     pub fn identifier_at(&self, file: u32, line: u32, col: u32) -> Option<(Site, &str)> {
         let f = &self.files[file as usize];
         if line as usize >= f.line_count() {
@@ -297,9 +264,6 @@ impl Repo {
         Some((Site { file, line, col: t.col, len }, name))
     }
 
-    /// Find `query` in the text of every file (in parallel). Smart case:
-    /// an all-lowercase query ignores case. Returns at most `max` hits, in
-    /// file order, and whether more were left out.
     pub fn search_text(&self, query: &str, max: usize) -> (Vec<Site>, bool) {
         if query.is_empty() {
             return (Vec::new(), false);
@@ -316,7 +280,6 @@ impl Repo {
                 find_all(f.text.as_bytes(), needle, ignore_case, |off| {
                     let line = f.line_starts.partition_point(|&s| s as usize <= off) - 1;
                     let start = f.line_starts[line] as usize;
-                    // Only whole characters can start a match of a valid query.
                     let col = f.text.get(start..off).map(|t| t.chars().count()).unwrap_or(0);
                     hits.push(Site {
                         file: fi as u32,
@@ -335,9 +298,6 @@ impl Repo {
         (out, total > max)
     }
 
-    /// The symbol meant by whatever is under `(line, col)`: the definition
-    /// itself when the cursor is on one, otherwise the definition the usage
-    /// resolves to. Also returns the site under the cursor.
     pub fn resolve_at(&self, file: u32, line: u32, col: u32) -> Option<(SymRef, Site)> {
         let f = &self.files[file as usize];
         if line as usize >= f.line_count() {
@@ -358,15 +318,12 @@ impl Repo {
         }
         let call = is_call(&f.text, toks, k);
         if t.kind == TokenKind::Keyword && !call {
-            return None; // a real keyword, not a name
+            return None;
         }
         let q = self.qualifier(f, file, line, toks, k);
         self.resolve(name, file, q, call).map(|s| (s, site))
     }
 
-    /// Best definition for `name` used in `from_file`.
-    ///
-    /// `qualifier` is the `X` of `X::name` / `X.name`, when known.
     pub fn resolve(&self, name: &str, from_file: u32, qualifier: Option<&str>, call: bool) -> Option<SymRef> {
         let cands = self.symbols.defs(name);
         match cands.len() {
@@ -385,8 +342,6 @@ impl Repo {
 
     fn nearest(&self, cands: &[SymRef], from_file: u32, call: bool) -> Option<SymRef> {
         let from = &self.files[from_file as usize];
-        // Mentioning a candidate's file stem (`./atlas`, `atlas::`) is a
-        // strong hint; only checked for short candidate lists.
         let check_imports = cands.len() <= 16;
         cands.iter().copied().max_by_key(|c| {
             let f = &self.files[c.file as usize];
@@ -404,13 +359,10 @@ impl Repo {
                     score += 1000;
                 }
             }
-            // Deterministic tie-break: earlier file wins.
             (score, std::cmp::Reverse(c.file), std::cmp::Reverse(c.index))
         })
     }
 
-    /// The `X` in `X::name` / `X.name` for token `k` of a line, with
-    /// `Self` / `self` / `this` replaced by the enclosing type's name.
     fn qualifier<'a>(&'a self, f: &'a SourceFile, file: u32, line: u32, toks: &[Token], k: usize) -> Option<&'a str> {
         if k < 2 {
             return None;
@@ -431,12 +383,9 @@ impl Repo {
                 s.kind.is_container().then(|| s.name(&f.text))
             });
         }
-        // Only a type-like qualifier says anything (`foo.bar()` has an unknown type).
         (sep == "::" || word.chars().next().is_some_and(char::is_uppercase)).then_some(word)
     }
 
-    /// Everything related to `target`. `clicked` is where the user clicked,
-    /// when that was a usage rather than the definition itself.
     pub fn relations(&self, target: SymRef, clicked: Option<Site>) -> Relations {
         let started = Instant::now();
         let def = self.sym_site(target);
@@ -450,7 +399,6 @@ impl Repo {
             other: None,
         }];
 
-        // --- usages across the repository (parallel) -------------------
         let many_defs = self.symbols.defs(&name).len() > 1;
         let found: Vec<Vec<Relation>> = self
             .files
@@ -463,7 +411,6 @@ impl Repo {
                 let fi = fi as u32;
                 let bytes = f.text.as_bytes();
                 let mut chunks: HashMap<usize, Tokens> = HashMap::new();
-                // Which definition unqualified uses in this file bind to.
                 let mut default_binding: Option<Option<SymRef>> = None;
                 let mut out = Vec::new();
                 for (off, _) in f.text.match_indices(name.as_str()) {
@@ -480,7 +427,6 @@ impl Repo {
                     if !usable(&t) {
                         continue;
                     }
-                    // Definition sites (of the target or of a namesake) are not usages.
                     if f.analysis.symbols.iter().any(|s| s.name_start as usize == off) {
                         continue;
                     }
@@ -523,7 +469,6 @@ impl Repo {
             items.push(r);
         }
 
-        // --- calls made from the body ------------------------------------
         let f = &self.files[target.file as usize];
         let mut seen: HashSet<SymRef> = HashSet::new();
         let body_end = tsym.body_end.min(tsym.line + 5000).min(f.line_count() as u32);
@@ -539,7 +484,7 @@ impl Repo {
                     continue;
                 }
                 if f.analysis.symbols.iter().any(|s| s.name_start == t.start) {
-                    continue; // a nested definition, not a call
+                    continue;
                 }
                 let callee = f.text[t.range()].trim_end_matches('!');
                 let q = self.qualifier(f, target.file, line, toks, k);
@@ -560,7 +505,6 @@ impl Repo {
             }
         }
 
-        // --- impl blocks of a type or trait ------------------------------
         if !tsym.kind.is_callable() {
             for &imp in self.symbols.impls(&name) {
                 if many_defs && self.resolve(&name, imp.file, None, false) != Some(target) {
@@ -617,7 +561,6 @@ mod tests {
         let atlas = file(&repo, "src/atlas.rs");
         let pipeline = file(&repo, "src/pipeline.rs");
 
-        // Click on the call in pipeline.rs resolves to the definition.
         let (site, name) = repo.identifier_at(pipeline, 5, 6).unwrap();
         assert_eq!(name, "rasterize");
         let target = repo.resolve(name, pipeline, None, true).unwrap();
@@ -634,7 +577,6 @@ mod tests {
         let out = rel.items.iter().find(|r| r.kind == RelKind::OutgoingCall).unwrap();
         assert_eq!(repo.sym_name(out.other.unwrap()), "helper");
 
-        // `Atlas::new` binds to Atlas, not to Thing::new.
         let news = repo.symbols.defs("new");
         assert_eq!(news.len(), 2);
         let atlas_new = *news.iter().find(|r| r.file == atlas).unwrap();
@@ -643,20 +585,17 @@ mod tests {
         let call = rel.items.iter().find(|r| r.kind == RelKind::IncomingCall).unwrap();
         assert_eq!(call.from.file, pipeline);
 
-        // The struct has an impl block.
         let atlas_struct = repo.resolve("Atlas", pipeline, None, false).unwrap();
         let rel = repo.relations(atlas_struct, None);
         assert_eq!(rel.count(RelKind::Implementation), 1);
         assert!(rel.count(RelKind::Reference) >= 3);
         assert_eq!(repo.sym_signature(target), "pub fn rasterize(a: &Atlas) -> u32");
 
-        // resolve_at: on a usage, on a qualified keyword-named call, on a definition.
         assert_eq!(repo.resolve_at(pipeline, 5, 6).map(|r| r.0), Some(target));
         assert_eq!(repo.resolve_at(pipeline, 3, 20).map(|r| r.0), Some(atlas_new), "Atlas::new()");
         assert_eq!(repo.resolve_at(atlas, 6, 8).map(|r| r.0), Some(target), "the definition itself");
         assert_eq!(repo.resolve_at(pipeline, 2, 0), None, "`pub` is a keyword");
 
-        // Text search: smart case, positions in characters.
         let (hits, more) = repo.search_text("rasterize", 100);
         assert!(!more);
         assert_eq!(hits.len(), 4, "definition, import, comment, call");

@@ -1,12 +1,3 @@
-# Starts a test instance of Code Canvas with a data folder of its own, runs a
-# script in it (see "Testing the real app" in docs/ARCHITECTURE.md), and saves
-# a picture of ITS window only, not of the screen. For checking how a change
-# looks without clicking around:
-#
-#   scripts\screenshot.ps1 -Exe target\debug\code-canvas.exe -Data $env:TEMP\cc-test `
-#       -Script "left settings; wait 4000; quit" -Out shot.png -After 4500 -Folders "C:\some\folder"
-#
-# Several folders go in one -Folders value, separated by commas.
 param(
     [string]$Exe,
     [string]$Data,
@@ -44,7 +35,6 @@ if ($h -eq [IntPtr]::Zero) {
     $bmp = New-Object System.Drawing.Bitmap $w, $hh
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $dc = $g.GetHdc()
-    # 2 = PW_RENDERFULLCONTENT: what the GPU drew, not just the frame.
     $ok = [Win]::PrintWindow($h, $dc, 2)
     $g.ReleaseHdc($dc)
     $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)

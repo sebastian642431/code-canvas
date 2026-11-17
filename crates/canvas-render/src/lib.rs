@@ -1,16 +1,3 @@
-//! `canvas-render`: draws a [`canvas_core::Layout`] with wgpu.
-//!
-//! The canvas is drawn in a single render pass, into an encoder owned by the
-//! caller (who then draws its UI on top and submits):
-//!
-//! 1. frames (directory boxes, file cards) — static buffer, range-culled
-//! 2. `under` rectangles (symbol bodies, outline regions)
-//! 3. code bars at the current [`Lod`] — static (blocks) or per-frame (lines, tokens)
-//! 4. text: code chunks, file and folder names
-//! 5. relation curves
-//! 6. `over` rectangles (hover, selection, usage markers)
-//! 7. chips: screen-space rectangles and their labels (symbol names)
-
 pub mod curve;
 mod gpu_util;
 pub mod scene;
@@ -37,13 +24,10 @@ struct CameraUniform {
     _pad: [f32; 2],
 }
 
-/// What the camera looks at. `offset` is the world point at the top-left of
-/// the screen; `zoom` is physical pixels per world unit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
     pub offset: [f32; 2],
     pub zoom: f32,
-    /// Physical pixels.
     pub viewport: [f32; 2],
 }
 
@@ -61,51 +45,32 @@ impl View {
     }
 }
 
-/// The page being drawn this frame.
 pub struct ScenePass<'a> {
     pub page: u32,
     pub gpu: &'a mut SceneGpu,
     pub repo: &'a Repo,
     pub layout: &'a Layout,
-    /// Tokenized chunks of this page (tokens are produced on demand).
     pub tokens: &'a mut TokenCache,
-    /// Screen area the canvas may draw text into (left, top, right, bottom),
-    /// so code never bleeds over the UI bars.
     pub clip: [f32; 4],
 }
 
-/// The part of the target one call to [`Renderer::render`] draws in. Several
-/// pages can share a frame, side by side, each in its own pane.
-///
-/// The calls share buffers, so each needs an encoder of its own that is
-/// submitted before the next call.
 #[derive(Clone, Copy, Debug)]
 pub struct Pane {
-    /// Left, top, right, bottom in pixels; `None` for the whole target.
     pub area: Option<[f32; 4]>,
-    /// Clear the target first: for the first call of a frame.
     pub clear: bool,
-    /// Draw the relation curves: they belong to one page (`set_curves`).
     pub curves: bool,
 }
 
 impl Pane {
-    /// One page on the whole target.
     pub const WHOLE: Pane = Pane { area: None, clear: true, curves: true };
 }
 
-/// Everything drawn on top of (or just under) the code this frame.
 #[derive(Default)]
 pub struct Overlay<'a> {
-    /// World rectangles under the code (symbol bodies, outline regions).
     pub under: &'a [RectInstance],
-    /// File and folder names, in screen space (drawn with the code text).
     pub labels: &'a [Label<'a>],
-    /// World rectangles above the code (hover, selection, usage markers).
     pub over: &'a [RectInstance],
-    /// Screen-space rectangles above everything (chip backgrounds).
     pub chips: &'a [RectInstance],
-    /// Text above the chips.
     pub chip_labels: &'a [Label<'a>],
 }
 
@@ -119,7 +84,6 @@ pub struct FrameStats {
     pub chunks_shaped: u32,
     pub cached_chunks: u32,
     pub text_pending: bool,
-    /// Chunks in the page's token cache / tokenized this frame.
     pub token_chunks: u32,
     pub tokenized: u32,
 }
@@ -139,7 +103,6 @@ pub struct Renderer {
     curves: DynBuffer,
     curve_vertices: u32,
     pub text: TextLayer,
-    /// The syntax colours the shaders read, and the theme they were taken from.
     palette_buf: wgpu::Buffer,
     theme_revision: u64,
 }
@@ -349,14 +312,10 @@ impl Renderer {
         }
     }
 
-    /// Upload a page's static geometry (built off-thread with [`SceneData::build`]).
     pub fn create_scene(&self, device: &wgpu::Device, name: &str, data: SceneData) -> SceneGpu {
         SceneGpu::new(device, &self.origins_layout, name, data)
     }
 
-    /// Record the canvas pass of one page into `encoder`, in `pane` of
-    /// `target`. The caller submits the encoder (before calling this again
-    /// for another pane) and, once per frame, calls [`Renderer::end_frame`].
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -372,8 +331,6 @@ impl Renderer {
         let mut stats = FrameStats::default();
         let colors = theme::get();
         if self.theme_revision != theme::revision() {
-            // The theme changed: new syntax colours for the shaders, and the
-            // shaped text carries the old ones.
             self.theme_revision = theme::revision();
             queue.write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(&palette(&colors)));
             self.text.clear();
@@ -409,7 +366,6 @@ impl Renderer {
             }),
         );
 
-        // Geometry + text for the page.
         let mut code_texts: Vec<CodeText> = Vec::new();
         if let Some(sc) = scene.as_mut() {
             stats.lod = Some(lod);
@@ -425,8 +381,6 @@ impl Renderer {
                         let tl = view.to_screen([n.rect.x, n.rect.y]);
                         let br = view.to_screen([n.rect.right(), n.rect.bottom()]);
                         for (col, lines) in n.visible_lines(&world_rect, f.line_count()) {
-                            // Folded column `col` shows lines from col * FOLD_LINES,
-                            // shifted right by col * col_stride.
                             let cx = o[0] + col as f32 * n.col_stride;
                             let top_line = (col * FOLD_LINES) as f32 * LINE_H;
                             let so = view.to_screen([cx, o[1] - top_line]);
@@ -499,7 +453,6 @@ impl Renderer {
             });
 
             if let Some([left, top, right, bottom]) = pane.area {
-                // Nothing of this page outside its pane; inside the target.
                 let (w, h) = (view.viewport[0].max(1.0), view.viewport[1].max(1.0));
                 let (x, y) = (left.clamp(0.0, w - 1.0).floor(), top.clamp(0.0, h - 1.0).floor());
                 let (r, b) = (right.clamp(x + 1.0, w).ceil(), bottom.clamp(y + 1.0, h).ceil());
@@ -554,14 +507,11 @@ impl Renderer {
         stats
     }
 
-    /// Replace the relation curves (world space; see [`push_curve`]). They
-    /// stay on the GPU until replaced, so call this only when they change.
     pub fn set_curves(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[CurveVertex]) {
         self.curves.write(device, queue, bytemuck::cast_slice(vertices));
         self.curve_vertices = vertices.len() as u32;
     }
 
-    /// Call after the frame's encoder was submitted.
     pub fn end_frame(&mut self) {
         self.text.end_frame();
     }

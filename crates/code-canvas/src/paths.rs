@@ -1,29 +1,14 @@
-//! Completing paths while they are typed: inside quotes, after `./`, `../`
-//! or a folder name and a slash, the files and folders that are there are
-//! offered (what the Path Intellisense extension does in VS Code).
-//!
-//! Relative paths are read from the folder of the file being edited; one
-//! that starts with `/` from the open folder. Only names are read.
-
 use std::path::{Component, Path, PathBuf};
 
-/// A path that is being typed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Partial {
-    /// The folders typed so far, with their last slash: `./components/`.
     pub dir: String,
-    /// What is typed of the next name; may be empty.
     pub prefix: String,
-    /// The column (in characters) where that name starts.
     pub start: usize,
 }
 
-/// The path being typed just before column `col` of `line` (in characters),
-/// when the caret is inside quotes and what is typed has a slash in it.
 pub fn partial(line: &str, col: usize) -> Option<Partial> {
     let before: String = line.chars().take(col).collect();
-    // The quote that is still open: the last one before the caret, if an odd
-    // number of its kind came before.
     let (at, quote) = before.char_indices().rev().find(|(_, c)| matches!(c, '"' | '\'' | '`'))?;
     if before.matches(quote).count() % 2 == 0 {
         return None;
@@ -37,15 +22,12 @@ pub fn partial(line: &str, col: usize) -> Option<Partial> {
     Some(Partial { dir: dir.to_string(), prefix: prefix.to_string(), start: col - prefix.chars().count() })
 }
 
-/// Something to offer: a file or a folder that is there.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub name: String,
     pub is_dir: bool,
 }
 
-/// `a/b/../c` → `a/c`, without touching the disk. `None` when it climbs out
-/// of everything.
 fn tidy(path: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for part in path.components() {
@@ -62,9 +44,6 @@ fn tidy(path: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-/// The folder a partial path points into: from the folder of the file
-/// being edited (`file`, relative to `root`), or from `root` itself for a
-/// path that starts with a slash.
 pub fn folder(root: &Path, file: &str, dir: &str) -> Option<PathBuf> {
     let typed = dir.trim_end_matches('/');
     let base = match dir.strip_prefix('/') {
@@ -74,12 +53,8 @@ pub fn folder(root: &Path, file: &str, dir: &str) -> Option<PathBuf> {
     tidy(&base.join(typed.trim_start_matches('/')))
 }
 
-/// At most this many names are offered.
 const MAX: usize = 60;
 
-/// What is in `folder` whose name starts with `prefix` (whatever its case):
-/// folders first, then files, each in alphabetical order. Hidden names are
-/// offered only once a dot is typed.
 pub fn candidates(folder: &Path, prefix: &str) -> Vec<Candidate> {
     let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
     let wanted = prefix.to_lowercase();
@@ -97,10 +72,6 @@ pub fn candidates(folder: &Path, prefix: &str) -> Vec<Candidate> {
     out
 }
 
-/// What to write for `candidate`. Scripts are imported without their
-/// extension from other scripts (`import x from "./file"`), as their tools
-/// expect; everything else is written whole. A folder ends in a slash, so
-/// the next name can be typed straight away.
 pub fn completion(candidate: &Candidate, editing: &str, line: &str) -> String {
     if candidate.is_dir {
         return format!("{}/", candidate.name);
@@ -130,16 +101,13 @@ mod tests {
         assert_eq!((p.dir.as_str(), p.prefix.as_str()), ("../docs/", ""));
         assert_eq!(at_end(r#"let a = "src/ui/git"#).unwrap().dir, "src/ui/");
         assert_eq!(at_end(r#"url("/assets/"#).unwrap().dir, "/assets/");
-        // Accents count as one character each.
         assert_eq!(at_end("x = \"./añ").unwrap().start, 7);
 
-        // Not a path, or not inside quotes.
         assert_eq!(at_end(r#"let a = "hello"#), None);
         assert_eq!(at_end(r#"let a = "done"; b / c"#), None);
         assert_eq!(at_end("a / b"), None);
         assert_eq!(at_end(r#"fetch("https://example.com/"#), None);
         assert_eq!(at_end(r#"say("one two/"#), None);
-        // The caret is in the middle of the line: only what is before counts.
         assert_eq!(partial(r#"open("./a/b")"#, 10).unwrap().dir, "./a/");
     }
 
@@ -169,7 +137,6 @@ mod tests {
         assert_eq!(names("a"), vec!["api.ts", "App.tsx"]);
         assert_eq!(names("CO"), vec!["components", "config.json"]);
         assert_eq!(names("."), vec![".hidden", ".env"]);
-        // Typed in full: nothing left to offer for it.
         assert_eq!(names("api.ts"), Vec::<String>::new());
         assert!(candidates(&dir.join("missing"), "").is_empty());
         assert!(candidates(&dir, "")[0].is_dir);
@@ -183,7 +150,6 @@ mod tests {
         assert_eq!(completion(&file("App.tsx"), "main.ts", import), "App");
         assert_eq!(completion(&file("types.d.ts"), "main.ts", import), "types.d.ts");
         assert_eq!(completion(&file("style.css"), "main.ts", import), "style.css");
-        // Not an import, or not a script that imports: the whole name.
         assert_eq!(completion(&file("App.tsx"), "main.ts", r#"const p = "./A"#), "App.tsx");
         assert_eq!(completion(&file("App.tsx"), "notes.md", import), "App.tsx");
         let folder = Candidate { name: "components".into(), is_dir: true };

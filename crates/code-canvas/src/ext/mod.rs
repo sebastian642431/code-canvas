@@ -1,10 +1,3 @@
-//! VS Code extensions.
-//!
-//! Installed extensions live unpacked in `<data dir>/extensions`. Those with
-//! code run in the extension host (`host.rs`, a Node process); what they
-//! report comes back here: diagnostics for the canvas and the Problems
-//! panel, formatted text, messages. See docs/EXTENSIONS.md.
-
 pub mod host;
 pub mod market;
 pub mod when;
@@ -20,7 +13,6 @@ use serde_json::{json, Value};
 use host::{Host, HostEvent};
 pub use market::MarketItem;
 
-/// Wakes the UI thread when background work has something for it.
 #[derive(Clone)]
 pub struct Waker(Arc<dyn Fn() + Send + Sync>);
 
@@ -36,12 +28,10 @@ impl Waker {
 
 static UI_WAKER: std::sync::OnceLock<Waker> = std::sync::OnceLock::new();
 
-/// Register the waker of the UI thread (once, at start-up).
 pub fn set_ui_waker(waker: Waker) {
     let _ = UI_WAKER.set(waker);
 }
 
-/// Wake the UI thread: a background thread finished something.
 pub fn wake_ui() {
     if let Some(w) = UI_WAKER.get() {
         w.wake();
@@ -50,31 +40,21 @@ pub fn wake_ui() {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
-    /// Installed; the host has not reported on it (yet).
     Idle,
     Activating,
     Active,
     Failed,
-    /// Contributes data only (themes, grammars…): nothing to run.
     Declarative,
     Disabled,
 }
 
-/// The extensions a new installation gets by itself, from Open VSX, as
-/// `(namespace, name)`: the assistant, formatting and linting that work
-/// without setting anything up, and file icons.
 pub const DEFAULTS: &[(&str, &str)] = &[
     ("Anthropic", "claude-code"),
     ("esbenp", "prettier-vscode"),
     ("dbaeumer", "vscode-eslint"),
-    // File icons for the explorer.
     ("miguelsolorio", "symbols"),
 ];
 
-/// Which of `defaults` are still to be installed. `offered` is the list of
-/// those this installation already got, and is brought up to date with the
-/// ones that are there. Each is offered once: removing one afterwards is the
-/// user's choice, and it does not come back.
 fn defaults_to_install(
     defaults: &[(&str, &str)],
     offered: &mut BTreeSet<String>,
@@ -96,7 +76,6 @@ fn defaults_to_install(
 }
 
 pub struct Installed {
-    /// `publisher.name`, lower case.
     pub id: String,
     pub display_name: String,
     pub publisher: String,
@@ -108,58 +87,39 @@ pub struct Installed {
     pub status: Status,
     pub error: String,
     pub activation_ms: u32,
-    /// VS Code API this extension asked for that the host does not have yet.
     pub unsupported: Vec<String>,
-    /// The extension's own icon (a PNG inside its folder).
     pub icon: Option<PathBuf>,
-    /// Commands it offers, as `(id, title)`.
     pub commands: Vec<(String, String)>,
-    /// Names of the views it adds to VS Code's side bar.
     pub views: Vec<String>,
-    /// The places of its own it adds to VS Code's bars, with their views.
     pub containers: Vec<Container>,
-    /// File icon themes it brings.
     pub icon_themes: Vec<IconThemeDecl>,
 }
 
-/// A file icon theme of a manifest (`contributes.iconThemes`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct IconThemeDecl {
     pub id: String,
     pub label: String,
-    /// The theme's JSON file (see `icon_theme.rs`).
     pub file: PathBuf,
 }
 
-/// A view container of a manifest (`contributes.viewsContainers`): an icon
-/// in one of VS Code's bars that opens the views declared for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Container {
     pub id: String,
     pub title: String,
-    /// Its icon when the manifest names a codicon (`$(github)` → `github`).
-    /// Otherwise it is an image file, and the extension's icon stands in.
     pub codicon: Option<String>,
     pub views: Vec<ViewDecl>,
 }
 
-/// A view of a manifest (`contributes.views`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewDecl {
     pub id: String,
     pub name: String,
-    /// A page of the extension's own (`"type": "webview"`). The others are
-    /// trees, which the app cannot show yet.
     pub webview: bool,
-    /// The condition for it to be shown (see `when.rs`); empty for always.
     pub when: String,
 }
 
-/// An icon for the rail: something of an extension that can be opened.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RailItem {
-    /// The webview it opens: a key of [`Extensions::webviews`], which
-    /// [`Extensions::ensure_view`] creates if the extension has not yet.
     pub view: String,
     pub extension: String,
     pub title: String,
@@ -177,7 +137,6 @@ pub enum Severity {
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub line: u32,
-    /// Display columns (tabs expanded), like everything on the canvas.
     pub col: u32,
     pub end_line: u32,
     pub end_col: u32,
@@ -188,7 +147,6 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// Is the cell at `(line, col)` inside this diagnostic's range?
     pub fn covers(&self, line: u32, col: u32) -> bool {
         if line < self.line || line > self.end_line {
             return false;
@@ -198,7 +156,6 @@ impl Diagnostic {
         after_start && before_end
     }
 
-    /// `eslint(no-undef)`, or whatever of that is known.
     pub fn title(&self) -> String {
         match (self.source.is_empty(), self.code.is_empty()) {
             (false, false) => format!("{}({})", self.source, self.code),
@@ -210,15 +167,12 @@ impl Diagnostic {
 }
 
 pub struct FileDiagnostics {
-    /// Absolute path with `/` separators.
     pub path: String,
     pub items: Vec<Diagnostic>,
     pub errors: u32,
     pub warnings: u32,
 }
 
-/// Something an extension draws on a file: a wash over a range and/or
-/// text after the end of a line (VS Code's "text editor decorations").
 #[derive(Clone, Debug)]
 pub struct Decoration {
     pub line: u32,
@@ -226,26 +180,18 @@ pub struct Decoration {
     pub end_line: u32,
     pub end_col: u32,
     pub whole_line: bool,
-    /// Text shown after the line's code.
     pub text: String,
-    /// `0xRRGGBBAA`; zero alpha means "not set".
     pub color: u32,
     pub background: u32,
 }
 
 pub struct FileDecorations {
-    /// Absolute path with `/` separators.
     pub path: String,
-    /// By decoration type, as the extension set them.
     pub by_type: HashMap<String, Vec<Decoration>>,
 }
 
-/// A colour sent by the host: `#rgb`, `#rrggbb`, `#rrggbbaa`, or
-/// `theme:<id>` for a colour of VS Code's theme, which is guessed from its
-/// name until themes are supported.
 fn parse_color(name: &str) -> u32 {
     if let Some(id) = name.strip_prefix("theme:") {
-        // `errorLens.warningForeground`: the last part says what it is.
         let id = id.rsplit('.').next().unwrap_or(id).to_lowercase();
         let rgb = if id.contains("error") {
             0xf7768e00
@@ -283,23 +229,17 @@ pub enum Level {
     Error,
 }
 
-/// A message for the user (from an extension, or about one).
 pub struct Notice {
     pub level: Level,
     pub source: String,
     pub text: String,
     pub at: Instant,
-    /// Choices the extension offers; it waits for one (or a dismissal).
     pub actions: Vec<String>,
-    /// The host's id of a message with choices.
     reply_to: Option<u64>,
-    /// A question of the app itself: what it is about (see
-    /// [`Extensions::ask`]).
     own: Option<String>,
 }
 
 impl Notice {
-    /// It waits for an answer instead of fading away.
     fn is_question(&self) -> bool {
         self.reply_to.is_some() || self.own.is_some()
     }
@@ -311,57 +251,29 @@ pub enum NodeStatus {
     Missing(String),
 }
 
-/// Things the app has to do for the extensions.
 pub enum Event {
-    /// Replace a file's contents (a formatter or a fix produced them).
-    Write {
-        path: PathBuf,
-        text: String,
-    },
-    /// Show this file.
+    Write { path: PathBuf, text: String },
     Reveal(PathBuf),
-    /// An extension set the page of a webview.
-    WebviewHtml {
-        handle: String,
-        html: String,
-    },
-    /// An extension sent a message to a webview's page.
-    WebviewPost {
-        handle: String,
-        message: Value,
-    },
+    WebviewHtml { handle: String, html: String },
+    WebviewPost { handle: String, message: Value },
     WebviewClosed(String),
-    /// Bring this webview (by key) in front of the user.
     ShowWebview(String),
-    /// Go to this place in a file (a definition that was asked for).
-    GoTo {
-        path: PathBuf,
-        line: u32,
-        col: u32,
-        len: u32,
-    },
+    GoTo { path: PathBuf, line: u32, col: u32, len: u32 },
 }
 
-/// What a language extension says about the code under the pointer.
 pub struct Hover {
     pub path: PathBuf,
     pub line: u32,
     pub col: u32,
-    /// Markdown as the extension gave it; empty when it had nothing to say.
     pub text: String,
 }
 
-/// A webview an extension offers: a view it registered (shown when the user
-/// asks for it) or a panel it opened itself.
 pub struct WebviewEntry {
-    /// The view's id, or the handle of a panel.
     pub key: String,
     pub extension: String,
     pub title: String,
-    /// Set once the extension has been asked to fill it.
     pub handle: Option<String>,
     resolving: bool,
-    /// The extension was asked and gave no page: it is not asked again.
     pub failed: bool,
 }
 
@@ -372,17 +284,13 @@ enum Job {
 }
 
 enum Pending {
-    /// A file being formatted; `true` when it is part of saving (quiet).
     Format(PathBuf, bool),
-    /// A command, by its title.
     Command(String),
-    /// A webview view being filled, by key.
     Webview(String),
     Hover(PathBuf, u32, u32),
     Definition(PathBuf),
 }
 
-/// Documents kept open in the host at most (least recently seen go first).
 const MAX_OPEN: usize = 48;
 const MAX_LOG: usize = 400;
 
@@ -394,30 +302,18 @@ pub struct Extensions {
     pub searching: bool,
     pub market_error: String,
     pub installing: HashSet<String>,
-    /// By [`path_key`].
     pub diagnostics: HashMap<String, FileDiagnostics>,
-    /// Bumped whenever `diagnostics` changes.
     pub revision: u64,
-    /// By [`path_key`].
     pub decorations: HashMap<String, FileDecorations>,
     pub notices: Vec<Notice>,
     pub log: VecDeque<String>,
-    /// Status bar items extensions are showing, `(id, text)`.
     pub status_items: Vec<(String, String)>,
     pub webviews: Vec<WebviewEntry>,
-    /// Context keys the extensions set (`setContext`): what `when` clauses
-    /// are evaluated against.
     pub contexts: HashMap<String, Value>,
-    /// The default extensions this installation already got (`defaults.json`).
     offered: BTreeSet<String>,
-    /// Answers to the app's own questions, until they are taken.
     answers: Vec<(String, String)>,
-    /// What the app itself draws on files, in the same form as what
-    /// extensions do (by [`path_key`]). It survives a restart of the host.
     own_decorations: HashMap<String, FileDecorations>,
-    /// The latest answer to [`Extensions::request_hover`].
     pub hover: Option<Hover>,
-    /// Webviews that went away with their host; reported by `poll`.
     dropped_webviews: Vec<String>,
     pub host_running: bool,
 
@@ -426,7 +322,6 @@ pub struct Extensions {
     disabled: HashSet<String>,
     host: Option<Host>,
     folders: Vec<PathBuf>,
-    /// Open documents, least recently wanted first.
     open: Vec<PathBuf>,
     focused: Option<PathBuf>,
     pending: HashMap<u64, Pending>,
@@ -436,7 +331,6 @@ pub struct Extensions {
     waker: Waker,
 }
 
-/// Key for a path that is the same however it is spelled.
 pub fn path_key(path: &str) -> String {
     let unified = path.replace('\\', "/");
     if cfg!(windows) {
@@ -448,7 +342,6 @@ pub fn path_key(path: &str) -> String {
 
 fn manifest_text(v: &Value, nls: &Value, key: &str) -> String {
     let raw = v.get(key).and_then(Value::as_str).unwrap_or_default();
-    // `%key%` points into package.nls.json.
     match raw.strip_prefix('%').and_then(|r| r.strip_suffix('%')) {
         Some(k) => match nls.get(k) {
             Some(Value::String(s)) => s.clone(),
@@ -459,7 +352,6 @@ fn manifest_text(v: &Value, nls: &Value, key: &str) -> String {
     }
 }
 
-/// A manifest string, which may be `%key%` pointing into package.nls.json.
 fn localized(value: &Value, nls: &Value) -> String {
     let raw = match value {
         Value::String(s) => s.as_str(),
@@ -472,8 +364,6 @@ fn localized(value: &Value, nls: &Value) -> String {
     }
 }
 
-/// The commands a manifest offers to the user, as `(id, "Category: Title")`.
-/// Those the extension hides from the command palette are left out.
 fn manifest_commands(v: &Value, nls: &Value) -> Vec<(String, String)> {
     let hidden: HashSet<&str> = v
         .pointer("/contributes/menus/commandPalette")
@@ -517,9 +407,6 @@ fn manifest_views(v: &Value, nls: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The view containers of a manifest with the views declared for each.
-/// Views a manifest adds to VS Code's own containers (the explorer, source
-/// control) are not here: those places are not an extension's.
 fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
     let text = |item: &Value, key: &str| item.get(key).map(|t| localized(t, nls)).unwrap_or_default();
     let Some(Value::Object(bars)) = v.pointer("/contributes/viewsContainers") else { return Vec::new() };
@@ -554,7 +441,6 @@ fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
     out
 }
 
-/// See [`Extensions::rail_items`]. `context` gives the value of a context key.
 fn rail_items_of(
     installed: &[Installed],
     webviews: &[WebviewEntry],
@@ -708,8 +594,6 @@ impl Extensions {
         self.installed.iter().any(|e| e.id == id)
     }
 
-    /// Tell the user something: a message that shows for a while and stays
-    /// in the log.
     pub fn notice(&mut self, level: Level, source: &str, text: impl Into<String>) {
         let text = text.into();
         self.log_line(&format!("[{source}] {text}"));
@@ -722,16 +606,12 @@ impl Extensions {
             reply_to: None,
             own: None,
         });
-        // Keep the corner small; questions stay until they are answered.
         while self.notices.iter().filter(|n| !n.is_question()).count() > 5 {
             let oldest = self.notices.iter().position(|n| !n.is_question()).unwrap_or(0);
             self.notices.remove(oldest);
         }
     }
 
-    /// Ask the user something of the app's own: a notice with `choices` as
-    /// buttons. The one chosen arrives through [`Extensions::take_answers`]
-    /// with `about`; asking again about the same thing replaces the notice.
     pub fn ask(&mut self, source: &str, text: impl Into<String>, choices: &[&str], about: &str) {
         let text = text.into();
         self.log_line(&format!("[{source}] {text}"));
@@ -747,14 +627,10 @@ impl Extensions {
         });
     }
 
-    /// The answers to the app's own questions since the last call:
-    /// `(what it was about, the choice)`.
     pub fn take_answers(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.answers)
     }
 
-    /// Press the button `choice` of the first notice that has it. False
-    /// when none does.
     pub fn answer_with(&mut self, choice: &str) -> bool {
         match self.notices.iter().position(|n| n.actions.iter().any(|a| a == choice)) {
             Some(index) => {
@@ -777,8 +653,6 @@ impl Extensions {
         }
     }
 
-    // ----- marketplace ------------------------------------------------------
-
     pub fn search(&mut self) {
         let query = self.query.clone();
         self.searching = true;
@@ -789,8 +663,6 @@ impl Extensions {
         });
     }
 
-    /// Install the extensions the app comes with ([`DEFAULTS`]) that this
-    /// installation never got. Called once, when the app starts.
     pub fn install_defaults(&mut self) {
         self.offered = std::fs::read_to_string(self.dir.join("defaults.json"))
             .ok()
@@ -838,7 +710,6 @@ impl Extensions {
 
     pub fn uninstall(&mut self, id: &str) {
         let Some(at) = self.installed.iter().position(|e| e.id == id) else { return };
-        // The host may hold the files open: stop it first.
         self.stop_host();
         let dir = self.installed[at].dir.clone();
         if let Err(e) = remove_dir_retrying(&dir) {
@@ -859,8 +730,6 @@ impl Extensions {
         let _ = std::fs::write(self.dir.join("disabled.json"), serde_json::to_string(&list).unwrap_or_default());
         self.restart_host();
     }
-
-    // ----- host --------------------------------------------------------------
 
     fn wants_host(&self) -> bool {
         matches!(self.node, NodeStatus::Ready(_))
@@ -897,12 +766,10 @@ impl Extensions {
                     "tabWidth": canvas_core::TAB_WIDTH,
                     "storageDir": self.data_dir.join("extension-storage"),
                     "settingsFile": self.data_dir.join("settings.json"),
-                    // VS Code's own settings, read as a base when it is installed.
                     "vscodeSettingsFile": dirs::config_dir().map(|d| d.join("Code").join("User").join("settings.json")),
                     "folders": self.folders,
                     "extensions": extensions,
                 }));
-                // Documents wanted before the (re)start are opened again.
                 for path in &self.open {
                     host.send(&json!({ "type": "open", "path": path, "focus": self.focused.as_ref() == Some(path) }));
                 }
@@ -925,7 +792,6 @@ impl Extensions {
         }
     }
 
-    /// The folders open in the app: the extensions' workspace.
     pub fn set_folders(&mut self, folders: Vec<PathBuf>) {
         if folders == self.folders {
             return;
@@ -941,9 +807,6 @@ impl Extensions {
         }
     }
 
-    /// Files whose code is readable on screen right now: extensions get them
-    /// as open documents (that is what they lint). `focus` is the one the
-    /// user is pointing at.
     pub fn show_documents(&mut self, visible: &[PathBuf], focus: Option<&Path>) {
         for path in visible {
             match self.open.iter().position(|p| p == path) {
@@ -970,8 +833,6 @@ impl Extensions {
         }
     }
 
-    /// The user is typing in `path`: `text` is what the file holds now,
-    /// not saved yet. Linters check it as it is typed.
     pub fn file_edited(&mut self, path: &Path, text: &str) {
         if !self.open.iter().any(|p| p == path) {
             self.open.push(path.to_path_buf());
@@ -979,13 +840,10 @@ impl Extensions {
         self.send(json!({ "type": "edit", "path": path, "text": text }));
     }
 
-    /// The file's contents changed on disk.
     pub fn file_changed(&mut self, path: &Path) {
         self.send(json!({ "type": "changed", "path": path }));
     }
 
-    /// Ask the extensions to format `path`; the result arrives as
-    /// [`Event::Write`] (or a notice when nothing can format it).
     pub fn format(&mut self, path: &Path) {
         if self.host.is_none() {
             let why = match &self.node {
@@ -1008,8 +866,6 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": id, "method": "format", "params": { "path": path } }));
     }
 
-    /// The file was just saved: format it, unless the settings say not to
-    /// (`editor.formatOnSave`). Says nothing unless it changes the file.
     pub fn format_on_save(&mut self, path: &Path) {
         if self.host.is_none() {
             return;
@@ -1022,8 +878,6 @@ impl Extensions {
         );
     }
 
-    /// Answer the question in notice `index`: one of its actions, or
-    /// `None` to dismiss it. Plain notices are just removed.
     pub fn answer_notice(&mut self, index: usize, action: Option<&str>) {
         if index >= self.notices.len() {
             return;
@@ -1037,8 +891,6 @@ impl Extensions {
         }
     }
 
-    /// Ask the language extensions about the code at `(line, display column)`
-    /// of `path`. The answer lands in [`Extensions::hover`].
     pub fn request_hover(&mut self, path: &Path, line: u32, col: u32) {
         if self.host.is_none() {
             return;
@@ -1049,8 +901,6 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": id, "method": "hover", "params": { "path": path, "line": line, "col": col } }));
     }
 
-    /// Ask where the name at that place is defined; the answer comes back
-    /// as [`Event::GoTo`]. False when no extension is running to ask.
     pub fn request_definition(&mut self, path: &Path, line: u32, col: u32) -> bool {
         if self.host.is_none() {
             return false;
@@ -1063,33 +913,18 @@ impl Extensions {
         true
     }
 
-    /// Folder the installed extensions live in.
     pub fn extensions_dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Ask the extension to fill the webview view `key` (once).
-    /// What the rail shows for extensions: one icon for each container of a
-    /// manifest that has a webview view to show right now. They are there
-    /// from the moment the extension is installed, as in VS Code: opening
-    /// one is what starts the extension.
-    ///
-    /// An extension none of whose containers gives an icon still gets one
-    /// for a webview it has open or registered (a panel it opened itself, or
-    /// a view under a condition this app cannot follow).
     pub fn rail_items(&self) -> Vec<RailItem> {
         rail_items_of(&self.installed, &self.webviews, &|key| self.contexts.get(key).cloned())
     }
 
-    /// The file icon themes of the installed extensions that are switched on.
     pub fn icon_themes(&self) -> impl Iterator<Item = &IconThemeDecl> {
         self.installed.iter().filter(|e| e.enabled).flat_map(|e| e.icon_themes.iter())
     }
 
-    /// The icon theme to use when the user's choice is `wanted`: that theme
-    /// if it is installed, none for `"none"`, and otherwise one that is
-    /// there (Symbols first, the app's default), so that installing an icon
-    /// theme is enough to see it.
     pub fn icon_theme(&self, wanted: &str) -> Option<&IconThemeDecl> {
         if wanted == "none" {
             return None;
@@ -1100,9 +935,6 @@ impl Extensions {
             .or_else(|| self.icon_themes().next())
     }
 
-    /// Make sure there is a webview entry for the view `key`, so that it can
-    /// be shown: a view of a manifest has none until its extension starts
-    /// and registers it. False when no installed extension declares it.
     pub fn ensure_view(&mut self, key: &str) -> bool {
         if self.webviews.iter().any(|w| w.key == key) {
             return true;
@@ -1127,7 +959,7 @@ impl Extensions {
 
     pub fn resolve_webview(&mut self, key: &str) {
         if self.host.is_none() {
-            return; // nothing to ask yet; the panel says so
+            return;
         }
         let Some(entry) = self.webviews.iter_mut().find(|w| w.key == key) else { return };
         if entry.handle.is_some() || entry.resolving || entry.failed {
@@ -1140,12 +972,10 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": request, "method": "resolveWebview", "params": { "view": key } }));
     }
 
-    /// The page of a webview sent a message to its extension.
     pub fn webview_message(&mut self, handle: &str, message: Value) {
         self.send(json!({ "type": "webviewMessage", "handle": handle, "message": message }));
     }
 
-    /// Run one of an extension's commands (`title` is for messages).
     pub fn run_command(&mut self, id: &str, title: &str) {
         if self.host.is_none() {
             self.notice(Level::Warn, title, "extensions are not running (open a folder first)");
@@ -1161,10 +991,6 @@ impl Extensions {
         self.stop_host();
     }
 
-    // ----- incoming ----------------------------------------------------------
-
-    /// Take in what background work and the host produced. Returns what the
-    /// app must do, and whether anything visible changed.
     pub fn poll(&mut self) -> (Vec<Event>, bool) {
         let mut events: Vec<Event> = self.dropped_webviews.drain(..).map(Event::WebviewClosed).collect();
         let mut changed = !events.is_empty();
@@ -1192,7 +1018,6 @@ impl Extensions {
                         Ok(dir) => {
                             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             self.notice(Level::Info, "Extensions", format!("installed {name}"));
-                            // One of the app's own: it has been given now.
                             let ours = DEFAULTS.iter().any(|(ns, n)| format!("{ns}.{n}").to_lowercase() == label);
                             if ours && self.offered.insert(label.clone()) {
                                 self.save_offered();
@@ -1230,15 +1055,12 @@ impl Extensions {
             }
         }
 
-        // Notices fade after a while; questions wait much longer, and an
-        // unanswered one counts as dismissed.
         let before = self.notices.len();
         let expired: Vec<usize> = (0..self.notices.len())
             .rev()
             .filter(|&i| {
                 self.notices[i].at.elapsed().as_secs_f32()
                     > match (&self.notices[i].own, self.notices[i].reply_to) {
-                        // The app's own questions can wait: nobody is blocked on them.
                         (Some(_), _) => 3600.0,
                         (None, Some(_)) => 300.0,
                         (None, None) => 9.0,
@@ -1398,7 +1220,6 @@ impl Extensions {
                 let id = s("id");
                 self.status_items.retain(|(i, _)| *i != id);
                 let visible = m.get("visible").and_then(Value::as_bool).unwrap_or(false);
-                // `$(check) Prettier`: the icon names are codicons.
                 let text = crate::codicons::render(&s("text")).trim().to_string();
                 if visible && !text.is_empty() {
                     self.status_items.push((id, text));
@@ -1504,20 +1325,16 @@ impl Extensions {
         self.installed.iter().find(|e| e.id == id).map(|e| e.display_name.clone()).unwrap_or_else(|| id.to_string())
     }
 
-    /// Diagnostics of the files under `root`, as `(path relative to root, diagnostics)`.
     pub fn diagnostics_under<'a>(&'a self, root: &Path) -> impl Iterator<Item = (&'a str, &'a FileDiagnostics)> + 'a {
         let prefix = folder_prefix(root);
         let len = prefix.len();
-        // Same length in both spellings: the key only differs in case.
         let under = move |key: &String, path: &String| key.starts_with(&prefix) && path.len() == key.len();
         self.diagnostics.iter().filter(move |(key, d)| under(key, &d.path)).map(move |(_, d)| (&d.path[len..], d))
     }
 
-    /// Decorations of the files under `root`, as `(path relative to root, decorations)`.
     pub fn decorations_under<'a>(&'a self, root: &Path) -> impl Iterator<Item = (&'a str, &'a FileDecorations)> + 'a {
         let prefix = folder_prefix(root);
         let len = prefix.len();
-        // Same length in both spellings: the key only differs in case.
         let under = move |key: &String, path: &String| key.starts_with(&prefix) && path.len() == key.len();
         self.decorations
             .iter()
@@ -1526,8 +1343,6 @@ impl Extensions {
             .map(move |(_, d)| (&d.path[len..], d))
     }
 
-    /// Draw `items` on the file at `path` (absolute, any separators) as the
-    /// app's own, under `key`; an empty list takes them away.
     pub fn set_own_decorations(&mut self, path: &str, key: &str, items: Vec<Decoration>) {
         let path = path.replace('\\', "/");
         let at = path_key(&path);
@@ -1543,13 +1358,11 @@ impl Extensions {
         }
     }
 
-    /// `(errors, warnings)` over every file.
     pub fn totals(&self) -> (u32, u32) {
         self.diagnostics.values().fold((0, 0), |(e, w), d| (e + d.errors, w + d.warnings))
     }
 }
 
-/// [`path_key`] of a folder, ending in `/`: what its files' keys start with.
 fn folder_prefix(root: &Path) -> String {
     let mut prefix = path_key(&root.to_string_lossy());
     if !prefix.ends_with('/') {
@@ -1593,7 +1406,6 @@ fn diagnostic(v: &Value) -> Diagnostic {
     }
 }
 
-/// Windows keeps files locked for a moment after the process using them ends.
 fn remove_dir_retrying(dir: &Path) -> std::io::Result<()> {
     let mut last = Ok(());
     for _ in 0..20 {
@@ -1631,7 +1443,6 @@ mod tests {
         assert_eq!(found[0].1.items[0].message, "boom");
         assert_eq!(ext.diagnostics_under(Path::new("C:/Work/Other")).count(), 0);
 
-        // An empty list clears the file.
         ext.on_message(&json!({ "type": "diagnostics", "path": "C:\\Work\\App\\src\\a.ts", "items": [] }), &mut events);
         assert_eq!(ext.totals(), (0, 0));
     }
@@ -1682,17 +1493,14 @@ mod tests {
     fn default_extensions_are_offered_once() {
         let defaults = [("Acme", "one"), ("acme", "two"), ("acme", "three")];
         let mut offered = BTreeSet::new();
-        // A new installation: "two" is there already (installed by hand).
         let wanted = defaults_to_install(&defaults, &mut offered, &|id| id == "acme.two");
         assert_eq!(wanted, vec![("Acme".to_string(), "one".to_string()), ("acme".to_string(), "three".to_string())]);
         assert_eq!(offered.iter().collect::<Vec<_>>(), vec!["acme.two"]);
 
-        // "one" arrived; "three" did not (no network): only "three" is tried again.
         offered.insert("acme.one".into());
         let wanted = defaults_to_install(&defaults, &mut offered, &|id| id != "acme.three");
         assert_eq!(wanted, vec![("acme".to_string(), "three".to_string())]);
 
-        // Later the user removes "one": it does not come back.
         offered.insert("acme.three".into());
         assert!(defaults_to_install(&defaults, &mut offered, &|_| false).is_empty());
     }
@@ -1726,12 +1534,10 @@ mod tests {
         let page = &by_id("box").views[0];
         assert!(page.webview && page.when == "box.ready" && page.id == "box.page");
         assert!(!by_id("box").views[1].webview);
-        // Declared without views: it has none, and nothing breaks.
         assert!(by_id("side").views.is_empty());
         assert!(manifest_containers(&json!({}), &nls).is_empty());
     }
 
-    /// An installed extension, from the manifest it would have on disk.
     fn installed_with(name: &str, manifest: Value) -> Installed {
         let dir = std::env::temp_dir().join(format!("code-canvas-test-rail-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1768,14 +1574,9 @@ mod tests {
             rail_items_of(&installed, webviews, &|key| context.get(key).cloned()).into_iter().map(|i| i.view).collect()
         };
 
-        // Straight after installing, nothing running: the manifest is enough,
-        // and of the two places for the same view only one is shown. The
-        // container that only has trees is not: there is nothing to open.
         assert_eq!(views(json!({}), &[]), vec!["box.b"]);
         assert_eq!(views(json!({ "box.narrow": true }), &[]), vec!["box.a"]);
 
-        // An extension that declares nothing still gets an icon for a page
-        // it opened itself.
         let panel = WebviewEntry {
             key: "panel-1".into(),
             extension: "test.plain".into(),
@@ -1789,13 +1590,11 @@ mod tests {
         let item = rail_items_of(&installed, &[], &|_| None).remove(0);
         assert_eq!((item.title.as_str(), item.codicon, item.extension.as_str()), ("Box, elsewhere", None, "test.box"));
 
-        // Switched off: no icon.
         let mut off = installed;
         off[0].enabled = false;
         assert!(rail_items_of(&off, &[], &|_| None).is_empty());
     }
 
-    /// `EXT_RAIL_TEST=<extensions folder> cargo test -p code-canvas rail_of_a_real -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn rail_of_a_real_extensions_folder() {
@@ -1827,7 +1626,6 @@ mod tests {
         assert_eq!(parse_color("#10203040"), 0x10203040);
         assert_eq!(parse_color("rgba(1,2,3,1)"), 0, "not understood: left unset");
         assert_eq!(parse_color(""), 0);
-        // Theme colours are guessed from their name.
         assert_eq!(parse_color("theme:errorLens.errorForeground") >> 8, 0xf7768e);
         assert_eq!(parse_color("theme:errorLens.warningForeground") >> 8, 0xe0af68);
         assert!(parse_color("theme:errorLens.warningBackground") & 0xff < 0x40, "backgrounds are faint");

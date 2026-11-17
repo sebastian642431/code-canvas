@@ -1,21 +1,11 @@
-//! Preferences that are neither looks nor keys: `prefs.json` in the data
-//! directory. The settings panel edits them.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Prefs {
-    /// Ask npm and crates.io for the latest version of each dependency and
-    /// show it next to the line (`versions.rs`). Only package names are sent.
     pub check_versions: bool,
-    /// Offer file and folder names while a path is typed in a string
-    /// (`paths.rs`).
     pub complete_paths: bool,
-    /// Look for a newer release when the app starts (`update.rs`).
     pub check_updates: bool,
-    /// Keep an assistant's panel scrolled to what it is writing, until the
-    /// user scrolls up (`webview.rs`).
     pub follow_chat: bool,
 }
 

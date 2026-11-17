@@ -1,11 +1,3 @@
-//! Text rendering on top of glyphon.
-//!
-//! Code is shaped in chunks of [`CHUNK_LINES`] lines, only for what is on
-//! screen, and cached. Shaping is the expensive part, so at most
-//! [`NEW_CHUNKS_PER_FRAME`] new chunks are shaped per frame; the rest shows up
-//! on the next frames (the app keeps redrawing while `pending` is set).
-//! Unused chunks are evicted after a while.
-
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -19,7 +11,6 @@ use glyphon::{
 use crate::theme;
 
 pub const NEW_CHUNKS_PER_FRAME: usize = 12;
-/// Frames an unused cache entry survives.
 const EVICT_AFTER: u64 = 300;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -29,21 +20,17 @@ pub struct ChunkKey {
     pub chunk: u32,
 }
 
-/// Code of one file to draw this frame.
 pub struct CodeText<'a> {
     pub page: u32,
     pub file_index: usize,
     pub file: &'a SourceFile,
     pub lines: std::ops::Range<usize>,
-    /// Screen position of the first character of line 0.
     pub left: f32,
     pub top: f32,
     pub zoom: f32,
-    /// Screen-space clip rectangle (left, top, right, bottom).
     pub clip: [i32; 4],
 }
 
-/// A short single-line text drawn at a fixed pixel size.
 pub struct Label<'a> {
     pub text: &'a str,
     pub left: f32,
@@ -70,7 +57,6 @@ pub struct TextLayer {
     labels: HashMap<u64, Cached>,
     frame: u64,
     code_font_size: f32,
-    /// More chunks are waiting to be shaped.
     pub pending: bool,
     pub chunks_shaped_last_frame: usize,
 }
@@ -92,8 +78,6 @@ impl TextLayer {
         #[cfg(target_os = "macos")]
         font_system.db_mut().set_monospace_family("Menlo");
 
-        // Pick the font size whose advance matches one character cell, so the
-        // text lines up exactly with the minimap bars and the card size.
         let probe = "MMMMMMMMMMMMMMMMMMMM";
         let mut b = Buffer::new(&mut font_system, Metrics::new(10.0, 12.0));
         b.set_text(probe, &Attrs::new().family(Family::Monospace), Shaping::Basic, None);
@@ -127,7 +111,7 @@ impl TextLayer {
 
     fn shape_chunk(&mut self, file: &SourceFile, chunk: usize, tokens: &Tokens) -> Buffer {
         let first = chunk * CHUNK_LINES;
-        let last = ((chunk + 1) * CHUNK_LINES).min(file.line_count()); // exclusive
+        let last = ((chunk + 1) * CHUNK_LINES).min(file.line_count());
         let start = file.line_starts[first] as usize;
         let end = file.line_starts.get(last).map(|&e| e as usize - 1).unwrap_or(file.text.len());
 
@@ -178,7 +162,6 @@ impl TextLayer {
         key
     }
 
-    /// Width in pixels of a label (shapes and caches it).
     pub fn measure(&mut self, text: &str, size: f32, bold: bool) -> f32 {
         let l = Label { text, left: 0.0, top: 0.0, size, color: theme::get().ui_text, max_w: f32::MAX, bold };
         let key = self.label_buffer(&l);
@@ -200,7 +183,6 @@ impl TextLayer {
         let frame = self.frame;
         self.viewport.update(queue, Resolution { width: resolution[0], height: resolution[1] });
 
-        // 1. Make sure the chunks we need exist (within the per-frame budget).
         let mut budget = NEW_CHUNKS_PER_FRAME;
         self.pending = false;
         let mut areas_code: Vec<(ChunkKey, f32, f32, f32, TextBounds)> = Vec::new();
@@ -233,7 +215,6 @@ impl TextLayer {
         let world_keys: Vec<u64> = world_labels.iter().map(|l| self.label_buffer(l)).collect();
         let ui_keys: Vec<u64> = ui_labels.iter().map(|l| self.label_buffer(l)).collect();
 
-        // 2. Build text areas.
         fn label_area<'b>(buf: &'b Buffer, l: &Label) -> TextArea<'b> {
             let right = if l.max_w.is_finite() { (l.left + l.max_w) as i32 } else { i32::MAX };
             TextArea {
@@ -307,7 +288,6 @@ impl TextLayer {
         }
     }
 
-    /// Call after the frame is submitted.
     pub(crate) fn end_frame(&mut self) {
         self.atlas.trim();
         if self.frame.is_multiple_of(60) {
@@ -317,14 +297,11 @@ impl TextLayer {
         }
     }
 
-    /// Forget all shaped text: its colours are part of it, so a new theme
-    /// needs it shaped again.
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.labels.clear();
     }
 
-    /// Forget every cached chunk of a page (e.g. when it is closed).
     pub fn drop_page(&mut self, page: u32) {
         self.chunks.retain(|k, _| k.page != page);
     }

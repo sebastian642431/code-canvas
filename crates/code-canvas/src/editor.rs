@@ -1,15 +1,5 @@
-//! Editing a file on the canvas: the text being edited, the caret, the
-//! selection and undo.
-//!
-//! The canvas shows a *normalised* copy of every file (tabs expanded, `\n`
-//! only). An [`Editor`] holds the file as it really is, with its own tabs and
-//! line endings, so saving changes nothing the user did not type. Positions
-//! are `(line, character)`; [`Editor::display_col`] converts to the columns
-//! the canvas draws.
-
 use canvas_core::TAB_WIDTH;
 
-/// A place in the text: 0-based line, and character index in that line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, Default)]
 pub struct Pos {
     pub line: usize,
@@ -22,7 +12,6 @@ impl Pos {
     }
 }
 
-/// One step of undo: at `at`, `removed` was replaced by `inserted`.
 struct Change {
     at: Pos,
     removed: String,
@@ -32,20 +21,15 @@ struct Change {
 }
 
 pub struct Editor {
-    /// Path relative to the folder, `/` separators.
     pub rel_path: String,
-    /// The lines, without their terminators.
     lines: Vec<String>,
     eol: &'static str,
     final_newline: bool,
     pub caret: Pos,
-    /// The other end of the selection, when there is one.
     pub anchor: Option<Pos>,
-    /// Display column the caret wants to be in while moving up and down.
     goal: Option<usize>,
     undo: Vec<Change>,
     redo: Vec<Change>,
-    /// Changed since it was opened or saved.
     pub dirty: bool,
 }
 
@@ -58,7 +42,6 @@ fn is_word(c: char) -> bool {
 }
 
 impl Editor {
-    /// Start editing `source`, the file's contents exactly as on disk.
     pub fn open(rel_path: String, source: &str) -> Editor {
         let eol = if source.contains("\r\n") { "\r\n" } else { "\n" };
         let final_newline = source.ends_with('\n');
@@ -78,7 +61,6 @@ impl Editor {
         }
     }
 
-    /// The contents to write to disk: the file's own line endings.
     pub fn text(&self) -> String {
         let mut out = self.lines.join(self.eol);
         if self.final_newline {
@@ -87,7 +69,6 @@ impl Editor {
         out
     }
 
-    /// The contents for the canvas (`\n` between lines; tabs still tabs).
     pub fn display_source(&self) -> String {
         self.lines.join("\n")
     }
@@ -101,7 +82,6 @@ impl Editor {
         Pos::new(line, p.col.min(self.line_len(line)))
     }
 
-    /// The column the canvas draws `p` at (tabs go to the next tab stop).
     pub fn display_col(&self, p: Pos) -> usize {
         let mut col = 0;
         for c in self.lines[p.line.min(self.lines.len() - 1)].chars().take(p.col) {
@@ -110,14 +90,12 @@ impl Editor {
         col
     }
 
-    /// The position whose display column is closest to `display_col`.
     pub fn pos_at_display(&self, line: usize, display_col: usize) -> Pos {
         let line = line.min(self.lines.len() - 1);
         let mut col = 0;
         for (i, c) in self.lines[line].chars().enumerate() {
             let w = if c == '\t' { TAB_WIDTH - col % TAB_WIDTH } else { 1 };
             if col + w > display_col {
-                // A click on the right half of a tab lands after it.
                 return Pos::new(line, if display_col - col > w / 2 { i + 1 } else { i });
             }
             col += w;
@@ -125,7 +103,6 @@ impl Editor {
         Pos::new(line, self.line_len(line))
     }
 
-    /// The selection as `(start, end)`, start first; `None` when empty.
     pub fn selection(&self) -> Option<(Pos, Pos)> {
         let a = self.anchor?;
         (a != self.caret).then(|| (a.min(self.caret), a.max(self.caret)))
@@ -152,8 +129,6 @@ impl Editor {
         self.selection().map(|(a, b)| self.range_text(a, b)).unwrap_or_default()
     }
 
-    /// Replace `start..end` with `text` (`\n` separates lines). Returns the
-    /// end of what was inserted. Does not record undo.
     fn splice(&mut self, start: Pos, end: Pos, text: &str) -> Pos {
         let head = self.lines[start.line][..byte_at(&self.lines[start.line], start.col)].to_string();
         let tail = self.lines[end.line][byte_at(&self.lines[end.line], end.col)..].to_string();
@@ -166,7 +141,6 @@ impl Editor {
         end_pos
     }
 
-    /// Replace `start..end` with `text`, as one undo step.
     fn replace(&mut self, start: Pos, end: Pos, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let removed = self.range_text(start, end);
@@ -211,34 +185,26 @@ impl Editor {
         true
     }
 
-    // ----- typing ------------------------------------------------------------
-
-    /// The text of line `i`; empty past the end.
     pub fn line(&self, i: usize) -> &str {
         self.lines.get(i).map_or("", String::as_str)
     }
 
-    /// Replace what is between column `from` of the caret's line and the
-    /// caret with `text`, as one undo step: how a completion is taken.
     pub fn complete(&mut self, from: usize, text: &str) {
         let end = self.caret;
         self.replace(Pos::new(end.line, from.min(end.col)), end, text);
     }
 
-    /// Type or paste `text` over the selection.
     pub fn insert(&mut self, text: &str) {
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
         self.replace(start, end, text);
     }
 
-    /// A new line that keeps the indentation of the current one.
     pub fn newline(&mut self) {
         let line = &self.lines[self.caret.line];
         let indent: String = line.chars().take(self.caret.col).take_while(|c| *c == ' ' || *c == '\t').collect();
         self.insert(&format!("\n{indent}"));
     }
 
-    /// Tab: one indentation step, in the file's own style.
     pub fn tab(&mut self) {
         let uses_tabs = self.lines.iter().any(|l| l.starts_with('\t'));
         if uses_tabs {
@@ -279,9 +245,6 @@ impl Editor {
         }
     }
 
-    // ----- moving ------------------------------------------------------------
-
-    /// Put the caret at `p`; with `select`, the selection grows to it.
     pub fn move_to(&mut self, p: Pos, select: bool) {
         let p = self.clamp(p);
         self.anchor = match (select, self.anchor) {
@@ -323,7 +286,6 @@ impl Editor {
         self.move_to(p, select);
     }
 
-    /// Up or down by `delta` lines, staying in the same display column.
     pub fn vertical(&mut self, delta: isize, select: bool) {
         let goal = self.goal.unwrap_or_else(|| self.display_col(self.caret));
         let line = (self.caret.line as isize + delta).clamp(0, self.lines.len() as isize - 1) as usize;
@@ -332,7 +294,6 @@ impl Editor {
         self.goal = Some(goal);
     }
 
-    /// Home: the first non-blank character, then the very start.
     pub fn home(&mut self, select: bool) {
         let line = &self.lines[self.caret.line];
         let first = line.chars().take_while(|c| c.is_whitespace()).count();
@@ -344,7 +305,6 @@ impl Editor {
         self.move_to(Pos::new(self.caret.line, self.line_len(self.caret.line)), select);
     }
 
-    /// Ctrl+Left / Ctrl+Right: to the previous or next word boundary.
     pub fn word(&mut self, forward: bool, select: bool) {
         let chars: Vec<char> = self.lines[self.caret.line].chars().collect();
         let mut col = self.caret.col;
@@ -378,7 +338,6 @@ impl Editor {
         self.caret = Pos::new(last, self.line_len(last));
     }
 
-    /// Select the word at `p` (a double click).
     pub fn select_word(&mut self, p: Pos) {
         let p = self.clamp(p);
         let chars: Vec<char> = self.lines[p.line].chars().collect();
@@ -393,7 +352,6 @@ impl Editor {
         self.caret = Pos::new(p.line, b);
     }
 
-    /// The file was written: what is in memory is what is on disk.
     pub fn mark_saved(&mut self) {
         self.dirty = false;
     }
@@ -447,11 +405,9 @@ mod tests {
         assert_eq!(e.caret, Pos::new(2, 4));
         e.insert("pass");
         assert_eq!(e.text(), "def f():\n    return 1\n    pass\n");
-        // Backspace at the start of a line joins it with the one above.
         at(&mut e, 2, 0);
         e.backspace();
         assert_eq!(e.text(), "def f():\n    return 1    pass\n");
-        // Delete at the end of a line joins the next one.
         at(&mut e, 0, 8);
         e.delete();
         assert_eq!(e.text(), "def f():    return 1    pass\n");
@@ -468,7 +424,6 @@ mod tests {
         assert!(e.undo());
         assert_eq!(e.text(), "const a = 1\nconst b = 2\nconst c = 3\n");
         assert_eq!(e.selection(), Some((Pos::new(0, 6), Pos::new(2, 6))));
-        // Pasting several lines.
         at(&mut e, 1, 0);
         e.insert("x\r\ny\n");
         assert_eq!(e.text(), "const a = 1\nx\ny\nconst b = 2\nconst c = 3\n");
@@ -484,11 +439,9 @@ mod tests {
         assert_eq!(e.pos_at_display(1, 1), Pos::new(1, 0));
         assert_eq!(e.pos_at_display(1, 3), Pos::new(1, 1));
         assert_eq!(e.pos_at_display(1, 99), Pos::new(1, 8));
-        // Tab in a file indented with tabs inserts a tab…
         at(&mut e, 1, 0);
         e.tab();
         assert_eq!(e.text(), "all:\n\t\techo hi\n");
-        // …and spaces, to the next step, in a file indented with spaces.
         let mut s = Editor::open("a.ts".into(), "if (x) {\n  y()\n}\n");
         at(&mut s, 1, 5);
         s.tab();

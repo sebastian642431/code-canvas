@@ -1,5 +1,3 @@
-//! Embeds the application icon and version info into the Windows executable.
-
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
@@ -8,7 +6,6 @@ fn main() {
         res.set("ProductName", "Code Canvas");
         res.set("FileDescription", "Code Canvas");
         if let Err(e) = res.compile() {
-            // The icon is cosmetic: never fail the build over it.
             println!("cargo:warning=could not embed the Windows icon: {e}");
         }
     }

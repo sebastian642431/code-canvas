@@ -1,7 +1,3 @@
-// Anti-aliased polylines for relation curves. Vertices carry a world
-// position plus a normal; the ribbon is extruded in screen space so its
-// width stays constant in pixels at any zoom.
-
 struct Camera {
     offset: vec2<f32>,
     zoom: f32,
@@ -15,7 +11,7 @@ struct Camera {
 struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
-    @location(1) dist: f32, // signed pixels from the centre line
+    @location(1) dist: f32,
     @location(2) half_width: f32,
 };
 
@@ -27,7 +23,7 @@ fn vs_main(
     @location(3) half_width: f32,
     @location(4) color: u32,
 ) -> Out {
-    let extent = half_width + 1.0; // +1px for anti-aliasing
+    let extent = half_width + 1.0;
     let s = (pos - cam.offset) * cam.zoom + normal * side * extent;
     var out: Out;
     out.clip = vec4<f32>(s.x / cam.viewport.x * 2.0 - 1.0, 1.0 - s.y / cam.viewport.y * 2.0, 0.0, 1.0);

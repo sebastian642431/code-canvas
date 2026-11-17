@@ -1,12 +1,3 @@
-// Code Canvas extension host.
-//
-// Runs real VS Code extensions (unpacked .vsix folders) in this Node process
-// and gives them a `vscode` module. The app starts it and talks to it over
-// stdin/stdout, one JSON object per line. See docs/EXTENSIONS.md.
-//
-// The API here is a growing subset of VS Code's. Anything an extension asks
-// for that is missing is answered with a harmless stand-in and reported to
-// the app once (`unsupported`), so the gaps are visible instead of fatal.
 'use strict';
 
 const fs = require('fs');
@@ -19,8 +10,6 @@ const { AsyncLocalStorage } = require('async_hooks');
 const WIN = process.platform === 'win32';
 const VSCODE_VERSION = '1.105.0';
 
-// ---------------------------------------------------------------- protocol
-
 const rawWrite = process.stdout.write.bind(process.stdout);
 function send(msg) {
   rawWrite(JSON.stringify(msg) + '\n');
@@ -28,7 +17,6 @@ function send(msg) {
 function log(level, source, text) {
   send({ type: 'log', level, source, text: String(text).replace(/\s+$/, '') });
 }
-// stdout belongs to the protocol: whatever extensions print becomes a log line.
 process.stdout.write = (chunk, _enc, cb) => {
   log('info', currentId() || 'host', chunk);
   if (typeof cb === 'function') cb();
@@ -49,7 +37,6 @@ for (const [name, level] of [['log', 'info'], ['info', 'info'], ['debug', 'debug
 process.on('uncaughtException', (e) => log('error', 'host', 'uncaught: ' + inspect(e)));
 process.on('unhandledRejection', (e) => log('error', 'host', 'unhandled rejection: ' + inspect(e)));
 
-/** Which extension is running right now (follows async continuations). */
 const scope = new AsyncLocalStorage();
 const currentId = () => scope.getStore();
 
@@ -60,8 +47,6 @@ function unsupported(api) {
   reported.add(key);
   send({ type: 'unsupported', extension: currentId() || '', api });
 }
-
-// ------------------------------------------------------------------- basics
 
 class Disposable {
   constructor(fn) {
@@ -83,7 +68,6 @@ class EventEmitter {
   constructor() {
     this._listeners = new Set();
     this.event = (listener, thisArg, disposables) => {
-      // Remember who subscribed, so what the listener does is attributed to it.
       const entry = { listener, thisArg, owner: currentId() };
       this._listeners.add(entry);
       const d = new Disposable(() => this._listeners.delete(entry));
@@ -130,8 +114,6 @@ class CancellationError extends Error {
     this.name = 'Canceled';
   }
 }
-
-// ---------------------------------------------------------------------- Uri
 
 const encodePath = (p) =>
   p.replace(/[^A-Za-z0-9\-._~/]/g, (c) => (c === ':' ? '%3A' : encodeURIComponent(c).replace(/[!'()*]/g, (x) => '%' + x.charCodeAt(0).toString(16).toUpperCase())));
@@ -202,14 +184,11 @@ class Uri {
   }
 }
 
-/** Same file, whatever the spelling: the key used to find documents. */
 function fileKey(p) {
   p = path.normalize(String(p));
   return WIN ? p.toLowerCase() : p;
 }
 const uriKey = (uri) => (uri.scheme === 'file' ? fileKey(uri.fsPath) : uri.toString());
-
-// --------------------------------------------------------- positions, edits
 
 class Position {
   constructor(line, character) {
@@ -327,7 +306,7 @@ class TextEdit {
 
 class WorkspaceEdit {
   constructor() {
-    this._edits = new Map(); // uri key -> { uri, edits }
+    this._edits = new Map();
     this._files = [];
   }
   _slot(uri) {
@@ -353,7 +332,6 @@ class WorkspaceEdit {
   set(uri, edits) {
     if (!edits) this._edits.delete(uriKey(uri));
     else {
-      // Entries are edits, or `[edit, metadata]` pairs; snippets count as text.
       this._slot(uri).edits = edits
         .map((e) => (Array.isArray(e) ? e[0] : e))
         .filter((e) => e && e.range)
@@ -378,7 +356,6 @@ class WorkspaceEdit {
   }
 }
 
-/** Apply edits (in any order, not overlapping) to a document's text. */
 function applyEdits(doc, edits) {
   const text = doc.getText();
   const spans = edits
@@ -388,14 +365,12 @@ function applyEdits(doc, edits) {
   let out = '';
   let at = 0;
   for (const s of spans) {
-    if (s.from < at) continue; // overlapping edit: skip rather than corrupt
+    if (s.from < at) continue;
     out += text.slice(at, s.from) + s.text;
     at = s.to;
   }
   return out + text.slice(at);
 }
-
-// ---------------------------------------------------------------- documents
 
 const EndOfLine = { LF: 1, CRLF: 2 };
 
@@ -501,10 +476,8 @@ class TextEditor {
     this.visibleRanges = [new Range(0, 0, Math.max(0, document.lineCount - 1), 0)];
     this.options = { tabSize: 4, indentSize: 4, insertSpaces: true, cursorStyle: 1, lineNumbers: 1 };
     this.viewColumn = 1;
-    this._decorations = new Map(); // decoration type key -> plain items
+    this._decorations = new Map();
   }
-  /// Decorations are how extensions draw on code (Error Lens' inline
-  /// messages, for one): the app gets them as plain ranges, text and colours.
   setDecorations(type, list) {
     if (!type || !type.key) return;
     const base = type._options || {};
@@ -542,7 +515,6 @@ class TextEditor {
   hide() {}
 }
 
-/** A colour as the app understands it: `#rrggbbaa`, or `theme:<id>`. */
 function colorName(c) {
   if (!c) return '';
   if (typeof c === 'string') return c;
@@ -561,9 +533,6 @@ function createTextEditorDecorationType(options) {
   return type;
 }
 
-// ------------------------------------------------------------ plain classes
-
-/** Small data classes: constructor arguments become fields of the same name. */
 function record(name, fields, extra) {
   const C = {
     [name]: class {
@@ -887,9 +856,6 @@ const enums = {
   InlineCompletionEndOfLifeReasonKind: enumOf('Accepted', 'Rejected', 'Ignored'),
 };
 
-// ------------------------------------------------------------ configuration
-
-/** JSON with comments and trailing commas (settings.json). */
 function parseJsonc(text) {
   let out = '';
   let i = 0;
@@ -940,7 +906,6 @@ function getDotted(tree, key) {
   }
   return node;
 }
-/** Flat settings ("a.b": 1, "[lang]": {...}) -> nested tree for a language. */
 function layerTree(flat, languageId) {
   const tree = {};
   for (const [k, v] of Object.entries(flat)) if (!k.startsWith('[')) setDotted(tree, k, v);
@@ -959,9 +924,6 @@ const config = {
     'editor.tabSize': 4,
     'editor.insertSpaces': true,
     'editor.detectIndentation': true,
-    // Formatting works without setting anything up: saving formats the file
-    // with Prettier where it is installed and knows the language (another
-    // formatter is used where it does not). Prose is left as it was typed.
     'editor.formatOnSave': true,
     'editor.defaultFormatter': 'esbenp.prettier-vscode',
     '[markdown]': { 'editor.formatOnSave': false },
@@ -980,10 +942,8 @@ const config = {
   },
   userFile: '',
   user: {},
-  // The user's own VS Code settings, when VS Code is installed: a base for
-  // ours, so formatters and linters behave here as they do there.
   imported: {},
-  folders: new Map(), // folder fsPath -> flat settings from .vscode/settings.json
+  folders: new Map(),
   changed: new EventEmitter(),
 };
 
@@ -1057,9 +1017,6 @@ function deepMerge(a, b) {
   return out;
 }
 
-// ---------------------------------------------------------------- languages
-
-/** Languages VS Code knows without any extension (its built-in ones). */
 const BUILTIN_LANGUAGES = {
   javascript: ['.js', '.mjs', '.cjs', '.es6'],
   javascriptreact: ['.jsx'],
@@ -1108,7 +1065,6 @@ function languageOf(file) {
   const base = path.basename(file);
   if (byFilename.has(base)) return byFilename.get(base);
   const lower = base.toLowerCase();
-  // Longest matching extension wins (".d.ts" before ".ts").
   for (let i = lower.indexOf('.'); i >= 0; i = lower.indexOf('.', i + 1)) {
     const id = byExtension.get(lower.slice(i));
     if (id) return id;
@@ -1170,11 +1126,9 @@ function scoreSelector(selector, doc) {
   return score;
 }
 
-// ------------------------------------------------------------- diagnostics
-
 const collections = new Set();
 const diagnosticsChanged = new EventEmitter();
-const dirtyDiagnostics = new Map(); // uri key -> uri
+const dirtyDiagnostics = new Map();
 let diagnosticsTimer = null;
 
 function touchDiagnostics(uri) {
@@ -1187,18 +1141,16 @@ function allDiagnostics(uri) {
   for (const c of collections) for (const d of c._map.get(key)?.items || []) out.push(d);
   return out;
 }
-/** Display column of a UTF-16 offset in a line: tabs expand, one cell per code point. */
 function displayColumn(text, character, tab) {
   let col = 0;
   for (let i = 0; i < Math.min(character, text.length); i++) {
     const code = text.charCodeAt(i);
     if (code === 9) col += tab - (col % tab);
-    else if (code >= 0xdc00 && code <= 0xdfff) continue; // second half of a pair
+    else if (code >= 0xdc00 && code <= 0xdfff) continue;
     else col++;
   }
   return col;
 }
-/** The character at display column `col` of a line (the inverse of displayColumn). */
 function characterAt(text, col, tab) {
   let at = 0;
   for (let i = 0; i < text.length; i++) {
@@ -1210,7 +1162,6 @@ function characterAt(text, col, tab) {
   }
   return text.length;
 }
-/** A position the app gave as line + display column, as a document position. */
 function positionAt(doc, line, col) {
   return new Position(line, characterAt(doc.lineAt(line).text, col, state.tabWidth));
 }
@@ -1290,19 +1241,17 @@ function createDiagnosticCollection(name) {
   return c;
 }
 
-// ------------------------------------------------------------------- state
-
 const state = {
   tabWidth: 4,
-  folders: [], // { uri, name, index }
-  extensions: new Map(), // id -> { id, dir, manifest, isActive, exports, module, context, events }
+  folders: [],
+  extensions: new Map(),
   commands: new Map(),
-  providers: [], // { kind, selector, provider, extension, order }
+  providers: [],
   storageDir: '',
   focused: null,
 };
-const documents = new Map(); // uri key -> TextDocument (opened by the app)
-const appPaths = new Map(); // uri key -> the path the app used
+const documents = new Map();
+const appPaths = new Map();
 const tabs = [];
 
 const events = {
@@ -1378,7 +1327,6 @@ function closeDocument(file) {
   events.visibleEditors.fire([...documents.values()].map((d) => d._editor));
 }
 
-/** The file changed on disk (the app wrote it, or someone else did). */
 function reloadDocument(file) {
   const doc = documents.get(fileKey(file));
   if (!doc) return;
@@ -1389,7 +1337,6 @@ function reloadDocument(file) {
     return closeDocument(file);
   }
   if (text === doc.getText()) {
-    // Typed here and now saved: same text, but no longer dirty.
     if (doc.isDirty) {
       doc.isDirty = false;
       events.saveDoc.fire(doc);
@@ -1405,7 +1352,6 @@ function reloadDocument(file) {
   events.saveDoc.fire(doc);
 }
 
-/** The user is typing: the document's text is what the app holds, not the disk's. */
 function editDocument(file, text) {
   const doc = documents.get(fileKey(file)) || openDocument(file, true);
   if (!doc || text === doc.getText()) return;
@@ -1417,11 +1363,8 @@ function editDocument(file, text) {
   events.changeDoc.fire({ document: doc, reason: undefined, contentChanges: [{ range: whole, rangeOffset: 0, rangeLength, text }] });
 }
 
-// ------------------------------------------------------------- the vscode API
-
 const disposableStub = () => new Disposable(() => {});
 
-/** Wrap a namespace so unknown members get a harmless stand-in. */
 function permissive(name, target) {
   return new Proxy(target, {
     get(obj, prop) {
@@ -1434,15 +1377,9 @@ function permissive(name, target) {
   });
 }
 
-// ----------------------------------------------------------------- webviews
-//
-// A webview is an extension's own HTML interface. The page is shown by the
-// app in a browser view; here lives the object the extension talks to. The
-// page's files are served by the app from RESOURCE_ORIGIN.
-
 const RESOURCE_ORIGIN = 'https://ccres.localhost';
-const webviews = new Map(); // handle -> { webview, received, extension, closed }
-const webviewProviders = new Map(); // view id -> { provider, extension }
+const webviews = new Map();
+const webviewProviders = new Map();
 let webviewSeq = 0;
 
 function createWebview(extension, options) {
@@ -1529,8 +1466,7 @@ function createWebviewPanel(viewType, title, _show, options) {
   return panel;
 }
 
-// Messages that offer choices wait for the user's answer in the app.
-const pendingMessages = new Map(); // id -> { resolve, items }
+const pendingMessages = new Map();
 let messageSeq = 0;
 const itemTitle = (i) => (typeof i === 'string' ? i : i.title);
 
@@ -1614,11 +1550,9 @@ const workspaceFs = {
 };
 
 function createFileSystemWatcher() {
-  // File watching is not wired yet: the watcher exists but never fires.
   return { ignoreCreateEvents: false, ignoreChangeEvents: false, ignoreDeleteEvents: false, onDidCreate: neverEvent, onDidChange: neverEvent, onDidDelete: neverEvent, dispose() {} };
 }
 
-/** Ask the app to write new contents (it owns the files on the canvas). */
 function applyWorkspaceEdit(edit) {
   if (!(edit instanceof WorkspaceEdit)) return Promise.resolve(false);
   for (const [uri, edits] of edit.entries()) {
@@ -1763,7 +1697,6 @@ const window = permissive('window', {
   createWebviewPanel,
   registerWebviewViewProvider,
   registerTreeDataProvider: disposableStub,
-  // Tree views have nowhere to be shown yet: they exist and stay empty.
   createTreeView: () => ({
     visible: false,
     selection: [],
@@ -1807,7 +1740,6 @@ const languages = new Proxy(
       if (prop in obj || typeof prop === 'symbol') return obj[prop];
       const m = KIND.exec(prop);
       if (m) {
-        // Every provider kind is kept; the app asks for the ones it can use.
         return (selector, provider, ...rest) => {
           const entry = { kind: m[1], selector, provider, rest, extension: currentId() || '', order: state.providers.length };
           state.providers.push(entry);
@@ -1843,7 +1775,6 @@ const commands = permissive('commands', {
         return Promise.reject(e);
       }
     }
-    // Opening a file: the app shows it (a picture in its viewer, code on the canvas).
     if (id === 'vscode.open' || id === 'revealInExplorer') {
       const target = args[0];
       const uri = target instanceof Uri ? target : typeof target === 'string' ? Uri.parse(target) : null;
@@ -1852,8 +1783,6 @@ const commands = permissive('commands', {
       return Promise.resolve();
     }
     if (id === 'setContext') {
-      // Context keys decide which of an extension's views are shown (the
-      // `when` of each view): the app keeps them.
       const [key, value] = args;
       if (typeof key === 'string') send({ type: 'context', key, value: value === undefined ? null : value });
       return Promise.resolve();
@@ -1956,7 +1885,6 @@ const api = {
   lm: permissive('lm', { selectChatModels: () => Promise.resolve([]), onDidChangeChatModels: neverEvent, tools: [] }),
 };
 
-/** What `require('vscode')` returns: the API, with stand-ins for the rest. */
 const vscode = new Proxy(api, {
   get(obj, prop) {
     if (prop in obj || typeof prop === 'symbol' || prop === 'then' || prop === '__esModule' || prop === 'default') return obj[prop];
@@ -1966,7 +1894,6 @@ const vscode = new Proxy(api, {
 });
 globalThis.__codeCanvasVscode = vscode;
 
-/** Make `vscode` resolvable for both `require` and `import` (bundles do either). */
 function installVscodeModule(dirs) {
   const names = Object.keys(api).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
   const source = `'use strict';\nconst api = globalThis.__codeCanvasVscode;\nmodule.exports = api;\n${names.map((n) => `exports.${n} = api.${n};`).join('\n')}\n`;
@@ -1987,8 +1914,6 @@ function installVscodeModule(dirs) {
     return request === 'vscode' && entry ? entry : resolve.call(this, request, ...rest);
   };
 }
-
-// ---------------------------------------------------------------- extensions
 
 function memento(file) {
   let data = {};
@@ -2096,14 +2021,12 @@ function wantsEvent(ext, event) {
       if (e === '*' || e === 'onStartupFinished') return true;
       if (!e.startsWith('workspaceContains:')) return false;
       const pattern = e.slice('workspaceContains:'.length);
-      if (/[*?{]/.test(pattern)) return true; // globs: assume yes rather than walk the tree
+      if (/[*?{]/.test(pattern)) return true;
       return state.folders.some((f) => fs.existsSync(path.join(f.uri.fsPath, pattern)));
     });
   }
   return list.includes(event);
 }
-/** Start the extension that contributes `view` (`onView:<id>`, which VS Code
- * implies for every view of a manifest), and wait for it. */
 function activateForView(view) {
   const pending = [activateByEvent('onView:' + view)];
   for (const ext of state.extensions.values()) {
@@ -2118,8 +2041,6 @@ function activateByEvent(event) {
   for (const ext of state.extensions.values()) if (ext.manifest.main && !ext.activation && wantsEvent(ext, event)) pending.push(activate(ext));
   return Promise.all(pending);
 }
-
-// ------------------------------------------------------------------ requests
 
 function providersFor(kind, doc) {
   return state.providers
@@ -2136,7 +2057,6 @@ function plainLocations(result) {
     .map((l) => (l.targetUri ? { uri: l.targetUri, range: l.targetSelectionRange || l.targetRange } : l))
     .filter((l) => l && l.uri && l.range)
     .map((l) => {
-      // Display columns, so the app can point at the place without the file's text.
       const doc = documents.get(uriKey(l.uri)) || loadDocument(l.uri, true);
       const col = (p) => (doc ? displayColumn(doc.lineAt(p.line).text, p.character, state.tabWidth) : p.character);
       return { path: appPath(l.uri), ...plainRange(l.range), col: col(l.range.start), endCol: col(l.range.end) };
@@ -2153,7 +2073,6 @@ const requests = {
     const doc = openDocument(file, true);
     if (!doc) throw new Error('cannot read the file');
     const cfg = getConfiguration('editor', doc);
-    // Saving formats unless the settings say not to (`editor.formatOnSave`).
     if (onSave && !cfg.get('formatOnSave', true)) return { changed: false, skipped: true };
     const candidates = providersFor('DocumentFormattingEdit', doc);
     if (candidates.length === 0) {
@@ -2190,10 +2109,7 @@ const requests = {
     }
     return { text: '' };
   },
-  /// The app is about to show a webview view: let its extension fill it.
   async resolveWebview({ view }) {
-    // Nobody registered the view yet when its extension has not started:
-    // showing a view is what starts it.
     if (!webviewProviders.has(view)) await activateForView(view);
     const entry = webviewProviders.get(view);
     if (!entry) throw new Error(`no extension provides the view ${view}`);
@@ -2214,7 +2130,6 @@ const requests = {
     return { handle: w.handle };
   },
   async command({ command, args }) {
-    // What a command returns stays here: it is rarely something that can be sent.
     await commands.executeCommand(command, ...(args || []));
     return { ok: true };
   },
@@ -2271,7 +2186,6 @@ async function handle(msg) {
       editDocument(msg.path, msg.text);
       break;
     case 'messageReply': {
-      // The user picked one of a message's choices (or dismissed it: no action).
       const pending = pendingMessages.get(msg.id);
       if (pending) {
         pendingMessages.delete(msg.id);
@@ -2280,7 +2194,6 @@ async function handle(msg) {
       break;
     }
     case 'webviewMessage': {
-      // The page called `acquireVsCodeApi().postMessage(...)`.
       const w = webviews.get(msg.handle);
       if (w) w.received.fire(msg.message);
       break;
@@ -2339,7 +2252,6 @@ async function shutdown() {
   process.exit(0);
 }
 
-// One message at a time, in order: documents must open before requests on them.
 let queue = Promise.resolve();
 let buffered = '';
 process.stdin.setEncoding('utf8');
@@ -2357,7 +2269,6 @@ process.stdin.on('data', (chunk) => {
       continue;
     }
     const run = () => handle(msg).catch((e) => log('error', 'host', `${msg.type} failed: ${inspect(e)}`));
-    // Requests may take long (a formatter starting up): do not hold the queue.
     if (msg.type === 'request') queue.then(run);
     else queue = queue.then(run);
   }

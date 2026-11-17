@@ -1,6 +1,3 @@
-//! The extension host process: Node running `exthost/host.js`, which loads
-//! the installed VS Code extensions. One JSON object per line each way.
-
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -10,21 +7,16 @@ use serde_json::Value;
 
 use super::Waker;
 
-/// The host script, embedded so an installed app needs no extra files.
 const HOST_JS: &str = include_str!("../../exthost/host.js");
 
 pub enum HostEvent {
     Message(Value),
-    /// Something the host wrote outside the protocol (Node's own errors).
     Stderr(String),
     Exited,
 }
 
 pub struct Host {
     child: Child,
-    /// Lines for the host. A thread of its own writes them: when the host
-    /// is busy its pipe fills up, and a write would block whoever does it.
-    /// That must never be the UI thread.
     out: Option<mpsc::Sender<String>>,
     pub rx: Receiver<HostEvent>,
 }
@@ -41,7 +33,6 @@ pub fn node_command() -> Command {
     c
 }
 
-/// `node --version`, or why Node cannot be run.
 pub fn detect_node() -> Result<String, String> {
     let out = node_command().arg("--version").stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
     if out.status.success() {
@@ -52,7 +43,6 @@ pub fn detect_node() -> Result<String, String> {
 }
 
 impl Host {
-    /// Write the host script under `dir` and start it.
     pub fn start(dir: &Path, waker: Waker) -> std::io::Result<Host> {
         std::fs::create_dir_all(dir)?;
         let script = dir.join("host.js");
@@ -70,7 +60,6 @@ impl Host {
                     break;
                 }
             }
-            // The channel closed (or the host is gone): closing the pipe tells it to stop.
         });
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -102,7 +91,6 @@ impl Host {
         Ok(Host { child, out: Some(out), rx })
     }
 
-    /// Send one message; false when the host is gone.
     pub fn send(&mut self, message: &Value) -> bool {
         let Some(out) = self.out.as_ref() else { return false };
         let mut line = message.to_string();
@@ -110,11 +98,9 @@ impl Host {
         out.send(line).is_ok()
     }
 
-    /// Ask the host to deactivate its extensions and leave; it is killed if
-    /// it does not within a few seconds. Does not block the caller.
     pub fn stop(mut self) {
         self.send(&serde_json::json!({ "type": "shutdown" }));
-        self.out = None; // the writer ends and closes the pipe, which also tells it to stop
+        self.out = None;
         std::thread::spawn(move || {
             for _ in 0..40 {
                 if matches!(self.child.try_wait(), Ok(Some(_)) | Err(_)) {
@@ -127,7 +113,6 @@ impl Host {
     }
 }
 
-/// Kill the host and whatever it started (language servers).
 fn kill_tree(child: &mut Child) {
     #[cfg(windows)]
     {

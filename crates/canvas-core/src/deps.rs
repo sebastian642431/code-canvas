@@ -1,20 +1,3 @@
-//! File-to-file dependency edges, computed from import statements.
-//!
-//! Every source file is scanned line by line for the statements that pull in
-//! another file (`import … from './x'`, `#include "x.h"`, `mod x;`,
-//! `use crate::x`, `from . import x`, `import a.b.C;`) and each one is
-//! resolved to a file of the repository, using nothing but the list of paths
-//! the scan already produced: the disk is never touched.
-//!
-//! It is import-based and approximate. There is no parser, no build
-//! configuration (include directories, `tsconfig` paths, `sys.path`, crate
-//! names) and no type information: a statement only counts when its line
-//! *starts* with the keyword, so an import inside a block comment or a string
-//! that happens to start a line is taken for real, and anything that needs
-//! the build system to be found (generated headers, other crates of a
-//! workspace) is reported as [`Deps::unresolved`] or [`Deps::external`].
-//! Go, C# and the other languages are skipped.
-
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -24,15 +7,10 @@ use crate::scan::{Repo, SourceFile};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum DepKind {
-    /// ES `import` / `require` / `import()`, Rust `use`, Python and Java `import`.
     Import,
-    /// TypeScript `import type`.
     TypeOnly,
-    /// ES `export … from`, Rust `pub use`.
     ReExport,
-    /// C-family `#include` / `#import`.
     Include,
-    /// Rust `mod name;`.
     Module,
 }
 
@@ -50,7 +28,6 @@ impl DepKind {
         }
     }
 
-    /// Position in [`DepKind::ALL`] and in [`Deps::counts`].
     pub fn index(self) -> usize {
         match self {
             DepKind::Import => 0,
@@ -62,8 +39,6 @@ impl DepKind {
     }
 }
 
-/// File `from` depends on file `to` (indices into [`Repo::files`]); `line` is
-/// the 0-based line of the statement in `from`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edge {
     pub from: u32,
@@ -74,22 +49,12 @@ pub struct Edge {
 
 #[derive(Clone, Debug, Default)]
 pub struct Deps {
-    /// Sorted by `(from, to, line)`; at most one edge per `(from, to, kind)`
-    /// (the first line it appears on).
     pub edges: Vec<Edge>,
-    /// Statements that point inside the repository by their form (relative,
-    /// quoted, aliased) but match no file.
     pub unresolved: u32,
-    /// Statements that name something outside the repository (`react`,
-    /// `<vector>`, `std::…`).
     pub external: u32,
-    /// Edges per [`DepKind::index`].
     pub counts: [u32; 5],
     pub ms: u128,
-    /// `edges[out_start[f]..out_start[f + 1]]` are the edges leaving file `f`.
     out_start: Vec<u32>,
-    /// Edge indices sorted by `to`; `by_to[in_start[f]..in_start[f + 1]]`
-    /// are the edges arriving at file `f`.
     by_to: Vec<u32>,
     in_start: Vec<u32>,
     pairs: usize,
@@ -116,7 +81,6 @@ impl Deps {
             out_start[f + 1] += out_start[f];
             in_start[f + 1] += in_start[f];
         }
-        // Counting sort by `to`: stable, so each group stays ordered by `from`.
         let mut next = in_start.clone();
         let mut by_to = vec![0u32; edges.len()];
         for (i, e) in edges.iter().enumerate() {
@@ -127,7 +91,6 @@ impl Deps {
         Deps { edges, unresolved: 0, external: 0, counts, ms: 0, out_start, by_to, in_start, pairs }
     }
 
-    /// Edges where `from == file`, ordered by `(to, line)`.
     pub fn outgoing(&self, file: u32) -> &[Edge] {
         match range(&self.out_start, file) {
             Some(r) => &self.edges[r],
@@ -135,13 +98,11 @@ impl Deps {
         }
     }
 
-    /// Edges where `to == file`, ordered by `(from, line)`.
     pub fn incoming(&self, file: u32) -> impl Iterator<Item = &Edge> + '_ {
         let r = range(&self.in_start, file).unwrap_or(0..0);
         self.by_to[r].iter().map(move |&i| &self.edges[i as usize])
     }
 
-    /// Number of distinct `(from, to)` pairs: the lines a graph would draw.
     pub fn pairs(&self) -> usize {
         self.pairs
     }
@@ -152,7 +113,6 @@ fn range(starts: &[u32], file: u32) -> Option<std::ops::Range<usize>> {
     Some(*starts.get(f)? as usize..*starts.get(f + 1)? as usize)
 }
 
-/// Compute the dependency edges of a whole repository, on all cores.
 pub fn analyze(repo: &Repo) -> Deps {
     let started = Instant::now();
     let ix = Index::build(&repo.files);
@@ -179,25 +139,12 @@ pub fn analyze(repo: &Repo) -> Deps {
     deps
 }
 
-// ---------------------------------------------------------------------------
-// Looking files up
-// ---------------------------------------------------------------------------
-
-/// A statement that spans several lines is followed for this many lines.
 const MAX_STATEMENT_LINES: usize = 40;
-/// Java / Kotlin files are found by up to this many trailing path segments.
 const JAVA_SEGMENTS: usize = 6;
-/// Marks a Java suffix shared by several files.
 const AMBIGUOUS: u32 = u32::MAX;
 
-/// Every question about the repository is answered from here. `by_path`
-/// gives the same answers as [`Repo::file_index`] for the normalised paths
-/// this module builds, in one hash instead of a binary search over paths
-/// (an order of magnitude cheaper, and resolution is all lookups).
 struct Index<'r> {
     by_path: HashMap<&'r str, u32>,
-    /// `.java` / `.kt` files by their last 1..=[`JAVA_SEGMENTS`] path
-    /// segments, without extension (`com/acme/Main`).
     java: HashMap<&'r str, u32>,
 }
 
@@ -228,7 +175,6 @@ impl<'r> Index<'r> {
         self.by_path.get(path).copied()
     }
 
-    /// `path` with `ext` appended; `path` is left as it was.
     fn find_with(&self, path: &mut String, ext: &str) -> Option<u32> {
         let n = path.len();
         path.push_str(ext);
@@ -238,18 +184,14 @@ impl<'r> Index<'r> {
     }
 }
 
-/// Folder of a path (`""` for a file at the root).
 fn dir_of(path: &str) -> &str {
     path.rfind('/').map(|i| &path[..i]).unwrap_or("")
 }
 
-/// `dir`, its parent, … and finally the root (`""`).
 fn ancestors(dir: &str) -> impl Iterator<Item = &str> {
     std::iter::successors(Some(dir), |d| (!d.is_empty()).then(|| dir_of(d)))
 }
 
-/// Append `rel` to the folder in `buf`, resolving `.` and `..` on the way.
-/// `false` when the path climbs out of the repository.
 fn push_path(buf: &mut String, rel: &str) -> bool {
     for seg in rel.split('/') {
         match seg {
@@ -272,16 +214,11 @@ fn push_path(buf: &mut String, rel: &str) -> bool {
     true
 }
 
-/// `base` + `rel`, normalised, into `buf`.
 fn join(buf: &mut String, base: &str, rel: &str) -> bool {
     buf.clear();
     buf.push_str(base);
     push_path(buf, rel)
 }
-
-// ---------------------------------------------------------------------------
-// Per-file scan
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scanner {
@@ -308,26 +245,18 @@ fn scanner_for(name: &str) -> Option<Scanner> {
     })
 }
 
-/// What one worker accumulates, plus the buffers it reuses for every file.
 #[derive(Default)]
 struct Scratch {
     edges: Vec<Edge>,
     unresolved: u32,
     external: u32,
-    /// The candidate path being looked up.
     buf: String,
-    /// A statement that spans several lines, joined.
     stmt: String,
-    /// JS: lengths of the prefixes of the file's folder that are package
-    /// roots, nearest first, then `0` for the repository root.
     roots: Vec<u32>,
     roots_ready: bool,
-    /// Rust: folder where the child modules of the file live.
     mod_dir: String,
-    /// Rust: folder of the crate's sources, once asked for.
     crate_src: String,
     crate_state: CrateState,
-    /// Rust: indentation of the inline `mod x {` blocks open at this line.
     inline: Vec<u32>,
 }
 
@@ -361,7 +290,6 @@ impl Scratch {
     }
 }
 
-/// Line `i` without its indentation (tabs are already spaces).
 fn code(f: &SourceFile, i: usize) -> &str {
     f.line(i).trim_start_matches(' ')
 }
@@ -379,7 +307,6 @@ fn scan_file(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
         Scanner::Python => scan_python(ix, fi, f, s),
         Scanner::Java => scan_java(ix, fi, f, s),
     }
-    // One edge per (to, kind), on the first line it appears.
     if s.edges.len() - first > 1 {
         s.edges[first..].sort_unstable_by_key(|e| (e.to, e.kind.index(), e.line));
         let mut kept = first + 1;
@@ -399,7 +326,6 @@ fn ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
 }
 
-/// The contents of the quoted string `r` starts with.
 fn quoted(r: &str) -> Option<&str> {
     let q = *r.as_bytes().first()?;
     if q != b'\'' && q != b'"' {
@@ -409,22 +335,14 @@ fn quoted(r: &str) -> Option<&str> {
     Some(&r[1..1 + end])
 }
 
-// ---------------------------------------------------------------------------
-// JavaScript / TypeScript
-// ---------------------------------------------------------------------------
-
 const JS_EXTS: [&str; 10] = [".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".vue", ".svelte"];
-/// `./x.js` written for `./x.ts` (TypeScript with ES modules), `./x.ts` for `./x.d.ts`.
 const JS_SWAPS: [(&str, &[&str]); 5] =
     [(".js", &[".ts", ".tsx"]), (".jsx", &[".tsx"]), (".mjs", &[".mts"]), (".cjs", &[".cts"]), (".ts", &[".d.ts"])];
-/// Prefixes that stand for the sources of the package: `@/x`, `~/x`,
-/// `src/x`, and Node's package-private `#src/x`.
 const JS_ALIASES: [&str; 4] = ["@/", "~/", "src/", "#"];
 const PACKAGE_MARKERS: [&str; 2] = ["package.json", "tsconfig.json"];
 
 fn scan_js(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     let dir = dir_of(&f.rel_path);
-    // `require('x')` / `import('x')` can sit anywhere on a line; most files have neither.
     let dynamic = f.text.contains("require(") || f.text.contains("import(");
     s.roots_ready = false;
     let n = f.line_count();
@@ -448,7 +366,6 @@ fn scan_js(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
                     continue;
                 }
             } else if !t.contains([';', '}']) {
-                // `import {` … `} from 'x'` over several lines.
                 for j in i..(i + MAX_STATEMENT_LINES).min(n) {
                     let l = code(f, j);
                     if js_statement(l).is_some() {
@@ -478,14 +395,11 @@ fn scan_js(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     }
 }
 
-/// Is `t` the start of a static `import` / `export … from` statement? Returns
-/// its kind and what follows the keyword (and `type`).
 fn js_statement(t: &str) -> Option<(DepKind, &str)> {
     let (import, r) = match t.strip_prefix("import") {
         Some(r) => (true, r),
         None => (false, t.strip_prefix("export")?),
     };
-    // `import(`, `import.meta`, `imports`, `exports.x` are something else.
     if !r.is_empty() && !r.starts_with([' ', '{', '*', '\'', '"']) {
         return None;
     }
@@ -493,7 +407,6 @@ fn js_statement(t: &str) -> Option<(DepKind, &str)> {
     let (type_only, r) = match r.strip_prefix("type") {
         Some(x) if x.starts_with([' ', '{', '*']) => {
             let x = x.trim_start_matches(' ');
-            // `import type from 'x'` imports a default called `type`.
             if x.starts_with("from") || x.starts_with([',', '=']) {
                 (false, r)
             } else {
@@ -505,14 +418,12 @@ fn js_statement(t: &str) -> Option<(DepKind, &str)> {
     if import {
         Some((if type_only { DepKind::TypeOnly } else { DepKind::Import }, r))
     } else if r.starts_with(['{', '*']) {
-        // Only `export {…} from` and `export * from` can name a module.
         Some((DepKind::ReExport, r))
     } else {
         None
     }
 }
 
-/// The module of `… from 'module'`.
 fn from_spec(l: &str) -> Option<&str> {
     let b = l.as_bytes();
     let mut at = 0;
@@ -528,7 +439,6 @@ fn from_spec(l: &str) -> Option<&str> {
     None
 }
 
-/// The literal arguments of every `require('x')` / `import('x')` on a line.
 fn dynamic_specs<'t>(t: &'t str, mut found: impl FnMut(&'t str)) {
     if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
         return;
@@ -547,7 +457,6 @@ fn dynamic_specs<'t>(t: &'t str, mut found: impl FnMut(&'t str)) {
         if start > 0 && (ident_byte(b[start - 1]) || b[start - 1] == b'.') {
             continue;
         }
-        // In a trailing comment (`://` is a URL, not a comment).
         if head.find("//").is_some_and(|c| c == 0 || b[c - 1] != b':') {
             return;
         }
@@ -564,9 +473,7 @@ fn dynamic_specs<'t>(t: &'t str, mut found: impl FnMut(&'t str)) {
     }
 }
 
-/// `None` for something that is not a module specifier at all.
 fn resolve_js(ix: &Index, dir: &str, spec: &str, s: &mut Scratch) -> Option<Res> {
-    // `./icon.svg?raw`
     let spec = spec.split('?').next().unwrap_or(spec);
     if spec.is_empty() {
         return None;
@@ -594,8 +501,6 @@ fn resolve_js(ix: &Index, dir: &str, spec: &str, s: &mut Scratch) -> Option<Res>
     Some(Res::Unresolved)
 }
 
-/// The ancestors of `dir` that hold a `package.json` or `tsconfig.json`,
-/// nearest first (as prefix lengths of `dir`), then the repository root.
 fn package_roots(ix: &Index, dir: &str, buf: &mut String, roots: &mut Vec<u32>) {
     roots.clear();
     for d in ancestors(dir).filter(|d| !d.is_empty()) {
@@ -609,7 +514,6 @@ fn package_roots(ix: &Index, dir: &str, buf: &mut String, roots: &mut Vec<u32>) 
     roots.push(0);
 }
 
-/// The file an extension-less (or `.js`-for-`.ts`) path in `buf` stands for.
 fn find_js(ix: &Index, buf: &mut String) -> Option<u32> {
     let n = buf.len();
     if n > 0 {
@@ -633,10 +537,6 @@ fn find_js(ix: &Index, buf: &mut String) -> Option<u32> {
     JS_EXTS.iter().find_map(|ext| ix.find_with(buf, ext))
 }
 
-// ---------------------------------------------------------------------------
-// C / C++ / Objective-C
-// ---------------------------------------------------------------------------
-
 fn scan_c(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     let dir = dir_of(&f.rel_path);
     for i in 0..f.line_count() {
@@ -654,7 +554,6 @@ fn scan_c(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
         if path.is_empty() {
             continue;
         }
-        // Next to the including file, then from the root (`"base/logging.h"`).
         let mut found = None;
         if is_quoted && join(&mut s.buf, dir, path) {
             found = ix.find(&s.buf);
@@ -671,13 +570,8 @@ fn scan_c(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Rust
-// ---------------------------------------------------------------------------
-
 fn scan_rust(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     let dir = dir_of(&f.rel_path);
-    // `lib.rs`, `main.rs` and `mod.rs` keep their child modules next to them, `foo.rs` in `foo/`.
     let root_like = matches!(f.name.as_str(), "lib.rs" | "main.rs" | "mod.rs");
     s.mod_dir.clear();
     s.mod_dir.push_str(dir);
@@ -697,7 +591,6 @@ fn scan_rust(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
         let indent = (raw.len() - t.len()) as u32;
         match t.as_bytes().first() {
             Some(b'}') => {
-                // The end of an inline module, by indentation.
                 while s.inline.last().is_some_and(|&open| open >= indent) {
                     s.inline.pop();
                 }
@@ -709,7 +602,6 @@ fn scan_rust(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
         let (public, r) = rust_visibility(t);
         if let Some(r) = r.strip_prefix("mod ") {
             let r = r.trim_start_matches(' ');
-            // `$` for the inline modules a macro generates (`mod $name {`).
             let end = r.find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '#' | '$'))).unwrap_or(r.len());
             let name = r[..end].strip_prefix("r#").unwrap_or(&r[..end]);
             let after = r[end..].trim_start_matches(' ');
@@ -723,7 +615,6 @@ fn scan_rust(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
                 }
             } else if after.starts_with(';') && s.inline.is_empty() {
                 let res = match path_attribute(f, line) {
-                    // Relative to the folder of the file, whatever the file is called.
                     Some(path) => match join(&mut s.buf, dir, path).then(|| ix.find(&s.buf)).flatten() {
                         Some(to) => Res::File(to),
                         None => Res::Unresolved,
@@ -737,7 +628,6 @@ fn scan_rust(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
             match r.find(';') {
                 Some(end) => rust_use(ix, fi, dir, root_like, line, kind, &r[..end], s),
                 None => {
-                    // `use crate::{` … `};` over several lines.
                     let mut stmt = std::mem::take(&mut s.stmt);
                     stmt.clear();
                     stmt.push_str(rust_code(r));
@@ -759,12 +649,10 @@ fn scan_rust(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     }
 }
 
-/// A line without its `//` comment.
 fn rust_code(l: &str) -> &str {
     l.find("//").map(|c| &l[..c]).unwrap_or(l)
 }
 
-/// Strip `pub` / `pub(crate)` / `pub(in path)`.
 fn rust_visibility(t: &str) -> (bool, &str) {
     let Some(r) = t.strip_prefix("pub") else { return (false, t) };
     let r = match r.as_bytes().first() {
@@ -778,7 +666,6 @@ fn rust_visibility(t: &str) -> (bool, &str) {
     (true, r.trim_start_matches(' '))
 }
 
-/// The path of a `#[path = "…"]` among the attributes right above `line`.
 fn path_attribute(f: &SourceFile, line: usize) -> Option<&str> {
     (line.saturating_sub(4)..line).rev().map(|i| code(f, i)).take_while(|l| l.starts_with("#[")).find_map(|l| {
         let value = l.strip_prefix("#[path")?.trim_start_matches(' ').strip_prefix('=')?;
@@ -786,10 +673,7 @@ fn path_attribute(f: &SourceFile, line: usize) -> Option<&str> {
     })
 }
 
-/// The file of `mod name;`.
 fn rust_mod(ix: &Index, dir: &str, root_like: bool, name: &str, s: &mut Scratch) -> Res {
-    // The second try is for crate roots that are not called `main.rs`
-    // (`src/bin/tool.rs`, `tests/it.rs`): their modules are their siblings.
     let bases = [s.mod_dir.as_str(), dir];
     for base in &bases[..if root_like { 1 } else { 2 }] {
         if join(&mut s.buf, base, name) {
@@ -803,7 +687,6 @@ fn rust_mod(ix: &Index, dir: &str, root_like: bool, name: &str, s: &mut Scratch)
 
 #[allow(clippy::too_many_arguments)]
 fn rust_use(ix: &Index, fi: u32, dir: &str, root_like: bool, line: usize, kind: DepKind, tree: &str, s: &mut Scratch) {
-    // One statement counts once as unresolved / external, however many paths it lists.
     let (mut unresolved, mut external) = (false, false);
     use_leaves(tree, |segs| match rust_path(ix, dir, root_like, segs, s) {
         Some(Res::File(to)) => s.edge(fi, to, line, kind),
@@ -815,8 +698,6 @@ fn rust_use(ix: &Index, fi: u32, dir: &str, root_like: bool, line: usize, kind: 
     s.external += external as u32;
 }
 
-/// Call `leaf` with the segments of every path of a `use` tree:
-/// `crate::{a::X, b::{Y, Z as W}}` gives `[crate a X]`, `[crate b Y]`, `[crate b Z]`.
 fn use_leaves<'t>(tree: &'t str, mut leaf: impl FnMut(&[&'t str])) {
     const MAX_SEGMENTS: usize = 24;
     const MAX_DEPTH: usize = 8;
@@ -824,7 +705,6 @@ fn use_leaves<'t>(tree: &'t str, mut leaf: impl FnMut(&[&'t str])) {
     let b = tree.as_bytes();
     let mut segs = [""; MAX_SEGMENTS];
     let mut n = 0;
-    // `marks[d]`: number of segments in front of the group open at depth `d`.
     let mut marks = [0usize; MAX_DEPTH];
     let mut depth = 0;
     let mut pending = false;
@@ -840,7 +720,7 @@ fn use_leaves<'t>(tree: &'t str, mut leaf: impl FnMut(&[&'t str])) {
             let word = &tree[start..i];
             let word = word.strip_prefix("r#").unwrap_or(word);
             if alias {
-                alias = false; // the name after `as`
+                alias = false;
             } else if word == "as" {
                 alias = true;
             } else {
@@ -862,7 +742,6 @@ fn use_leaves<'t>(tree: &'t str, mut leaf: impl FnMut(&[&'t str])) {
                 depth += 1;
                 pending = false;
             }
-            // A glob stands for the module in front of it.
             b'*' => pending = true,
             b',' | b'}' | b';' => {
                 if pending {
@@ -887,15 +766,11 @@ fn use_leaves<'t>(tree: &'t str, mut leaf: impl FnMut(&[&'t str])) {
     }
 }
 
-/// The file one `use` path points at. `None`: nothing to report (an item of
-/// the file itself).
 fn rust_path(ix: &Index, dir: &str, root_like: bool, segs: &[&str], s: &mut Scratch) -> Option<Res> {
-    // `a::{self, B}`
     let segs = match segs {
         [rest @ .., "self"] if !rest.is_empty() => rest,
         _ => segs,
     };
-    // Inside `mod tests { … }`, `super` is the file itself.
     let inline = s.inline.len();
     match *segs.first()? {
         "crate" => {
@@ -909,7 +784,6 @@ fn rust_path(ix: &Index, dir: &str, root_like: bool, segs: &[&str], s: &mut Scra
             if let Some(i) = find_rust(ix, &s.crate_src, &segs[1..], &mut s.buf) {
                 return Some(Res::File(i));
             }
-            // An item of the crate root; from the root itself that is no dependency.
             if root_like && dir == s.crate_src {
                 return None;
             }
@@ -940,8 +814,6 @@ fn rust_path(ix: &Index, dir: &str, root_like: bool, segs: &[&str], s: &mut Scra
     }
 }
 
-/// The longest prefix of `segs` that names a module file under `base`
-/// (`a/b.rs` or `a/b/mod.rs`); the rest of the path is items inside it.
 fn find_rust(ix: &Index, base: &str, segs: &[&str], buf: &mut String) -> Option<u32> {
     (1..=segs.len()).rev().find_map(|k| {
         buf.clear();
@@ -956,7 +828,6 @@ fn find_rust(ix: &Index, base: &str, segs: &[&str], buf: &mut String) -> Option<
     })
 }
 
-/// The file of the module whose children live in `dir`.
 fn module_file(ix: &Index, dir: &str, buf: &mut String) -> Option<u32> {
     buf.clear();
     buf.push_str(dir);
@@ -969,10 +840,6 @@ fn module_file(ix: &Index, dir: &str, buf: &mut String) -> Option<u32> {
     })
 }
 
-/// Folder that `crate::` paths start from: `src/` of the nearest ancestor
-/// with a `Cargo.toml` (the folder itself when the crate root sits next to
-/// the manifest); without a manifest (other build systems), the nearest
-/// folder that holds a `lib.rs` or `main.rs`.
 fn crate_src(ix: &Index, dir: &str, buf: &mut String, out: &mut String) -> bool {
     const ROOTS: [&str; 2] = ["lib.rs", "main.rs"];
     let mut holds = |d: &str, names: &[&str]| {
@@ -993,10 +860,6 @@ fn crate_src(ix: &Index, dir: &str, buf: &mut String, out: &mut String) -> bool 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Python
-// ---------------------------------------------------------------------------
-
 fn scan_python(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     let dir = dir_of(&f.rel_path);
     let n = f.line_count();
@@ -1006,7 +869,6 @@ fn scan_python(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
             continue;
         }
         if let Some(r) = t.strip_prefix("import ") {
-            // `import a.b as c, d`
             for part in python_code(r).split(',') {
                 let module = part.trim_matches(' ').split(' ').next().unwrap_or("");
                 if python_module(module) && !module.starts_with('.') {
@@ -1024,7 +886,6 @@ fn scan_python(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
             let dots = module.bytes().take_while(|&b| b == b'.').count();
             let names = python_code(after);
             if names.starts_with('(') && !names.contains(')') {
-                // `from a import (` … `)` over several lines.
                 let mut stmt = std::mem::take(&mut s.stmt);
                 stmt.clear();
                 stmt.push_str(names);
@@ -1045,7 +906,6 @@ fn scan_python(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     }
 }
 
-/// A line without its `#` comment.
 fn python_code(l: &str) -> &str {
     l.find('#').map(|c| &l[..c]).unwrap_or(l).trim_matches(' ')
 }
@@ -1054,11 +914,9 @@ fn python_module(m: &str) -> bool {
     !m.is_empty() && m.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b >= 0x80)
 }
 
-/// One `import module` (`names` empty) or `from <dots>module import names`.
 #[allow(clippy::too_many_arguments)]
 fn python_import(ix: &Index, fi: u32, dir: &str, line: usize, dots: usize, module: &str, names: &str, s: &mut Scratch) {
     if dots > 0 {
-        // One dot is the file's package, every further dot its parent.
         let mut base = Some(dir);
         for _ in 1..dots {
             base = base.filter(|b| !b.is_empty()).map(dir_of);
@@ -1068,15 +926,12 @@ fn python_import(ix: &Index, fi: u32, dir: &str, line: usize, dots: usize, modul
         }
         return;
     }
-    // From the root, then from every folder above the file, nearest first.
     let mut bases = std::iter::once("").chain(ancestors(dir).filter(|d| !d.is_empty()));
     if !bases.any(|base| python_try(ix, fi, base, line, module, names, s)) {
         s.external += 1;
     }
 }
 
-/// Resolve an import with `base` as the folder the module path starts from.
-/// `false` when nothing there matches.
 fn python_try(ix: &Index, fi: u32, base: &str, line: usize, module: &str, names: &str, s: &mut Scratch) -> bool {
     s.buf.clear();
     s.buf.push_str(base);
@@ -1088,8 +943,6 @@ fn python_try(ix: &Index, fi: u32, base: &str, line: usize, module: &str, names:
     }
     let n = s.buf.len();
     let mut found = false;
-    // `from a.b import c`: `c` may be the module `a/b/c.py`; otherwise it is
-    // a name of `a.b`, as is everything in a plain `import a.b`.
     let (mut any_name, mut plain_name) = (false, false);
     for name in names.split(',') {
         let name = name.trim_matches(['(', ')', ' ', '\\']).split(' ').next().unwrap_or("");
@@ -1116,7 +969,6 @@ fn python_try(ix: &Index, fi: u32, base: &str, line: usize, module: &str, names:
     }
     if plain_name || !any_name {
         s.buf.truncate(n);
-        // `from . import x` with no `x.py`: a name of the package itself.
         let hit = if module.is_empty() {
             if n > 0 {
                 s.buf.push('/');
@@ -1133,16 +985,11 @@ fn python_try(ix: &Index, fi: u32, base: &str, line: usize, module: &str, names:
     found
 }
 
-// ---------------------------------------------------------------------------
-// Java / Kotlin
-// ---------------------------------------------------------------------------
-
 fn scan_java(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     for i in 0..f.line_count() {
         let Some(r) = code(f, i).strip_prefix("import ") else { continue };
         let r = r.trim_start_matches(' ');
         let r = r.strip_prefix("static ").map(|r| r.trim_start_matches(' ')).unwrap_or(r);
-        // Up to `;`, ` as Alias` or the `*` of a wildcard.
         let end = r.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$' || c == '.')).unwrap_or(r.len());
         let path = r[..end].trim_end_matches('.');
         if path.is_empty() {
@@ -1153,7 +1000,6 @@ fn scan_java(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     }
 }
 
-/// The file of `a.b.C`, or of `a.b.C.member` / `a.b.Outer.Inner`.
 fn find_java(ix: &Index, path: &str, buf: &mut String) -> Option<u32> {
     let mut path = path;
     for _ in 0..3 {
@@ -1167,7 +1013,6 @@ fn find_java(ix: &Index, path: &str, buf: &mut String) -> Option<u32> {
             Some(&i) if i != AMBIGUOUS => return Some(i),
             _ => {}
         }
-        // Drop the member or nested class; a single segment says too little.
         path = &path[..path.rfind('.')?];
         if !path.contains('.') {
             break;
@@ -1199,7 +1044,6 @@ mod tests {
         repo.file_index(path).unwrap_or_else(|| panic!("no file {path}")) as u32
     }
 
-    /// `(to, line, kind)` of every edge leaving `from`, with paths instead of indices.
     fn out<'a>(repo: &'a Repo, deps: &Deps, from: &str) -> Vec<(&'a str, u32, DepKind)> {
         deps.outgoing(file(repo, from))
             .iter()
@@ -1211,7 +1055,6 @@ mod tests {
         deps.incoming(file(repo, to)).map(|e| repo.files[e.from as usize].rel_path.as_str()).collect()
     }
 
-    /// The invariants every result must hold.
     fn check(repo: &Repo, deps: &Deps) {
         let key = |e: &Edge| (e.from, e.to, e.line);
         assert!(deps.edges.windows(2).all(|w| key(&w[0]) <= key(&w[1])), "sorted by (from, to, line)");
@@ -1660,8 +1503,6 @@ import com.acme.dup.Twice;
         assert_eq!((empty.incoming(0).count(), empty.pairs()), (0, 0));
     }
 
-    /// Timing on a real repository:
-    /// `CODE_CANVAS_DEPS_REPO=<folder> cargo test --release -p canvas-core deps::tests::bench -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn bench_repo_from_env() {
@@ -1687,7 +1528,6 @@ import com.acme.dup.Twice;
         for k in DepKind::ALL {
             println!("  {:<13}{}", k.label(), deps.counts[k.index()]);
         }
-        // What one lookup costs each way (every path once, all hits).
         let t = Instant::now();
         let ix = Index::build(&repo.files);
         let build = t.elapsed();

@@ -1,6 +1,3 @@
-//! What survives between launches: opened folders, cameras, collapsed and
-//! hidden paths. Stored as JSON in the user's config directory.
-
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -12,12 +9,9 @@ pub struct Session {
     pub active: usize,
     pub left_open: bool,
     pub right_open: bool,
-    /// Which panel each side shows (index into the rail).
     pub left_panel: u8,
     pub right_panel: u8,
-    /// Logical window size.
     pub window: Option<[f32; 2]>,
-    /// Show one folder at a time, instead of all of them side by side.
     pub single: bool,
 }
 
@@ -25,20 +19,12 @@ pub struct Session {
 #[serde(default)]
 pub struct PageSession {
     pub path: PathBuf,
-    /// What the camera looks at: the point of the world in the middle of the
-    /// page's part of the window, and the zoom in logical pixels per world
-    /// unit (`Page::portable_camera`).
     pub camera: Option<([f32; 2], f32)>,
     pub collapsed: Vec<String>,
     pub hidden: Vec<String>,
     pub tree_open: Vec<String>,
 }
 
-/// `%APPDATA%\code-canvas` on Windows, `~/.config/code-canvas` on Linux,
-/// `~/Library/Application Support/code-canvas` on macOS.
-///
-/// `CODE_CANVAS_DATA_DIR` overrides it (tests use this to leave the real
-/// session alone).
 pub fn data_dir() -> PathBuf {
     let dir = match std::env::var_os("CODE_CANVAS_DATA_DIR") {
         Some(d) => PathBuf::from(d),

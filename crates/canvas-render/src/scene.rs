@@ -1,18 +1,3 @@
-//! GPU-side representation of one canvas page (one repository).
-//!
-//! Performance model
-//! -----------------
-//! * **Frames** (directory boxes and file cards) live in a static buffer, one
-//!   instance per layout node, in layout pre-order. A subtree is therefore the
-//!   contiguous range `node..subtree_end`, which lets us cull whole folders and
-//!   draw everything visible in a handful of draw calls.
-//! * **Blocks** (one bar per 8 lines) are the far-away code LOD. Also static,
-//!   also in pre-order, with a per-node prefix table for range culling.
-//! * **Lines / tokens** are only generated for what is on screen, every time
-//!   the view changes. Their cost is bounded by the screen, not by the repo.
-//! * Code instances are 12 bytes and positioned relative to their file origin,
-//!   which is read from a storage buffer.
-
 use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
@@ -22,7 +7,6 @@ use canvas_core::{Rect, Repo, SourceFile, TokenCache, Tokens, BLOCK_LINES, CHUNK
 use crate::gpu_util::DynBuffer;
 use crate::theme;
 
-/// Upper bound for per-frame generated instances (safety valve).
 pub const MAX_DYNAMIC_INSTANCES: usize = 4_000_000;
 
 #[repr(C)]
@@ -32,9 +16,7 @@ pub struct RectInstance {
     pub size: [f32; 2],
     pub fill: u32,
     pub border: u32,
-    /// Corner radius in pixels.
     pub radius: f32,
-    /// Border width in pixels.
     pub border_w: f32,
 }
 
@@ -48,9 +30,7 @@ impl RectInstance {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct CodeInstance {
     pub file: u32,
-    /// `line:20 | kind:4 | span:8`
     pub line_kind: u32,
-    /// `col:16 | cols:16`
     pub col_cols: u32,
 }
 
@@ -64,7 +44,6 @@ impl CodeInstance {
     }
 }
 
-/// Level of detail, picked from how many pixels one line of code takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Lod {
     Cards,
@@ -104,13 +83,11 @@ impl Lod {
 pub struct SceneGpu {
     pub(crate) frames: wgpu::Buffer,
     pub(crate) blocks: wgpu::Buffer,
-    /// `block_start[node]`: first block instance of that node's subtree.
     block_start: Vec<u32>,
     pub(crate) origins_bind: wgpu::BindGroup,
     _origins: wgpu::Buffer,
     pub(crate) dynamic: DynBuffer,
     pub(crate) dynamic_len: u32,
-    /// Instance ranges to draw this frame.
     pub(crate) frame_ranges: Vec<Range<u32>>,
     pub(crate) code_ranges: Vec<Range<u32>>,
     scratch: Vec<CodeInstance>,
@@ -135,8 +112,6 @@ fn push_blocks(fi: usize, f: &SourceFile, out: &mut Vec<CodeInstance>) {
     }
 }
 
-/// CPU-side static geometry of a page. Pure data, so it can be built on the
-/// scan thread; only the upload ([`SceneGpu::new`]) runs on the UI thread.
 pub struct SceneData {
     frames: Vec<RectInstance>,
     blocks: Vec<CodeInstance>,
@@ -173,7 +148,7 @@ impl SceneData {
         let mut origins = vec![[0.0f32; 4]; repo.files.len().max(1)];
         for (fi, &ni) in layout.file_node.iter().enumerate() {
             if ni == canvas_core::layout::NONE {
-                continue; // not on the canvas (hidden, filtered or inside a collapsed folder)
+                continue;
             }
             let n = &layout.nodes[ni as usize];
             let [x, y] = n.code_origin();
@@ -228,8 +203,6 @@ impl SceneGpu {
         }
     }
 
-    /// Decide what to draw for `view` (world rect) at `lod`. Returns the
-    /// number of code instances that will be drawn.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         &mut self,
@@ -284,13 +257,11 @@ impl SceneGpu {
     }
 }
 
-/// `tokens` holds one chunk whose first line is `first`.
 fn push_lines(fi: usize, tokens: &Tokens, first: usize, lines: Range<usize>, out: &mut Vec<CodeInstance>) {
     for line in lines {
         let toks = tokens.line(line - first);
         let mut i = 0;
         while i < toks.len() {
-            // Merge tokens separated by small gaps into one bar.
             let start = toks[i].col as u32;
             let mut end = start + toks[i].cols as u32;
             let mut counts = [0u32; 11];
@@ -330,10 +301,6 @@ fn push_tokens(fi: usize, tokens: &Tokens, first: usize, lines: Range<usize>, ou
     }
 }
 
-/// Collect instance ranges for nodes visible in `view`. `start(i)` is the
-/// first instance of node `i`'s subtree (and `start(i + 1)` the end of its own
-/// instances). Fully-visible subtrees become a single range; adjacent ranges
-/// are merged.
 fn cull_ranges(layout: &Layout, view: &Rect, start: impl Fn(usize) -> u32, out: &mut Vec<Range<u32>>) {
     let push = |r: Range<u32>, out: &mut Vec<Range<u32>>| {
         if r.start >= r.end {

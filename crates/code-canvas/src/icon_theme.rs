@@ -1,14 +1,3 @@
-//! File icon themes: the `iconThemes` extensions contribute (Symbols,
-//! Material Icon Theme…), in VS Code's own format. The explorer draws its
-//! rows with the one in use.
-//!
-//! A theme is a JSON file: `iconDefinitions` names image files, and tables
-//! say which definition a file or folder gets, by its whole name
-//! (`fileNames`, `folderNames`) or by its extension (`fileExtensions`).
-//! Icons are SVG files, drawn with `resvg`. Font icons and the per-language
-//! table (`languageIds`) are not read: a file without a match gets the
-//! theme's plain file icon.
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -16,9 +5,7 @@ use serde_json::Value;
 
 #[derive(Debug, Default)]
 pub struct IconTheme {
-    /// Definition name → image file.
     icons: HashMap<String, PathBuf>,
-    /// Lower case → definition name.
     extensions: HashMap<String, String>,
     names: HashMap<String, String>,
     folders: HashMap<String, String>,
@@ -35,7 +22,6 @@ impl IconTheme {
         Ok(IconTheme::from_json(&json, file.parent().unwrap_or(Path::new("."))))
     }
 
-    /// `dir` is the folder of the theme file: image paths are relative to it.
     pub fn from_json(json: &Value, dir: &Path) -> IconTheme {
         let table = |key: &str| -> HashMap<String, String> {
             let Some(Value::Object(map)) = json.get(key) else { return HashMap::new() };
@@ -62,23 +48,16 @@ impl IconTheme {
         }
     }
 
-    /// The first of `definitions` that has an image (a theme may name one
-    /// it does not define, or one that is a font character).
     fn image<'a>(&'a self, definitions: impl IntoIterator<Item = Option<&'a String>>) -> Option<&'a Path> {
         definitions.into_iter().flatten().find_map(|d| self.icons.get(d)).map(PathBuf::as_path)
     }
 
-    /// The image for a file called `name` (no folders in it). Its whole name
-    /// wins over its extension, and a longer extension over a shorter one
-    /// (`x.test.ts` is `test.ts` before `ts`); last comes the plain file.
     pub fn file(&self, name: &str) -> Option<&Path> {
         let name = name.to_lowercase();
         let by_extension = name.match_indices('.').find_map(|(dot, _)| self.extensions.get(&name[dot + 1..]));
         self.image([self.names.get(&name), by_extension, self.file.as_ref()])
     }
 
-    /// The image for a folder called `name`, open or closed. A theme without
-    /// open variants shows the closed one.
     pub fn folder(&self, name: &str, open: bool) -> Option<&Path> {
         let name = name.to_lowercase();
         self.image([
@@ -90,8 +69,6 @@ impl IconTheme {
     }
 }
 
-/// Draw an SVG file into a square of `size` pixels, centred and whole:
-/// RGBA with premultiplied alpha, row by row. `None` when it cannot be read.
 pub fn rasterize(svg: &Path, size: u32) -> Option<Vec<u8>> {
     use resvg::{tiny_skia, usvg};
     let data = std::fs::read(svg).ok()?;
@@ -145,7 +122,6 @@ mod tests {
         assert_eq!(icon(t.file("app.test.ts")), "ts-test.svg");
         assert_eq!(icon(t.file("Main.TS")), "ts.svg");
         assert_eq!(icon(t.file("cargo.toml")), "cargo.svg");
-        // Nothing says what these are: the plain file icon.
         assert_eq!(icon(t.file("notes.txt")), "doc.svg");
         assert_eq!(icon(t.file("Makefile")), "doc.svg");
         assert_eq!(t.file("main.ts").unwrap(), Path::new("/theme").join("./icons/ts.svg"));
@@ -154,8 +130,6 @@ mod tests {
     #[test]
     fn what_has_no_image_falls_back() {
         let t = theme();
-        // A font icon, and a name without a definition: not drawable here,
-        // so the plain file icon is used.
         assert_eq!(icon(t.file("x.weird")), "doc.svg");
         assert_eq!(icon(t.file("x.gone")), "doc.svg");
         assert_eq!(IconTheme::default().file("main.ts"), None);
@@ -168,12 +142,9 @@ mod tests {
         assert_eq!(icon(t.folder("src", false)), "dir-src.svg");
         assert_eq!(icon(t.folder("SRC", true)), "dir-src-open.svg");
         assert_eq!(icon(t.folder("docs", false)), "dir.svg");
-        // No open variant in the theme: the closed one stands in.
         assert_eq!(icon(t.folder("docs", true)), "dir.svg");
     }
 
-    /// Draws what a real theme gives a few names, side by side, to look at:
-    /// `ICON_THEME_TEST=<theme.json> ICON_THEME_SHEET=<out.png> cargo test -p code-canvas real_icon_theme -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn sheet_of_a_real_icon_theme() {
@@ -210,7 +181,6 @@ mod tests {
             drawn += 1;
             for (at, px) in pixels.chunks_exact(4).enumerate() {
                 let (x, y) = (at as u32 % SIZE + i as u32 * SIZE, at as u32 / SIZE);
-                // Premultiplied over the panel colour, as the app blends it.
                 let under = sheet.get_pixel(x, y).0;
                 let over = |c: usize| px[c] as u32 + under[c] as u32 * (255 - px[3] as u32) / 255;
                 sheet.put_pixel(x, y, image::Rgba([over(0) as u8, over(1) as u8, over(2) as u8, 255]));
@@ -231,7 +201,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("code-canvas-test-svg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("square.svg");
-        // A red square in the middle of a wider, transparent drawing.
         std::fs::write(
             &file,
             r##"<svg width="48" height="24" viewBox="0 0 48 24" xmlns="http://www.w3.org/2000/svg"><rect x="12" y="0" width="24" height="24" fill="#ff0000"/></svg>"##,
@@ -240,7 +209,6 @@ mod tests {
         let pixels = rasterize(&file, 32).unwrap();
         assert_eq!(pixels.len(), 32 * 32 * 4);
         let at = |x: usize, y: usize| &pixels[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
-        // Scaled to fit the width (48 → 32), so 16 tall and centred.
         assert_eq!(at(16, 16), [255, 0, 0, 255]);
         assert_eq!(at(16, 2), [0, 0, 0, 0]);
         assert_eq!(at(2, 16), [0, 0, 0, 0]);

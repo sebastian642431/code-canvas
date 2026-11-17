@@ -1,7 +1,3 @@
-//! Everything the app draws on the canvas besides the code itself: folder
-//! and file names, collapse markers, hover and selection highlights, and the
-//! symbol relations (curves, name chips, body highlights).
-
 use std::collections::HashSet;
 
 use canvas_core::layout::{NodeKind, CARD_PAD, DIR_HEADER, FILE_LABEL_H, NONE};
@@ -18,10 +14,8 @@ const MAX_CHIPS: usize = 260;
 const MAX_BODIES: usize = 400;
 const MAX_MARKERS: usize = 3000;
 const MAX_DECORATIONS: usize = 600;
-/// Symbols react to the pointer once a line is at least this many pixels tall.
 pub const SYMBOL_HOVER_MIN_PX: f32 = 0.6;
 
-/// A label whose text is owned (built per frame).
 pub struct OwnedLabel {
     pub text: String,
     pub left: f32,
@@ -53,9 +47,7 @@ pub struct CanvasOverlay {
     pub chips: Vec<RectInstance>,
     pub labels: Vec<OwnedLabel>,
     pub chip_labels: Vec<OwnedLabel>,
-    /// Screen rectangles of clickable chips and the symbol they stand for.
     pub chip_hits: Vec<(Rect, SymRef)>,
-    /// Screen rectangles of folder collapse markers and the folder's path.
     pub toggle_hits: Vec<(Rect, String)>,
 }
 
@@ -75,26 +67,18 @@ fn rel_color(kind: RelKind) -> u32 {
     theme::get().rel_colors()[kind.index()]
 }
 
-/// Rebuild the relation curves of a page and update each selection's
-/// "outside the canvas" count.
-/// Most dependency curves drawn for one selection, and for "every edge".
 const MAX_DEP_CURVES: usize = 4000;
 const MAX_ALL_EDGES: usize = 40_000;
 
-/// Curves for the dependencies of `node` (a file, or everything under a
-/// folder): what it imports in one colour, what imports it in another. Each
-/// starts at the line of the import. Returns `(drawn, total)`.
 fn dep_curves(out: &mut Vec<CurveVertex>, r: &Ready, node: usize, deps: &DepFilters, scale: f32) -> (usize, usize) {
     let Some(n) = r.layout.nodes.get(node) else { return (0, 0) };
     let range = node as u32..n.subtree_end;
-    // A file hidden inside a collapsed folder counts as being where that folder is.
     let inside = |f: u32| r.layout.file_anchor.get(f as usize).is_some_and(|a| range.contains(a));
     let anchor = |file: u32, line: u32| r.layout.anchor(&Site { file, line, col: 0, len: 0 }).map(|(p, _)| p);
     let mut files: Vec<u32> = Vec::new();
     match n.kind {
         NodeKind::File(fi) => files.push(fi as u32),
         NodeKind::Dir => {
-            // What is drawn under the folder, or all its files when it is collapsed.
             let all = (0..r.repo.files.len() as u32).filter(|f| inside(*f));
             files.extend(all);
         }
@@ -123,7 +107,6 @@ fn dep_curves(out: &mut Vec<CurveVertex>, r: &Ready, node: usize, deps: &DepFilt
 pub fn build_curves(page: &mut Page, filters: &RelFilters, deps: &DepFilters, scale: f32) -> Vec<CurveVertex> {
     let mut out = Vec::new();
     let PageState::Ready(r) = &page.state else { return out };
-    // Every edge, faint, under everything else (a sample of them in a huge repository).
     if deps.all {
         let step = r.deps.edges.len().div_ceil(MAX_ALL_EDGES).max(1);
         for e in r.deps.edges.iter().step_by(step).filter(|e| deps.kinds[e.kind.index()]) {
@@ -143,7 +126,6 @@ pub fn build_curves(page: &mut Page, filters: &RelFilters, deps: &DepFilters, sc
         let def = r.repo.sym_site(sel.sym);
         let def_start = r.repo.sym_line_start(sel.sym);
         for rel in &sel.rel.items {
-            // Ends at a definition attach to the start of its line.
             let to = if rel.to == def {
                 def_start
             } else {
@@ -173,7 +155,6 @@ struct Chip {
     sym: Option<SymRef>,
 }
 
-/// Body rectangles of `sym`, if its file is on the canvas.
 fn body_rects(repo: &Repo, layout: &Layout, sym: SymRef) -> Vec<Rect> {
     let node = layout.file_node[sym.file as usize];
     if node == NONE {
@@ -201,7 +182,6 @@ fn selection_overlay(
     seen_chips: &mut HashSet<(u32, u32)>,
 ) {
     let def = repo.sym_site(sel.sym);
-    // The selected symbol itself: body + bright chip.
     let own = RelKind::Definition.index();
     if filters.enabled[own] && filters.bodies[own] && seen_bodies.insert(sel.sym) {
         for rect in body_rects(repo, layout, sel.sym) {
@@ -235,7 +215,6 @@ fn selection_overlay(
         }
         let color = rel_color(rel.kind);
         let opacity = filters.opacity[rel.kind.index()];
-        // Marker on the usage site.
         if rel.from != rel.to && out.over.len() < MAX_MARKERS {
             if let Some(rect) = site_rect(layout, &rel.from) {
                 if rect.intersects(world) {
@@ -249,7 +228,6 @@ fn selection_overlay(
                 }
             }
         }
-        // The symbol at the far end: its body and a chip with its name.
         let Some(other) = rel.other else { continue };
         if other == sel.sym {
             continue;
@@ -272,7 +250,7 @@ fn selection_overlay(
             }
         }
         if rel.kind == RelKind::Reference && !other_sym.kind.is_callable() {
-            continue; // a plain mention outside any function needs no chip
+            continue;
         }
         let other_site = repo.sym_site(other);
         if !seen_chips.insert((other_site.file, other_site.line)) {
@@ -292,7 +270,6 @@ fn selection_overlay(
     }
 }
 
-/// Build the per-frame overlay for the active page.
 pub fn build(
     page: &Page,
     view: View,
@@ -306,16 +283,12 @@ pub fn build(
     let PageState::Ready(r) = &page.state else { return out };
     let (repo, layout) = (&r.repo, &r.layout);
     let z = view.zoom;
-    // Only what is inside the canvas area gets labels and chips.
     let mut world = view.world_rect();
     world.x += area.x / z;
     world.w = area.w / z;
     world.y += area.y / z;
     world.h = area.h / z;
 
-    // --- folder and file names ---------------------------------------------
-    // Screen rects of placed labels; parents are visited first and win,
-    // overlapping descendants are skipped.
     let mut placed: Vec<Rect> = Vec::new();
     let free = |r: Rect, placed: &mut Vec<Rect>| {
         if placed.iter().any(|p| p.intersects(&r)) {
@@ -330,7 +303,6 @@ pub fn build(
         let w_px = n.rect.w * z;
         match n.kind {
             NodeKind::Dir if n.collapsed => {
-                // A collapsed folder is one box: name it in the middle.
                 let h_px = n.rect.h * z;
                 if w_px > 46.0 * s && h_px > 22.0 * s {
                     let size = (h_px * 0.16).clamp(11.0 * s, 20.0 * s).round();
@@ -375,8 +347,6 @@ pub fn build(
                     let label = format!("{}/", n.name);
                     let left = tl[0] + 8.0 * s;
                     let is_root = n.parent.is_none();
-                    // The root's name sits above its box, so it never fights
-                    // with the first folder inside for the same corner.
                     let top = if is_root {
                         tl[1] - size * 1.3 - 5.0 * s
                     } else {
@@ -395,7 +365,6 @@ pub fn build(
                             max_w,
                             bold: true,
                         });
-                        // The root folder cannot be collapsed.
                         if !is_root {
                             out.labels.push(OwnedLabel {
                                 text: "−".into(),
@@ -419,7 +388,6 @@ pub fn build(
                     let top = tl[1] - lab_px + (lab_px - size * 1.3) * 0.5;
                     let tw = (n.name.chars().count() as f32 * size * 0.58).min(w_px);
                     if free(Rect::new(left - 2.0, top, tw + 4.0, size * 1.3), &mut placed) {
-                        // A dot marks a file with changes that are not saved yet.
                         let unsaved = page.editors.get(&n.rel_path).is_some_and(|e| e.dirty);
                         out.labels.push(OwnedLabel {
                             text: if unsaved { format!("● {}", n.name) } else { n.name.clone() },
@@ -437,7 +405,6 @@ pub fn build(
         out.labels.len() < MAX_WORLD_LABELS
     });
 
-    // --- hover and selection of nodes --------------------------------------
     if let Some(n) = page.hover.and_then(|h| layout.nodes.get(h)) {
         out.over.push(RectInstance::new(n.rect, 0, theme::get().canvas_hover, if n.is_dir() { 6.0 } else { 3.0 }, 1.5));
     }
@@ -446,7 +413,6 @@ pub fn build(
         out.over.push(RectInstance::new(n.rect, theme::get().select_fill, theme::get().select, radius, 2.0));
     }
 
-    // --- search hits ---------------------------------------------------------
     if let Some(search) = &page.search {
         for hit in search.hits.iter().take(MAX_MARKERS) {
             if let Some(rect) = site_rect(layout, hit) {
@@ -459,7 +425,6 @@ pub fn build(
 
     let readable = z * LINE_H >= 2.5;
 
-    // --- the file being edited: its line, selection and caret ------------------
     if let Some(editor) = page.editor() {
         let node =
             repo.file_index(&editor.rel_path).and_then(|fi| layout.file_node.get(fi).copied()).filter(|&n| n != NONE);
@@ -473,7 +438,6 @@ pub fn build(
                     let to = if line == b.line {
                         editor.display_col(b)
                     } else {
-                        // Up to the end of the line, plus one cell for the line break.
                         editor.display_col(crate::editor::Pos::new(line, usize::MAX)) + 1
                     };
                     let cell = n.cell_rect(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
@@ -488,9 +452,6 @@ pub fn build(
         }
     }
 
-    // --- source control: what changed since the last commit -------------------
-    // A coloured strip along the card's left side (and a dot from far away);
-    // close up, a bar next to each changed line, like an editor's gutter.
     if let Some(git) = &page.git {
         for change in git.changes.iter().take(MAX_MARKERS) {
             let Some(fi) = repo.file_index(&change.path) else { continue };
@@ -536,7 +497,6 @@ pub fn build(
                         continue;
                     }
                     let rect = if count == 0 {
-                        // Lines were removed here: a short mark between two lines.
                         let y = if line >= lines { cell.bottom() } else { cell.y };
                         Rect::new(cell.x - CARD_PAD * 0.9, y - bar * 0.5, CARD_PAD * 0.8, bar)
                     } else {
@@ -548,9 +508,6 @@ pub fn build(
         }
     }
 
-    // --- problems reported by extensions -------------------------------------
-    // Close up, each one underlines its code. From any distance the file's
-    // card gets a coloured edge and a dot, so problems show on the whole map.
     let mut marked = 0usize;
     for (rel, found) in ext.diagnostics_under(&page.root) {
         let Some(fi) = repo.file_index(rel) else { continue };
@@ -591,8 +548,6 @@ pub fn build(
         }
     }
 
-    // --- what extensions draw on the code (decorations) -----------------------
-    // Readable only close up: a wash over the range, and text after the line.
     if z * LINE_H >= 6.5 {
         let size = (z * LINE_H * 0.8).round();
         let mut drawn = 0usize;
@@ -605,7 +560,6 @@ pub fn build(
                 continue;
             }
             let f = &repo.files[fi];
-            // Several texts on one line (two problems) follow each other.
             let mut next_col: std::collections::HashMap<u32, u32> = Default::default();
             let mut types: Vec<_> = found.by_type.iter().collect();
             types.sort_by(|a, b| a.0.cmp(b.0));
@@ -647,7 +601,6 @@ pub fn build(
         }
     }
 
-    // --- symbols -------------------------------------------------------------
     let mut chips: Vec<Chip> = Vec::new();
     let mut seen_bodies = HashSet::new();
     let mut seen_chips = HashSet::new();
@@ -655,7 +608,6 @@ pub fn build(
         selection_overlay(sel, repo, layout, filters, &world, &mut out, &mut chips, &mut seen_bodies, &mut seen_chips);
     }
 
-    // The symbol under the pointer: outline its body, name it.
     if let Some((file, line, _)) = page.hover_cell {
         if z * LINE_H >= SYMBOL_HOVER_MIN_PX {
             if let Some(sym) = repo.sym_at(file, line) {
@@ -679,7 +631,6 @@ pub fn build(
         }
     }
 
-    // Chips: fixed pixel size, anchored at a world point, no overlaps.
     let size = (11.0 * s).round();
     let h = (size * 1.3).ceil() + 5.0 * s;
     let mut placed: Vec<Rect> = Vec::new();
@@ -692,7 +643,6 @@ pub fn build(
             continue;
         }
         let w = text.measure(&chip.text, size, chip.bold) + 12.0 * s;
-        // Sit just above the line it names, like a tag.
         let rect = Rect::new(p[0] - 2.0 * s, p[1] - h - LINE_H * z * 0.5 + 1.0, w, h);
         if placed.iter().any(|q| q.intersects(&rect)) {
             continue;

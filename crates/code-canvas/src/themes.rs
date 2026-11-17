@@ -1,14 +1,3 @@
-//! The user's choice of colours: a built-in theme and the colours changed on
-//! top of it. Stored as `theme.json` in the data directory, next to the
-//! session:
-//!
-//! ```json
-//! { "theme": "dark", "colors": { "card_border": "#4b5362" }, "icons": "symbols" }
-//! ```
-//!
-//! The themes themselves, and the key of every colour, are in
-//! `canvas_render::theme`.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -18,27 +7,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ThemeFile {
-    /// Key of a built-in theme (`theme::PRESETS`); unknown or empty means
-    /// the default one.
     pub theme: String,
-    /// Colours changed by the user: key → `#rrggbb` or `#rrggbbaa`.
     pub colors: BTreeMap<String, String>,
-    /// The file icon theme: the id an extension gives it (`"symbols"`),
-    /// `"none"` for the app's own glyphs, or empty to use one that is
-    /// installed (see `Extensions::icon_theme`).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub icons: String,
 }
 
 impl ThemeFile {
-    /// The built-in theme this choice starts from: `(key, colours)`.
     pub fn base(&self) -> (&'static str, Theme) {
         let (key, _, colors) = theme::PRESETS.iter().find(|p| p.0 == self.theme).unwrap_or(&theme::PRESETS[0]);
         (key, *colors)
     }
 
-    /// The colours to use: the base theme with the user's changes. Keys
-    /// that no longer exist and values that are not colours are ignored.
     pub fn resolve(&self) -> Theme {
         let (_, mut out) = self.base();
         for field in theme::FIELDS {
@@ -49,13 +29,10 @@ impl ThemeFile {
         out
     }
 
-    /// Switch to another built-in theme, keeping the colours changed by hand.
     pub fn set_base(&mut self, key: &str) {
         self.theme = key.to_string();
     }
 
-    /// Change one colour. Setting it back to the base theme's value forgets
-    /// the change, so the file only lists what really differs.
     pub fn set_color(&mut self, key: &str, color: u32) {
         let Some(field) = theme::FIELDS.iter().find(|f| f.key == key) else { return };
         if (field.get)(&self.base().1) == color {
@@ -117,7 +94,6 @@ mod tests {
         assert_eq!(colors.chrome, theme::MIDNIGHT.chrome);
         assert!(file.is_changed("card"));
 
-        // Back to the base theme's own value: nothing left to remember.
         file.set_color("card", theme::MIDNIGHT.card);
         assert!(file.colors.is_empty());
         assert_eq!(file.resolve(), theme::MIDNIGHT);

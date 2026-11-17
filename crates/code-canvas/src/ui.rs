@@ -1,15 +1,3 @@
-//! The application chrome, built with egui around the canvas.
-//!
-//! The window has no system title bar: the header is ours (panel toggles,
-//! rescan, folder tabs, the "go to file" box, window buttons). An icon rail
-//! on each side opens one panel at a time, like an activity bar:
-//!
-//! * left: files, search in files, extensions, problems, shortcuts
-//! * right: symbols (selection, filters, names), and extensions' webviews
-//!
-//! The UI never mutates pages directly; it emits [`Action`]s that the app
-//! applies after the egui pass.
-
 use std::sync::atomic::Ordering;
 
 use canvas_core::{RelKind, Site};
@@ -33,42 +21,30 @@ use crate::keys::{Command, Keymap};
 pub enum LeftPanel {
     Files,
     Search,
-    /// Find, install and manage VS Code extensions.
     Extensions,
-    /// What the extensions report: errors and warnings.
     Problems,
-    /// Source control: what git says changed.
     Changes,
-    /// One installed extension (`UiState::extension`): what it offers.
     Extension,
     Help,
-    /// The theme and its colours.
     Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RightPanel {
     Symbols,
-    /// Dependencies between files: what imports what.
     Deps,
-    /// An extension's webview (`UiState::webview`).
     Webview,
-    /// An image, video, audio file or PDF (`UiState::media`).
     Media,
 }
 
-/// The file icon theme in use (`icon_theme.rs`) and the images of it drawn
-/// so far. Without one, callers draw the app's own glyphs.
 #[derive(Default)]
 struct FileIcons {
-    /// The theme file `theme` was read from, or failed to be.
     file: Option<std::path::PathBuf>,
     theme: Option<crate::icon_theme::IconTheme>,
     textures: std::collections::HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
 }
 
 impl FileIcons {
-    /// Use the theme in `file`; `None` for the app's own glyphs.
     fn set(&mut self, file: Option<&std::path::Path>) {
         if self.file.as_deref() == file {
             return;
@@ -84,12 +60,9 @@ impl FileIcons {
         self.textures.clear();
     }
 
-    /// Paint the icon of a file or folder called `name` in `at`. False when
-    /// the theme has none for it: the caller then draws its own.
     fn paint(&mut self, ui: &egui::Ui, name: &str, is_dir: bool, open: bool, at: Rect, dim: bool) -> bool {
         let Some(theme) = &self.theme else { return false };
         let Some(svg) = (if is_dir { theme.folder(name, open) } else { theme.file(name) }) else { return false };
-        // Twice the size it is shown at: sharp on dense screens too.
         const PIXELS: u32 = 32;
         let texture = self.textures.entry(svg.to_path_buf()).or_insert_with(|| {
             let pixels = crate::icon_theme::rasterize(svg, PIXELS)?;
@@ -103,30 +76,13 @@ impl FileIcons {
     }
 }
 
-/// Something the explorer's menu asks the app to do with a file or folder.
-/// Paths are relative to the open folder, with `/`; `""` is the folder itself.
 pub enum FileOp {
-    /// Show it in the system's file manager.
     Reveal(String),
-    /// Open a terminal in this folder.
     Terminal(String),
-    CopyPath {
-        path: String,
-        relative: bool,
-    },
-    NewFile {
-        dir: String,
-        name: String,
-    },
-    NewFolder {
-        dir: String,
-        name: String,
-    },
-    Rename {
-        path: String,
-        name: String,
-    },
-    /// Move it to the recycle bin (the app asks first).
+    CopyPath { path: String, relative: bool },
+    NewFile { dir: String, name: String },
+    NewFolder { dir: String, name: String },
+    Rename { path: String, name: String },
     Delete(String),
 }
 
@@ -137,22 +93,15 @@ pub enum NamingKind {
     Rename,
 }
 
-/// The explorer is asking for a name.
 pub struct Naming {
     pub kind: NamingKind,
-    /// The folder the new thing goes in, or what is being renamed.
     pub path: String,
     pub text: String,
-    /// Put the caret in the field on the next frame.
     pub focus: bool,
 }
 
-/// Names offered while a path is typed (`paths.rs`), for the list under
-/// the caret.
 pub struct CompletionView {
-    /// Where the list hangs from: under the caret, in points.
     pub at: Pos2,
-    /// `(name, is a folder)`.
     pub items: Vec<(String, bool)>,
     pub selected: usize,
 }
@@ -164,56 +113,34 @@ pub struct QuickOpen {
 }
 
 pub struct UiState {
-    /// The open left panel, if any (the rail icon toggles it).
     pub left: Option<LeftPanel>,
     pub right: Option<RightPanel>,
-    /// What the rail reopens when a closed side is toggled from the header.
     pub last_left: LeftPanel,
     pub last_right: RightPanel,
     pub explorer_filter: String,
     pub search_query: String,
     pub quick: Option<QuickOpen>,
     pub filters: RelFilters,
-    /// Interactive floating areas over the canvas, in points.
     pub floating: Vec<Rect>,
     pub maximized: bool,
-    /// The app icon, shown in the top-left corner of the header.
     logo: Option<egui::TextureHandle>,
-    /// What to draw of the dependencies between files.
     pub deps: crate::page::DepFilters,
-    /// Open the folder menu on the next frame (set by scripts).
     pub open_folder_menu: bool,
-    /// Key of the webview shown by [`RightPanel::Webview`].
     pub webview: String,
-    /// Where that webview's page goes this frame, in points.
     pub webview_rect: Option<Rect>,
-    /// Id of the extension shown by [`LeftPanel::Extension`].
     pub extension: String,
-    /// Icons of installed extensions, by extension id (`None`: it has none).
     ext_icons: std::collections::HashMap<String, Option<egui::TextureHandle>>,
-    /// The theme chosen and the colours changed on top of it. The app keeps
-    /// it in step with what is on screen and on disk.
     pub theme: crate::themes::ThemeFile,
-    /// The shortcuts in use, and the user's changes they were built from.
     pub keys: Keymap,
     pub key_file: crate::keys::KeyFile,
-    /// The command whose new shortcut the settings panel is waiting for:
-    /// the next key pressed becomes it.
     pub rebinding: Option<Command>,
-    /// The name the explorer is asking for, if it is asking.
     pub naming: Option<Naming>,
-    /// Show one folder at a time, instead of all of them side by side.
     pub single: bool,
     pub prefs: crate::prefs::Prefs,
-    /// The file shown by [`RightPanel::Media`].
     pub media: Option<std::path::PathBuf>,
-    /// Whether a newer version of the app exists (`update.rs`).
     pub update: crate::update::State,
-    /// The names offered under the caret, when a path is being typed.
     pub completion: Option<CompletionView>,
-    /// Who writes commit messages when asked (`commit_ai.rs`).
     pub commit_ai: crate::commit_ai::Settings,
-    /// The file icon theme in use.
     file_icons: FileIcons,
 }
 
@@ -284,13 +211,11 @@ pub enum Action {
     CloseTab(usize),
     OpenFolder,
     Rescan,
-    /// Select a file or folder and fly the camera to it.
     FlyToPath(String),
     FlyToSite(Site),
     ToggleHidden(String),
     ToggleCollapsed(String),
     ToggleTreeOpen(String),
-    /// The explorer row under the pointer.
     HoverPath(String),
     RemoveSymbol(usize),
     ClearSymbols,
@@ -302,72 +227,42 @@ pub enum Action {
     CollapseAll,
     ExpandAll,
     ShowAll,
-    /// Search the text of every file of the active page.
     Search(String),
-    /// Format a file of the active page with the installed formatter:
-    /// the given path, else the file under the pointer or the selected one.
     FormatFile(Option<String>),
-    /// Open a left panel.
     ShowLeft(LeftPanel),
-    /// Save the file being edited.
     SaveFile,
-    /// Run an extension's command: `(id, title)`.
     RunCommand(String, String),
-    /// What to draw of the dependencies changed.
     DepsChanged,
-    /// A source control command on the active page.
     Git(crate::git::GitOp),
-    /// Ask git again what changed in the active page.
     RefreshGit,
-    /// Have an assistant write the commit message of the active page.
     WriteCommitMessage,
-    /// Change who writes commit messages.
     SetCommitAi(crate::commit_ai::Settings),
     SetPrefs(crate::prefs::Prefs),
-    /// Show an image, video, audio file or PDF in the viewer.
     OpenMedia(std::path::PathBuf),
-    /// Open a file with the program the system uses for it.
     OpenExternally(std::path::PathBuf),
-    /// Look for a newer version of the app now.
     CheckUpdates,
-    /// Download the newer version on offer and restart into it.
     InstallUpdate,
-    /// Take one of the names offered under the caret.
     AcceptCompletion(usize),
-    /// Show only the files git reports as changed.
     SetOnlyChanged(bool),
-    /// Pick a `.vsix` file and install it.
     InstallVsix,
-    /// Use a built-in theme (a key of `theme::PRESETS`).
     SetTheme(&'static str),
-    /// Change one colour of the theme: `(key, 0xRRGGBBAA)`.
     SetColor(&'static str, u32),
-    /// Forget every colour changed by hand.
     ResetColors,
-    /// Use this file icon theme (an id, or `"none"` for the app's own).
     SetIconTheme(String),
-    /// Folders side by side, or one at a time.
     ToggleSideBySide,
-    /// Give a command its own shortcuts back.
     ResetKey(Command),
-    /// Leave a command without a shortcut.
     UnbindKey(Command),
-    /// The explorer's menu: something to do with a file or folder.
     File(FileOp),
-    // The window itself (it has no system title bar).
     DragWindow,
     ToggleMaximize,
     Minimize,
     CloseWindow,
 }
 
-/// Per-frame facts the UI displays but does not own.
 pub struct FrameInfo<'a> {
     pub stats: &'a FrameStats,
     pub frame_ms: f32,
     pub zoom: f32,
-    /// Title and detail for the tooltip next to the pointer, when the
-    /// pointer is over something on the canvas.
     pub tooltip: Option<(String, String)>,
     pub status: String,
 }
@@ -377,19 +272,12 @@ fn c(rgba: u32) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-/// The interface's colours: the "Interface" group of the theme in use
-/// (`canvas_render::theme`), ready for egui. Take them with [`pal`].
 #[derive(Clone, Copy)]
 struct Pal {
-    /// The window behind everything, and the rails.
     chrome: Color32,
-    /// Panels.
     card: Color32,
-    /// Text fields and other insets.
     well: Color32,
-    /// A row of a list that stands out a little.
     row: Color32,
-    /// Buttons, selected rows.
     raised: Color32,
     hover: Color32,
     active: Color32,
@@ -400,7 +288,6 @@ struct Pal {
     text_dim: Color32,
     text_faint: Color32,
     accent: Color32,
-    /// Text drawn on top of the accent colour.
     on_accent: Color32,
 }
 
@@ -430,10 +317,8 @@ const HEADER_H: f32 = 40.0;
 const RAIL_W: f32 = 44.0;
 const GAP: i8 = 6;
 
-/// Space between two folders shown side by side, in points.
 const PANE_GAP: f32 = 8.0;
 
-/// How many folders the canvas shows at once.
 pub fn pane_count(single: bool, folders: usize) -> usize {
     if single {
         1
@@ -442,9 +327,6 @@ pub fn pane_count(single: bool, folders: usize) -> usize {
     }
 }
 
-/// The canvas divided into `count` panes side by side, with a gap between
-/// them: where each open folder is drawn. Works in any unit; `gap` is the
-/// space between two panes in that unit.
 pub fn pane_rects(canvas: egui::Rect, count: usize, gap: f32) -> Vec<egui::Rect> {
     let count = count.max(1);
     let width = ((canvas.width() - gap * (count - 1) as f32) / count as f32).max(1.0);
@@ -456,10 +338,8 @@ pub fn pane_rects(canvas: egui::Rect, count: usize, gap: f32) -> Vec<egui::Rect>
         .collect()
 }
 
-/// Fonts and the app's look (call once).
 pub fn style(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
-    // Lucide icons as a fallback font: icon code points render anywhere text does.
     ctx.add_font(FontInsert {
         name: "lucide".into(),
         data: egui::FontData::from_static(include_bytes!("../assets/lucide.ttf")),
@@ -469,8 +349,6 @@ pub fn style(ctx: &egui::Context) {
         ],
     });
 
-    // Codicons (VS Code's icons) too: extensions name them in their texts,
-    // and a few panels that mirror VS Code's use the same icons it does.
     ctx.add_font(FontInsert {
         name: "codicon".into(),
         data: egui::FontData::from_static(include_bytes!("../assets/codicon.ttf")),
@@ -489,7 +367,6 @@ pub fn style(ctx: &egui::Context) {
     });
 }
 
-/// Give egui the colours of the theme in use (again, when it changes).
 pub fn apply_theme(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = pal().chrome;
@@ -515,7 +392,6 @@ pub fn apply_theme(ctx: &egui::Context) {
     v.selection.bg_fill = pal().selection;
     v.selection.stroke = Stroke::new(1.0, pal().text);
     v.hyperlink_color = pal().accent;
-    // Always dark, whatever the system theme is.
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_visuals_of(egui::Theme::Dark, v);
 }
@@ -524,7 +400,6 @@ fn icon(glyph: &str, size: f32, color: Color32) -> RichText {
     RichText::new(glyph).size(size).color(color)
 }
 
-/// A square icon button drawn by hand (rail, header, window buttons).
 fn icon_button(ui: &mut egui::Ui, glyph: &str, size: Vec2, active: bool, hover_fill: Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
@@ -540,7 +415,6 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, size: Vec2, active: bool, hover_f
     resp
 }
 
-/// A rounded checkbox with a check mark, like the concept's.
 fn check(ui: &mut egui::Ui, on: &mut bool, label: &str, enabled: bool, dim: bool) -> egui::Response {
     let font = FontId::proportional(if dim { 12.0 } else { 13.0 });
     let text_color = if !enabled {
@@ -570,7 +444,6 @@ fn check(ui: &mut egui::Ui, on: &mut bool, label: &str, enabled: bool, dim: bool
     resp
 }
 
-/// A section title with an icon, e.g. "Filters".
 fn section(ui: &mut egui::Ui, glyph: &str, title: &str) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -581,7 +454,6 @@ fn section(ui: &mut egui::Ui, glyph: &str, title: &str) {
     ui.add_space(2.0);
 }
 
-/// A recessed rounded area inside a panel.
 fn well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     Frame::NONE.fill(pal().well).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -589,7 +461,6 @@ fn well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// A side panel: a rounded card with a gap around it.
 fn card_panel(ui: &mut egui::Ui, panel: egui::Panel, add: impl FnOnce(&mut egui::Ui)) {
     panel.frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: GAP })).show(
         ui,
@@ -603,7 +474,6 @@ fn card_panel(ui: &mut egui::Ui, panel: egui::Panel, add: impl FnOnce(&mut egui:
     );
 }
 
-/// Build the whole chrome. Returns the canvas rectangle in points.
 pub fn build(
     ui: &mut egui::Ui,
     st: &mut UiState,
@@ -646,8 +516,6 @@ pub fn build(
 
     let canvas = ui.available_rect_before_wrap();
     let ctx = ui.ctx().clone();
-    // One pane per folder shown: its message while it has no canvas yet,
-    // and with several, a frame that says which one the keyboard is on.
     let panes = pane_rects(canvas, pane_count(st.single, pages.len()), PANE_GAP);
     if panes.len() > 1 {
         for (i, pane) in panes.iter().enumerate() {
@@ -659,7 +527,6 @@ pub fn build(
     } else {
         center_message(ui, canvas, pages.get(active), &st.keys);
     }
-    // The zoom buttons act on the active folder: they sit in its pane.
     let active_pane = if panes.len() > 1 { panes.get(active).copied().unwrap_or(canvas) } else { canvas };
     toolbar(&ctx, st, active_pane, info, actions);
     completion_list(&ctx, st, actions);
@@ -672,8 +539,6 @@ pub fn build(
 fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     egui::Panel::top("header").frame(Frame::NONE.fill(pal().chrome)).exact_size(HEADER_H).show(ui, |ui| {
         let bar = ui.max_rect();
-        // The empty parts of the header move the window. Added first, so
-        // every button placed afterwards wins over it.
         let drag = ui.interact(bar, egui::Id::unique("titlebar"), Sense::click_and_drag());
         if drag.drag_started_by(egui::PointerButton::Primary) {
             actions.push(Action::DragWindow);
@@ -686,7 +551,6 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
         let mut right_start = bar.right();
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            // The app icon sits in the corner, above the left rail.
             let logo = st.logo.get_or_insert_with(|| {
                 let pixels = include_bytes!("../assets/icon_128.rgba");
                 let image = egui::ColorImage::from_rgba_unmultiplied([128, 128], pixels);
@@ -741,7 +605,6 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             });
         });
 
-        // The "go to file" box, centred in the window when there is room.
         let room = (right_start - left_end - 24.0).max(0.0);
         let w = room.min(440.0);
         if w >= 150.0 {
@@ -787,7 +650,6 @@ fn status_bar(
         ui,
         |ui| {
             ui.horizontal_centered(|ui| {
-                // Like VS Code's: the branch first (`*` when there are changes).
                 if let Some(git) = page.and_then(|p| p.git.as_ref()) {
                     let icon = crate::codicons::glyph("source-control").unwrap_or(icons::GIT_BRANCH);
                     let mut text = format!("{icon} {}{}", git.branch, if git.changes.is_empty() { "" } else { "*" });
@@ -805,7 +667,6 @@ fn status_bar(
                 }
                 ui.label(RichText::new(&info.status).size(12.0).color(pal().text_dim));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // The version, at the very end; a newer one is offered next to it.
                     let version = RichText::new(format!("v{}", crate::update::current())).size(12.0).color(pal().text_faint);
                     let label = ui.add(egui::Label::new(version).sense(Sense::click()));
                     if label.on_hover_text("Code Canvas version: click for Settings, where updates are").clicked() {
@@ -841,7 +702,6 @@ fn status_bar(
                         st.cached_chunks,
                         info.frame_ms
                     ));
-                    // What extensions report: problems, and their status items.
                     let (errors, warnings) = ext.totals();
                     if errors + warnings > 0 {
                         ui.add_space(8.0);
@@ -893,7 +753,6 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
         ] {
             let resp = icon_button(ui, glyph, b, st.left == Some(panel), pal().hover);
             if panel == LeftPanel::Problems {
-                // A dot on the icon while there is something to look at.
                 let (errors, warnings) = ext.totals();
                 if errors + warnings > 0 {
                     let color =
@@ -902,7 +761,6 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
                 }
             }
             if panel == LeftPanel::Changes {
-                // How many files git reports as changed, as VS Code shows it.
                 let changed = page.and_then(|p| p.git.as_ref()).map_or(0, |g| g.changes.len());
                 if changed > 0 {
                     count_badge(ui, resp.rect, changed);
@@ -939,13 +797,10 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
     });
 }
 
-/// A number in the corner of a rail icon: a pill in the accent colour,
-/// "99+" beyond two digits.
 fn count_badge(ui: &egui::Ui, icon: Rect, count: usize) {
     let text = if count > 99 { "99+".to_string() } else { count.to_string() };
     let galley = ui.painter().layout_no_wrap(text, FontId::proportional(9.5), pal().on_accent);
     let size = Vec2::new((galley.size().x + 7.0).max(14.0), 14.0);
-    // Its right edge stays inside the rail however many digits there are.
     let pill = Rect::from_min_size(Pos2::new(icon.right() - size.x, icon.bottom() - size.y - 2.0), size);
     ui.painter().rect_filled(pill, 7.0, pal().accent);
     ui.painter().galley(pill.center() - galley.size() * 0.5, galley, pal().on_accent);
@@ -967,7 +822,6 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
                 }
             }
         }
-        // The media viewer, once something has been looked at.
         if st.media.is_some() {
             let active = st.right == Some(RightPanel::Media);
             let tip = "The image, video or PDF you last looked at";
@@ -975,7 +829,6 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
                 st.right = if active { None } else { Some(RightPanel::Media) };
             }
         }
-        // Extensions' own interfaces: what their manifests put in the bars.
         for w in &ext.rail_items() {
             let active = st.right == Some(RightPanel::Webview) && st.webview == w.view;
             let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
@@ -988,8 +841,6 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
                 let color = if active || resp.hovered() { pal().text } else { pal().text_dim };
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
             };
-            // The container's own icon when it is one of VS Code's; else the
-            // extension's picture stands in for its image file.
             let installed = ext.installed.iter().find(|e| e.id == w.extension);
             match w.codicon.as_deref().and_then(crate::codicons::glyph) {
                 Some(codicon) => glyph(ui, codicon),
@@ -1041,7 +892,6 @@ fn small_icon(ui: &mut egui::Ui, glyph: &str, tip: &str) -> bool {
     resp.on_hover_text(tip).clicked()
 }
 
-/// A text field with a leading icon, in a rounded well.
 fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, glyph: &str) -> egui::Response {
     Frame::NONE
         .fill(pal().well)
@@ -1069,8 +919,6 @@ fn file_glyph(name: &str) -> &'static str {
     }
 }
 
-/// The open folders as a menu: pick one, close one, open another. Each
-/// folder is its own canvas.
 fn folder_switcher(
     ui: &mut egui::Ui,
     open: &mut bool,
@@ -1087,8 +935,6 @@ fn folder_switcher(
     let count = if pages.len() > 1 { format!("  {}/{}", active + 1, pages.len()) } else { String::new() };
     let label = format!("{}  {title}{count}  {}", icons::FOLDER, icons::CHEVRON_DOWN);
     let button = ui.menu_button(RichText::new(label).size(13.5).color(pal().text), |ui| {
-        // As wide as its longest folder name needs, within sensible limits:
-        // rows are laid out by hand so the menu does not stretch.
         let font = FontId::proportional(13.0);
         let longest = pages
             .iter()
@@ -1127,7 +973,6 @@ fn folder_switcher(
                 font.clone(),
                 pal().text,
             );
-            // The close button shows on the row under the pointer.
             if ui.rect_contains_pointer(rect) {
                 if close.hovered() {
                     ui.painter().rect_filled(close_at, 5.0, pal().border_strong);
@@ -1190,7 +1035,6 @@ fn folder_switcher(
             ui.close();
         }
     });
-    // A script asked for the menu to be shown (there is no click to open it).
     if std::mem::take(open) {
         egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&button.response));
     }
@@ -1220,7 +1064,6 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
                 if small_icon(ui, icons::UNFOLD_VERTICAL, "Expand every folder on the canvas") {
                     actions.push(Action::ExpandAll);
                 }
-                // The folder being shown: what is left of the row.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     folder_switcher(ui, &mut st.open_folder_menu, &st.keys, pages, active, actions)
                 });
@@ -1258,7 +1101,6 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         r.tree_dirty = false;
     }
 
-    // With a filter: a flat list of matching files.
     let terms: Vec<String> = st.explorer_filter.split_whitespace().map(|t| t.to_lowercase()).collect();
     let matches: Option<Vec<usize>> = (!terms.is_empty()).then(|| {
         r.repo
@@ -1317,7 +1159,6 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 painter.rect_filled(row_bg, 6.0, pal().row);
             }
             let mid = rect.center().y;
-            // Indent guides.
             for d in 0..depth {
                 let gx = rect.left() + 22.0 + d as f32 * 16.0;
                 painter.vline(gx, rect.y_range(), Stroke::new(1.0, pal().raised));
@@ -1333,7 +1174,6 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                     pal().text_dim,
                 );
             }
-            // Checkbox: is it on the canvas?
             let on = !hidden && !locked;
             let cb = Rect::from_center_size(Pos2::new(x0 + 27.0, mid), Vec2::splat(15.0));
             painter.rect_filled(cb, 4.0, pal().raised);
@@ -1346,10 +1186,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             } else if is_dir {
                 pal().text
             } else {
-                // Files: a step below folders.
                 c(theme::mix(theme::get().text, theme::get().text_dim, 0.35))
             };
-            // Its icon: from the icon theme, else (for files) the app's own.
             let base = name.rsplit_once('/').map_or(name, |(_, base)| base);
             let icon_at = Rect::from_center_size(Pos2::new(text_x + 7.0, mid), Vec2::splat(16.0));
             if st.file_icons.paint(ui, base, is_dir, open, icon_at, !on) {
@@ -1370,7 +1208,6 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             let room = rect.right() - right_pad - text_x;
             text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
             if is_dir {
-                // How many files are inside.
                 let at = Pos2::new(rect.right() - 14.0, mid);
                 painter.text(at, Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.0), pal().text_faint);
             }
@@ -1403,13 +1240,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     });
 }
 
-/// The names offered while a path is typed: a short list under the caret.
-/// Arrows, Enter, Tab and Esc are the editor's (the app handles them); a
-/// click takes a name.
 fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     const ROWS: usize = 9;
     let Some(view) = &st.completion else { return };
-    // A window of rows that keeps the selected one in sight.
     let first = view.selected.saturating_sub(ROWS - 1).min(view.items.len().saturating_sub(ROWS));
     let shown = &view.items[first..view.items.len().min(first + ROWS)];
     let file_icons = &mut st.file_icons;
@@ -1455,13 +1288,9 @@ fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Acti
                     }
                 });
         });
-    // Clicks on it are for it, not for the canvas under it.
     st.floating.push(area.response.rect);
 }
 
-/// One line of text starting at `at` (its left end, vertically centred)
-/// that has `width` to fit in: what does not fit is cut at the end, which
-/// then reads "…". Returns the width it took.
 fn text_fit(painter: &egui::Painter, at: Pos2, text: &str, font: FontId, color: Color32, width: f32) -> f32 {
     if width <= 1.0 {
         return 0.0;
@@ -1477,7 +1306,6 @@ fn text_fit(painter: &egui::Painter, at: Pos2, text: &str, font: FontId, color: 
     size.x
 }
 
-/// A row of a menu: an icon and what it does. True when it was chosen.
 fn menu_row(ui: &mut egui::Ui, glyph: &str, label: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
     if resp.hovered() {
@@ -1489,7 +1317,6 @@ fn menu_row(ui: &mut egui::Ui, glyph: &str, label: &str) -> bool {
     resp.clicked()
 }
 
-/// A line between two groups of a menu.
 fn menu_gap(ui: &mut egui::Ui) {
     ui.add_space(3.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
@@ -1497,7 +1324,6 @@ fn menu_gap(ui: &mut egui::Ui) {
     ui.add_space(3.0);
 }
 
-/// The menu of a row of the explorer (right click).
 fn file_menu(
     ui: &mut egui::Ui,
     naming: &mut Option<Naming>,
@@ -1509,7 +1335,6 @@ fn file_menu(
 ) {
     ui.set_width(236.0);
     ui.spacing_mut().item_spacing.y = 1.0;
-    // Where new things go: into a folder, next to a file.
     let dir = if is_dir { path } else { path.rsplit_once('/').map_or("", |(dir, _)| dir) };
     let name = path.rsplit_once('/').map_or(path, |(_, name)| name);
     let mut op = None;
@@ -1574,8 +1399,6 @@ fn file_menu(
     }
 }
 
-/// The field the explorer asks a name with: Enter takes it, Esc or a click
-/// elsewhere gives up.
 fn naming_box(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     let Some(naming) = &mut st.naming else { return };
     let place = |path: &str| if path.is_empty() { "this folder".to_string() } else { format!("{path}/") };
@@ -1666,7 +1489,6 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
 }
 
 fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
-    // What a command answers to right now: every chord it has.
     let key = |command: Command| -> String {
         let all: Vec<String> = keys.chords(command).map(|c| c.label()).collect();
         if all.is_empty() {
@@ -1892,7 +1714,6 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                         let id = (page.id, sel.sym.file, sel.sym.index, kind.index());
                         egui::CollapsingHeader::new(title).id_salt(id).show(ui, |ui| {
                             for rel in items.iter().take(200) {
-                                // Outgoing calls list the callee; the rest list where the usage is.
                                 let site = if kind == RelKind::OutgoingCall { rel.to } else { rel.from };
                                 let f = &repo.files[site.file as usize];
                                 let who = rel.other.map(|o| repo.sym_name(o)).unwrap_or("");
@@ -2015,7 +1836,6 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
     st.floating.push(resp.response.rect);
 }
 
-/// Rank `path` against a lowercase query. Higher is better; `None` is no match.
 fn quick_score(path: &str, query: &str) -> Option<i32> {
     let lower = path.to_lowercase();
     let name = lower.rsplit('/').next().unwrap_or(&lower);
@@ -2031,7 +1851,6 @@ fn quick_score(path: &str, query: &str) -> Option<i32> {
     if lower.contains(query) {
         return Some(1000 - lower.len() as i32);
     }
-    // Subsequence match, e.g. "appts" → "src/app/types.ts".
     let mut chars = query.chars();
     let mut want = chars.next()?;
     let mut span = 0;
@@ -2051,8 +1870,6 @@ fn quick_score(path: &str, query: &str) -> Option<i32> {
     None
 }
 
-/// Everything the command palette offers: the app's own commands, then
-/// those of the extensions that are running.
 fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
     let mut out: Vec<(String, Action)> = vec![
         ("File: Open Folder…".into(), Action::OpenFolder),
@@ -2117,7 +1934,6 @@ fn quick_open(
                     );
                     if q.focus {
                         edit.request_focus();
-                        // Opened as the command palette (`>`): the caret goes after it.
                         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit.id) {
                             let end = egui::text::CCursor::new(q.query.chars().count());
                             state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
@@ -2129,7 +1945,6 @@ fn quick_open(
                         q.selected = 0;
                     }
 
-                    // `>` turns the box into the command palette, as in VS Code.
                     if let Some(filter) = q.query.strip_prefix('>') {
                         let filter = filter.trim().to_lowercase();
                         let mut rows: Vec<(i32, String, Action)> = palette_commands(ext)
@@ -2302,8 +2117,6 @@ fn quick_open(
     }
 }
 
-/// A hover from a language extension (Markdown) as the two parts of the
-/// canvas tooltip: the first code line as the title, the rest below it.
 pub fn hover_text(markdown: &str) -> (String, String) {
     let mut lines = markdown
         .lines()

@@ -1,47 +1,28 @@
-//! Newer versions of a project's dependencies, shown next to each one.
-//!
-//! `package.json` and `Cargo.toml` files are read for their dependencies;
-//! the latest version of each is asked for on background threads (npm's
-//! registry, the crates.io index) and comes back as a short text for the end
-//! of its line: `✓ latest`, or `↑ 2.1.0` when there is something newer.
-//!
-//! Nothing but the names of the dependencies leaves the machine, and only
-//! when this is switched on (`prefs.rs`). Answers are kept for an hour.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-/// Who knows the versions of a package.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Registry {
     Npm,
     Crates,
 }
 
-/// A dependency as a manifest declares it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dependency {
-    /// 0-based line of the manifest it is on.
     pub line: u32,
     pub name: String,
-    /// What the manifest asks for: `^1.2.0`, `1`, `>=2, <3`.
     pub wanted: String,
     pub registry: Registry,
 }
 
-/// How what a manifest asks for compares with the latest version.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Standing {
-    /// It asks for the latest.
     Latest,
-    /// Something newer exists that it already accepts (same major).
     Newer,
-    /// Something newer exists that it does not accept: an upgrade to do.
     Major,
 }
 
-/// The dependencies of a manifest called `file_name`, with the line each is on.
 pub fn dependencies(file_name: &str, text: &str) -> Vec<Dependency> {
     match file_name {
         "package.json" => package_json(text),
@@ -50,7 +31,6 @@ pub fn dependencies(file_name: &str, text: &str) -> Vec<Dependency> {
     }
 }
 
-/// `"name": "value"` on a line, with or without a trailing comma.
 fn json_pair(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim().strip_prefix('"')?;
     let (name, rest) = rest.split_once('"')?;
@@ -65,7 +45,6 @@ fn package_json(text: &str) -> Vec<Dependency> {
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if !inside {
-            // `"dependencies": {`
             let opens = trimmed.strip_prefix('"').and_then(|r| r.split_once('"'));
             inside = opens.is_some_and(|(name, rest)| SECTIONS.contains(&name) && rest.trim_end().ends_with('{'));
             continue;
@@ -75,7 +54,6 @@ fn package_json(text: &str) -> Vec<Dependency> {
             continue;
         }
         let Some((name, wanted)) = json_pair(line) else { continue };
-        // Only what a registry can answer for: not files, links, git or tags.
         let from_registry = wanted.chars().next().is_some_and(|c| c.is_ascii_digit() || "^~>=<v*".contains(c));
         if from_registry && !wanted.contains(':') && !wanted.contains('/') {
             out.push(Dependency {
@@ -89,7 +67,6 @@ fn package_json(text: &str) -> Vec<Dependency> {
     out
 }
 
-/// The value of `key = "value"` inside an inline table: `{ version = "1", features = [...] }`.
 fn inline_value<'a>(table: &'a str, key: &str) -> Option<&'a str> {
     let mut rest = table;
     while let Some(at) = rest.find(key) {
@@ -108,8 +85,6 @@ fn inline_value<'a>(table: &'a str, key: &str) -> Option<&'a str> {
 
 fn cargo_toml(text: &str) -> Vec<Dependency> {
     let mut out = Vec::new();
-    // In a `[...dependencies]` table every line is one; in a
-    // `[dependencies.name]` table the `version` line is that crate's.
     let (mut listing, mut single): (bool, Option<String>) = (false, None);
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.split('#').next().unwrap_or("").trim();
@@ -123,8 +98,6 @@ fn cargo_toml(text: &str) -> Vec<Dependency> {
         let (key, value) = (key.trim().trim_matches('"'), value.trim());
         let found = if listing && !key.contains('.') {
             let plain = value.strip_prefix('"').and_then(|v| v.split_once('"')).map(|(v, _)| v);
-            // `name = "1"`, or `name = { version = "1", ... }`. A table with a
-            // `package` renames the crate: that is the name to ask for.
             let wanted = plain.or_else(|| inline_value(value, "version"));
             let name = inline_value(value, "package").unwrap_or(key);
             let elsewhere = inline_value(value, "path").is_some() || inline_value(value, "git").is_some();
@@ -141,37 +114,31 @@ fn cargo_toml(text: &str) -> Vec<Dependency> {
     out
 }
 
-/// The numbers of a version, as many as are written: `1.2.3-beta` → `[1, 2, 3]`.
 fn numbers(version: &str) -> Vec<u64> {
     let core = version.trim().trim_start_matches(['^', '~', '=', '>', '<', 'v', ' ']);
     let core = core.split(['-', '+', ' ', ',']).next().unwrap_or("");
     core.split('.').map_while(|part| part.parse().ok()).collect()
 }
 
-/// Is `version` a pre-release (`2.0.0-rc.1`)? Those are not "the latest".
 fn pre_release(version: &str) -> bool {
     version.split('+').next().unwrap_or("").contains('-')
 }
 
-/// Compare what a manifest asks for with the latest version.
 pub fn standing(wanted: &str, latest: &str) -> Standing {
     let (w, l) = (numbers(wanted), numbers(latest));
     if w.is_empty() || l.is_empty() || wanted.trim() == "*" {
-        return Standing::Latest; // nothing to compare: do not cry wolf
+        return Standing::Latest;
     }
-    // As far as it is written: `1.2` is `1.2.x`.
     let same = w.iter().zip(&l).all(|(a, b)| a == b);
     let older = w.iter().zip(&l).find(|(a, b)| a != b).is_some_and(|(a, b)| a < b);
     if same || !older {
         return Standing::Latest;
     }
-    // What a caret range accepts: the same first number that is not zero.
     let lead = |v: &[u64]| v.iter().position(|n| *n != 0).map(|i| (i, v[i]));
     let accepted = match (lead(&w), lead(&l)) {
         (Some(a), Some(b)) => a == b && w.len() > a.0,
         _ => false,
     };
-    // `~1.2` and exact versions do not take a new minor by themselves.
     let pinned = wanted.trim_start().starts_with(['~', '=']) || wanted.contains('<');
     if accepted && !pinned {
         Standing::Newer
@@ -180,12 +147,10 @@ pub fn standing(wanted: &str, latest: &str) -> Standing {
     }
 }
 
-/// The highest version that is not a pre-release.
 fn highest<'a>(versions: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     versions.filter(|v| !pre_release(v)).max_by(|a, b| numbers(a).cmp(&numbers(b)))
 }
 
-/// Where the crates.io index keeps a crate: `se/rd/serde`, `3/s/syn`.
 fn crates_index_path(name: &str) -> String {
     let name = name.to_lowercase();
     match name.len() {
@@ -196,8 +161,6 @@ fn crates_index_path(name: &str) -> String {
     }
 }
 
-/// The latest version in what the crates.io index says about a crate: one
-/// JSON object per line, one per version, some of them withdrawn.
 fn latest_in_index(body: &str) -> Option<String> {
     let versions: Vec<String> = body
         .lines()
@@ -208,7 +171,6 @@ fn latest_in_index(body: &str) -> Option<String> {
     highest(versions.iter().map(String::as_str)).map(str::to_string)
 }
 
-/// Ask the registry. Blocks: runs on a worker thread.
 fn fetch(registry: Registry, name: &str) -> Result<String, String> {
     const AGENT: &str = "code-canvas (https://github.com/sebastian642431/code-canvas)";
     let get = |url: &str| -> Result<String, String> {
@@ -219,7 +181,6 @@ fn fetch(registry: Registry, name: &str) -> Result<String, String> {
     };
     match registry {
         Registry::Npm => {
-            // A scope's slash is part of the name, not of the path.
             let body = get(&format!("https://registry.npmjs.org/{}/latest", name.replace('/', "%2f")))?;
             let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
             json.get("version").and_then(serde_json::Value::as_str).map(str::to_string).ok_or("no version".to_string())
@@ -231,7 +192,6 @@ fn fetch(registry: Registry, name: &str) -> Result<String, String> {
     }
 }
 
-/// What to write after a dependency's line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
     pub line: u32,
@@ -239,18 +199,15 @@ pub struct Note {
     pub standing: Standing,
 }
 
-/// Asks for latest versions in the background and remembers the answers.
 pub struct Checker {
     known: HashMap<(Registry, String), (Option<String>, Instant)>,
     asking: HashSet<(Registry, String)>,
     tx: Sender<(Registry, String, Option<String>)>,
     rx: Receiver<(Registry, String, Option<String>)>,
-    /// Names waiting for a free worker.
     queue: Vec<(Registry, String)>,
     waker: fn(),
 }
 
-/// How many registries are asked at once, and how long an answer is good for.
 const WORKERS: usize = 4;
 const FRESH: Duration = Duration::from_secs(3600);
 
@@ -260,7 +217,6 @@ impl Checker {
         Checker { known: HashMap::new(), asking: HashSet::new(), tx, rx, queue: Vec::new(), waker }
     }
 
-    /// Make sure the latest version of each of these is known or on its way.
     pub fn want(&mut self, dependencies: &[Dependency]) {
         for d in dependencies {
             let key = (d.registry, d.name.clone());
@@ -291,7 +247,6 @@ impl Checker {
         }
     }
 
-    /// Take in the answers that arrived. True when something new is known.
     pub fn poll(&mut self) -> bool {
         let mut news = false;
         while let Ok((registry, name, latest)) = self.rx.try_recv() {
@@ -305,12 +260,10 @@ impl Checker {
         news
     }
 
-    /// Still asking?
     pub fn busy(&self) -> bool {
         !self.asking.is_empty() || !self.queue.is_empty()
     }
 
-    /// What is known about these dependencies, one note per answered line.
     pub fn notes(&self, dependencies: &[Dependency]) -> Vec<Note> {
         dependencies
             .iter()
@@ -446,7 +399,6 @@ default = []
         let now = Instant::now();
         checker.known.insert((Registry::Crates, "serde".into()), (Some("1.0.228".into()), now));
         checker.known.insert((Registry::Crates, "log".into()), (Some("0.4.22".into()), now));
-        // Asked and not found (no network): nothing is said about it.
         checker.known.insert((Registry::Crates, "unknown".into()), (None, now));
         let notes = checker.notes(&deps);
         assert_eq!(
@@ -458,7 +410,6 @@ default = []
         );
     }
 
-    /// Asks the real registries: `cargo test -p code-canvas real_registries -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn the_real_registries_answer() {

@@ -1,11 +1,3 @@
-//! Settings: which theme, every colour of it, and the keyboard shortcuts.
-//!
-//! The panel only asks for changes (`Action::SetTheme`, `Action::SetColor`,
-//! `Action::ResetColors`, `Action::ResetKey`, `Action::UnbindKey`); the app
-//! applies and saves them (`themes.rs`, `keys.rs`). A new shortcut is the
-//! next key pressed after clicking one: `UiState::rebinding` says for which
-//! command, and the app's key handler takes it from there.
-
 use canvas_render::theme;
 use egui::{Align, Frame, Layout, Margin, RichText};
 
@@ -13,7 +5,6 @@ use super::{check, pal, panel_title, search_field, section, small_icon, well, Ac
 use crate::icons;
 use crate::keys::{self, Scope};
 
-/// The icon next to each group of colours (`theme::Field::group`).
 fn group_icon(group: &str) -> &'static str {
     match group {
         "Interface" => icons::LAYOUT_GRID,
@@ -37,7 +28,6 @@ pub(super) fn settings_panel(
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let (base_key, base) = st.theme.base();
 
-            // Which version this is, and whether there is a newer one.
             section(ui, icons::INFO, "Code Canvas");
             well(ui, |ui| {
                 use crate::update::State;
@@ -84,7 +74,6 @@ pub(super) fn settings_panel(
 
             section(ui, icons::FILE, "File icons");
             well(ui, |ui| {
-                // What is in use: the choice, or the theme found for it.
                 let current = ext.icon_theme(&st.theme.icons).map(|t| t.id.clone());
                 for theme in ext.icon_themes() {
                     let mut on = current.as_deref() == Some(theme.id.as_str());
@@ -184,7 +173,6 @@ pub(super) fn settings_panel(
                         }
                         let hex = theme::to_hex(u32::from_be_bytes(rgba));
                         ui.label(RichText::new(hex).monospace().size(11.0).color(pal().text_faint));
-                        // The name takes what is left, cut at the end if it does not fit.
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             let color = if changed { pal().text } else { pal().text_dim };
                             ui.add(egui::Label::new(RichText::new(field.label).size(12.5).color(color)).truncate());
@@ -199,8 +187,6 @@ pub(super) fn settings_panel(
     });
 }
 
-/// Every command with its shortcut. Clicking the shortcut waits for a new
-/// one; the icons give the command its own back, or leave it without any.
 fn shortcuts(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     section(ui, icons::CORNER_DOWN_LEFT, "Keyboard shortcuts");
     ui.horizontal(|ui| {
@@ -244,7 +230,6 @@ fn shortcuts(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 if ui.add(button).on_hover_text("Click, then press the new shortcut").clicked() {
                     st.rebinding = if waiting { None } else { Some(info.command) };
                 }
-                // The name takes what is left, cut at the end if it does not fit.
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let color = if changed { pal().text } else { pal().text_dim };
                     ui.add(egui::Label::new(RichText::new(info.title).size(12.5).color(color)).truncate());

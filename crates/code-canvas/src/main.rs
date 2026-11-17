@@ -1,9 +1,3 @@
-//! Code Canvas — see a whole codebase on an infinite, GPU-rendered canvas.
-//!
-//! Usage: `code-canvas [FOLDER ...]` — every folder opens in its own tab.
-//! Without arguments the previous session is restored.
-
-// A GUI app: no console window on Windows release builds. Logs go to a file.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
@@ -37,7 +31,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Writes log lines to the log file and, when there is one, to stderr.
 struct Tee(Mutex<Option<std::fs::File>>);
 
 impl Write for Tee {
@@ -69,7 +62,6 @@ fn init_logging() {
     .target(env_logger::Target::Pipe(Box::new(Tee(Mutex::new(file)))))
     .init();
 
-    // Without a console a panic would vanish silently: log it and tell the user.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         log::error!("panic: {info}");
@@ -82,9 +74,6 @@ fn init_logging() {
     }));
 }
 
-/// `code-canvas --install-extension <publisher.name | file.vsix> ...`:
-/// install extensions without opening a window (like `code` does). The
-/// outcome goes to the log; the exit code is the number of failures.
 fn install_extensions(args: &[String]) -> i32 {
     let dir = session::data_dir().join("extensions");
     let mut failures = 0;
@@ -109,7 +98,6 @@ fn install_extensions(args: &[String]) -> i32 {
 fn main() -> anyhow::Result<()> {
     init_logging();
     log::info!("Code Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
-    // What an update left next to the program.
     update::clean_up();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -126,7 +114,6 @@ fn main() -> anyhow::Result<()> {
     });
 
     let event_loop = winit::event_loop::EventLoop::new()?;
-    // Background work (the extension host) wakes the UI thread through this.
     let proxy = event_loop.create_proxy();
     let waker = ext::Waker::new(move || {
         let _ = proxy.send_event(());

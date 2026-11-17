@@ -1,81 +1,39 @@
-//! Scripted driving of the app, for tests and demos that must not touch the
-//! real mouse or keyboard:
-//!
-//! ```text
-//! CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800; select main; locate" code-canvas <folder>
-//! ```
-//!
-//! Steps are separated by `;` and run in order once the active page has
-//! finished loading and the camera has settled. See [`Step`] for the list.
-
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
-    /// `wait <ms>`
     Wait(u64),
-    /// `fit`: show the whole canvas.
     Fit,
-    /// `locate`: frame the selected symbols.
     Locate,
-    /// `goto <path>`: select a file or folder and fly to it.
     Goto(String),
-    /// `select <name>`: select the first symbol with that name.
     Select(String),
-    /// `search <text>`: search in files.
     Search(String),
-    /// `left files|search|extensions|problems|changes|settings|help|none`
     Left(String),
-    /// `install <publisher.name>`: install an extension from Open VSX.
     Install(String),
-    /// `ext-search <text>`: search the extension registry.
     ExtSearch(String),
-    /// `format <path>`: format a file with the installed formatter.
     Format(String),
-    /// `command <id>`: run an extension's command.
     Command(String),
-    /// `answer <choice>`: press that button of the notice that is asking.
     Answer(String),
-    /// `open <path>`: show an image, video or PDF in the viewer (a path
-    /// in the folder, or anywhere on the disk).
     Open(String),
-    /// `focus page|app`: give the keyboard to the webview on screen, or
-    /// back to the window (what clicking one or the other does).
     Focus(String),
-    /// `updates`: look for a newer version of the app now.
     Updates,
-    /// `resize <width> <height>`: resize the window (physical pixels).
     Resize(u32, u32),
-    /// `palette <text>`: open the command palette with a filter typed in.
     Palette(String),
-    /// `edit <path> <line> <column>` (1-based): put the caret in a file.
     Edit(String),
-    /// `type <text>`: type at the caret.
     Type(String),
-    /// `key enter|backspace|delete|tab|left|right|up|down|home|end|undo|redo|save|escape`
     Key(String),
-    /// `git stage [path]`, `git unstage [path]`, `git commit <message>`.
     Git(String),
-    /// `changed on|off`: show only the files git reports as changed.
     OnlyChanged(bool),
-    /// `right symbols|<extension id>|none`
     Right(String),
     CollapseAll,
     ExpandAll,
-    /// `connected on|off`: show only connected files.
     Connected(bool),
-    /// `tab <n>` (1-based)
     Tab(usize),
-    /// `folders`: show the list of opened folders.
     Folders,
-    /// `zoom <factor>`
     Zoom(f32),
-    /// `quick <text>`: open "go to file" with a query typed in.
     Quick(String),
-    /// `maximize`
     Maximize,
-    /// `quit`
     Quit,
 }
 
@@ -149,7 +107,6 @@ impl Script {
         Some(script)
     }
 
-    /// The next step to run now, if it is time. `Wait` steps are consumed here.
     pub fn next(&mut self, now: Instant) -> Option<Step> {
         if now < self.not_before {
             return None;
@@ -160,7 +117,6 @@ impl Script {
                 None
             }
             step => {
-                // A short pause between steps lets each one draw.
                 self.not_before = now + Duration::from_millis(120);
                 Some(step)
             }

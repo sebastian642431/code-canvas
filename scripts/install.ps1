@@ -1,12 +1,3 @@
-# Installs Code Canvas for the current user (no admin rights needed):
-#   - copies the release build to %LOCALAPPDATA%\Programs\Code Canvas
-#   - adds Start Menu and Desktop shortcuts
-#   - optionally adds "Open with Code Canvas" to the folder context menu
-#
-# Usage (from the repository root):
-#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -ContextMenu
-#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -NoBuild -NoDesktop
 param(
     [switch]$NoBuild,
     [switch]$NoDesktop,
@@ -25,7 +16,6 @@ if (-not $NoBuild) {
 }
 if (-not (Test-Path $source)) { throw "Not found: $source (run without -NoBuild)" }
 
-# The installed copy cannot be replaced while it is running.
 $running = Get-Process code-canvas -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
 if ($running) { throw "Code Canvas is running from $exe. Close it and run this script again." }
 
@@ -45,12 +35,9 @@ function New-Shortcut([string]$path) {
 }
 New-Shortcut (Join-Path ([Environment]::GetFolderPath("Programs")) "Code Canvas.lnk")
 if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "Code Canvas.lnk") }
-# Windows keeps the icons of programs in a cache; without this an update can
-# keep showing the previous icon on shortcuts and the taskbar.
 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
 
 if ($ContextMenu) {
-    # Per-user registry keys: right-click a folder (or inside one) -> Open with Code Canvas.
     foreach ($entry in @(@("Directory\shell\CodeCanvas", "%1"), @("Directory\Background\shell\CodeCanvas", "%V"))) {
         $key = "HKCU:\Software\Classes\$($entry[0])"
         New-Item -Path "$key\command" -Force | Out-Null

@@ -1,5 +1,3 @@
-/// Axis-aligned rectangle in world units. `(x, y)` is the top-left corner and
-/// `y` grows downwards, like screen coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -29,7 +27,6 @@ impl Rect {
         p[0] >= self.x && p[0] <= self.right() && p[1] >= self.y && p[1] <= self.bottom()
     }
 
-    /// `o` lies completely inside `self`.
     pub fn contains_rect(&self, o: &Rect) -> bool {
         o.x >= self.x && o.right() <= self.right() && o.y >= self.y && o.bottom() <= self.bottom()
     }

@@ -1,5 +1,3 @@
-//! Measure each phase of loading a folder:
-//! `cargo run --release -p canvas-core --example scan_bench -- <folder>`
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -37,7 +35,6 @@ fn main() {
             repo.symbols.count,
             layout.nodes.len()
         );
-        // Where the loading threads spent their time (CPU seconds, all threads).
         let secs = |i: usize| scan::LOAD_PROFILE[i].swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
         println!(
             "       load, thread-seconds: stat {:.1}, read {:.1}, normalise {:.1}, analyse {:.1}",

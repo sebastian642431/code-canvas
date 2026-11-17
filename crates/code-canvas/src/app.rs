@@ -1,5 +1,3 @@
-//! Window, input and the per-frame glue between pages, the UI and the renderer.
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,17 +32,11 @@ struct Gfx {
     device: wgpu::Device,
     config: wgpu::SurfaceConfiguration,
     surface: wgpu::Surface<'static>,
-    /// The window changed size and the surface has not been told yet. It is
-    /// told once per frame: while an edge is dragged many sizes arrive
-    /// between two frames, and each reconfiguration costs 15-30 ms.
     resized: bool,
     instance: wgpu::Instance,
-    // Dropped last: the surface must go before the window.
     window: Arc<Window>,
 }
 
-/// The name shortcuts know a key by (`keys::Chord`). `None` for keys that
-/// are not a shortcut on their own: modifiers, dead keys, media keys.
 fn key_name(key: &Key) -> Option<String> {
     let name = match key {
         Key::Character(c) if !c.is_empty() => return Some(c.to_lowercase()),
@@ -83,9 +75,7 @@ fn key_name(key: &Key) -> Option<String> {
     Some(name.to_string())
 }
 
-/// Names offered for the path being typed in the editor (`paths.rs`).
 struct Completion {
-    /// The column where the name being completed starts.
     start: usize,
     items: Vec<crate::paths::Candidate>,
     selected: usize,
@@ -98,7 +88,6 @@ struct Drag {
     button: MouseButton,
 }
 
-/// Left panels in the order their index is saved in the session.
 const LEFT_PANELS: [LeftPanel; 7] = [
     LeftPanel::Files,
     LeftPanel::Search,
@@ -122,79 +111,44 @@ pub struct App {
     mods: ModifiersState,
     last_click: Option<(Instant, [f32; 2])>,
     ui: UiState,
-    /// The part of the window the active folder is drawn in, in physical
-    /// pixels: the whole canvas, or its pane when folders are side by side.
     canvas: Rect,
-    /// The whole canvas (the window minus the panels), in physical pixels.
     canvas_full: Rect,
-    /// How many folders were side by side in the last frame.
     pane_count: usize,
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
-    /// Page whose relation curves are on the GPU.
     curves_for: Option<u32>,
     last_frame: Instant,
     frame_ms: f32,
     stats: FrameStats,
     bench: Option<Bench>,
-    /// When egui asked to be repainted (animations, tooltips).
     next_repaint: Option<Instant>,
-    /// Scripted steps to run (`CODE_CANVAS_SCRIPT`), for tests and demos.
     script: Option<Script>,
-    /// The close button of our own title bar was pressed.
     exit_requested: bool,
-    /// Edge under the pointer where a press resizes the window.
     resize_edge: Option<ResizeDirection>,
-    /// Something worth persisting changed since the last save.
     session_dirty: bool,
     last_save: Instant,
-    /// Installed VS Code extensions and the process that runs them.
     ext: Extensions,
-    /// When an edit last changed a file: the symbol index is rebuilt once
-    /// the typing pauses.
     symbols_stale: Option<Instant>,
-    /// An edit the extensions have not been told about yet, and when it
-    /// happened: they get the text after a short pause, not per keystroke.
     unsent_edit: Option<(PathBuf, Instant)>,
-    /// The code cell the pointer rests on and since when: the language
-    /// extensions are asked about it once it has stayed there a moment.
     hover_probe: Option<((u32, u32, u32), Instant, bool)>,
-    /// Reports files that change on disk.
     watcher: crate::watch::Watcher,
-    /// When each page was last rescanned because of such changes.
     auto_rescan: Option<Instant>,
-    /// Browser views showing extensions' webviews.
     webviews: crate::webview::WebViews,
-    /// Folders webview pages may load files from (to notice changes).
     webview_roots: Vec<PathBuf>,
-    /// Looks for newer releases of the app, and installs one when asked.
     updater: crate::update::Updater,
-    /// The program to start once the app has closed: an update was installed.
     restart_as: Option<PathBuf>,
-    /// What is offered under the caret while a path is typed.
     completion: Option<Completion>,
-    /// Latest versions of dependencies, asked for in the background.
     versions: crate::versions::Checker,
-    /// The dependencies of each manifest of the open folders, by its path.
     manifests: HashMap<PathBuf, Vec<crate::versions::Dependency>>,
-    /// Pages (ids) whose manifests have to be read (again).
     versions_due: Vec<u32>,
-    /// Folders the user was already told about, once every answer was in.
     versions_told: HashSet<PathBuf>,
-    /// The theme (`theme::revision`) the interface and the scenes were last
-    /// built with.
     theme_revision: u64,
-    /// The choice of theme changed since it was last written to disk.
     theme_dirty: bool,
 }
 
 impl App {
-    /// Restores the previous session and adds `paths` (from the command
-    /// line) to it.
     pub fn new(paths: Vec<PathBuf>, waker: ext::Waker) -> Self {
         let saved: Session = session::load();
-        // The previous session always comes back; folders given on the
-        // command line are added to it (and the first one is shown).
         let mut initial: Vec<(PathBuf, Option<PageSession>)> =
             saved.pages.iter().filter(|s| s.path.is_dir()).map(|s| (s.path.clone(), Some(s.clone()))).collect();
         let mut initial_active = saved.active;
@@ -211,19 +165,15 @@ impl App {
                 initial_active = at;
             }
         }
-        // The colours first: everything built from here on takes them.
         let chosen = crate::themes::load();
         canvas_render::theme::set(chosen.resolve());
         let mut ext = Extensions::new(session::data_dir(), waker);
-        // Not in scripted or benchmark runs: those must not reach for the network.
         if std::env::var_os("CODE_CANVAS_SCRIPT").is_none() && std::env::var_os("CODE_CANVAS_BENCH").is_none() {
             ext.install_defaults();
         }
         let mut ui = UiState::default();
         ui.theme = chosen;
         ui.prefs = crate::prefs::load();
-        // Scripted and benchmark runs keep to themselves, unless a test of
-        // the updates asks otherwise.
         let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
         let updates = (ui.prefs.check_updates && !quiet) || std::env::var_os("CODE_CANVAS_CHECK_UPDATES").is_some();
         let follow_chat = ui.prefs.follow_chat;
@@ -312,8 +262,6 @@ impl App {
         }
     }
 
-    /// The folders on screen and where each is drawn (physical pixels): all
-    /// of them side by side, or only the active one.
     fn panes(&self) -> Vec<(usize, Rect)> {
         let count = ui::pane_count(self.ui.single, self.pages.len());
         if count <= 1 {
@@ -321,7 +269,6 @@ impl App {
         }
         let c = self.canvas_full;
         let whole = egui::Rect::from_min_size(egui::pos2(c.x, c.y), egui::vec2(c.w, c.h));
-        // The same division the UI draws its frames with, in pixels.
         ui::pane_rects(whole, count, 8.0 * self.scale())
             .into_iter()
             .map(|r| Rect::new(r.left(), r.top(), r.width(), r.height()))
@@ -329,8 +276,6 @@ impl App {
             .collect()
     }
 
-    /// The pointer is about to do something on the canvas at `p`: the folder
-    /// it is over becomes the active one.
     fn focus_pane_at(&mut self, p: [f32; 2]) {
         let over = self.panes().into_iter().find(|(_, rect)| rect.contains(p));
         if let Some((i, rect)) = over {
@@ -342,7 +287,6 @@ impl App {
         }
     }
 
-    /// Is this physical-pixel position over the UI rather than the canvas?
     fn over_ui(&self, p: [f32; 2]) -> bool {
         if !self.canvas.contains(p) {
             return true;
@@ -352,19 +296,13 @@ impl App {
         self.ui.floating.iter().any(|r| r.contains(pt))
     }
 
-    /// The user chose a theme or changed a colour (`self.ui.theme`): use it.
-    /// What is on screen follows in [`App::follow_theme`].
     fn theme_changed(&mut self) {
         canvas_render::theme::set(self.ui.theme.resolve());
         self.theme_dirty = true;
         self.request_redraw();
     }
 
-    /// Bring everything that keeps colours of its own up to date with the
-    /// theme in use: egui's look, the web pages and the pages' GPU scenes
-    /// (the renderer sees to its own buffers).
     fn follow_theme(&mut self) {
-        // Pages that finished loading since the theme changed get it now.
         self.webviews.retheme();
         let revision = canvas_render::theme::revision();
         if self.theme_revision == revision {
@@ -403,7 +341,6 @@ impl App {
         });
     }
 
-    /// The window edge or corner under `p`, where dragging resizes.
     fn edge_at(&self, p: [f32; 2]) -> Option<ResizeDirection> {
         let g = self.gfx.as_ref()?;
         if g.window.is_maximized() {
@@ -425,12 +362,6 @@ impl App {
         })
     }
 
-    // ----- pages -------------------------------------------------------
-
-    /// A file was dropped on the window while a folder is open: put a copy
-    /// of it there. It goes into the folder selected on the canvas or in the
-    /// explorer (the one a selected file is in), else the open folder itself.
-    /// Nothing is ever overwritten; the file watcher shows it once it is in.
     fn drop_file(&mut self, file: PathBuf) {
         let Some(page) = self.pages.get(self.active) else { return };
         let selected = page.selected.and_then(|n| page.ready().and_then(|r| r.layout.nodes.get(n)));
@@ -453,8 +384,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// Something chosen in the explorer's menu. Paths are relative to the
-    /// open folder and cannot leave it (`files::inside`).
     fn file_op(&mut self, op: FileOp) {
         let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
         let at = |rel: &str| crate::files::inside(&root, rel);
@@ -462,7 +391,6 @@ impl App {
             FileOp::Reveal(path) => at(&path).and_then(|p| crate::files::reveal(&p)),
             FileOp::Terminal(dir) => at(&dir).and_then(|p| crate::files::terminal(&p)),
             FileOp::CopyPath { path, relative } => at(&path).and_then(|full| {
-                // With the separators of this system, whatever the tree uses.
                 let full: PathBuf = full.components().collect();
                 let text = if relative { path.clone() } else { full.display().to_string() };
                 arboard::Clipboard::new().and_then(|mut c| c.set_text(text)).map_err(|e| e.to_string())
@@ -515,7 +443,6 @@ impl App {
     fn switch_to(&mut self, i: usize) {
         if i < self.pages.len() {
             self.active = i;
-            // A folder restored from the last session is read when first shown.
             self.pages[i].ensure_scanned();
             self.drag = None;
             self.update_title();
@@ -552,7 +479,6 @@ impl App {
         let (s, vp) = (self.scale(), self.viewport());
         if let Some(p) = self.pages.get_mut(self.active) {
             if !p.is_loading() {
-                // Keep looking at the same place once the scan finishes.
                 p.restore_camera = p.portable_camera(s, vp);
                 p.framed = false;
                 p.start_scan();
@@ -568,21 +494,15 @@ impl App {
         self.request_redraw();
     }
 
-    // ----- files and extensions ----------------------------------------
-
-    /// The page that holds `path` and the path relative to its root.
     fn locate_file(&self, path: &Path) -> Option<(usize, String)> {
         let key = ext::path_key(&path.to_string_lossy());
         self.pages.iter().enumerate().find_map(|(i, p)| {
             let mut root = ext::path_key(&p.root.to_string_lossy());
             root.push('/');
-            // The key differs from the path in case only, so lengths match.
             key.starts_with(&root).then(|| (i, path.to_string_lossy().replace('\\', "/")[root.len()..].to_string()))
         })
     }
 
-    /// Replace a file's contents on disk (a formatter or a fix produced
-    /// them) and show the new contents.
     fn write_file(&mut self, path: &Path, text: &str) {
         self.watcher.expect(path);
         if let Err(e) = std::fs::write(path, text) {
@@ -593,7 +513,6 @@ impl App {
         self.ext.file_changed(path);
         if let Some((i, rel)) = self.locate_file(path) {
             if let Some(page) = self.pages.get_mut(i) {
-                // An open editor without changes of its own takes the new text.
                 if page.editors.get(&rel).is_some_and(|e| !e.dirty) {
                     let caret = page.editors.remove(&rel).map(|e| e.caret).unwrap_or_default();
                     if page.editing.as_deref() == Some(rel.as_str()) && page.begin_edit(&rel) {
@@ -612,8 +531,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// F12: where is the name at the caret (or under the pointer) defined?
-    /// Language extensions answer exactly; without one, the built-in index does.
     fn go_to_definition(&mut self) {
         let Some(page) = self.pages.get(self.active) else { return };
         let Some(r) = page.ready() else { return };
@@ -633,11 +550,6 @@ impl App {
         }
     }
 
-    // ----- changes on disk ---------------------------------------------------
-
-    /// Files changed outside the app: show them as they are now. A few
-    /// files are read again one by one; many, or new and removed ones, mean
-    /// the folder is scanned again.
     fn on_disk_changes(&mut self, batch: crate::watch::Batch) {
         const ONE_BY_ONE: usize = 24;
         log::debug!(
@@ -652,26 +564,23 @@ impl App {
                 page.refresh_git();
             }
         }
-        // Per page: files already on the canvas, and paths that are not.
         let mut known: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         let mut other: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         for path in &batch.files {
             let Some((i, rel)) = self.locate_file(path) else { continue };
-            // Build output and dependencies are not on the canvas.
             if rel.split('/').any(|part| skip.iter().any(|s| s == part)) {
                 continue;
             }
             let on_canvas = self.pages[i].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
             match (on_canvas, path.is_file()) {
                 (true, true) => known[i].push(rel),
-                (true, false) => other[i].push(rel), // removed
-                (false, true) => other[i].push(rel), // new
-                (false, false) => {}                 // a folder, or already gone
+                (true, false) => other[i].push(rel),
+                (false, true) => other[i].push(rel),
+                (false, false) => {}
             }
         }
         for i in 0..self.pages.len() {
             let root = self.pages[i].root.clone();
-            // New paths count only when git would not ignore them.
             let fresh = if other[i].is_empty() {
                 Vec::new()
             } else {
@@ -687,7 +596,6 @@ impl App {
                     self.pages[i].ready().is_some_and(|r| r.repo.files.len() > 60_000),
                     self.auto_rescan.is_some_and(|t| t.elapsed() < Duration::from_secs(4)),
                 );
-                // A huge folder takes seconds to scan: that stays the user's call (F5).
                 if !big && !recent && !self.pages[i].is_loading() && self.pages[i].editors.values().all(|e| !e.dirty) {
                     log::info!("{}: files were added or removed, scanning again", root.display());
                     self.auto_rescan = Some(Instant::now());
@@ -703,7 +611,6 @@ impl App {
             }
             for rel in std::mem::take(&mut known[i]) {
                 let page = &mut self.pages[i];
-                // What is being typed here wins over what changed there.
                 if page.editors.get(&rel).is_some_and(|e| e.dirty) {
                     continue;
                 }
@@ -712,7 +619,6 @@ impl App {
                     g.renderer.text.drop_page(page.id);
                     page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
                 }
-                // A manifest changed: its dependencies may have.
                 if rel.ends_with("package.json") || rel.ends_with("Cargo.toml") {
                     self.versions_due.push(page.id);
                 }
@@ -729,9 +635,6 @@ impl App {
         self.request_redraw();
     }
 
-    // ----- editing ---------------------------------------------------------
-
-    /// The text of the file being edited changed: show it.
     fn after_edit(&mut self) {
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let Some(rel) = page.editing.clone() else { return };
@@ -745,8 +648,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// Where the caret's cell is on screen: its top left and bottom right
-    /// corners, in physical pixels.
     fn caret_cell(&self) -> Option<([f32; 2], [f32; 2])> {
         let page = self.pages.get(self.active)?;
         let editor = page.editor()?;
@@ -759,7 +660,6 @@ impl App {
         Some((view.to_screen([cell.x, cell.y]), view.to_screen([cell.right(), cell.bottom()])))
     }
 
-    /// Offer names for the path being typed at the caret, if one is.
     fn update_completion(&mut self) {
         self.completion = None;
         if !self.ui.prefs.complete_paths {
@@ -771,7 +671,6 @@ impl App {
         let Some(typed) = crate::paths::partial(editor.line(caret.line), caret.col) else { return };
         let Some(folder) = crate::paths::folder(&page.root, &editor.rel_path, &typed.dir) else { return };
         let mut items = crate::paths::candidates(&folder, &typed.prefix);
-        // A file does not import itself.
         let own = page.root.join(&editor.rel_path);
         items.retain(|c| folder.join(&c.name) != own);
         if !items.is_empty() {
@@ -779,8 +678,6 @@ impl App {
         }
     }
 
-    /// Write the offered name `index` where it was being typed. After a
-    /// folder the names inside it are offered straight away.
     fn accept_completion(&mut self, index: usize) {
         let Some(offer) = self.completion.take() else { return };
         let Some(candidate) = offer.items.get(index) else { return };
@@ -791,7 +688,6 @@ impl App {
         self.update_completion();
     }
 
-    /// Pan just enough for the caret to be on screen.
     fn keep_caret_visible(&mut self) {
         let area = self.canvas;
         let Some((tl, br)) = self.caret_cell() else { return };
@@ -815,8 +711,6 @@ impl App {
         }
     }
 
-    /// Write the file being edited, then let the extensions format it if
-    /// the settings say so.
     fn save_edit(&mut self) {
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let Some(rel) = page.editing.clone() else { return };
@@ -837,7 +731,6 @@ impl App {
         log::info!("saved {}", path.display());
         self.ext.file_changed(&path);
         if let Some(g) = self.gfx.as_mut() {
-            // From disk again: the symbol index and git see the saved file.
             g.renderer.text.drop_page(page.id);
             page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
         }
@@ -847,7 +740,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// Files with unsaved edits, over every folder.
     fn unsaved(&self) -> Vec<(usize, String)> {
         let dirty = |i: usize, p: &Page| {
             p.editors.values().filter(|e| e.dirty).map(|e| (i, e.rel_path.clone())).collect::<Vec<_>>()
@@ -855,7 +747,6 @@ impl App {
         self.pages.iter().enumerate().flat_map(|(i, p)| dirty(i, p)).collect()
     }
 
-    /// Before leaving: offer to save what is not saved. False cancels leaving.
     fn confirm_exit(&mut self) -> bool {
         let unsaved = self.unsaved();
         if unsaved.is_empty() {
@@ -887,14 +778,9 @@ impl App {
         }
     }
 
-    /// Keys while the caret is in a file. True when the key was used.
     fn edit_key(&mut self, event: &KeyEvent) -> bool {
-        // AltGr reports Ctrl+Alt: that is typing (`@`, `{`, `[` on many layouts), not a shortcut.
         let cmd = (self.mods.control_key() && !self.mods.alt_key()) || self.mods.super_key();
         let shift = self.mods.shift_key();
-        // A list of names is up: the keys that walk and take it are its own.
-        // Any other key goes on to the editor, which then offers again
-        // for what is at the caret.
         if let Some(offer) = self.completion.as_mut() {
             let count = offer.items.len();
             let taken = match &event.logical_key {
@@ -987,7 +873,6 @@ impl App {
                         changed = true;
                     }
                 }
-                // Other shortcuts (Ctrl+P, Ctrl+O…) keep their meaning.
                 _ => return false,
             },
             _ => match event.text.as_deref() {
@@ -1004,13 +889,10 @@ impl App {
             self.keep_caret_visible();
             self.request_redraw();
         }
-        // What is at the caret now may be a path being typed.
         self.update_completion();
         true
     }
 
-    /// Show an image, a video, an audio file or a PDF in the viewer panel.
-    /// False when `path` is none of those.
     fn open_media(&mut self, path: &Path) -> bool {
         let Some(kind) = crate::media::kind(path).filter(|_| path.is_file()) else { return false };
         self.webviews.allow_file(path);
@@ -1022,8 +904,6 @@ impl App {
     }
 
     fn reveal_file(&mut self, path: &Path) {
-        // Pictures and the like are looked at, wherever they are; code is
-        // gone to on the canvas.
         if self.open_media(path) {
             return;
         }
@@ -1033,7 +913,6 @@ impl App {
         }
     }
 
-    /// The file the user means: under the pointer, else the selected one.
     fn current_file(&self) -> Option<PathBuf> {
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
@@ -1055,8 +934,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// Tell the extensions which files are readable on screen: those are
-    /// their open documents (what linters check).
     fn sync_documents(&mut self) {
         if self.drag.is_some() {
             return;
@@ -1087,8 +964,6 @@ impl App {
         self.ext.show_documents(&visible, focus.as_deref());
     }
 
-    // ----- camera helpers ---------------------------------------------
-
     fn frame_node(&mut self, node: usize) {
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
@@ -1097,7 +972,6 @@ impl App {
         let target = if n.is_dir() {
             Camera::fit(n.rect, area, vp, 24.0 * s)
         } else {
-            // Files: readable width, top of the file at the top of the screen.
             let z = (area.w * 0.7 / n.rect.w).min(2.0 * s).max(Camera::fit(n.rect, area, vp, 24.0 * s).zoom);
             let ac = area.center();
             Camera {
@@ -1112,14 +986,12 @@ impl App {
         self.request_redraw();
     }
 
-    /// Fly to a place in the code, zooming in enough to read it.
     fn frame_site(&mut self, site: Site) {
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let Some((p, exact)) = r.layout.anchor(&site) else { return };
         let z = if exact { page.camera.zoom.max(1.25 * s) } else { page.camera.zoom };
-        // Put the site a third of the way into the canvas.
         let (sx, sy) = (area.x + area.w * 0.3, area.y + area.h * 0.35);
         page.target = Some(Camera { center: [p[0] - (sx - vp[0] * 0.5) / z, p[1] - (sy - vp[1] * 0.5) / z], zoom: z });
         self.request_redraw();
@@ -1129,8 +1001,6 @@ impl App {
         self.frame_node(0);
     }
 
-    /// Frame the selected symbols and everything related to them, or the
-    /// selected node when no symbol is selected.
     fn frame_selection(&mut self) {
         let (area, vp, s) = (self.canvas, self.viewport(), self.scale());
         let Some(page) = self.pages.get_mut(self.active) else { return };
@@ -1151,7 +1021,6 @@ impl App {
             Some(b) => {
                 let mut cam = Camera::fit(b.expand(60.0), area, vp, 90.0 * s);
                 cam.zoom = cam.zoom.min(1.6 * s);
-                // Re-centre after clamping the zoom.
                 let (c, ac) = (b.center(), area.center());
                 cam.center = [c[0] - (ac[0] - vp[0] * 0.5) / cam.zoom, c[1] - (ac[1] - vp[1] * 0.5) / cam.zoom];
                 page.target = Some(cam);
@@ -1212,8 +1081,6 @@ impl App {
         }
     }
 
-    // ----- symbols ------------------------------------------------------
-
     fn select_symbol(&mut self, sym: SymRef, clicked: Option<Site>, toggle: bool) {
         let Some(page) = self.pages.get_mut(self.active) else { return };
         if !toggle && page.selections.iter().any(|s| s.sym == sym) {
@@ -1240,8 +1107,6 @@ impl App {
         }
     }
 
-    // ----- input --------------------------------------------------------
-
     fn on_canvas_click(&mut self, pos: [f32; 2]) {
         self.completion = None;
         let now = Instant::now();
@@ -1252,12 +1117,10 @@ impl App {
         });
         self.last_click = if double { None } else { Some((now, pos)) };
 
-        // Name chips select the symbol they show.
         if let Some(&(_, sym)) = self.chip_hits.iter().find(|(r, _)| r.contains(pos)) {
             self.select_symbol(sym, None, false);
             return;
         }
-        // Folder collapse markers.
         if let Some(path) = self.toggle_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, p)| p.clone()) {
             self.apply(Action::ToggleCollapsed(path));
             return;
@@ -1272,9 +1135,8 @@ impl App {
         let zoom = page.camera.zoom;
         let readable = Lod::for_zoom(zoom) == Lod::Text;
 
-        // What is under the pointer, worked out before anything changes.
-        let mut caret_at = None; // (file path, line, display column)
-        let mut picked = None; // a symbol and, when it was a use of it, where
+        let mut caret_at = None;
+        let mut picked = None;
         if let Some(n) = hit.map(|h| &r.layout.nodes[h]) {
             if let NodeKind::File(fi) = n.kind {
                 let f = &r.repo.files[fi];
@@ -1293,7 +1155,6 @@ impl App {
             }
         }
 
-        // A card that is a picture, a video or a PDF: show it.
         let media = hit.and_then(|h| match r.layout.nodes[h].kind {
             NodeKind::File(fi) => Some(page.root.join(&r.repo.files[fi].rel_path)),
             NodeKind::Dir => None,
@@ -1301,9 +1162,6 @@ impl App {
         let media = media.filter(|p| !double && crate::media::kind(p).is_some() && caret_at.is_none());
 
         page.selected = hit;
-        // Readable code is an editor: a click puts the caret there (Shift
-        // extends the selection, a double click takes the word). Ctrl+click
-        // asks where the name is used, as in VS Code.
         if let Some((rel, line, col)) = caret_at {
             if page.begin_edit(&rel) {
                 if let Some(editor) = page.editor_mut() {
@@ -1318,7 +1176,6 @@ impl App {
                 return;
             }
         }
-        // A click anywhere else leaves the editor (what was typed is kept).
         if !ctrl {
             page.editing = None;
         }
@@ -1348,9 +1205,6 @@ impl App {
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
         let chord = key_name(&event.logical_key).map(|key| Chord::new(&key, cmd, shift, alt));
 
-        // Settings is waiting for the new shortcut of a command: this key is
-        // it. Esc gives up; a modifier on its own, or a key that cannot be
-        // used for that command, keeps it waiting.
         if self.ui.left != Some(LeftPanel::Settings) {
             self.ui.rebinding = None;
         }
@@ -1370,7 +1224,6 @@ impl App {
         }
 
         let bound = chord.as_ref().and_then(|c| self.ui.keys.command(c)).map(Command::info);
-        // Some shortcuts work wherever the keyboard is, a text field included.
         if let Some(info) = bound.filter(|i| i.scope == Scope::Anywhere) {
             self.run_command(info.command);
             return;
@@ -1378,9 +1231,6 @@ impl App {
         if typing || self.ui.quick.is_some() {
             return;
         }
-        // The caret is in a file: keys go to the editor first. A shortcut
-        // with Alt is the exception (Shift+Alt+F formats, it does not type);
-        // Ctrl+Alt is AltGr, which does type.
         let before_editor = bound.is_some() && alt && !cmd;
         if !before_editor && self.edit_key(event) {
             return;
@@ -1403,7 +1253,6 @@ impl App {
         }
     }
 
-    /// What a shortcut does (`keys::COMMANDS` says which keys it has).
     fn run_command(&mut self, command: Command) {
         match command {
             Command::Palette => self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true }),
@@ -1432,7 +1281,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// Shortcuts that are not in the table: Ctrl+1 … Ctrl+9 go to that canvas.
     fn fixed_chord(&mut self, chord: &Chord) -> bool {
         match chord.key.as_bytes() {
             [digit @ b'1'..=b'9'] if chord.ctrl && !chord.alt => {
@@ -1443,14 +1291,10 @@ impl App {
         }
     }
 
-    /// A chord pressed while a web page (an extension's panel) had the
-    /// keyboard: the same shortcuts as in the window, except the canvas's
-    /// own, which are not for a page that is being typed in.
     fn page_chord(&mut self, k: &crate::webview::PageKey) {
         let chord = Chord::new(&k.key, k.ctrl, k.shift, k.alt);
         match self.ui.keys.command(&chord).map(Command::info) {
             Some(info) if info.scope != Scope::Canvas => {
-                // These open a text field of the app: typing must reach it.
                 if matches!(info.command, Command::Palette | Command::GoToFile | Command::SearchInFiles) {
                     self.webviews.focus_app();
                 }
@@ -1463,7 +1307,6 @@ impl App {
         }
     }
 
-    /// The user changed a shortcut (`self.ui.key_file`): use it and save it.
     fn keys_changed(&mut self) {
         self.ui.keys = Keymap::new(&self.ui.key_file);
         crate::keys::save(&self.ui.key_file);
@@ -1480,8 +1323,6 @@ impl App {
         }
         self.frame_node(parent);
     }
-
-    // ----- UI actions -----------------------------------------------------
 
     fn apply(&mut self, action: Action) {
         if !matches!(action, Action::HoverPath(_) | Action::DragWindow | Action::Minimize | Action::CloseWindow) {
@@ -1501,7 +1342,6 @@ impl App {
             }
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
             Action::FlyToPath(path) => {
-                // A picture or a video is also shown, not just gone to.
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
                     self.open_media(&file);
                 }
@@ -1548,7 +1388,6 @@ impl App {
             }
             Action::ToggleCollapsed(path) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
-                    // A merged chain `a/b/c` may have been collapsed through any of its folders.
                     let chain: Vec<String> = page
                         .ready()
                         .map(|r| {
@@ -1653,7 +1492,6 @@ impl App {
                 self.request_redraw();
             }
             Action::Git(op) => {
-                // Discarding cannot be undone: ask first.
                 let lost = match &op {
                     crate::git::GitOp::Discard(path) => Some(format!("the changes in {path}")),
                     crate::git::GitOp::DiscardAll => Some("ALL the changes in tracked files".to_string()),
@@ -1702,7 +1540,6 @@ impl App {
                 self.updater.set_enabled(prefs.check_updates);
                 self.ui.prefs = prefs;
                 if versions {
-                    // On: read every folder's manifests. Off: take the notes away.
                     self.versions_due = self.pages.iter().map(|p| p.id).collect();
                     for path in std::mem::take(&mut self.manifests).into_keys() {
                         self.ext.set_own_decorations(&path.to_string_lossy(), "versions", Vec::new());
@@ -1785,12 +1622,8 @@ impl App {
         }
     }
 
-    // ----- scripted driving -------------------------------------------------
-
-    /// Run due script steps. Returns true while the script still has work.
     fn run_script(&mut self) -> bool {
         let Some(script) = self.script.as_mut() else { return false };
-        // Wait for the page to load and the camera to settle between steps.
         let busy = self.pages.get(self.active).is_some_and(|p| p.is_loading() || p.target.is_some() || !p.framed);
         if busy {
             return true;
@@ -1833,7 +1666,6 @@ impl App {
                 "changes" => self.ui.show_left(LeftPanel::Changes),
                 "settings" => self.ui.show_left(LeftPanel::Settings),
                 id if id.contains('.') => {
-                    // `left publisher.name`: that extension's own panel.
                     self.ui.extension = id.to_string();
                     self.ui.show_left(LeftPanel::Extension);
                 }
@@ -1881,7 +1713,6 @@ impl App {
                 self.after_edit();
                 self.update_completion();
             }
-            // With a list of names up, these keys are the list's, as when typed.
             Step::Key(name)
                 if self.completion.is_some() && matches!(name.as_str(), "up" | "down" | "enter" | "tab" | "escape") =>
             {
@@ -1948,7 +1779,6 @@ impl App {
                 "symbols" => self.ui.show_right(RightPanel::Symbols),
                 "deps" => self.ui.show_right(RightPanel::Deps),
                 key if !key.is_empty() && key != "none" => {
-                    // `right <view id or extension id>`: that extension's webview.
                     let items = self.ext.rail_items();
                     let found = items.iter().find(|w| w.view == key || w.extension == key).map(|w| w.view.clone());
                     let open = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
@@ -2000,14 +1830,9 @@ impl App {
         true
     }
 
-    // ----- background work -------------------------------------------------
-
-    /// Pull finished work from background helpers. Returns true while any
-    /// of them is still running (so the UI keeps ticking).
     fn poll_background(&mut self) -> bool {
         let mut busy = false;
         let mut changed = false;
-        // Editing leaves the symbol index behind; catch up when typing pauses.
         if self.symbols_stale.is_some_and(|t| t.elapsed() > Duration::from_millis(700)) {
             self.symbols_stale = None;
             for page in &mut self.pages {
@@ -2019,7 +1844,6 @@ impl App {
             }
         }
         busy |= self.symbols_stale.is_some();
-        // Tell the extensions what was typed, once the typing pauses.
         if self.unsent_edit.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(250)) {
             if let Some((path, _)) = self.unsent_edit.take() {
                 let text =
@@ -2030,7 +1854,6 @@ impl App {
             }
         }
         busy |= self.unsent_edit.is_some();
-        // Source control: results of `git status` runs.
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
@@ -2043,7 +1866,6 @@ impl App {
         if git_relayout {
             self.relayout();
         }
-        // The timeline follows the selected file.
         if let Some(page) = self.pages.get_mut(self.active) {
             let selected = page.ready().and_then(|r| {
                 let n = r.layout.nodes.get(page.selected?)?;
@@ -2054,7 +1876,6 @@ impl App {
             }
             changed |= page.poll_timeline();
         }
-        // What the language extensions know about the code under the pointer.
         let cell = self
             .pages
             .get(self.active)
@@ -2079,7 +1900,6 @@ impl App {
                 busy = true;
             }
         }
-        // Files changed on disk by someone else.
         let folders: Vec<PathBuf> = self.pages.iter().filter(|p| !p.is_waiting()).map(|p| p.root.clone()).collect();
         self.watcher.set_folders(&folders);
         if let Some(batch) = self.watcher.poll() {
@@ -2087,7 +1907,6 @@ impl App {
             changed = true;
         }
         busy |= self.watcher.busy();
-        // Extensions: their workspace is the set of open folders.
         self.ext.set_folders(self.pages.iter().filter(|p| !p.is_waiting()).map(|p| p.root.clone()).collect());
         let (events, ext_changed) = self.ext.poll();
         changed |= ext_changed;
@@ -2125,7 +1944,6 @@ impl App {
                 }
             }
         }
-        // Webview pages: what they may load, and what they sent.
         let mut roots: Vec<PathBuf> = self.pages.iter().map(|p| p.root.clone()).collect();
         roots.push(self.ext.extensions_dir().to_path_buf());
         if roots != self.webview_roots {
@@ -2138,9 +1956,7 @@ impl App {
         for key in self.webviews.take_keys() {
             self.page_chord(&key);
         }
-        // Updates: a newer release, and what the user decided about it.
         self.poll_updates();
-        // Dependencies: manifests to read, and answers that arrived.
         for id in std::mem::take(&mut self.versions_due) {
             self.read_dependencies(id);
             changed = true;
@@ -2149,15 +1965,12 @@ impl App {
             self.show_versions();
             changed = true;
         }
-        // Notices fade out by themselves: keep ticking while one is up.
         busy |= !self.ext.notices.is_empty();
         if changed {
             self.request_redraw();
         }
         busy
     }
-
-    // ----- frame ----------------------------------------------------------
 
     fn poll_pages(&mut self) {
         let Some(g) = &mut self.gfx else { return };
@@ -2178,7 +1991,6 @@ impl App {
                 }));
                 page.curves_dirty = true;
                 changed = true;
-                // Its manifests can be read now.
                 self.versions_due.push(page.id);
             }
         }
@@ -2187,7 +1999,6 @@ impl App {
         }
     }
 
-    /// Offer a newer release once, and install it when the user says so.
     fn poll_updates(&mut self) {
         use crate::update::News;
         const UPDATE: &str = "Update and restart";
@@ -2200,8 +2011,6 @@ impl App {
                 self.request_redraw();
             }
             Some(News::Installed(program)) => {
-                // Leave the usual way (unsaved files are asked about); the
-                // new version starts once this one has closed.
                 self.restart_as = Some(program);
                 self.exit_requested = true;
             }
@@ -2239,8 +2048,6 @@ impl App {
         }
     }
 
-    /// Read the manifests of a page for their dependencies and ask for the
-    /// latest version of each.
     fn read_dependencies(&mut self, page_id: u32) {
         const MAX_MANIFESTS: usize = 40;
         if !self.ui.prefs.check_versions {
@@ -2266,12 +2073,9 @@ impl App {
         self.show_versions();
     }
 
-    /// Write what is known about each dependency after its line, and once
-    /// every answer of a folder is in, say how many have something newer.
     fn show_versions(&mut self) {
         use crate::versions::Standing;
         let t = canvas_render::theme::get();
-        // Per folder: (newer, of which outside what the manifest accepts).
         let mut counts: HashMap<PathBuf, (usize, usize)> = HashMap::new();
         for (path, wanted) in &self.manifests {
             let notes = self.versions.notes(wanted);
@@ -2316,7 +2120,6 @@ impl App {
         }
     }
 
-    /// Status text and canvas tooltip for the frame.
     fn describe(&self) -> (String, Option<(String, String)>) {
         let Some(page) = self.pages.get(self.active) else {
             return (
@@ -2404,7 +2207,6 @@ impl App {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         let Some(g) = self.gfx.as_mut() else { return };
-        // The latest size, applied once however many arrived since the last frame.
         if std::mem::take(&mut g.resized) {
             let t = Instant::now();
             g.surface.configure(&g.device, &g.config);
@@ -2418,8 +2220,6 @@ impl App {
 
         self.ui.maximized = self.gfx.as_ref().is_some_and(|g| g.window.is_maximized());
 
-        // 1. The UI. It only produces actions; they are applied right after,
-        //    so the canvas drawn below already reflects them.
         self.ui.completion = self.completion.as_ref().and_then(|offer| {
             let (tl, br) = self.caret_cell()?;
             Some(ui::CompletionView {
@@ -2454,14 +2254,11 @@ impl App {
         for a in actions {
             self.apply(a);
         }
-        // Where each folder on screen goes. With another number of them the
-        // room each has changed: every one is framed again.
         let panes = self.panes();
         if panes.len() != self.pane_count {
             self.pane_count = panes.len();
             let first_frame = self.pages.iter().all(|p| !p.framed);
             for page in &mut self.pages {
-                // At start-up the saved cameras are still to be used.
                 if !first_frame {
                     page.restore_camera = None;
                 }
@@ -2473,14 +2270,12 @@ impl App {
         if let Some((_, rect)) = panes.iter().find(|(i, _)| *i == self.active) {
             self.canvas = *rect;
         }
-        // The webview on screen, if any: a browser view over its panel.
         {
             let shown =
                 (self.ui.right == Some(RightPanel::Webview)).then_some(()).and(self.ui.webview_rect).and_then(|r| {
                     let entry = self.ext.webviews.iter().find(|w| w.key == self.ui.webview)?;
                     Some((entry.handle.clone()?, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
                 });
-            // The media viewer is a page of the app's own, shown the same way.
             let media = (self.ui.right == Some(RightPanel::Media) && self.ui.media.is_some())
                 .then_some(())
                 .and(self.ui.webview_rect)
@@ -2501,12 +2296,10 @@ impl App {
         }
         let area = self.canvas;
 
-        // 2. Frame newly loaded pages; advance camera animations.
         let mut animating = false;
         for (i, area) in panes.iter().copied() {
             let active = i == self.active;
             let Some(page) = self.pages.get_mut(i) else { continue };
-            // A folder beside the active one is on screen too: read it.
             page.ensure_scanned();
             if let PageState::Ready(r) = &page.state {
                 if !page.framed {
@@ -2517,7 +2310,6 @@ impl App {
                     page.framed = true;
                     page.pane_center = Some(area.center());
                 }
-                // Its part of the window moved: what was in the middle of it stays there.
                 let middle = area.center();
                 if let Some(old) = page.pane_center.replace(middle) {
                     let z = page.camera.zoom;
@@ -2548,14 +2340,12 @@ impl App {
         }
         self.sync_documents();
 
-        // 3. Relation curves (only when they changed) and the overlay.
         let filters = self.ui.filters;
         let mut canvas_overlay = CanvasOverlay::default();
         {
             let g = self.gfx.as_mut().unwrap();
             match self.pages.get_mut(self.active) {
                 Some(page) => {
-                    // The selected node's dependency edges are curves too.
                     if page.curves_node != page.selected {
                         page.curves_node = page.selected;
                         page.curves_dirty = true;
@@ -2581,15 +2371,9 @@ impl App {
         let labels: Vec<Label> = canvas_overlay.labels.iter().map(|l| l.as_label()).collect();
         let chip_labels: Vec<Label> = canvas_overlay.chip_labels.iter().map(|l| l.as_label()).collect();
 
-        // 4. Render: canvas pass, then egui on top.
         let build_ms = now.elapsed().as_secs_f32() * 1000.0;
         let any_loading = self.pages.iter().any(|p| p.is_loading());
         let g = self.gfx.as_mut().unwrap();
-        // egui's texture updates must not be lost when a frame is skipped:
-        // new and changed ones go to the GPU now. The ones it no longer needs
-        // are freed after the frame that may still show them (or right away
-        // when there is no frame). Taken out of `full`, which checks that
-        // none is forgotten.
         let textures = std::mem::take(&mut full.textures_delta);
         for (id, deltas) in &textures.set {
             for delta in deltas {
@@ -2609,13 +2393,8 @@ impl App {
         }
         let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
-            // Still usable (the window is being resized and the size event has
-            // not arrived yet). It must NOT be reconfigured here: configuring
-            // a surface while one of its textures is held is an error that
-            // takes the app down. The resize event reconfigures it.
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             skipped => {
-                // No frame this time: nothing will show those textures again.
                 for id in &unused_textures {
                     g.egui_renderer.free_texture(id);
                 }
@@ -2642,9 +2421,6 @@ impl App {
         };
         let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // The folders beside the active one first, each in its own pane and
-        // with an encoder of its own (the calls share buffers, so one has to
-        // be submitted before the next is recorded).
         let side_by_side = panes.len() > 1;
         let edges = |r: Rect| [r.x, r.y, r.right(), r.bottom()];
         let mut first = true;
@@ -2670,7 +2446,6 @@ impl App {
                 &mut encoder,
                 &target,
                 view,
-                // The relation curves are the active folder's.
                 Pane { area: Some(edges(pane)), clear: first, curves: false },
                 scene,
                 &Overlay {
@@ -2729,7 +2504,6 @@ impl App {
             },
         );
 
-        // Text still being shaped in any pane keeps the frames coming.
         self.stats.text_pending |= others_pending;
 
         let ppp = full.pixels_per_point;
@@ -2773,7 +2547,6 @@ impl App {
             b.record(dt * 1000.0, build_ms + render_ms);
         }
 
-        // 5. Decide whether another frame is needed.
         let repaint = full.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay);
         self.next_repaint = None;
         let mut again = false;
@@ -2782,8 +2555,6 @@ impl App {
             Some(d) if d < Duration::from_secs(3600) => self.next_repaint = Some(Instant::now() + d),
             _ => {}
         }
-        // The status bar shows the previous frame's stats: redraw once more
-        // when they changed so it never stays stale.
         let st = &self.stats;
         let stats_changed = (prev.lod, prev.code_instances, prev.frame_instances, prev.draw_calls)
             != (st.lod, st.code_instances, st.frame_instances, st.draw_calls);
@@ -2794,7 +2565,6 @@ impl App {
 }
 
 impl ApplicationHandler for App {
-    /// A background thread has something for us; `about_to_wait` picks it up.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {}
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -2810,14 +2580,11 @@ impl ApplicationHandler for App {
             .with_title("Code Canvas")
             .with_inner_size(LogicalSize::new(size[0] as f64, size[1] as f64))
             .with_min_inner_size(LogicalSize::new(720.0, 420.0))
-            // Our own header replaces the system title bar.
             .with_decorations(false)
             .with_window_icon(crate::icon::window_icon());
         #[cfg(windows)]
         let attrs = {
             use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-            // The taskbar and Alt+Tab use the big icon. Setting it here keeps
-            // them from falling back to whatever Windows cached for the file.
             attrs
                 .with_undecorated_shadow(true)
                 .with_corner_preference(CornerPreference::Round)
@@ -2825,11 +2592,6 @@ impl ApplicationHandler for App {
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
 
-        // Which graphics API to draw with. On Windows Direct3D 12 comes first:
-        // resizing its swap chain is cheap (Vulkan's is rebuilt, 15-30 ms per
-        // size), and with a browser view in the window (extensions' webviews)
-        // Vulkan stalls for half a second per frame while the window changes
-        // size. `CODE_CANVAS_BACKEND=vulkan|dx12|metal|gl` overrides the choice.
         let connect = |backends: wgpu::Backends| {
             let mut descriptor =
                 wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
@@ -2860,8 +2622,6 @@ impl ApplicationHandler for App {
             adapter.request_device(&wgpu::DeviceDescriptor { label: Some("code-canvas"), ..Default::default() }),
         )
         .expect("request device");
-        // By default such an error ends the program. Here it costs a frame at
-        // most, so it is written to the log and the app goes on.
         device.on_uncaptured_error(Arc::new(|e| log::error!("GPU error: {e}")));
 
         let size = window.inner_size();
@@ -2869,7 +2629,6 @@ impl ApplicationHandler for App {
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .expect("surface not supported by adapter");
         let caps = surface.get_capabilities(&adapter);
-        // Non-sRGB target: colours are authored in sRGB and blended like most UIs.
         if let Some(f) = caps.formats.iter().find(|f| !f.is_srgb()) {
             config.format = *f;
         }
@@ -2914,9 +2673,6 @@ impl ApplicationHandler for App {
             window,
         });
 
-        // Only the folder that will be on screen is read now; the others
-        // wait until they are shown (a huge one would take seconds and
-        // every core, for a canvas nobody is looking at).
         for (path, saved) in std::mem::take(&mut self.initial) {
             let path = canvas_core::scan::clean_path(path.canonicalize().unwrap_or(path));
             if !self.pages.iter().any(|p| p.root == path) {
@@ -2927,13 +2683,11 @@ impl ApplicationHandler for App {
         if !self.pages.is_empty() {
             self.switch_to(self.initial_active.min(self.pages.len() - 1));
         }
-        // Remember what is open even if the app is later killed.
         self.save_session();
         self.request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // Without a system frame the window edges are ours to handle.
         match &event {
             WindowEvent::CursorMoved { position, .. } => {
                 let edge = self.edge_at([position.x as f32, position.y as f32]);
@@ -2956,7 +2710,6 @@ impl ApplicationHandler for App {
             _ => {}
         }
         if let Some(g) = &mut self.gfx {
-            // RedrawRequested is not input; everything else goes to egui first.
             if !matches!(event, WindowEvent::RedrawRequested) {
                 let resp = g.egui_state.on_window_event(&g.window, &event);
                 if resp.repaint {
@@ -2995,7 +2748,6 @@ impl ApplicationHandler for App {
                 } else if self.pages.get(self.active).is_some() {
                     self.drop_file(path);
                 } else if let Some(parent) = path.parent() {
-                    // Nothing is open yet: show the folder the file is in.
                     self.open_folder(parent.to_path_buf(), None);
                 }
                 self.save_session();
@@ -3025,13 +2777,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => {
-                    // A press that reaches the window is on the app's own
-                    // interface, not on a web page: the keyboard follows it.
-                    // Without this, a box clicked while an extension's panel
-                    // had the keyboard opened but could not be typed in.
                     self.webviews.focus_app();
                     self.focus_pane_at(self.cursor);
-                    // Only presses that start on the canvas belong to the canvas.
                     if self.drag.is_none() && !self.over_ui(self.cursor) {
                         self.drag = Some(Drag { last: self.cursor, start: self.cursor, moved: false, button });
                     }
@@ -3090,8 +2837,6 @@ impl ApplicationHandler for App {
         if self.exit_requested {
             if !self.confirm_exit() {
                 self.exit_requested = false;
-                // The new version is in place all the same: it is the one
-                // that starts next time.
                 self.restart_as = None;
                 return;
             }
@@ -3117,8 +2862,6 @@ impl ApplicationHandler for App {
         let working = self.poll_background();
         let scripting = self.run_script();
         let loading = self.pages.iter().any(|p| p.is_loading()) || working || scripting;
-        // Refresh scan progress a few times per second; otherwise sleep
-        // until input arrives or egui's next scheduled repaint.
         let tick = now + Duration::from_millis(100);
         let wake = match (loading, self.next_repaint) {
             (true, t) => Some(t.map_or(tick, |t| t.min(tick))),

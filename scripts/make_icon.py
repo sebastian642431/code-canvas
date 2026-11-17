@@ -1,17 +1,3 @@
-# Builds every icon asset of the app from one square image:
-#
-#   python scripts/make_icon.py                      # from assets/icon_source.png
-#   python scripts/make_icon.py path/to/icon.png     # from another image
-#   python scripts/make_icon.py --placeholder        # draw a simple placeholder
-#
-# Outputs, in crates/code-canvas/assets/:
-#   icon.png       256 px   (README, packaging)
-#   icon.ico       16-256   (the .exe, shortcuts, taskbar)
-#   icon_128.rgba  128 px   (the logo in the app's header)
-#   icon_64.rgba   64 px    (the window icon)
-#
-# The artwork should be a square PNG, ideally 1024 px, with a transparent
-# background around the icon shape. Requires Pillow.
 import sys
 
 from PIL import Image, ImageDraw
@@ -20,8 +6,7 @@ OUT = "crates/code-canvas/assets/"
 
 
 def placeholder():
-    """Nested folder boxes with code bars and a relation curve."""
-    s = 1024  # supersampled, downscaled for anti-aliasing
+    s = 1024
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
@@ -68,9 +53,6 @@ def placeholder():
 
 
 def load(path):
-    """Any image -> square RGBA. Transparent margins around the artwork are
-    trimmed (keeping 2%), so the icon is not smaller than its neighbours in
-    the taskbar; a non-square result is padded with transparency."""
     src = Image.open(path).convert("RGBA")
     box = src.getchannel("A").point(lambda a: 255 if a > 8 else 0).getbbox()
     if box:

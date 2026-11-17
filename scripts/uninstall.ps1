@@ -1,5 +1,3 @@
-# Removes what scripts\install.ps1 added. Settings and the session file in
-# %APPDATA%\code-canvas are kept unless -Purge is given.
 param([switch]$Purge)
 $ErrorActionPreference = "Stop"
 $dir = Join-Path $env:LOCALAPPDATA "Programs\Code Canvas"

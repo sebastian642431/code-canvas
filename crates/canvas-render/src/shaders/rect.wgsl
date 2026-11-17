@@ -1,11 +1,8 @@
-// Instanced rounded rectangles with an anti-aliased border.
-// Used for directory boxes, file cards, highlights and the UI chrome.
-
 struct Camera {
-    offset: vec2<f32>,   // world position at the top-left of the screen
-    zoom: f32,           // physical pixels per world unit
+    offset: vec2<f32>,
+    zoom: f32,
     alpha: f32,
-    viewport: vec2<f32>, // physical pixels
+    viewport: vec2<f32>,
     _pad: vec2<f32>,
 };
 
@@ -16,8 +13,8 @@ struct Inst {
     @location(1) size: vec2<f32>,
     @location(2) fill: u32,
     @location(3) border: u32,
-    @location(4) radius: f32,    // pixels
-    @location(5) border_w: f32,  // pixels
+    @location(4) radius: f32,
+    @location(5) border_w: f32,
 };
 
 struct Out {
@@ -26,7 +23,7 @@ struct Out {
     @location(1) half: vec2<f32>,
     @location(2) fill: vec4<f32>,
     @location(3) border: vec4<f32>,
-    @location(4) params: vec3<f32>, // radius, border width, coverage
+    @location(4) params: vec3<f32>,
 };
 
 fn unpack(c: u32) -> vec4<f32> {
@@ -41,12 +38,11 @@ fn unpack(c: u32) -> vec4<f32> {
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, inst: Inst) -> Out {
     let size_px = inst.size * cam.zoom;
-    // Rectangles thinner than a pixel stay one pixel wide but fade out.
     let coverage = min(size_px.x, 1.0) * min(size_px.y, 1.0);
     let half = max(size_px * 0.5, vec2<f32>(0.5));
     let center = (inst.pos + inst.size * 0.5 - cam.offset) * cam.zoom;
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
-    let local = corner * (half + 1.0); // +1px for anti-aliasing
+    let local = corner * (half + 1.0);
     let s = center + local;
 
     var out: Out;

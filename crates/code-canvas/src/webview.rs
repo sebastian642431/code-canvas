@@ -1,35 +1,15 @@
-//! Browser views for extensions' webviews.
-//!
-//! A webview is an extension's own HTML interface (the Claude Code panel,
-//! for one). The extension host owns the object the extension talks to
-//! (`exthost/host.js`); this module shows the page: a child browser view
-//! (WebView2 on Windows, through `wry`) placed over a panel of the window.
-//!
-//! * The page and its files come from `https://ccres.localhost`, a protocol
-//!   served here: `/view/<handle>` is the HTML the extension set,
-//!   `/file/<path>` a file from an allowed folder (extensions, open folders).
-//! * A script added to every page provides `acquireVsCodeApi()` and the
-//!   `--vscode-*` theme colours pages are styled with.
-//! * Messages go both ways as JSON: page → `ipc` → [`WebViews::poll`];
-//!   extension → [`WebViews::post`] → `window.postMessage` in the page.
-
 use serde_json::Value;
 
-/// What a page did: `(handle, message)`.
 pub type PageMessage = (String, Value);
 
-/// A key chord pressed while a page had the keyboard. Pages hand these over
-/// (see `INIT_JS`) so that the app's shortcuts work wherever the caret is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageKey {
-    /// Lower case, as browsers name keys: `"p"`, `"f1"`, `"tab"`.
     pub key: String,
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
 }
 
-/// Runs in every page before its own scripts.
 #[cfg(windows)]
 const INIT_JS: &str = r#"
 (function () {
@@ -43,10 +23,6 @@ const INIT_JS: &str = r#"
   };
   window.acquireVsCodeApi = () => api;
 
-  // Colours VS Code gives every webview as CSS variables. Pages use hundreds
-  // of them; the ones below are taken from the app's theme (`T`, by the keys
-  // of `canvas_render::theme`), the rest are guessed from their name so that
-  // nothing is left transparent or black on black.
   let T = window.__ccTheme || {};
   const exact = () => ({
     'font-family': '"Segoe UI", system-ui, sans-serif', 'font-size': '13px', 'font-weight': 'normal',
@@ -75,7 +51,6 @@ const INIT_JS: &str = r#"
     const tone = /error|deleted|removed/.test(n) ? T.problem_error : /warning|modified/.test(n) ? T.problem_warning : /added|inserted|success/.test(n) ? T.git_added : /info|link|focus|active|selection|highlight/.test(n) ? T.accent : null;
     if (/shadow/.test(n)) return '#00000080';
     if (/border|outline|separator/.test(n)) return tone || T.border;
-    // A tint of the tone: its `#rrggbb` with a low alpha.
     if (/background/.test(n)) return tone ? tone.slice(0, 7) + '26' : /hover/.test(n) ? T.raised : T.card;
     if (/foreground|color/.test(n)) return tone || T.text;
     return null;
@@ -100,11 +75,6 @@ const INIT_JS: &str = r#"
       document.body.setAttribute('data-vscode-theme-kind', 'vscode-dark');
     }
   }
-  // VS Code also gives every webview a default style sheet, the scroll bars
-  // among it; without one, pages show the browser's own grey bar with arrows.
-  // The second half is this app's taste for the Claude Code panel: text that
-  // does not fit is cut at a whole line instead of fading out. Its classes
-  // end in a hash that changes with every version, hence `[class*=...]`.
   const css = `
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
@@ -119,22 +89,16 @@ const INIT_JS: &str = r#"
     ::-webkit-scrollbar-thumb:horizontal { min-width: 32px; }
     ::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); border-width: 2px; }
     ::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); border-width: 2px; }
-    /* The standard properties switch the rules above off where a page sets them. */
     [class*="userMessageAttachments_"], [class*="attachedFilesContainerAbove_"] { scrollbar-width: auto !important; }
     [class*="root_"] { scrollbar-color: auto !important; }
 
-    /* A long message of the user, collapsed: three whole lines, no veil. */
     [class*="truncationGradient_"] { display: none !important; }
     [class*="userMessage_"] [class*="content_"][class*="collapsed_"] { max-height: 3lh !important; }
-    /* What a tool printed, collapsed: three whole lines of its smaller type
-       (0.85em at 1.5). The 4px of padding below still show what overflows,
-       so they come off the height. */
     [class*="toolBodyRowContent_"]:not([class*="toolBodyRowContent_disableClipping_"]) {
       -webkit-mask-image: none !important;
       mask-image: none !important;
       max-height: calc(3 * 1.5 * 0.85em - 4px) !important;
     }
-    /* The message pinned at the top: a solid edge over what scrolls under it. */
     [class*="stickyHeader_"] { background-image: none !important; background-color: var(--sticky-bg) !important; }
   `;
   function addStyles() {
@@ -142,19 +106,14 @@ const INIT_JS: &str = r#"
     const style = document.createElement('style');
     style.id = '_defaultStyles';
     style.textContent = css;
-    // Last in the head: after the page's own sheets, so equal rules are ours.
     (document.head || document.documentElement).appendChild(style);
   }
 
-  // The app calls this when its theme changes while the page is open.
   window.__codeCanvasTheme = (theme) => {
     T = theme;
     applyTheme();
   };
 
-  // Follow what is being written: while the conversation of an assistant's
-  // panel grows it stays scrolled to its end, as a terminal does. Scrolling
-  // up by hand lets go of it; coming back to the end takes hold again.
   let follow = window.__ccFollow !== false;
   window.__codeCanvasFollow = (on) => {
     follow = !!on;
@@ -175,8 +134,6 @@ const INIT_JS: &str = r#"
     box.addEventListener(
       'scroll',
       () => {
-        // At the end: hold on. Away from it because of the user: let go.
-        // Away from it because the page moved it: not the user's doing.
         if (gap() < 48) held = true;
         else if (Date.now() - lastGesture < 1500) held = false;
       },
@@ -196,9 +153,6 @@ const INIT_JS: &str = r#"
     new MutationObserver(findConversations).observe(document.documentElement, { childList: true, subtree: true });
   });
 
-  // Key chords belong to the app (Ctrl+P, Ctrl+Shift+P...), as in VS Code,
-  // where a webview hands them to the workbench. The ones text editing needs
-  // stay here, and so does AltGr, which arrives as Ctrl+Alt.
   const editing = new Set(['a', 'c', 'v', 'x', 'z', 'y', 'insert', 'backspace', 'delete', 'enter', 'home', 'end',
     'pageup', 'pagedown', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'control', 'shift', 'alt', 'meta']);
   window.addEventListener('keydown', (e) => {
@@ -206,7 +160,6 @@ const INIT_JS: &str = r#"
     const ctrl = e.ctrlKey || e.metaKey;
     const chord = ctrl && !e.altKey && !editing.has(key);
     if (!chord && !/^f([1-9]|1[0-2])$/.test(key)) return;
-    // The page's own handlers still run; only the browser's default does not.
     if (chord) e.preventDefault();
     window.ipc.postMessage(JSON.stringify({ key: { key, ctrl, shift: e.shiftKey, alt: e.altKey } }));
   }, true);
@@ -223,9 +176,6 @@ const INIT_JS: &str = r#"
 })();
 "#;
 
-/// The theme in use as the object `INIT_JS` reads: every colour of
-/// `canvas_render::theme` by its key, as `#rrggbb` or `#rrggbbaa`, plus two
-/// that pages need and are derived from those.
 #[cfg(windows)]
 fn theme_json() -> String {
     use canvas_render::theme;
@@ -260,25 +210,17 @@ mod platform {
 
     const ORIGIN: &str = "https://ccres.localhost";
 
-    /// State the protocol handler reads from the browser's thread.
     #[derive(Default)]
     struct Shared {
-        /// Handle → the HTML the extension set.
         html: HashMap<String, String>,
-        /// Folders files may be served from.
         roots: Vec<PathBuf>,
-        /// Single files that may be served wherever they are: what the user
-        /// opened in the media viewer.
         files: Vec<PathBuf>,
     }
 
     struct View {
         web: WebView,
-        /// The page finished loading: messages can be delivered.
         ready: bool,
-        /// Messages posted before that, in order.
         queued: Vec<String>,
-        /// The theme (`theme::revision`) its page was last given.
         theme: u64,
     }
 
@@ -288,11 +230,8 @@ mod platform {
         tx: Sender<(String, String)>,
         rx: Receiver<(String, String)>,
         shown: Option<String>,
-        /// Where the shown view was last placed.
         placed: Option<Rect>,
-        /// Key chords the pages handed over since [`WebViews::take_keys`].
         keys: Vec<PageKey>,
-        /// Pages keep their conversation scrolled to its end (a preference).
         follow: bool,
     }
 
@@ -362,7 +301,6 @@ mod platform {
             .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])))
     }
 
-    /// Answer one request of a page: its HTML, or a file from an allowed folder.
     fn serve(shared: &Mutex<Shared>, request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         let path = decode(request.uri().path());
         if let Some(handle) = path.strip_prefix("/view/") {
@@ -373,8 +311,6 @@ mod platform {
         }
         let Some(file) = path.strip_prefix("/file/") else { return respond(404, "text/plain", Vec::new()) };
         let file = PathBuf::from(file);
-        // Only what the extensions and the open folders contain; `..` cannot
-        // leave them because the resolved path is what gets compared.
         let Ok(real) = file.canonicalize() else { return respond(404, "text/plain", Vec::new()) };
         let key = |p: &Path| crate::ext::path_key(&canvas_core::scan::clean_path(p.to_path_buf()).to_string_lossy());
         let real_key = key(&real);
@@ -390,8 +326,6 @@ mod platform {
         if !allowed {
             return respond(403, "text/plain", b"outside the allowed folders".to_vec());
         }
-        // Video and audio are asked for in pieces (`Range: bytes=a-b`): that
-        // is what makes seeking work, and a long video is never read whole.
         let range = request.headers().get("Range").and_then(|v| v.to_str().ok()).and_then(parse_range);
         match range {
             Some((from, to)) => serve_range(&real, from, to),
@@ -402,13 +336,11 @@ mod platform {
         }
     }
 
-    /// `bytes=a-b` or `bytes=a-`: the first byte wanted and, if given, the last.
     fn parse_range(header: &str) -> Option<(u64, Option<u64>)> {
         let (from, to) = header.trim().strip_prefix("bytes=")?.split(',').next()?.split_once('-')?;
         Some((from.trim().parse().ok()?, to.trim().parse().ok()))
     }
 
-    /// One piece of a file, as a `206 Partial Content` answer.
     fn serve_range(path: &Path, from: u64, to: Option<u64>) -> Response<Cow<'static, [u8]>> {
         use std::io::{Read, Seek, SeekFrom};
         const PIECE: u64 = 4 * 1024 * 1024;
@@ -462,20 +394,17 @@ mod platform {
             self.shared.lock().unwrap().roots = roots.into_iter().map(|r| r.canonicalize().unwrap_or(r)).collect();
         }
 
-        /// Let pages load this one file, wherever it is (the media viewer's).
         pub fn allow_file(&mut self, file: &Path) {
             let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
             let mut shared = self.shared.lock().unwrap();
             if !shared.files.contains(&file) {
                 shared.files.push(file);
-                // Only the recent ones stay allowed.
                 if shared.files.len() > 64 {
                     shared.files.remove(0);
                 }
             }
         }
 
-        /// The extension set (or replaced) the page of `handle`.
         pub fn set_html(&mut self, handle: &str, html: String) {
             self.shared.lock().unwrap().html.insert(handle.to_string(), html);
             if let Some(view) = self.views.get_mut(handle) {
@@ -489,7 +418,6 @@ mod platform {
             self.shared.lock().unwrap().html.contains_key(handle)
         }
 
-        /// The extension sent `message` to the page.
         pub fn post(&mut self, handle: &str, message: &Value) {
             let script = format!("window.postMessage({message}, '*')");
             match self.views.get_mut(handle) {
@@ -497,7 +425,6 @@ mod platform {
                     let _ = view.web.evaluate_script(&script);
                 }
                 Some(view) => view.queued.push(script),
-                // Not on screen yet: nothing listens, and VS Code drops these too.
                 None => {}
             }
         }
@@ -510,8 +437,6 @@ mod platform {
             }
         }
 
-        /// Show `handle` over `area` (physical pixels of the window), hiding
-        /// whichever view was shown before; `None` hides them all.
         pub fn show(&mut self, window: &winit::window::Window, target: Option<(&str, Rect)>) {
             let wanted = target.map(|(h, _)| h.to_string());
             if self.shown != wanted {
@@ -522,7 +447,7 @@ mod platform {
             let Some((handle, area)) = target else { return };
             if !self.views.contains_key(handle) {
                 if !self.has_html(handle) {
-                    return; // the extension has not produced the page yet
+                    return;
                 }
                 match self.create(window, handle, area) {
                     Ok(web) => {
@@ -555,20 +480,17 @@ mod platform {
                 .with_bounds(bounds(area))
                 .with_https_scheme(true)
                 .with_custom_protocol("ccres".into(), move |_id, request| serve(&shared, &request))
-                // The theme first: the script reads it while it sets itself up.
                 .with_initialization_script(format!(
                     "window.__ccTheme = {};\nwindow.__ccFollow = {};\n{INIT_JS}",
                     theme_json(),
                     self.follow
                 ))
-                // The browser's own shortcuts (print, find, reload) are not ours.
                 .with_browser_accelerator_keys(false)
                 .with_ipc_handler(move |request: Request<String>| {
                     let _ = tx.send((owner.clone(), request.body().clone()));
                     crate::ext::wake_ui();
                 })
                 .with_background_color({
-                    // What shows until the page paints: the panel's own colour.
                     let [r, g, b, _] = canvas_render::theme::unpack(canvas_render::theme::get().card);
                     (r, g, b, 255)
                 })
@@ -576,8 +498,6 @@ mod platform {
                 .build_as_child(window)
         }
 
-        /// Whether pages keep their conversation scrolled to its end, for the
-        /// ones that are open and the ones to come.
         pub fn set_follow(&mut self, follow: bool) {
             self.follow = follow;
             let script = format!("window.__codeCanvasFollow && window.__codeCanvasFollow({follow})");
@@ -586,9 +506,6 @@ mod platform {
             }
         }
 
-        /// Give every open page the theme in use, if it changed since the
-        /// page got one. A page that is still loading gets it when it is
-        /// ready: call this again then (it is cheap when nothing is due).
         pub fn retheme(&mut self) {
             let revision = canvas_render::theme::revision();
             if self.views.values().all(|v| v.theme == revision) {
@@ -601,7 +518,6 @@ mod platform {
             }
         }
 
-        /// What the pages sent since the last call.
         pub fn poll(&mut self) -> Vec<PageMessage> {
             let mut out = Vec::new();
             while let Ok((handle, body)) = self.rx.try_recv() {
@@ -630,23 +546,16 @@ mod platform {
             out
         }
 
-        /// The key chords pages handed over; [`WebViews::poll`] collects them.
         pub fn take_keys(&mut self) -> Vec<PageKey> {
             std::mem::take(&mut self.keys)
         }
 
-        /// Give the keyboard back to the window, so that what is typed next
-        /// reaches the app and not the page.
-        /// Give the keyboard to the page on screen, as a click on it does.
         pub fn focus_page(&self) {
             if let Some(view) = self.shown.as_ref().and_then(|h| self.views.get(h)) {
                 let _ = view.web.focus();
             }
         }
 
-        /// Give the keyboard back to the app's window. A page that was clicked
-        /// keeps the keyboard, even hidden, until someone takes it: any of the
-        /// views can hand it to the window they all live in.
         pub fn focus_app(&self) {
             let shown = self.shown.as_ref().and_then(|h| self.views.get(h));
             if let Some(view) = shown.or_else(|| self.views.values().next()) {
@@ -656,7 +565,6 @@ mod platform {
     }
 }
 
-/// Where there is no browser view to use yet, webviews stay empty.
 #[cfg(not(windows))]
 mod platform {
     use std::path::PathBuf;
@@ -693,5 +601,4 @@ mod platform {
 
 pub use platform::WebViews;
 
-/// Can this build show webviews?
 pub const AVAILABLE: bool = cfg!(windows);

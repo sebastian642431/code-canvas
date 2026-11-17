@@ -1,5 +1,3 @@
-/// A GPU buffer that grows (to the next power of two) when the data written
-/// to it does not fit. Used for per-frame geometry.
 pub struct DynBuffer {
     pub buf: wgpu::Buffer,
     cap: u64,
@@ -31,7 +29,6 @@ impl DynBuffer {
             self.cap = len.next_power_of_two();
             self.buf = Self::alloc(device, self.label, self.usage, self.cap);
         }
-        // write_buffer needs a multiple of 4 bytes; our instances always are.
         queue.write_buffer(&self.buf, 0, data);
     }
 }

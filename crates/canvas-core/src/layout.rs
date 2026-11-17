@@ -1,21 +1,3 @@
-//! Turn a directory tree into nested boxes on the canvas.
-//!
-//! * A file is a *card* sized after its code: `cols × CHAR_W` wide and
-//!   `lines × LINE_H` tall, so zooming in shows the real text in place.
-//!   Files longer than [`FOLD_LINES`] are folded into side-by-side columns
-//!   (like a newspaper) so one huge data file cannot stretch the whole canvas.
-//! * A directory is a box that packs its children with a skyline packer,
-//!   aiming for a landscape aspect ratio. Directories can be **collapsed**
-//!   (drawn as an empty box) and chains of single-child directories are
-//!   merged into one box labelled `a/b/c`.
-//! * A [`LayoutFilter`] decides what is on the canvas at all: hidden paths
-//!   are left out, and `only_files` keeps just a set of files (used by
-//!   "show only connected files").
-//!
-//! Nodes are stored flat in **pre-order**: every subtree is the contiguous
-//! slice `nodes[i..nodes[i].subtree_end]`. The renderer relies on this to cull
-//! whole directories with a single range check.
-
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -24,70 +6,43 @@ use crate::refs::Site;
 use crate::scan::{Dir, Repo};
 use crate::{CHAR_W, LINE_H};
 
-/// Padding between a card's border and its code.
 pub const CARD_PAD: f32 = 6.0;
-/// Space reserved above every card for the file name.
 pub const FILE_LABEL_H: f32 = 16.0;
-/// Inner padding of a directory box.
 pub const DIR_PAD: f32 = 16.0;
-/// Space at the top of a directory box for its name.
 pub const DIR_HEADER: f32 = 24.0;
-/// Gap between siblings.
 pub const GAP: f32 = 16.0;
 pub const MIN_COLS: u32 = 24;
-/// Cards grow with their longest line up to this many columns; longer
-/// lines are clipped (soft wrapping is the planned fix for those).
 pub const MAX_COLS: u32 = 160;
-/// Preferred width / height of a directory's content.
 pub const ASPECT: f32 = 1.6;
-/// Lines per column of a folded file. A multiple of
-/// [`CHUNK_LINES`](crate::CHUNK_LINES) and [`BLOCK_LINES`](crate::BLOCK_LINES),
-/// so chunks and blocks never straddle two columns.
 pub const FOLD_LINES: usize = 2048;
-/// Horizontal gap between the columns of a folded file.
 pub const FOLD_GAP: f32 = 24.0;
-/// "Not on the canvas" marker in [`Layout::file_node`] / [`Layout::file_anchor`].
 pub const NONE: u32 = u32::MAX;
 
-/// What goes on the canvas. Paths are relative to the repository root,
-/// with `/` separators (the root itself is `""`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutFilter {
-    /// Directories drawn as a collapsed box.
     pub collapsed: HashSet<String>,
-    /// Files and directories left out entirely.
     pub hidden: HashSet<String>,
-    /// When set, only these files (and the folders containing them) are laid out.
     pub only_files: Option<HashSet<u32>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
     Dir,
-    /// Index into [`Repo::files`].
     File(usize),
 }
 
 #[derive(Clone, Debug)]
 pub struct Node {
     pub kind: NodeKind,
-    /// Display name; merged directory chains read `a/b/c`.
     pub name: String,
-    /// Path of the file, or of the deepest directory of a merged chain.
     pub rel_path: String,
-    /// Directory box, or the file card (the label sits above it).
     pub rect: Rect,
     pub depth: u16,
     pub parent: Option<u32>,
-    /// One past the last node of this subtree.
     pub subtree_end: u32,
-    /// Files: x distance between two columns of a folded file.
     pub col_stride: f32,
-    /// Directories: drawn collapsed, children are not on the canvas.
     pub collapsed: bool,
-    /// Files below this node (1 for a file).
     pub files: u32,
-    /// Lines of code below this node.
     pub lines: u64,
 }
 
@@ -96,12 +51,10 @@ impl Node {
         matches!(self.kind, NodeKind::Dir)
     }
 
-    /// Top-left of the first character of code inside a file card.
     pub fn code_origin(&self) -> [f32; 2] {
         [self.rect.x + CARD_PAD, self.rect.y + CARD_PAD]
     }
 
-    /// World rectangle of `cols` character cells at `(line, col)` of this file card.
     pub fn cell_rect(&self, line: u32, col: u32, cols: u32) -> Rect {
         let o = self.code_origin();
         let fold = line as usize / FOLD_LINES;
@@ -114,8 +67,6 @@ impl Node {
         )
     }
 
-    /// World rectangles covering whole lines `lines` of this file card, one
-    /// per folded column they touch.
     pub fn line_rects(&self, lines: Range<u32>) -> Vec<Rect> {
         let mut out = Vec::new();
         if lines.is_empty() {
@@ -137,7 +88,6 @@ impl Node {
         out
     }
 
-    /// `(line, col)` under a world point inside this file card.
     pub fn cell_at(&self, p: [f32; 2], line_count: usize) -> Option<(u32, u32)> {
         let o = self.code_origin();
         let (dx, dy) = (p[0] - o[0], p[1] - o[1]);
@@ -157,8 +107,6 @@ impl Node {
         (line < line_count).then_some((line as u32, (in_col / CHAR_W) as u32))
     }
 
-    /// Lines of this file card visible in `view`, per folded column:
-    /// `(column, line range)`.
     pub fn visible_lines(&self, view: &Rect, line_count: usize) -> Vec<(usize, Range<usize>)> {
         let mut out = Vec::new();
         let o = self.code_origin();
@@ -187,17 +135,11 @@ impl Node {
 pub struct Layout {
     pub nodes: Vec<Node>,
     pub bounds: Rect,
-    /// `file_node[file]`: node of that file's card, or [`NONE`].
     pub file_node: Vec<u32>,
-    /// `file_anchor[file]`: the card, else the collapsed folder that
-    /// contains the file, else [`NONE`] (hidden / filtered out).
     pub file_anchor: Vec<u32>,
-    /// Directory path → node (every directory of a merged chain and every
-    /// directory inside a collapsed box maps to the node that shows it).
     pub dir_node: HashMap<String, u32>,
 }
 
-/// Intermediate tree with sizes and positions relative to the parent.
 struct Laid {
     w: f32,
     h: f32,
@@ -208,14 +150,11 @@ struct Laid {
     collapsed: bool,
     files: u32,
     lines: u64,
-    /// Directory paths this node stands for.
     paths: Vec<String>,
-    /// Files hidden inside a collapsed box.
     inner_files: Vec<u32>,
     children: Vec<(f32, f32, Laid)>,
 }
 
-/// Card width, height and column stride.
 fn card_size(repo: &Repo, idx: usize) -> (f32, f32, f32) {
     let f = &repo.files[idx];
     let col_w = f.max_cols.clamp(MIN_COLS, MAX_COLS) as f32 * CHAR_W;
@@ -231,7 +170,6 @@ fn file_visible(repo: &Repo, fi: usize, filter: &LayoutFilter) -> bool {
         && filter.only_files.as_ref().is_none_or(|only| only.contains(&(fi as u32)))
 }
 
-/// Everything below `dir` that passes the filter, for a collapsed box.
 fn collect_inner(dir: &Dir, repo: &Repo, filter: &LayoutFilter, files: &mut Vec<u32>, paths: &mut Vec<String>) {
     for &fi in &dir.files {
         if file_visible(repo, fi, filter) {
@@ -259,7 +197,6 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
             return None;
         }
         let lines: u64 = inner_files.iter().map(|&f| repo.files[f as usize].line_count() as u64).sum();
-        // Bigger folders get a bigger (but much smaller than expanded) box.
         let side = ((lines as f32).sqrt() * 6.0).clamp(140.0, 1600.0);
         return Some(Laid {
             w: side * 1.5,
@@ -277,11 +214,9 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
         });
     }
 
-    // Children in display order: sub-directories first, then files.
     let mut items: Vec<Laid> = dir.dirs.iter().filter_map(|d| lay_dir(d, repo, filter, false)).collect();
     let own_files: Vec<usize> = dir.files.iter().copied().filter(|&fi| file_visible(repo, fi, filter)).collect();
 
-    // `a/` containing only `b/` is shown as one box `a/b/`.
     if !is_root && own_files.is_empty() && items.len() == 1 {
         let mut only = items.pop().unwrap();
         only.name = format!("{}/{}", dir.name, only.name);
@@ -297,7 +232,6 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
         let f = &repo.files[fi];
         items.push(Laid {
             w,
-            // The slot includes the label strip above the card.
             h: h + FILE_LABEL_H,
             kind: NodeKind::File(fi),
             name: f.name.clone(),
@@ -318,7 +252,6 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
     let widest = items.iter().map(|c| c.w).fold(0.0, f32::max);
     let target_w = (area * ASPECT).sqrt().max(widest);
 
-    // Tallest first packs best; ties keep the alphabetical order.
     items.sort_by(|a, b| b.h.total_cmp(&a.h));
     let mut sky = Skyline::new(target_w);
     let mut placed = Vec::with_capacity(items.len());
@@ -346,11 +279,8 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
     })
 }
 
-/// Skyline bottom-left packer: keeps the top contour of what was placed and
-/// puts each item where it ends up highest (smallest y), then leftmost.
 struct Skyline {
     width: f32,
-    /// Segments (x, y, w) covering `0..width`, ordered by x.
     segs: Vec<(f32, f32, f32)>,
 }
 
@@ -360,13 +290,12 @@ impl Skyline {
     }
 
     fn place(&mut self, w: f32, h: f32) -> (f32, f32) {
-        let mut best: Option<(f32, f32)> = None; // (y, x)
+        let mut best: Option<(f32, f32)> = None;
         for i in 0..self.segs.len() {
             let x = self.segs[i].0;
             if x + w > self.width + 0.01 && x > 0.0 {
                 break;
             }
-            // Highest segment under [x, x + w).
             let mut y = 0.0f32;
             for s in &self.segs[i..] {
                 if s.0 >= x + w {
@@ -383,7 +312,6 @@ impl Skyline {
         (x, y)
     }
 
-    /// Set the contour to `top` over [x, x + w).
     fn raise(&mut self, x: f32, w: f32, top: f32) {
         let end = x + w;
         let mut out = Vec::with_capacity(self.segs.len() + 2);
@@ -402,7 +330,6 @@ impl Skyline {
         }
         out.push((x, top, w));
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // Merge neighbours at the same height.
         let mut merged: Vec<(f32, f32, f32)> = Vec::with_capacity(out.len());
         for s in out {
             if let Some(last) = merged.last_mut() {
@@ -420,7 +347,6 @@ impl Skyline {
 fn flatten(l: Laid, x: f32, y: f32, depth: u16, parent: Option<u32>, out: &mut Layout) {
     let me = out.nodes.len() as u32;
     let rect = match l.kind {
-        // Card starts below its label strip.
         NodeKind::File(fi) => {
             out.file_node[fi] = me;
             out.file_anchor[fi] = me;
@@ -454,7 +380,6 @@ fn flatten(l: Laid, x: f32, y: f32, depth: u16, parent: Option<u32>, out: &mut L
 }
 
 impl Layout {
-    /// Lay out everything.
     pub fn build(repo: &Repo) -> Layout {
         Self::build_filtered(repo, &LayoutFilter::default())
     }
@@ -472,7 +397,6 @@ impl Layout {
         out
     }
 
-    /// Node showing `path` (a file or a directory), if it is on the canvas.
     pub fn node_for_path(&self, repo: &Repo, path: &str) -> Option<usize> {
         if let Some(&n) = self.dir_node.get(path) {
             return Some(n as usize);
@@ -482,10 +406,6 @@ impl Layout {
         (n != NONE).then_some(n as usize)
     }
 
-    /// World point where a relation attaches to `site`: the exact cell when
-    /// the file is on the canvas, a spot inside its collapsed folder
-    /// otherwise, `None` when it is not shown at all. The flag tells whether
-    /// the position is exact.
     pub fn anchor(&self, site: &Site) -> Option<([f32; 2], bool)> {
         let n = *self.file_anchor.get(site.file as usize)?;
         if n == NONE {
@@ -493,7 +413,6 @@ impl Layout {
         }
         let node = &self.nodes[n as usize];
         if node.is_dir() {
-            // Spread the sites of a collapsed folder deterministically.
             let h = (site.file as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
                 ^ (site.line as u64 + 1).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
             let fx = 0.12 + 0.76 * ((h >> 16) & 0xffff) as f32 / 65535.0;
@@ -504,8 +423,6 @@ impl Layout {
         Some(([r.x, r.y + r.h * 0.5], true))
     }
 
-    /// Deepest node under `p` (world coordinates). File cards also count
-    /// their label strip as part of them.
     pub fn hit(&self, p: [f32; 2]) -> Option<usize> {
         let root = self.nodes.first()?;
         if !root.rect.contains(p) {
@@ -532,8 +449,6 @@ impl Layout {
         Some(best)
     }
 
-    /// Visit the nodes whose rect intersects `view`, skipping invisible
-    /// subtrees. The callback returns `false` to not descend into a node.
     pub fn visit_visible(&self, view: &Rect, mut f: impl FnMut(usize, &Node) -> bool) {
         let mut i = 0usize;
         while i < self.nodes.len() {
@@ -586,7 +501,6 @@ mod tests {
                 assert!(i < parent.subtree_end as usize);
             }
         }
-        // Folded files: every line maps into the card.
         for (fi, &ni) in layout.file_node.iter().enumerate() {
             let n = &layout.nodes[ni as usize];
             let lines = repo.files[fi].line_count();
@@ -596,7 +510,6 @@ mod tests {
             let all: usize = n.visible_lines(&n.rect.expand(1.0), lines).iter().map(|(_, r)| r.len()).sum();
             assert_eq!(all, lines);
         }
-        // Every file is reachable by hit-testing its centre.
         for (fi, &ni) in layout.file_node.iter().enumerate() {
             let n = &layout.nodes[ni as usize];
             assert_eq!(n.kind, NodeKind::File(fi));
@@ -612,14 +525,11 @@ mod tests {
         let layout = Layout::build(&repo);
 
         let n = &layout.nodes[layout.file_node[0] as usize];
-        // 5000 lines -> 3 columns of at most 2048 lines.
         assert!(n.rect.h < (FOLD_LINES as f32 + 2.0) * LINE_H);
         assert!(n.rect.w > 2.0 * n.col_stride);
-        // A view over the last column only sees lines 4096..5000.
         let x = n.code_origin()[0] + 2.0 * n.col_stride;
         let view = Rect::new(x, n.rect.y, 10.0, n.rect.h);
         assert_eq!(n.visible_lines(&view, 5000), vec![(2, 4096..5000)]);
-        // Cells round-trip through world coordinates, also in folded columns.
         for (line, col) in [(0u32, 0u32), (17, 3), (2048, 0), (4999, 5)] {
             let r = n.cell_rect(line, col, 1);
             assert_eq!(n.cell_at([r.x + 1.0, r.y + 1.0], 5000), Some((line, col)));
@@ -641,7 +551,6 @@ mod tests {
         );
         let file = |name: &str| repo.files.iter().position(|f| f.rel_path == name).unwrap();
 
-        // `a/b/c` is one box.
         let layout = Layout::build(&repo);
         let chain = layout.nodes.iter().find(|n| n.name == "a/b/c").expect("merged chain");
         assert_eq!(chain.rel_path, "a/b/c");
@@ -650,7 +559,6 @@ mod tests {
             assert_eq!(layout.nodes[layout.dir_node[p] as usize].name, "a/b/c");
         }
 
-        // Collapsed: children leave the canvas but still anchor to the box.
         let mut filter = LayoutFilter::default();
         filter.collapsed.insert("src".into());
         let layout = Layout::build_filtered(&repo, &filter);
@@ -664,7 +572,6 @@ mod tests {
         let (p, exact) = layout.anchor(&site).unwrap();
         assert!(!exact && layout.nodes[src].rect.contains(p));
 
-        // Hidden: gone, with no anchor.
         let mut filter = LayoutFilter::default();
         filter.hidden.insert("a".into());
         filter.hidden.insert("README.md".into());
@@ -674,7 +581,6 @@ mod tests {
         assert_eq!(layout.file_anchor[file("README.md")], NONE);
         assert_ne!(layout.file_node[file("src/main.rs")], NONE);
 
-        // Only some files: empty folders disappear.
         let filter = LayoutFilter {
             only_files: Some([file("src/util/x.rs") as u32].into_iter().collect()),
             ..Default::default()

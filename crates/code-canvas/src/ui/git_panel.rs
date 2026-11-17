@@ -1,5 +1,3 @@
-//! The source control panel: what git says changed in the active folder.
-
 use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Vec2};
 
 use super::{
@@ -18,8 +16,6 @@ fn change_color(change: Change) -> Color32 {
     })
 }
 
-/// History of the selected file, under the explorer: the commits that
-/// touched it, newest first, and whether it has changes not committed yet.
 pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
     let Some(page) = page else { return };
     let Some(path) = &page.timeline.path else { return };
@@ -88,9 +84,6 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
     });
 }
 
-/// A section header like VS Code's: a chevron, a title, a count, and maybe
-/// a button that shows with the pointer. A click folds the section; whether
-/// it is open is kept by its `key`. Returns `(open, the button was clicked)`.
 fn group_header(
     ui: &mut egui::Ui,
     title: &str,
@@ -144,8 +137,6 @@ fn group_header(
     (open, clicked)
 }
 
-/// A small button that shows on a row while the pointer is on it. `right`
-/// is where the next one to the left goes.
 fn row_button(
     ui: &mut egui::Ui,
     right: &mut f32,
@@ -164,7 +155,6 @@ fn row_button(
     r.on_hover_text(tip).clicked()
 }
 
-/// One changed file in a group. Returns what the user asked for.
 fn change_row(
     ui: &mut egui::Ui,
     file_icons: &mut FileIcons,
@@ -193,7 +183,6 @@ fn change_row(
     let mut right = rect.right() - 32.0;
     let mut action = None;
     if hovered {
-        // As in VS Code, from the right: stage or unstage, discard, open.
         let path = &change.path;
         let (glyph, tip) = if staged { (icons::MINUS, "Unstage") } else { (icons::PLUS, "Stage") };
         if row_button(ui, &mut right, mid, ("stage", staged, path), glyph, tip) {
@@ -203,7 +192,6 @@ fn change_row(
         if !staged {
             let glyph = crate::codicons::glyph("discard").unwrap_or(icons::ARROW_LEFT);
             if side == Change::Untracked {
-                // Nothing to go back to: discarding a new file removes it.
                 if row_button(ui, &mut right, mid, ("discard", path), glyph, "Delete (to the recycle bin)") {
                     action = Some(Action::File(FileOp::Delete(path.clone())));
                 }
@@ -220,7 +208,6 @@ fn change_row(
         right -= 2.0;
     }
     let (dir, name) = change.path.rsplit_once('/').unwrap_or(("", &change.path));
-    // The file's icon, then its name, then the folder it is in.
     let mut x = rect.left() + 26.0;
     let icon_at = Rect::from_center_size(Pos2::new(x + 8.0, mid), Vec2::splat(16.0));
     if file_icons.paint(ui, name, false, false, icon_at, deleted) {
@@ -228,7 +215,6 @@ fn change_row(
     }
     let painter = ui.painter();
     let name_color = if deleted { pal().text_dim } else { color.lerp_to_gamma(pal().text, 0.35) };
-    // The name first; the folder gets what is left of the row.
     let name_w = text_fit(painter, Pos2::new(x, mid), name, FontId::proportional(12.5), name_color, right - x);
     if deleted {
         painter.line_segment([Pos2::new(x, mid), Pos2::new(x + name_w, mid)], (1.0, pal().text_dim));
@@ -242,20 +228,13 @@ fn change_row(
     action
 }
 
-/// What the big button does when pressed, and what it says.
 enum Primary {
     Commit,
-    /// The branch is on no remote yet.
     Publish,
-    /// Nothing to commit, but the remote and this branch differ.
     Sync,
-    /// Nothing to do.
     Idle,
 }
 
-/// Source control, laid out like VS Code's view: the repository and its
-/// branch, the commit message and button, staged and unstaged changes, and
-/// the latest commits.
 pub fn changes_panel(
     ui: &mut egui::Ui,
     file_icons: &mut FileIcons,
@@ -267,7 +246,6 @@ pub fn changes_panel(
     Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 10, bottom: 2 }).show(ui, |ui| {
         panel_title(ui, "Source control", |ui| {
             if in_repository {
-                // "…": what does not have a button of its own.
                 let more = ui
                     .scope(|ui| {
                         ui.visuals_mut().button_frame = false;
@@ -338,7 +316,6 @@ pub fn changes_panel(
 
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        // --- the repository and its branch ---------------------------------
         if group_header(ui, "Repositories", "repositories", None, None).0 {
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
             let mid = rect.center().y;
@@ -372,13 +349,11 @@ pub fn changes_panel(
             if g.behind > 0 {
                 branch.push_str(&format!("  ↓{}", g.behind));
             }
-            // The branch, on the right of the row; a click lists the others.
             let galley = ui.painter().layout_no_wrap(branch.clone(), FontId::proportional(12.0), pal().text_dim);
             let at = Rect::from_min_size(
                 Pos2::new(sync_at.left() - 12.0 - galley.size().x, rect.top() + 1.0),
                 Vec2::new(galley.size().x + 8.0, ROW_H - 2.0),
             );
-            // The repository's name takes what the branch leaves.
             let name_clip =
                 Rect::from_min_max(Pos2::new(rect.left() + 46.0, rect.top()), Pos2::new(at.left() - 6.0, rect.bottom()));
             ui.painter().with_clip_rect(name_clip).text(
@@ -407,7 +382,6 @@ pub fn changes_panel(
                 .on_hover_text("Branch: click to switch");
         }
 
-        // --- message, commit, and the changes --------------------------------
         if group_header(ui, "Changes", "changes", None, None).0 {
             Frame::NONE.inner_margin(Margin { left: 26, right: 10, top: 2, bottom: 6 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
@@ -430,7 +404,6 @@ pub fn changes_panel(
                             );
                             commit |= edit.has_focus()
                                 && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
-                            // An assistant writes the message from the change.
                             let (at, spark) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
                             let can = !writing && !g.changes.is_empty();
                             if spark.hovered() && can {
@@ -455,8 +428,6 @@ pub fn changes_panel(
                         });
                     });
 
-                // The button: commit when there is something to, else what
-                // is left to do with the remote.
                 let has_message = !commit_message.trim().is_empty();
                 let primary = match (g.changes.is_empty(), g.upstream) {
                     (false, _) => Primary::Commit,
@@ -480,7 +451,6 @@ pub fn changes_panel(
                     }
                 };
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
-                // The arrow at its right end opens the other ways to commit.
                 let with_menu = matches!(primary, Primary::Commit);
                 let menu_w = if with_menu { 26.0 } else { 0.0 };
                 let main_at = Rect::from_min_max(rect.min, Pos2::new(rect.right() - menu_w, rect.bottom()));
@@ -536,7 +506,6 @@ pub fn changes_panel(
                         ui.set_width(200.0);
                         ui.spacing_mut().item_spacing.y = 1.0;
                         let mut chosen = None;
-                        // The first three need a message; amending can keep the old one.
                         if has_message {
                             if menu_row(ui, icons::CHECK, "Commit") {
                                 chosen = Some(commit_op(false, After::Nothing));
@@ -575,7 +544,6 @@ pub fn changes_panel(
                 }
             });
 
-            // --- staged and unstaged changes --------------------------------
             if !staged.is_empty() {
                 let (open, all) =
                     group_header(ui, "Staged Changes", "staged", Some(staged.len()), Some((icons::MINUS, "Unstage all")));
@@ -605,7 +573,6 @@ pub fn changes_panel(
             }
         }
 
-        // --- the latest commits -----------------------------------------------
         ui.add_space(8.0);
         if group_header(ui, "Graph", "graph", None, None).0 {
             let now = std::time::SystemTime::now()
@@ -623,7 +590,6 @@ pub fn changes_panel(
                 }
                 let mid = rect.center().y;
                 let x = rect.left() + 18.0;
-                // The line of history, with a ring for the commit the branch is on.
                 let top = if i == 0 { mid } else { rect.top() };
                 let bottom = if i + 1 == g.graph.len() { mid } else { rect.bottom() };
                 painter.line_segment([Pos2::new(x, top), Pos2::new(x, bottom)], (1.5, pal().accent.gamma_multiply(0.7)));
@@ -633,8 +599,6 @@ pub fn changes_panel(
                 } else {
                     painter.circle_filled(Pos2::new(x, mid), 3.5, pal().accent);
                 }
-                // Branch and tag names on the right, the subject in what is
-                // left. Who and when are in the tooltip, as in VS Code.
                 let mut right = rect.right() - 10.0;
                 for name in node.refs.iter().take(2) {
                     let galley = painter.layout_no_wrap(name.clone(), FontId::proportional(10.5), pal().on_accent);
