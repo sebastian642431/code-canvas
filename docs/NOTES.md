@@ -76,6 +76,7 @@ to run things. These notes were rescued from the comments the code used to have.
 | `CODE_CANVAS_SCRIPT` | `script.rs`, `app.rs` | Steps to run inside the app, see [script.rs](#cratescode-canvassrcscriptrs). Also makes the run *quiet* (below). |
 | `CODE_CANVAS_BENCH` | `bench.rs`, `app.rs` | `CODE_CANVAS_BENCH=1 code-canvas <folder>` runs the frame-time benchmark. Also makes the run quiet. |
 | `CODE_CANVAS_DATA_DIR` | `session::data_dir` | Replaces the data directory, so a test leaves the real session alone. |
+| `CODE_CANVAS_TEXT_MB` | `page::text_budget` | How many megabytes of file text are kept in memory before the least recently used is let go and read again on demand (768 by default). |
 | `CODE_CANVAS_BACKEND` | `app.rs` | `vulkan\|dx12\|metal\|gl` overrides the graphics API (default on Windows: Direct3D 12). |
 | `CODE_CANVAS_NO_VSYNC` | `app.rs` | See "Measuring" in [ARCHITECTURE.md](ARCHITECTURE.md). |
 | `CODE_CANVAS_PRETEND_VERSION` | `update::current` | Replaces the version of this build, to see how an offered update looks without waiting for a release. |
@@ -242,6 +243,10 @@ Resolution rules per language:
 
 ### crates/canvas-core/src/refs.rs
 
+- `relations` skips a file whose `idents` filter rules the name out; `search_text`
+  one whose `threes` filter rules the phrase out, and once enough hits are found
+  it stops reading files it would have to read from disk. Both are exact for
+  files whose text is in memory.
 How usages are bound to definitions: see "Symbols and relations" in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -266,6 +271,34 @@ How usages are bound to definitions: see "Symbols and relations" in
 
 ### crates/canvas-core/src/scan.rs
 
+Text on demand
+
+- A `SourceFile` does not always hold its text. `text()`, `line()`, `line_starts()`
+  and `tokenize_chunk()` read the file again when it is not there (`loaded`, a
+  `OnceLock`, so any thread may be the one that reads it); `peek` looks at the
+  text without keeping it, which is what a search over every file must do.
+  `line_count()` never needs the text.
+- Text read again is forced to the number of lines the scan saw (`with_lines`):
+  if the file changed on disk a moment ago, everything that indexes by line still
+  finds a line there until the watcher reloads the file.
+- `root` is `None` for text that was given by hand (`Repo::replace_source`: what
+  is being typed, a diff): that text is all there is, so it is never let go.
+- `Repo::trim_text(keep)` lets go of the least recently used text until three
+  quarters of `keep` are held. Each file it lets go first gets its two filters,
+  made from the text it still has: `idents` (every identifier, for `may_contain`)
+  and `threes` (every three bytes in a row, lower case, for `may_hold`). They can
+  only say "not here". While a file has no filters both answer "maybe", which is
+  right: its text is in memory. Making them at the scan would cost every folder a
+  tenth of its load time for something only huge ones use.
+- `LOADED_BYTES` counts the text held by every folder; the app compares it with
+  the budget (`page::text_budget`: 768 MB, or `CODE_CANVAS_TEXT_MB`) every two
+  seconds, and a scan trims before it hands the folder over.
+- Symbol names are kept beside the text (`names`, `name_at`, `implemented`), so
+  the index is rebuilt after every save without reading a file, and what draws a
+  symbol's name does not read its file. `Symbol::name_start` still points into the
+  text: the relations compare it with token offsets.
+- Not done by this: the scan itself still reads every file, so the peak while a
+  huge folder opens is as before. The cache of what a scan computes is next.
 The phases are in "Loading a folder" in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - `scan` leaves **two cores free**: a scan of a huge folder must not starve the

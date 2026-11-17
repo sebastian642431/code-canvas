@@ -96,7 +96,7 @@ impl SymbolIndex {
         for (fi, f) in files.iter().enumerate() {
             for (si, s) in f.analysis.symbols.iter().enumerate() {
                 let r = SymRef { file: fi as u32, index: si as u32 };
-                let name = s.name(&f.text);
+                let name = f.symbol_name(si);
                 if s.kind == SymbolKind::Impl {
                     idx.impls.entry(name.into()).or_default().push(r);
                 } else {
@@ -104,8 +104,7 @@ impl SymbolIndex {
                 }
                 idx.count += 1;
             }
-            for &(sym, start, len) in &f.analysis.impl_traits {
-                let name = &f.text[start as usize..start as usize + len as usize];
+            for (sym, name) in f.implemented() {
                 idx.impls.entry(name.into()).or_default().push(SymRef { file: fi as u32, index: sym });
             }
         }
@@ -121,7 +120,7 @@ impl SymbolIndex {
     }
 }
 
-fn ident_byte(b: u8) -> bool {
+pub(crate) fn ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
 }
 
@@ -185,7 +184,7 @@ impl Repo {
     }
 
     pub fn sym_name(&self, r: SymRef) -> &str {
-        self.sym(r).name(&self.files[r.file as usize].text)
+        self.files[r.file as usize].symbol_name(r.index as usize)
     }
 
     pub fn sym_site(&self, r: SymRef) -> Site {
@@ -207,7 +206,7 @@ impl Repo {
         while p != u32::MAX {
             let s = &f.analysis.symbols[p as usize];
             if s.kind.is_container() || s.kind == SymbolKind::Module {
-                return Some(s.name(&f.text));
+                return Some(f.symbol_name(p as usize));
             }
             p = s.parent;
         }
@@ -255,7 +254,7 @@ impl Repo {
         if !usable(t) || t.kind == TokenKind::Keyword {
             return None;
         }
-        let mut name = &f.text[t.range()];
+        let mut name = &f.text()[t.range()];
         let mut len = t.cols;
         if let Some(stripped) = name.strip_suffix('!') {
             name = stripped;
@@ -271,24 +270,32 @@ impl Repo {
         let ignore_case = !query.chars().any(|c| c.is_uppercase());
         let needle = query.as_bytes();
         let cols = query.chars().count().min(u16::MAX as usize) as u16;
+        let found = std::sync::atomic::AtomicUsize::new(0);
         let per_file: Vec<Vec<Site>> = self
             .files
             .par_iter()
             .enumerate()
             .filter_map(|(fi, f)| {
                 let mut hits = Vec::new();
-                find_all(f.text.as_bytes(), needle, ignore_case, |off| {
-                    let line = f.line_starts.partition_point(|&s| s as usize <= off) - 1;
-                    let start = f.line_starts[line] as usize;
-                    let col = f.text.get(start..off).map(|t| t.chars().count()).unwrap_or(0);
-                    hits.push(Site {
-                        file: fi as u32,
-                        line: line as u32,
-                        col: col.min(u16::MAX as usize) as u16,
-                        len: cols,
-                    });
-                    hits.len() < max
+                let enough = found.load(std::sync::atomic::Ordering::Relaxed) >= max;
+                if !f.may_hold(needle) || (enough && !f.has_text()) {
+                    return None;
+                }
+                f.peek(|text, line_starts| {
+                    find_all(text.as_bytes(), needle, ignore_case, |off| {
+                        let line = line_starts.partition_point(|&s| s as usize <= off) - 1;
+                        let start = line_starts[line] as usize;
+                        let col = text.get(start..off).map(|t| t.chars().count()).unwrap_or(0);
+                        hits.push(Site {
+                            file: fi as u32,
+                            line: line as u32,
+                            col: col.min(u16::MAX as usize) as u16,
+                            len: cols,
+                        });
+                        hits.len() < max
+                    })
                 });
+                found.fetch_add(hits.len(), std::sync::atomic::Ordering::Relaxed);
                 (!hits.is_empty()).then_some(hits)
             })
             .collect();
@@ -311,12 +318,12 @@ impl Repo {
         if !usable(&t) {
             return None;
         }
-        let name = f.text[t.range()].trim_end_matches('!');
+        let name = f.text()[t.range()].trim_end_matches('!');
         let site = Site { file, line, col: t.col, len: name.chars().count().min(u16::MAX as usize) as u16 };
         if let Some(index) = f.analysis.symbols.iter().position(|s| s.name_start == t.start) {
             return Some((SymRef { file, index: index as u32 }, site));
         }
-        let call = is_call(&f.text, toks, k);
+        let call = is_call(&f.text(), toks, k);
         if t.kind == TokenKind::Keyword && !call {
             return None;
         }
@@ -355,7 +362,7 @@ impl Repo {
             }
             if check_imports && c.file != from_file {
                 let stem = f.name.split('.').next().unwrap_or("");
-                if stem.len() >= 3 && !matches!(stem, "mod" | "index" | "lib" | "main") && from.text.contains(stem) {
+                if stem.len() >= 3 && !matches!(stem, "mod" | "index" | "lib" | "main") && from.text().contains(stem) {
                     score += 1000;
                 }
             }
@@ -367,7 +374,7 @@ impl Repo {
         if k < 2 {
             return None;
         }
-        let sep = &f.text[toks[k - 1].range()];
+        let sep = &f.text()[toks[k - 1].range()];
         if toks[k - 1].kind != TokenKind::Punct || !(sep == "::" || sep == "." || sep == "->" || sep == "?.") {
             return None;
         }
@@ -375,12 +382,12 @@ impl Repo {
         if !usable(q) {
             return None;
         }
-        let word = &f.text[q.range()];
+        let word = &f.text()[q.range()];
         if matches!(word, "Self" | "self" | "this" | "super" | "cls") {
             let at = self.sym_at(file, line)?;
             return self.sym_container(at).or_else(|| {
                 let s = self.sym(at);
-                s.kind.is_container().then(|| s.name(&f.text))
+                s.kind.is_container().then(|| self.sym_name(at))
             });
         }
         (sep == "::" || word.chars().next().is_some_and(char::is_uppercase)).then_some(word)
@@ -405,20 +412,20 @@ impl Repo {
             .par_iter()
             .enumerate()
             .filter_map(|(fi, f)| {
-                if f.text.len() < name.len() || !f.text.contains(name.as_str()) {
+                if !f.may_contain(&name) || f.text().len() < name.len() || !f.text().contains(name.as_str()) {
                     return None;
                 }
                 let fi = fi as u32;
-                let bytes = f.text.as_bytes();
+                let bytes = f.text().as_bytes();
                 let mut chunks: HashMap<usize, Tokens> = HashMap::new();
                 let mut default_binding: Option<Option<SymRef>> = None;
                 let mut out = Vec::new();
-                for (off, _) in f.text.match_indices(name.as_str()) {
+                for (off, _) in f.text().match_indices(name.as_str()) {
                     let end = off + name.len();
                     if (off > 0 && ident_byte(bytes[off - 1])) || (end < bytes.len() && ident_byte(bytes[end])) {
                         continue;
                     }
-                    let line = f.line_starts.partition_point(|&s| s as usize <= off) - 1;
+                    let line = f.line_starts().partition_point(|&s| s as usize <= off) - 1;
                     let chunk = line / CHUNK_LINES;
                     let tokens = chunks.entry(chunk).or_insert_with(|| f.tokenize_chunk(chunk));
                     let toks = tokens.line(line - chunk * CHUNK_LINES);
@@ -443,7 +450,7 @@ impl Repo {
                             continue;
                         }
                     }
-                    let call = is_call(&f.text, toks, k);
+                    let call = is_call(&f.text(), toks, k);
                     let enclosing = symbol_at_line(&f.analysis.symbols, line as u32)
                         .map(|index| SymRef { file: fi, index: index as u32 });
                     out.push(Relation {
@@ -480,13 +487,13 @@ impl Repo {
             }
             let toks = chunk_cache.as_ref().unwrap().1.line(line as usize - chunk * CHUNK_LINES);
             for (k, t) in toks.iter().enumerate() {
-                if !is_call(&f.text, toks, k) {
+                if !is_call(&f.text(), toks, k) {
                     continue;
                 }
                 if f.analysis.symbols.iter().any(|s| s.name_start == t.start) {
                     continue;
                 }
-                let callee = f.text[t.range()].trim_end_matches('!');
+                let callee = f.text()[t.range()].trim_end_matches('!');
                 let q = self.qualifier(f, target.file, line, toks, k);
                 let Some(d) = self.resolve(callee, target.file, q, true) else { continue };
                 if d == target || !seen.insert(d) {

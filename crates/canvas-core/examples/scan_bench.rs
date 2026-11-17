@@ -7,13 +7,13 @@ fn main() {
     let root = PathBuf::from(std::env::args().nth(1).expect("usage: scan_bench <folder>"));
     for run in 0..2 {
         let t = Instant::now();
-        let repo = scan::scan(&root, &ScanOptions::default(), None);
+        let mut repo = scan::scan(&root, &ScanOptions::default(), None);
         let scan_ms = t.elapsed().as_millis();
         let t = Instant::now();
         let layout = Layout::build(&repo);
         let layout_ms = t.elapsed().as_millis();
         let heap: usize = repo.files.iter().map(|f| f.heap_bytes()).sum();
-        let text: usize = repo.files.iter().map(|f| f.text.len()).sum();
+        let text: usize = repo.files.iter().map(|f| f.text().len()).sum();
         let t = Instant::now();
         let tokens: usize = repo
             .files
@@ -43,5 +43,28 @@ fn main() {
             secs(2),
             secs(3)
         );
+        let name = std::env::args().nth(2).unwrap_or_else(|| "spawn".to_string());
+        let Some(&symbol) = repo.symbols.defs(&name).first() else { continue };
+        let megabytes = || scan::loaded_text_bytes() as f64 / 1e6;
+        let ask = |repo: &canvas_core::Repo, when: &str| {
+            let t = Instant::now();
+            let relations = repo.relations(symbol, None).items.len();
+            let relations_ms = t.elapsed().as_secs_f32() * 1000.0;
+            let held = megabytes();
+            let t = Instant::now();
+            let hits = repo.search_text("fn main", 5000).0.len();
+            let search_ms = t.elapsed().as_secs_f32() * 1000.0;
+            let t = Instant::now();
+            let rare = repo.search_text("serde_json::from_slice", 5000).0.len();
+            let rare_ms = t.elapsed().as_secs_f32() * 1000.0;
+            println!(
+                "       {when}: {relations} relations of '{name}' in {relations_ms:.0} ms ({held:.0} MB of text held after), {hits} hits of a common search in {search_ms:.0} ms, {rare} of a rarer one in {rare_ms:.0} ms"
+            );
+        };
+        ask(&repo, "all text in memory");
+        let freed = repo.trim_text(64 << 20);
+        println!("       let go of {:.0} MB, {:.0} MB of text held", freed as f64 / 1e6, megabytes());
+        ask(&repo, "text read when needed");
+        ask(&repo, "and again");
     }
 }

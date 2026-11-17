@@ -157,6 +157,7 @@ pub struct App {
     last_input: Instant,
     checkers_offered: HashSet<&'static str>,
     following: Option<(usize, String, u32, Instant)>,
+    text_checked: Instant,
 }
 
 impl App {
@@ -256,6 +257,7 @@ impl App {
             last_input: Instant::now(),
             checkers_offered: HashSet::new(),
             following: None,
+            text_checked: Instant::now(),
         }
     }
 
@@ -754,21 +756,31 @@ impl App {
                 let caret = page.editors.remove(&rel).map(|e| e.caret);
                 let text_of = |page: &Page| {
                     let r = page.ready()?;
-                    let shown = &r.repo.files[r.repo.file_index(&rel)?].text;
-                    Some(page.diffs.get(&rel).map_or(shown, |diffed| &diffed.plain).clone())
+                    let shown = &r.repo.files[r.repo.file_index(&rel)?];
+                    match page.diffs.get(&rel) {
+                        Some(diffed) => Some(diffed.plain.clone()),
+                        None => shown.has_text().then(|| shown.text().to_string()),
+                    }
                 };
                 let before = text_of(page);
                 if let Some(g) = self.gfx.as_mut() {
                     g.renderer.text.drop_page(page.id);
                     page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
                 }
-                if let (Some(before), Some(after)) = (before, text_of(page)) {
-                    let (hunks, _, _) = crate::git::compare(&before, &after);
-                    let lines: Vec<(u32, u32)> = hunks.iter().map(|h| (h.line, h.count.max(1))).collect();
-                    if let Some(&(first, _)) = lines.first() {
-                        page.touch(&rel, lines);
-                        seen = Some((i, rel.clone(), first));
+                match (before, text_of(page)) {
+                    (Some(before), Some(after)) => {
+                        let (hunks, _, _) = crate::git::compare(&before, &after);
+                        let lines: Vec<(u32, u32)> = hunks.iter().map(|h| (h.line, h.count.max(1))).collect();
+                        if let Some(&(first, _)) = lines.first() {
+                            page.touch(&rel, lines);
+                            seen = Some((i, rel.clone(), first));
+                        }
                     }
+                    (None, Some(_)) => {
+                        page.touch(&rel, Vec::new());
+                        seen = Some((i, rel.clone(), 0));
+                    }
+                    _ => {}
                 }
                 if rel.ends_with("package.json") || rel.ends_with("Cargo.toml") {
                     self.versions_due.push(page.id);
@@ -2709,6 +2721,16 @@ impl App {
             self.find_refresh(false);
             changed = true;
         }
+        let budget = crate::page::text_budget();
+        if self.text_checked.elapsed() > Duration::from_secs(2) {
+            self.text_checked = Instant::now();
+            if canvas_core::scan::loaded_text_bytes() > budget {
+                let share = budget / self.pages.len().max(1);
+                let freed: usize =
+                    self.pages.iter_mut().filter_map(Page::ready_mut).map(|r| r.repo.trim_text(share)).sum();
+                log::debug!("text over its budget: {} MB let go", freed >> 20);
+            }
+        }
         busy |= self.follow_now();
         busy |= !self.ext.notices.is_empty();
         if changed {
@@ -2833,7 +2855,7 @@ impl App {
         let mut all = Vec::new();
         let manifests = r.repo.files.iter().filter(|f| matches!(f.name.as_str(), "package.json" | "Cargo.toml"));
         for f in manifests.take(MAX_MANIFESTS) {
-            let found = crate::versions::dependencies(&f.name, &f.text);
+            let found = crate::versions::dependencies(&f.name, f.text());
             if !found.is_empty() {
                 all.extend(found.iter().cloned());
                 self.manifests.insert(root.join(&f.rel_path), found);

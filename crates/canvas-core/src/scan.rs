@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -52,21 +52,198 @@ pub struct ScanProgress {
     pub loaded: AtomicUsize,
 }
 
+struct Loaded {
+    text: String,
+    line_starts: Vec<u32>,
+}
+
+static LOADED_BYTES: AtomicUsize = AtomicUsize::new(0);
+static CLOCK: AtomicU32 = AtomicU32::new(1);
+
+pub fn loaded_text_bytes() -> usize {
+    LOADED_BYTES.load(Ordering::Relaxed)
+}
+
+impl Loaded {
+    fn new(text: String, line_starts: Vec<u32>) -> Loaded {
+        let loaded = Loaded { text, line_starts };
+        LOADED_BYTES.fetch_add(loaded.bytes(), Ordering::Relaxed);
+        loaded
+    }
+
+    fn bytes(&self) -> usize {
+        self.text.capacity() + self.line_starts.capacity() * 4
+    }
+
+    fn with_lines(mut self, lines: usize) -> Loaded {
+        if self.line_starts.len() == lines {
+            return self;
+        }
+        let before = self.bytes();
+        if self.line_starts.len() > lines {
+            self.text.truncate(self.line_starts[lines] as usize - 1);
+            self.line_starts.truncate(lines);
+        }
+        while self.line_starts.len() < lines {
+            self.text.push('\n');
+            self.line_starts.push(self.text.len() as u32);
+        }
+        LOADED_BYTES.fetch_add(self.bytes(), Ordering::Relaxed);
+        LOADED_BYTES.fetch_sub(before, Ordering::Relaxed);
+        self
+    }
+}
+
+impl Drop for Loaded {
+    fn drop(&mut self) {
+        LOADED_BYTES.fetch_sub(self.bytes(), Ordering::Relaxed);
+    }
+}
+
 pub struct SourceFile {
     pub rel_path: String,
     pub name: String,
     pub lang: Lang,
-    pub text: String,
-    pub line_starts: Vec<u32>,
+    loaded: OnceLock<Loaded>,
+    root: Option<Arc<Path>>,
+    lines: u32,
+    used: AtomicU32,
+    idents: Box<[u64]>,
+    threes: Box<[u64]>,
+    names: Box<str>,
+    name_at: Box<[u32]>,
+    implemented: Box<[(u32, Box<str>)]>,
     pub analysis: Analysis,
     pub max_cols: u32,
     pub note: Option<String>,
     pub fold: usize,
 }
 
+fn ident_bits(ident: &[u8], bits: usize) -> [usize; 3] {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in ident {
+        hash = (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    [hash as usize & (bits - 1), (hash >> 21) as usize & (bits - 1), (hash >> 42) as usize & (bits - 1)]
+}
+
+fn three_bit(a: u8, b: u8, c: u8, bits: usize) -> usize {
+    let three =
+        a.to_ascii_lowercase() as u32 | (b.to_ascii_lowercase() as u32) << 8 | (c.to_ascii_lowercase() as u32) << 16;
+    (three.wrapping_mul(0x9e37_79b1) >> 7) as usize & (bits - 1)
+}
+
+fn three_filter(text: &str) -> Box<[u64]> {
+    let bits = (text.len() / 2).clamp(64, 1 << 23).next_power_of_two();
+    let mut filter = vec![0u64; bits / 64];
+    for three in text.as_bytes().windows(3) {
+        let bit = three_bit(three[0], three[1], three[2], bits);
+        filter[bit / 64] |= 1 << (bit % 64);
+    }
+    filter.into_boxed_slice()
+}
+
+fn ident_filter(text: &str) -> Box<[u64]> {
+    let bits = (text.len() / 2).clamp(64, 1 << 22).next_power_of_two();
+    let mut filter = vec![0u64; bits / 64];
+    for ident in text.as_bytes().split(|b| !crate::refs::ident_byte(*b)).filter(|run| !run.is_empty()) {
+        for bit in ident_bits(ident, bits) {
+            filter[bit / 64] |= 1 << (bit % 64);
+        }
+    }
+    filter.into_boxed_slice()
+}
+
 impl SourceFile {
+    fn loaded(&self) -> &Loaded {
+        self.used.store(CLOCK.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.loaded.get_or_init(|| self.read())
+    }
+
+    fn read(&self) -> Loaded {
+        let raw = self.root.as_ref().and_then(|root| std::fs::read(root.join(&self.rel_path)).ok());
+        let (text, line_starts, _) = normalise(&String::from_utf8_lossy(&raw.unwrap_or_default()));
+        Loaded::new(text, line_starts).with_lines(self.lines as usize)
+    }
+
+    pub fn text(&self) -> &str {
+        &self.loaded().text
+    }
+
+    pub fn line_starts(&self) -> &[u32] {
+        &self.loaded().line_starts
+    }
+
+    pub fn has_text(&self) -> bool {
+        self.loaded.get().is_some()
+    }
+
+    pub fn peek<R>(&self, look: impl FnOnce(&str, &[u32]) -> R) -> R {
+        match self.loaded.get() {
+            Some(loaded) => look(&loaded.text, &loaded.line_starts),
+            None => {
+                let read = self.read();
+                look(&read.text, &read.line_starts)
+            }
+        }
+    }
+
+    pub fn symbol_name(&self, index: usize) -> &str {
+        let start = self.name_at[index] as usize;
+        &self.names[start..start + self.analysis.symbols[index].name_len as usize]
+    }
+
+    pub fn implemented(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.implemented.iter().map(|(symbol, name)| (*symbol, &**name))
+    }
+
+    fn keep_names(&mut self, text: &str) {
+        let mut names = String::new();
+        let mut name_at = Vec::with_capacity(self.analysis.symbols.len());
+        for symbol in &self.analysis.symbols {
+            name_at.push(names.len() as u32);
+            names.push_str(symbol.name(text));
+        }
+        let traits = self.analysis.impl_traits.iter();
+        self.implemented = traits
+            .map(|&(symbol, start, len)| (symbol, text[start as usize..start as usize + len as usize].into()))
+            .collect();
+        (self.names, self.name_at) = (names.into(), name_at.into());
+    }
+
+    pub fn may_hold(&self, needle: &[u8]) -> bool {
+        let bits = self.threes.len() * 64;
+        bits == 0
+            || needle.windows(3).all(|t| {
+                let bit = three_bit(t[0], t[1], t[2], bits);
+                self.threes[bit / 64] >> (bit % 64) & 1 == 1
+            })
+    }
+
+    pub fn may_contain(&self, ident: &str) -> bool {
+        let bits = self.idents.len() * 64;
+        let whole = !ident.is_empty() && ident.bytes().all(crate::refs::ident_byte);
+        !whole
+            || bits == 0
+            || ident_bits(ident.as_bytes(), bits).iter().all(|bit| self.idents[bit / 64] >> (bit % 64) & 1 == 1)
+    }
+
+    fn forget_text(&mut self) -> usize {
+        match (&self.root, self.loaded.get()) {
+            (Some(_), Some(loaded)) => {
+                let bytes = loaded.bytes();
+                if self.idents.is_empty() {
+                    (self.idents, self.threes) = (ident_filter(&loaded.text), three_filter(&loaded.text));
+                }
+                self.loaded = OnceLock::new();
+                bytes
+            }
+            _ => 0,
+        }
+    }
+
     pub fn line_count(&self) -> usize {
-        self.line_starts.len()
+        self.lines as usize
     }
 
     pub fn chunk_count(&self) -> usize {
@@ -80,12 +257,16 @@ impl SourceFile {
 
     pub fn tokenize_chunk(&self, c: usize) -> Tokens {
         let in_comment = self.analysis.chunk_in_comment.get(c).copied().unwrap_or(false);
-        syntax::tokenize_range(&self.text, &self.line_starts, self.lang, self.chunk_lines(c), in_comment)
+        let loaded = self.loaded();
+        syntax::tokenize_range(&loaded.text, &loaded.line_starts, self.lang, self.chunk_lines(c), in_comment)
     }
 
     pub fn heap_bytes(&self) -> usize {
-        self.text.capacity()
-            + self.line_starts.capacity() * 4
+        self.loaded.get().map_or(0, Loaded::bytes)
+            + self.idents.len() * 8
+            + self.threes.len() * 8
+            + self.names.len()
+            + self.name_at.len() * 4
             + self.analysis.blocks.capacity() * std::mem::size_of::<syntax::Block>()
             + self.analysis.chunk_in_comment.capacity()
             + self.analysis.symbols.capacity() * std::mem::size_of::<crate::symbols::Symbol>()
@@ -94,24 +275,37 @@ impl SourceFile {
     }
 
     pub fn line(&self, i: usize) -> &str {
-        let s = self.line_starts[i] as usize;
-        let e = self.line_starts.get(i + 1).map(|&e| e as usize - 1).unwrap_or(self.text.len());
-        &self.text[s..e]
+        let loaded = self.loaded();
+        let Some(&start) = loaded.line_starts.get(i) else { return "" };
+        let end = loaded.line_starts.get(i + 1).map(|&e| e as usize - 1).unwrap_or(loaded.text.len());
+        &loaded.text[start as usize..end]
+    }
+
+    fn with_text(rel_path: String, text: String, line_starts: Vec<u32>, max_cols: u32) -> Self {
+        SourceFile {
+            name: file_name(&rel_path),
+            lang: Lang::from_path(&rel_path),
+            rel_path,
+            lines: line_starts.len() as u32,
+            idents: Box::default(),
+            threes: Box::default(),
+            names: Box::default(),
+            name_at: Box::default(),
+            implemented: Box::default(),
+            loaded: OnceLock::from(Loaded::new(text, line_starts)),
+            root: None,
+            used: AtomicU32::new(0),
+            analysis: Analysis::default(),
+            max_cols,
+            note: None,
+            fold: 0,
+        }
     }
 
     fn placeholder(rel_path: String, note: String) -> Self {
-        let name = file_name(&rel_path);
-        SourceFile {
-            lang: Lang::from_path(&rel_path),
-            rel_path,
-            name,
-            text: String::new(),
-            line_starts: vec![0],
-            analysis: Analysis::default(),
-            max_cols: 0,
-            note: Some(note),
-            fold: 0,
-        }
+        let mut file = SourceFile::with_text(rel_path, String::new(), vec![0], 0);
+        file.note = Some(note);
+        file
     }
 }
 
@@ -143,6 +337,31 @@ pub struct Repo {
 }
 
 impl Repo {
+    pub fn trim_text(&mut self, keep: usize) -> usize {
+        let mut held: Vec<(u32, usize, usize)> = Vec::new();
+        for (index, f) in self.files.iter().enumerate() {
+            if let (Some(_), Some(loaded)) = (&f.root, f.loaded.get()) {
+                held.push((f.used.load(Ordering::Relaxed), index, loaded.bytes()));
+            }
+        }
+        let mut total: usize = held.iter().map(|(_, _, bytes)| bytes).sum();
+        CLOCK.fetch_add(1, Ordering::Relaxed);
+        if total <= keep {
+            return 0;
+        }
+        held.sort_unstable();
+        let mut going = vec![false; self.files.len()];
+        for (_, index, bytes) in held {
+            if total <= keep / 4 * 3 {
+                break;
+            }
+            total -= bytes;
+            going[index] = true;
+        }
+        let let_go = |(index, file): (usize, &mut SourceFile)| if going[index] { file.forget_text() } else { 0 };
+        self.files.par_iter_mut().enumerate().map(let_go).sum()
+    }
+
     pub fn file_index(&self, rel_path: &str) -> Option<usize> {
         self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(rel_path))).ok()
     }
@@ -161,6 +380,7 @@ impl Repo {
         let rel = self.files[index].rel_path.clone();
         let path = self.root.join(&rel);
         self.files[index] = load_file(&path, rel, None, opts);
+        self.files[index].root = Some(Arc::from(self.root.as_path()));
         self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
         self.symbols = crate::refs::SymbolIndex::build(&self.files);
     }
@@ -268,7 +488,12 @@ fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
     let lang = Lang::from_path(&rel_path);
     let analysis = syntax::analyze(&text, &line_starts, lang, crate::symbols::Dialect::from_path(&rel_path));
     text.shrink_to_fit();
-    SourceFile { name: file_name(&rel_path), rel_path, lang, text, line_starts, analysis, max_cols, note, fold: 0 }
+    let mut file = SourceFile::with_text(rel_path, String::new(), Vec::new(), max_cols);
+    (file.analysis, file.note) = (analysis, note);
+    file.keep_names(&text);
+    file.lines = line_starts.len() as u32;
+    file.loaded = OnceLock::from(Loaded::new(text, line_starts));
+    file
 }
 
 type Found = (PathBuf, String, Option<u64>);
@@ -379,11 +604,15 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
 
     let walk_ms = started.elapsed().as_millis();
     let t_load = Instant::now();
+    let dir: Arc<Path> = Arc::from(root.as_path());
     let load = || -> Vec<SourceFile> {
         paths
             .par_iter()
             .map(|(path, rel, size)| {
-                let f = load_file(path, rel.clone(), *size, opts);
+                let mut f = load_file(path, rel.clone(), *size, opts);
+                if f.note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
+                    f.root = Some(dir.clone());
+                }
                 if let Some(p) = &progress {
                     p.loaded.fetch_add(1, Ordering::Relaxed);
                 }
@@ -464,5 +693,29 @@ mod tests {
         assert_eq!(f.analysis.blocks.len(), f.line_count().div_ceil(syntax::BLOCK_LINES));
         let all: usize = (0..f.chunk_count()).map(|c| f.tokenize_chunk(c).lines()).sum();
         assert_eq!(all, f.line_count());
+    }
+
+    #[test]
+    fn text_is_let_go_and_read_again() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut repo = scan(root, &ScanOptions::default(), None);
+        let at = repo.file_index("src/scan.rs").unwrap();
+        let (text, lines) = (repo.files[at].text().to_string(), repo.files[at].line_count());
+        let absent = ["never", "written", "anywhere"].join("_");
+        assert!(repo.files[at].may_contain(&absent), "nothing is ruled out while the text is at hand");
+        assert!(repo.trim_text(0) > 0);
+        assert!(repo.files[at].may_contain("trim_text") && !repo.files[at].may_contain(&absent));
+        let unseen = absent.replace('_', "#~");
+        assert!(repo.files[at].may_hold(b"pub fn trim_text(&mut self") && !repo.files[at].may_hold(unseen.as_bytes()));
+        assert!(repo.files.iter().all(|f| !f.has_text() || f.note.is_some()));
+        assert_eq!(repo.files[at].peek(|text, starts| (text.len(), starts.len())), (text.len(), lines));
+        assert!(!repo.files[at].has_text(), "a look does not keep the text");
+        assert_eq!(repo.files[at].text(), text);
+        assert!(repo.files[at].has_text());
+        assert_eq!(repo.files[at].line(lines + 5), "");
+
+        repo.replace_source(at, "only this\nand this", &ScanOptions::default());
+        assert_eq!(repo.trim_text(0), repo.trim_text(0), "nothing left to let go");
+        assert_eq!(repo.files[at].line(1), "and this", "text given by hand is all there is: it stays");
     }
 }

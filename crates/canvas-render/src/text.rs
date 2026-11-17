@@ -112,8 +112,8 @@ impl TextLayer {
     fn shape_chunk(&mut self, file: &SourceFile, chunk: usize, tokens: &Tokens) -> Buffer {
         let first = chunk * CHUNK_LINES;
         let last = ((chunk + 1) * CHUNK_LINES).min(file.line_count());
-        let start = file.line_starts[first] as usize;
-        let end = file.line_starts.get(last).map(|&e| e as usize - 1).unwrap_or(file.text.len());
+        let start = file.line_starts()[first] as usize;
+        let end = file.line_starts().get(last).map(|&e| e as usize - 1).unwrap_or(file.text().len());
 
         let colors = theme::get().token_colors();
         let default = Attrs::new().family(Family::Monospace).color(theme::glyph_color(colors[8]));
@@ -123,15 +123,15 @@ impl TextLayer {
             for t in tokens.line(line - first) {
                 let (s, e) = (t.start as usize, t.end() as usize);
                 if s > cursor {
-                    spans.push((&file.text[cursor..s], default.clone()));
+                    spans.push((&file.text()[cursor..s], default.clone()));
                 }
                 let color = colors[theme::kind_index(t.kind) as usize];
-                spans.push((&file.text[s..e], default.clone().color(theme::glyph_color(color))));
+                spans.push((&file.text()[s..e], default.clone().color(theme::glyph_color(color))));
                 cursor = e;
             }
         }
         if end > cursor {
-            spans.push((&file.text[cursor..end], default.clone()));
+            spans.push((&file.text()[cursor..end], default.clone()));
         }
 
         let mut buffer = Buffer::new_empty(Metrics::new(self.code_font_size, LINE_H));

@@ -172,6 +172,11 @@ impl Diffed {
 
 const MAX_DIFFS: usize = 400;
 
+pub fn text_budget() -> usize {
+    let megabytes = std::env::var("CODE_CANVAS_TEXT_MB").ok().and_then(|mb| mb.parse::<usize>().ok());
+    megabytes.unwrap_or(768) << 20
+}
+
 pub struct Touch {
     pub path: String,
     pub lines: Vec<(u32, u32)>,
@@ -738,8 +743,12 @@ impl Page {
             .name(format!("scan {}", self.title))
             .spawn(move || {
                 let t = Instant::now();
-                let repo = scan::scan(&root, &ScanOptions::default(), Some(p));
+                let mut repo = scan::scan(&root, &ScanOptions::default(), Some(p));
                 let deps = canvas_core::deps::analyze(&repo);
+                let freed = repo.trim_text(text_budget());
+                if freed > 0 {
+                    log::info!("'{}': {} MB of text let go, read again when it is looked at", repo.name, freed >> 20);
+                }
                 log::info!(
                     "dependencies of '{}': {} edges between {} pairs of files in {} ms ({} unresolved, {} external)",
                     repo.name,

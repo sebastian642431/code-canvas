@@ -295,7 +295,7 @@ fn code(f: &SourceFile, i: usize) -> &str {
 }
 
 fn scan_file(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
-    if f.text.is_empty() {
+    if f.text().is_empty() {
         return;
     }
     let Some(scanner) = scanner_for(&f.name) else { return };
@@ -343,7 +343,7 @@ const PACKAGE_MARKERS: [&str; 2] = ["package.json", "tsconfig.json"];
 
 fn scan_js(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
     let dir = dir_of(&f.rel_path);
-    let dynamic = f.text.contains("require(") || f.text.contains("import(");
+    let dynamic = f.text().contains("require(") || f.text().contains("import(");
     s.roots_ready = false;
     let n = f.line_count();
     let mut i = 0;
