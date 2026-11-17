@@ -3655,7 +3655,7 @@ fn quick_score(path: &str, query: &str) -> Option<i32> {
     None
 }
 
-fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
+fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(String, Action)> {
     let mut out: Vec<(String, Action)> = vec![
         ("File: Open Folder…".into(), Action::OpenFolder),
         ("File: Save (the file being edited, or every unsaved file)".into(), Action::SaveFile),
@@ -3693,9 +3693,12 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("Sharing: Bring Everyone to What I See".into(), Action::Share(ShareOp::CallEveryone)),
         (
             "Source Control: Show What Changed Inside the Files".into(),
-            Action::SetDiff(crate::page::DiffView { on: true, ..Default::default() }),
+            Action::SetDiff(crate::page::DiffView { on: true, ..diff }),
         ),
-        ("Source Control: Show the Files as They Are".into(), Action::SetDiff(Default::default())),
+        (
+            "Source Control: Show the Files as They Are".into(),
+            Action::SetDiff(crate::page::DiffView { on: false, ..diff }),
+        ),
         ("Extensions: Install from VSIX…".into(), Action::InstallVsix),
     ];
     for e in ext.installed.iter().filter(|e| e.enabled && e.has_code) {
@@ -3748,7 +3751,8 @@ fn quick_open(
 
                     if let Some(filter) = q.query.strip_prefix('>') {
                         let filter = filter.trim().to_lowercase();
-                        let mut rows: Vec<(i32, String, Action)> = palette_commands(ext)
+                        let diff = page.map(|page| page.diff).unwrap_or_default();
+                        let mut rows: Vec<(i32, String, Action)> = palette_commands(ext, diff)
                             .into_iter()
                             .filter_map(|(label, action)| {
                                 let score = if filter.is_empty() {

@@ -1,0 +1,35 @@
+title: The palette's two diff commands only turn the diff on and off: side by side and 7 lines around are chosen while it is off, then "Show What Changed Inside the Files" must show it side by side with 7 lines around, and "Show the Files as They Are" must keep both (the log says how it is shown each time)
+folders: git-changes
+expect-log: what changed inside the files: shown, 2 sides, 7 lines kept around a change
+expect-log: what changed is shown inside 1 files
+forbid-log: what changed inside the files: .*1 sides
+forbid-log: what changed inside the files: shown, 2 sides, 3 lines
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 800
+zoom 0.5
+diff split
+diff around 7
+wait 500
+palette Show What Changed Inside
+wait 800
+mark 1-palette
+wait 500
+ui click 860 110
+wait 1500
+mark 2-on-side-by-side
+wait 500
+palette Show the Files as They Are
+wait 800
+ui click 860 110
+wait 1200
+mark 3-off
+wait 500
+diff on
+wait 1200
+mark 4-on-again
+wait 500
+quit

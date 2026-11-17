@@ -520,6 +520,10 @@ impl Page {
     }
 
     pub fn set_diff(&mut self, view: DiffView) {
+        let (shown, sides) = (if view.on { "shown" } else { "not shown" }, if view.split { 2 } else { 1 });
+        let folded =
+            if view.fold { format!("{} lines kept around a change", view.around) } else { "nothing folded".into() };
+        log::info!("what changed inside the files: {shown}, {sides} sides, {folded}");
         self.diff = view;
         self.diff_stale = true;
     }
