@@ -23,6 +23,8 @@ use crate::script::{Script, Step};
 use crate::session::{self, PageSession, Session};
 use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState};
 
+mod sharing;
+
 struct Gfx {
     renderer: Renderer,
     egui_renderer: egui_wgpu::Renderer,
@@ -213,6 +215,7 @@ pub struct App {
     playing: Option<PathBuf>,
     player_shown: bool,
     commit_from: Option<Place>,
+    sharing: sharing::Sharing,
     last_move_by_itself: bool,
 }
 
@@ -258,7 +261,7 @@ impl App {
         ui.restore(Side::Left, saved.left_open, &saved.left_last);
         ui.restore(Side::Right, saved.right_open, &saved.right_last);
         ui.single = saved.single;
-        Self {
+        let mut app = Self {
             gfx: None,
             pages: Vec::new(),
             active: 0,
@@ -327,8 +330,11 @@ impl App {
             playing: None,
             player_shown: false,
             commit_from: None,
+            sharing: Default::default(),
             last_move_by_itself: false,
-        }
+        };
+        app.share_setup();
+        app
     }
 
     fn scale(&self) -> f32 {
@@ -466,8 +472,13 @@ impl App {
         }
         let (window, window_pos, maximized) = (self.window_size, self.window_pos, self.start_maximized);
         session::save(&Session {
-            pages: self.pages.iter().filter(|p| !p.only).map(|p| p.to_session(s, self.viewport())).collect(),
-            active: self.pages.iter().take(self.active).filter(|p| !p.only).count(),
+            pages: self
+                .pages
+                .iter()
+                .filter(|p| !p.only && p.shared.is_none())
+                .map(|p| p.to_session(s, self.viewport()))
+                .collect(),
+            active: self.pages.iter().take(self.active).filter(|p| !p.only && p.shared.is_none()).count(),
             left_open: self.ui.left.is_some(),
             right_open: self.ui.right.is_some(),
             left_last: self.ui.last_left.key(),
@@ -583,6 +594,11 @@ impl App {
 
     fn file_op(&mut self, op: FileOp) {
         let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
+        let changes = !matches!(op, FileOp::Reveal(_) | FileOp::Terminal(_) | FileOp::CopyPath { .. });
+        if changes && self.pages[self.active].shared.is_some() {
+            let text = "Files are made, renamed and deleted by the one who shares the folder.";
+            return self.ext.notice(ext::Level::Info, "Sharing", text);
+        }
         let at = |rel: &str| crate::files::inside(&root, rel);
         let done: Result<(), String> = match op {
             FileOp::Reveal(path) => at(&path).and_then(|p| crate::files::reveal(&p)),
@@ -661,6 +677,9 @@ impl App {
     fn close_page(&mut self, i: usize) {
         if i >= self.pages.len() {
             return;
+        }
+        if self.pages[i].shared.is_some() && self.sharing.session.is_some() {
+            return self.share_stop(None);
         }
         let page = self.pages.remove(i);
         if let Some(g) = &mut self.gfx {
@@ -850,6 +869,9 @@ impl App {
         let mut seen: Option<(usize, String, u32)> = None;
         for path in &batch.files {
             let Some((i, rel)) = self.locate_file(path) else { continue };
+            if self.sharing.session.is_some() {
+                self.sharing.touched.push((self.pages[i].id, rel.clone()));
+            }
             if rel.split('/').any(|part| skip.iter().any(|s| s == part)) {
                 continue;
             }
@@ -1426,6 +1448,9 @@ impl App {
         }
         editor.mark_saved();
         log::info!("saved {}", path.display());
+        if let (Some(folder), Some(session)) = (page.shared, self.sharing.session.as_mut()) {
+            session.saved(folder, rel);
+        }
         self.ext.file_changed(&path);
         if let Some(g) = self.gfx.as_mut() {
             g.renderer.text.drop_page(page.id);
@@ -1480,7 +1505,8 @@ impl App {
 
     fn unsaved(&self) -> Vec<(usize, String)> {
         let dirty = |i: usize, p: &Page| {
-            p.editors.values().filter(|e| e.dirty).map(|e| (i, e.rel_path.clone())).collect::<Vec<_>>()
+            let own = p.editors.values().filter(|e| e.dirty && p.shared.is_none());
+            own.map(|e| (i, e.rel_path.clone())).collect::<Vec<_>>()
         };
         self.pages.iter().enumerate().flat_map(|(i, p)| dirty(i, p)).collect()
     }
@@ -2272,7 +2298,10 @@ impl App {
         }
         let Some(chord) = chord else { return };
         if chord.key == "escape" {
-            if self.playing.is_some() {
+            if self.sharing.following.is_some() {
+                self.share_let_go();
+                self.request_redraw();
+            } else if self.playing.is_some() {
                 self.stop_playing();
             } else if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
                 self.clear_symbols();
@@ -2557,6 +2586,7 @@ impl App {
                 self.request_redraw();
             }
             Action::Answered(about, answer) => self.answered(about, answer),
+            Action::Share(op) => self.share_op(op),
             Action::Git(op) => {
                 use crate::git::{GitOp, Part};
                 let lost = match &op {
@@ -3017,6 +3047,42 @@ impl App {
                     _ => log::warn!("script: part needs stage|unstage, a path and a line"),
                 }
             }
+            Step::Share(asked) => {
+                let (verb, rest) = asked.split_once(' ').unwrap_or((asked.as_str(), ""));
+                let named = |me: &App, name: &str| {
+                    let session = me.sharing.session.as_ref()?;
+                    session.people.iter().find(|person| person.name.eq_ignore_ascii_case(name.trim())).map(|p| p.id)
+                };
+                let op = match verb {
+                    "start" => {
+                        self.ui.share.guests_write = rest.trim() == "writers";
+                        Some(ui::ShareOp::Start)
+                    }
+                    "stop" => Some(ui::ShareOp::Stop),
+                    "join" => {
+                        let mut words = rest.split_whitespace();
+                        self.ui.share.typed = words.next().unwrap_or_default().to_string();
+                        if let Some(name) = words.next() {
+                            self.ui.share.name = name.to_string();
+                        }
+                        Some(ui::ShareOp::Join)
+                    }
+                    "panel" => {
+                        self.ui.share.open = rest.trim() != "close";
+                        None
+                    }
+                    "follow" => named(self, rest).map(|id| ui::ShareOp::Follow(Some(id))),
+                    "unfollow" => Some(ui::ShareOp::Follow(None)),
+                    "writer" => named(self, rest).map(|id| ui::ShareOp::SetWriter(id, true)),
+                    "reader" => named(self, rest).map(|id| ui::ShareOp::SetWriter(id, false)),
+                    _ => None,
+                };
+                match op {
+                    Some(op) => self.share_op(op),
+                    None if verb == "panel" => {}
+                    None => log::warn!("script: share needs start [writers], stop, join <invitation> [name], follow|writer|reader <name>, unfollow or panel"),
+                }
+            }
             Step::Theme(named) => {
                 let own =
                     canvas_render::theme::PRESETS.iter().map(|(key, name, _)| (key.to_string(), name.to_string()));
@@ -3176,6 +3242,7 @@ impl App {
             }
         }
         busy |= self.unsent_edit.is_some();
+        busy |= self.poll_share();
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
@@ -3662,6 +3729,7 @@ impl App {
                 selected: offer.selected,
             })
         });
+        self.share_view();
         let mut travelling = false;
         for page in &mut self.pages {
             if let Some(t) = page.target {
@@ -4028,6 +4096,7 @@ impl ApplicationHandler for App {
         if let Some(g) = &self.gfx {
             g.window.set_visible(false);
         }
+        self.share_stop(None);
         self.ext.shutdown();
     }
 
@@ -4230,6 +4299,7 @@ impl ApplicationHandler for App {
                     d.last = p;
                     if (p[0] - d.start[0]).abs() + (p[1] - d.start[1]).abs() > 4.0 {
                         d.moved = true;
+                        self.sharing.following = None;
                     }
                     if let (true, Some(rel)) = (d.moved, &d.select) {
                         selecting = Some((rel.clone(), d.start, !std::mem::replace(&mut d.anchored, true)));
@@ -4296,6 +4366,7 @@ impl ApplicationHandler for App {
                 };
                 let vp = self.viewport();
                 let cursor = self.cursor;
+                self.share_let_go();
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.target = None;
                     page.camera.zoom_at(cursor, vp, 1.2f32.powf(steps));

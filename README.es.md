@@ -87,6 +87,14 @@ muy grandes. Código abierto: cualquiera puede aportar.
   archivos como están.
 - **Clic derecho sobre una línea cambiada**: prepara (*stage*), saca del *stage* o
   descarta solo ese cambio; el mismo menú prepara el archivo entero o copia su ruta.
+- **Compartir la sesión** (el ícono de arriba a la derecha): la app te da una
+  invitación para copiar; quien la pega en su Code Canvas ve tus carpetas abiertas
+  en su propio lienzo, y lo que cualquiera escribe aparece para todos mientras se
+  escribe. Cada invitado entra como lector o como escritor (lo cambiás cuando
+  quieras), se ve el puntero, el cursor y la vista de cada persona con su nombre y
+  color, y podés **seguir** a alguien o traer a todos a lo que estás mirando. Se
+  corta con un botón y sola al cerrar la app. En la misma red funciona directo;
+  desde afuera hace falta una VPN (Tailscale, ZeroTier) o abrir el puerto.
 - **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
   preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas
   marcadas en el lienzo, "mostrar solo lo que cambió" y el historial (*timeline*) del

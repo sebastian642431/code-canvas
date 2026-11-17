@@ -39,6 +39,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 wry = "0.57"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 similar = "2"
+ring = "0.17"
+flate2 = "1"
 
 [profile.dev.package."*"]
 opt-level = 2

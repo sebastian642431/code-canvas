@@ -258,6 +258,7 @@ pub struct UiState {
     pub find: Option<Find>,
     pub card_menu: Option<CardMenu>,
     pub ask: Option<Ask>,
+    pub share: ShareView,
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
     pub commit_ai: crate::commit_ai::Settings,
@@ -301,6 +302,7 @@ impl Default for UiState {
             find: None,
             card_menu: None,
             ask: None,
+            share: ShareView::default(),
             can_go: (false, false),
             pictures: Vec::new(),
             commit_ai: Default::default(),
@@ -472,6 +474,7 @@ pub enum Action {
     SetDiff(crate::page::DiffView),
     ShowCommit(Option<crate::git::Commit>),
     Answered(Asked, Answer),
+    Share(ShareOp),
     InstallVsix,
     SetTheme(String),
     SetColor(&'static str, u32),
@@ -726,6 +729,9 @@ pub fn build(
     toolbar(&ctx, st, canvas, info, actions);
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
+    peer_marks(&on_canvas, st, canvas);
+    following_bar(&ctx, st, canvas, actions);
+    share_panel(&ctx, st, actions);
     card_menu(&ctx, st, canvas, actions);
     completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
@@ -801,6 +807,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                     }
                 }
                 ui.add_space(6.0);
+                share_button(ui, st, actions);
                 right_start = ui.min_rect().left();
             });
         });
@@ -2285,6 +2292,362 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
     st.floating.push(resp.response.rect);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ShareMode {
+    #[default]
+    Off,
+    Hosting,
+    Joining,
+    Joined,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShareOp {
+    Start,
+    Stop,
+    Join,
+    SetWriter(u32, bool),
+    SendAway(u32),
+    Follow(Option<u32>),
+    CopyInvite,
+    Changed,
+    Panel,
+    CallEveryone,
+}
+
+pub struct PersonView {
+    pub id: u32,
+    pub name: String,
+    pub color: u32,
+    pub writer: bool,
+    pub host: bool,
+    pub me: bool,
+}
+
+pub struct PeerMark {
+    pub name: String,
+    pub color: u32,
+    pub looked_at: Option<Rect>,
+    pub pointer: Option<Pos2>,
+    pub caret: Option<Rect>,
+    pub chosen: Option<Rect>,
+}
+
+#[derive(Default)]
+pub struct ShareView {
+    pub open: bool,
+    pub mode: ShareMode,
+    pub invite: String,
+    pub typed: String,
+    pub name: String,
+    pub address: String,
+    pub guests_write: bool,
+    pub writer: bool,
+    pub people: Vec<PersonView>,
+    pub marks: Vec<PeerMark>,
+    pub following: Option<u32>,
+    button: Option<Rect>,
+}
+
+fn initial(name: &str) -> String {
+    name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_else(|| "?".to_string())
+}
+
+fn readable_on(color: Color32) -> Color32 {
+    let light = 0.299 * color.r() as f32 + 0.587 * color.g() as f32 + 0.114 * color.b() as f32;
+    if light > 150.0 {
+        Color32::from_rgb(16, 18, 22)
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn avatar(ui: &mut egui::Ui, person: &PersonView, size: f32, followed: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size + 4.0), Sense::click());
+    let color = c(person.color);
+    if followed {
+        ui.painter().circle_stroke(rect.center(), size * 0.5 + 2.0, Stroke::new(1.5, color));
+    }
+    let fill = if resp.hovered() { color } else { color.gamma_multiply(0.9) };
+    ui.painter().circle_filled(rect.center(), size * 0.5 - if followed { 1.0 } else { 0.0 }, fill);
+    let font = FontId::proportional(size * 0.52);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial(&person.name), font, readable_on(color));
+    resp
+}
+
+fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    let on = st.share.mode != ShareMode::Off;
+    let glyph = crate::codicons::glyph("live-share").unwrap_or(icons::WAYPOINTS);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, 28.0), Sense::click());
+    let lit = on || st.share.open;
+    if resp.hovered() || st.share.open {
+        ui.painter().rect_filled(rect, 7.0, pal().hover);
+    }
+    let color = if lit { pal().accent } else { pal().text_dim };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(16.0), color);
+    if on {
+        ui.painter().circle_filled(rect.right_top() + Vec2::new(-6.0, 7.0), 3.5, c(theme::get().git_added));
+    }
+    let tip = match st.share.mode {
+        ShareMode::Off => "Share this session, or join someone's",
+        ShareMode::Hosting => "You are sharing this session",
+        ShareMode::Joining => "Connecting to a session",
+        ShareMode::Joined => "You are in someone's session",
+    };
+    if resp.on_hover_text(tip).clicked() {
+        st.share.open = !st.share.open;
+    }
+    st.share.button = Some(rect);
+    ui.add_space(2.0);
+    let following = st.share.following;
+    for person in st.share.people.iter().filter(|person| !person.me).take(6) {
+        let followed = following == Some(person.id);
+        let tip = match followed {
+            true => format!("{}: you follow what they look at. Click to stop.", person.name),
+            false => format!("{}: click to follow what they look at", person.name),
+        };
+        if avatar(ui, person, 22.0, followed).on_hover_text(tip).clicked() {
+            actions.push(Action::Share(ShareOp::Follow((!followed).then_some(person.id))));
+        }
+    }
+}
+
+fn name_tag(painter: &egui::Painter, at: Pos2, name: &str, color: Color32) {
+    let galley = painter.layout_no_wrap(name.to_string(), FontId::proportional(11.0), readable_on(color));
+    let rect = Rect::from_min_size(at, galley.size() + Vec2::new(10.0, 4.0));
+    painter.rect_filled(rect, 5.0, color);
+    painter.galley(rect.min + Vec2::new(5.0, 2.0), galley, readable_on(color));
+}
+
+fn peer_marks(painter: &egui::Painter, st: &UiState, canvas: Rect) {
+    for mark in &st.share.marks {
+        let color = c(mark.color);
+        if let Some(rect) =
+            mark.looked_at.filter(|rect| rect.intersects(canvas) && !rect.contains_rect(canvas.shrink(8.0)))
+        {
+            painter.rect_stroke(rect, 6.0, Stroke::new(1.5, color.gamma_multiply(0.75)), egui::StrokeKind::Inside);
+            if mark.pointer.is_none_or(|at| !canvas.contains(at)) {
+                let at = Pos2::new(rect.left().max(canvas.left()) + 6.0, rect.top().max(canvas.top()) + 6.0);
+                name_tag(painter, at, &mark.name, color);
+            }
+        }
+        if let Some(rect) = mark.chosen {
+            painter.rect_filled(rect, 1.0, color.gamma_multiply(0.28));
+        }
+        if let Some(cell) = mark.caret.filter(|cell| canvas.intersects(*cell)) {
+            let bar =
+                Rect::from_min_max(cell.left_top() - Vec2::new(1.0, 0.0), cell.left_bottom() + Vec2::new(1.0, 0.0));
+            painter.rect_filled(bar, 0.0, color);
+            if cell.height() >= 7.0 {
+                name_tag(painter, Pos2::new(cell.left() - 1.0, cell.top() - 17.0), &mark.name, color);
+            }
+        }
+        if let Some(at) = mark.pointer.filter(|at| canvas.contains(*at)) {
+            let arrow = vec![at, at + Vec2::new(0.0, 15.0), at + Vec2::new(4.2, 11.2), at + Vec2::new(10.5, 10.5)];
+            painter.add(egui::Shape::convex_polygon(arrow, color, Stroke::new(1.0, Color32::from_black_alpha(160))));
+            name_tag(painter, at + Vec2::new(10.0, 14.0), &mark.name, color);
+        }
+    }
+}
+
+fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
+    let Some(person) = st.share.following.and_then(|id| st.share.people.iter().find(|person| person.id == id)) else {
+        return;
+    };
+    let area = egui::Area::new(egui::Id::unique("following"))
+        .pivot(Align2::LEFT_TOP)
+        .fixed_pos(canvas.left_top() + Vec2::new(12.0, 10.0))
+        .order(egui::Order::Foreground);
+    let resp = area.show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, c(person.color)))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(10, 6));
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 5.0, c(person.color));
+                ui.label(RichText::new(format!("Following {}", person.name)).size(12.5).color(pal().text));
+                ui.label(RichText::new("Esc, or move the canvas, to stop").size(11.5).color(pal().text_faint));
+                if small_icon(ui, icons::X, "Stop following") {
+                    actions.push(Action::Share(ShareOp::Follow(None)));
+                }
+            });
+        });
+    });
+    st.floating.push(resp.response.rect);
+}
+
+fn share_people(ui: &mut egui::Ui, view: &ShareView, hosting: bool, actions: &mut Vec<Action>) {
+    for person in &view.people {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let followed = view.following == Some(person.id);
+            avatar(ui, person, 22.0, followed);
+            let about = match (person.me, person.host, person.writer) {
+                (true, true, _) => "you, sharing",
+                (true, false, true) => "you, can edit",
+                (true, false, false) => "you, can look",
+                (false, true, _) => "shares the session",
+                (false, false, true) => "can edit",
+                (false, false, false) => "can look",
+            };
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.add(egui::Label::new(RichText::new(&person.name).size(13.0).color(pal().text)).truncate());
+                ui.label(RichText::new(about).size(11.0).color(pal().text_faint));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if person.me {
+                    return;
+                }
+                if hosting && small_icon(ui, icons::X, "Take them out of the session") {
+                    actions.push(Action::Share(ShareOp::SendAway(person.id)));
+                }
+                if hosting {
+                    let label = if person.writer { "Editing" } else { "Looking" };
+                    if ext_panels::pill(ui, label, person.writer) {
+                        actions.push(Action::Share(ShareOp::SetWriter(person.id, !person.writer)));
+                    }
+                }
+                if ext_panels::pill(ui, if followed { "Following" } else { "Follow" }, followed) {
+                    actions.push(Action::Share(ShareOp::Follow((!followed).then_some(person.id))));
+                }
+            });
+        });
+    }
+}
+
+fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    const WIDTH: f32 = 380.0;
+    let Some(button) = st.share.button.filter(|_| st.share.open) else { return };
+    let screen = ctx.content_rect();
+    let at = Pos2::new((button.right() + 4.0).min(screen.right() - 8.0), button.bottom() + 8.0);
+    let area = egui::Area::new(egui::Id::unique("share"))
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(at)
+        .order(egui::Order::Foreground);
+    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let view = &mut st.share;
+    let mut changed = false;
+    let resp = area.show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, pal().border_strong))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::same(16));
+        frame.show(ui, |ui| {
+            ui.set_width(WIDTH);
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            let title = |ui: &mut egui::Ui, text: &str, lit: bool| {
+                ui.horizontal(|ui| {
+                    let glyph = crate::codicons::glyph("live-share").unwrap_or(icons::WAYPOINTS);
+                    ui.label(icon(glyph, 16.0, if lit { pal().accent } else { pal().text_dim }));
+                    ui.label(RichText::new(text).size(15.0).strong().color(pal().text));
+                });
+            };
+            let dim = |ui: &mut egui::Ui, text: &str| {
+                ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text_dim)).wrap());
+            };
+            let field = |ui: &mut egui::Ui, text: &mut String, hint: &str, mono: bool| {
+                let font = if mono { FontId::monospace(12.0) } else { FontId::proportional(13.0) };
+                ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(f32::INFINITY).font(font))
+            };
+            match view.mode {
+                ShareMode::Off => {
+                    title(ui, "Share this session", false);
+                    dim(ui, "Others open your folders on their own canvas, see what everyone types as it is typed, and where each one is looking.");
+                    ui.label(RichText::new("Your name").size(11.5).color(pal().text_faint));
+                    changed |= field(ui, &mut view.name, "How the others will see you", false).lost_focus();
+                    changed |= check(ui, &mut view.guests_write, "Those who join can edit", true, false).clicked();
+                    dim(ui, if view.guests_write { "They type in your files. You can change it for each one." } else { "They only look. You can let each one edit later." });
+                    if ask_button(ui, "Start sharing", ChoiceLook::Main) {
+                        actions.push(Action::Share(ShareOp::Changed));
+                        actions.push(Action::Share(ShareOp::Start));
+                    }
+                    menu_gap(ui);
+                    ui.label(RichText::new("Join someone's session").size(13.0).color(pal().text));
+                    let typed = field(ui, &mut view.typed, "Paste the invitation: cc1:…", true);
+                    let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ask_button(ui, "Join", ChoiceLook::Plain) || entered) && !view.typed.trim().is_empty() {
+                        actions.push(Action::Share(ShareOp::Changed));
+                        actions.push(Action::Share(ShareOp::Join));
+                    }
+                }
+                ShareMode::Hosting => {
+                    title(ui, "You are sharing this session", true);
+                    ui.label(RichText::new("Invitation").size(11.5).color(pal().text_faint));
+                    Frame::NONE.fill(pal().well).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 8)).show(
+                        ui,
+                        |ui| {
+                            ui.set_width(WIDTH - 20.0);
+                            let text = RichText::new(&view.invite).font(FontId::monospace(12.0)).color(pal().text);
+                            ui.add(egui::Label::new(text).truncate());
+                        },
+                    );
+                    if ask_button(ui, "Copy the invitation", ChoiceLook::Main) {
+                        actions.push(Action::Share(ShareOp::CopyInvite));
+                    }
+                    dim(ui, "Whoever has it gets in: send it only to who should. It stops working when you stop sharing or close the app.");
+                    ui.label(RichText::new("The address the others reach this computer at").size(11.5).color(pal().text_faint));
+                    changed |= field(ui, &mut view.address, "This network's, unless you write another", true).changed();
+                    dim(ui, "On the same network nothing has to be written. From outside: the address of a VPN both are in (Tailscale, ZeroTier), or your public one with the port of the invitation forwarded.");
+                    changed |= check(ui, &mut view.guests_write, "Those who join from now on can edit", true, false).clicked();
+                    menu_gap(ui);
+                    share_people(ui, view, true, actions);
+                    if view.people.len() < 2 {
+                        dim(ui, "Nobody has joined yet.");
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ask_button(ui, "Stop sharing", ChoiceLook::Danger) {
+                            actions.push(Action::Share(ShareOp::Stop));
+                        }
+                        if view.people.len() > 1 && ask_button(ui, "Bring everyone to what I see", ChoiceLook::Plain) {
+                            actions.push(Action::Share(ShareOp::CallEveryone));
+                        }
+                    });
+                }
+                ShareMode::Joining => {
+                    title(ui, "Connecting…", true);
+                    dim(ui, "Reaching the computer that shares.");
+                    if ask_button(ui, "Cancel", ChoiceLook::Plain) {
+                        actions.push(Action::Share(ShareOp::Stop));
+                    }
+                }
+                ShareMode::Joined => {
+                    title(ui, "You are in a shared session", true);
+                    dim(ui, if view.writer { "You can edit: take the pencil and type. Ctrl+S saves the file where it lives." } else { "You can look around. The one sharing decides who edits." });
+                    menu_gap(ui);
+                    share_people(ui, view, false, actions);
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ask_button(ui, "Leave", ChoiceLook::Danger) {
+                            actions.push(Action::Share(ShareOp::Stop));
+                        }
+                        if ask_button(ui, "Bring everyone to what I see", ChoiceLook::Plain) {
+                            actions.push(Action::Share(ShareOp::CallEveryone));
+                        }
+                    });
+                }
+            }
+        });
+    });
+    let rect = resp.response.rect;
+    st.floating.push(rect);
+    let pressed = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
+    close |= pressed.is_some_and(|at| !rect.contains(at) && !button.contains(at));
+    if changed {
+        actions.push(Action::Share(ShareOp::Changed));
+    }
+    if close {
+        st.share.open = false;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Asked {
     Delete(String),
@@ -2687,6 +3050,10 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("Source Control: Show Only Changed Files".into(), Action::SetOnlyChanged(true)),
         ("Source Control: Show All Files".into(), Action::SetOnlyChanged(false)),
         ("Source Control: Stop Showing the Commit".into(), Action::ShowCommit(None)),
+        ("Sharing: Share This Session or Join One".into(), Action::Share(ShareOp::Panel)),
+        ("Sharing: Stop Sharing or Leave".into(), Action::Share(ShareOp::Stop)),
+        ("Sharing: Stop Following".into(), Action::Share(ShareOp::Follow(None))),
+        ("Sharing: Bring Everyone to What I See".into(), Action::Share(ShareOp::CallEveryone)),
         (
             "Source Control: Show What Changed Inside the Files".into(),
             Action::SetDiff(crate::page::DiffView { on: true, ..Default::default() }),

@@ -23,6 +23,7 @@ mod prefs;
 mod rails;
 mod script;
 mod session;
+mod share;
 mod themes;
 mod ui;
 mod update;

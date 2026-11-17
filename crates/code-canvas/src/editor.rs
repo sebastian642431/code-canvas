@@ -32,6 +32,7 @@ pub struct Editor {
     redo: Vec<Change>,
     saved_at: Option<usize>,
     pub dirty: bool,
+    pub rev: u64,
 }
 
 fn byte_at(line: &str, col: usize) -> usize {
@@ -60,6 +61,7 @@ impl Editor {
             redo: Vec::new(),
             saved_at: Some(0),
             dirty: false,
+            rev: 0,
         }
     }
 
@@ -164,6 +166,69 @@ impl Editor {
 
     fn touch(&mut self) {
         self.dirty = self.saved_at != Some(self.undo.len());
+        self.rev += 1;
+    }
+
+    fn offset_of(&self, p: Pos) -> usize {
+        let p = self.clamp(p);
+        self.lines[..p.line].iter().map(|line| line.chars().count() + 1).sum::<usize>() + p.col
+    }
+
+    fn pos_of(&self, mut offset: usize) -> Pos {
+        for (i, line) in self.lines.iter().enumerate() {
+            let len = line.chars().count();
+            if offset <= len {
+                return Pos::new(i, offset);
+            }
+            offset -= len + 1;
+        }
+        let last = self.lines.len() - 1;
+        Pos::new(last, self.line_len(last))
+    }
+
+    pub fn apply_remote(&mut self, op: &crate::share::ot::TextOp) -> Option<(u32, u32)> {
+        use crate::share::ot::Part;
+        let length = self.lines.iter().map(|line| line.chars().count()).sum::<usize>() + self.lines.len() - 1;
+        if op.before() != length {
+            return None;
+        }
+        let (caret, anchor, goal) = (self.offset_of(self.caret), self.anchor.map(|a| self.offset_of(a)), self.goal);
+        let mut at = 0;
+        let mut lines: Option<(usize, usize)> = None;
+        for part in &op.parts {
+            let from = self.pos_of(at);
+            let to = match part {
+                Part::Retain(n) => {
+                    at += n;
+                    continue;
+                }
+                Part::Insert(text) => {
+                    self.replace(from, from, text);
+                    at += text.chars().count();
+                    self.pos_of(at)
+                }
+                Part::Delete(n) => {
+                    let end = self.pos_of(at + n);
+                    self.replace(from, end, "");
+                    from
+                }
+            };
+            lines = Some(match lines {
+                Some((first, last)) => (first.min(from.line), last.max(to.line)),
+                None => (from.line, to.line),
+            });
+        }
+        self.caret = self.pos_of(op.place(caret));
+        self.anchor = anchor.map(|a| self.pos_of(op.place(a)));
+        self.goal = goal;
+        lines.map(|(first, last)| (first as u32, (last - first + 1) as u32))
+    }
+
+    pub fn become_text(&mut self, body: &str) {
+        let (caret, last) = (self.caret, self.lines.len() - 1);
+        let end = Pos::new(last, self.line_len(last));
+        self.replace(Pos::default(), end, body);
+        self.caret = self.clamp(caret);
     }
 
     fn end_of(at: Pos, text: &str) -> Pos {
@@ -396,6 +461,36 @@ mod tests {
         let no_newline = Editor::open("b.txt".into(), "x\ny");
         assert_eq!(no_newline.text(), "x\ny");
         assert_eq!(Editor::open("c.txt".into(), "").text(), "");
+    }
+
+    #[test]
+    fn what_someone_else_types_goes_in_and_the_caret_stays_on_its_text() {
+        use crate::share::ot::TextOp;
+        let before = "fn main() {\n    run();\n}";
+        let mut e = Editor::open("a.rs".into(), "fn main() {\r\n    run();\r\n}\r\n");
+        at(&mut e, 1, 8);
+        let (rev, text) = (e.rev, e.display_source());
+        assert_eq!(text, before);
+        let after = "// theirs\nfn main() {\n    run();\n    stop();\n}";
+        let lines = e.apply_remote(&TextOp::between(before, after));
+        assert_eq!(e.display_source(), after);
+        assert_eq!(e.caret, Pos::new(2, 8), "the caret is still after run(");
+        assert_eq!(lines, Some((0, 5)), "from the first line touched to where the last one ends");
+        assert!(e.dirty && e.rev > rev);
+        assert_eq!(
+            e.text(),
+            "// theirs\r\nfn main() {\r\n    run();\r\n    stop();\r\n}\r\n",
+            "the file keeps its line ends"
+        );
+
+        let typed_at_caret = TextOp::between(after, "// theirs\nfn main() {\n    run(now);\n    stop();\n}");
+        e.apply_remote(&typed_at_caret);
+        assert_eq!(e.caret, Pos::new(2, 11), "what is typed where the caret is pushes it");
+        assert!(e.apply_remote(&TextOp::between("another text", "x")).is_none(), "an edit for another text is refused");
+        e.become_text("all new\ntext");
+        assert_eq!(e.display_source(), "all new\ntext");
+        assert!(e.undo());
+        assert_eq!(e.display_source(), "// theirs\nfn main() {\n    run(now);\n    stop();\n}");
     }
 
     #[test]

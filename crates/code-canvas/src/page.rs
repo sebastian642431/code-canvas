@@ -151,6 +151,9 @@ pub struct Page {
     pub warm_at: usize,
     pub warm_batch: usize,
     pub only: bool,
+    pub shared: Option<u32>,
+    pub read_only: bool,
+    pub refused_edit: bool,
     pub extra: Vec<String>,
 }
 
@@ -329,6 +332,9 @@ impl Page {
             warm_at: 0,
             warm_batch: 256,
             only: false,
+            shared: None,
+            read_only: false,
+            refused_edit: false,
             extra: Vec::new(),
         };
         if let Some(s) = saved {
@@ -719,6 +725,10 @@ impl Page {
     }
 
     pub fn begin_edit(&mut self, rel_path: &str) -> bool {
+        if self.read_only {
+            self.refused_edit = true;
+            return false;
+        }
         if !self.editors.contains_key(rel_path) {
             let Ok(bytes) = std::fs::read(self.root.join(rel_path)) else { return false };
             let Ok(source) = String::from_utf8(bytes) else { return false };

@@ -129,6 +129,28 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Checked so far with ESLint, Prettier, Error Lens, Claude Code and TypeScript. Tree views are
   not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
+**Working together**
+- **Share the session** (the icon at the top right): the app gives an invitation to
+  copy; whoever pastes it in their Code Canvas gets your open folders on their own
+  canvas. Nothing is installed or signed into: the two apps talk to each other
+  directly, sealed with the key that is in the invitation.
+- What anyone types shows for everyone as it is typed, two people in the same
+  file included. What another program changes on your disk (an assistant, a
+  formatter, git) reaches them as well.
+- **To look or to edit**: each one who joins only looks until you let them edit,
+  one by one or everyone by default. A reader's keys change nothing. `Ctrl+S` of
+  someone who edits saves the file where it lives, on your computer.
+- **Where everyone is**: each person's pointer and caret with their name, in
+  their colour, and the outline of what their window shows. Click their circle
+  at the top to **follow** them: your canvas goes where theirs goes until you
+  move it or press Esc. *Bring everyone to what I see* makes the others follow
+  you.
+- It ends when you say so, and by itself when the app closes. Whoever joined is
+  left with nothing of yours on their disk.
+- On the same network it works as it is. From outside, both computers need a way
+  to reach each other: a VPN both are in (Tailscale, ZeroTier) or the port of
+  the invitation forwarded on the router.
+
 **Source control**
 - A panel laid out like VS Code's: the repository and its branch, a message box and
   Commit, *Staged Changes* and *Changes* with stage / unstage, sync, and the latest
@@ -295,6 +317,11 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
 - [x] Line numbers (the file's own, also where a card shows a diff).
 - [x] The folders and files never read can be chosen (Settings, "Never read").
+- [x] Sharing a session: others see and edit your folders live from their own app,
+      as readers or writers, with everyone's pointer, caret and view, and following.
+- [ ] Sharing across networks without a VPN or a forwarded port (a relay); files
+      made, renamed and deleted by those who join; pictures and other files that
+      are not text.
 - [ ] Linux / macOS packaging, a web build (WebGPU).
 
 ## Project layout

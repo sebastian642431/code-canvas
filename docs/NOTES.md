@@ -59,6 +59,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [prefs.rs](#cratescode-canvassrcprefsrs) ·
   [script.rs](#cratescode-canvassrcscriptrs) ·
   [session.rs](#cratescode-canvassrcsessionrs) ·
+  [share](#cratescode-canvassrcshare) ·
   [themes.rs](#cratescode-canvassrcthemesrs) ·
   [ui.rs](#cratescode-canvassrcuirs) ·
   [update.rs](#cratescode-canvassrcupdaters) ·
@@ -1420,6 +1421,7 @@ Details:
 | `follow_changes` | Travel to the lines a file changed from outside (an assistant, another editor) has new, and light them (`App::follow_change`). |
 | `edit` | The tool of the toolbar: `false` is the hand (clicks select, nothing is edited), `true` the pencil (a click in readable code puts the caret there). |
 | `unwanted` | Extensions offered for a language and answered "Do not ask again" (`App::offer_checker`). |
+| `share_name`, `share_writers` | The name the others see in a shared session, and whether those who join can edit from the start. |
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
@@ -1468,6 +1470,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `share` | `share start [writers]`, `share stop`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
 | `delete` | `delete <path>` | Ask to delete a file or folder (answer with `answer Delete` or `answer Cancel`). |
@@ -1505,6 +1508,76 @@ the menu with.
   `Session::right_last` are keys of panels (`Panel::key`). `Session::rails` is the
   order of the icons of each bar. `Session::single` shows one folder at a time
   instead of all on one canvas.
+
+### crates/code-canvas/src/share
+
+A session shared between apps: `ot.rs` is how two texts edited at once agree,
+`wire.rs` what crosses the network, `mod.rs` the session, and
+`app/sharing.rs` what the app does with it.
+
+- **The one who shares is the centre.** Everyone else has one connection, to
+  them; what a guest does reaches the other guests through the host. A folder
+  has the id of the host's page, a person the number of their connection (the
+  host is 0), and the host never takes a guest's word for who they are.
+- **A guest's folder is a real folder**: the files of the host's page written
+  under `<data dir>/shared/<process>/<folder id>/<name>` and opened as any other
+  page (`Page::shared`). So everything a page does works on it with no second
+  kind of page, and what arrives is a file changing on disk, which the canvas
+  already lights up and travels to. The folder is deleted when the session ends
+  and whatever is left of an earlier run at startup (`share_setup`). Only text
+  the canvas shows is sent: no `note`, at most `LARGEST_FILE` each and
+  `MOST_TEXT` in all, and a page of more than `MOST_FILES` is not shared.
+- **The text of a file is its lines joined by `\n`** (`share::body`,
+  `Editor::display_source`): line ends and the last newline stay with whoever
+  has the file. Both ends keep that text for every file (`Doc::text`), which is
+  what an edit is made against.
+- **Edits are found by looking, not by being told.** Every pass (`poll_share`,
+  with the rest of the background work) the text of each editor whose `rev`
+  moved, and of each file the watcher named, is compared with the kept one;
+  `TextOp::between` makes the edit: what is between the common start and end,
+  or, when that spans lines on both sides, a diff by lines, so a formatter that
+  touches the top and the bottom of a file does not replace its middle under
+  someone's caret. Nothing in the editor knows it is shared. `share_look_over`
+  compares the files of the page with the ones shared every two seconds: that is
+  how a new file, or a deleted one, is noticed.
+- **Two edits made at once** end the same on both sides by the usual transform
+  (`TextOp::transform`, the host's insertion first when both are at one place)
+  and a `Link` per file and connection: each message says how many of the
+  other's edits its sender had seen, the receiver drops the ones of its own that
+  were seen and passes the incoming one over the rest. An edit that does not fit
+  (a reader's, or a bug) is answered with the whole file and a new `epoch`,
+  under which the old messages still on their way are ignored.
+- An edit that arrives goes into the editor of the file (`Editor::apply_remote`:
+  the caret keeps its text, and it is one more step of undo). At the host an
+  editor is made for it if there is none: what a guest types is *not saved* at
+  the host until someone saves, which is `Msg::Save` from a guest. At a guest
+  with no editor the kept text is written to the file and the watcher shows it;
+  with one, the file is written too, told to the watcher as its own
+  (`Watcher::expect`), and the editor counts as saved. Files not saved of a
+  shared folder do not hold the guest's app from closing (`App::unsaved`).
+- **Readers**: `Page::read_only` refuses to start editing, and the host refuses
+  the edits anyway (`Session::edit`), sending the file back.
+- **Where someone is** (`Seen`) is said in terms of the layout, not of pixels or
+  world places, because two apps lay the same folder out differently (folded
+  folders, hidden files, a diff open): the node at the middle of the view and
+  the offset in it, how much of the world the view takes, the node under the
+  pointer and the offset in it, and the caret as a cell of a file. The other
+  side finds the node by its path (`share_place`). Following fits what they see
+  into the own canvas (`share_follow`); a drag, the wheel or Esc lets go.
+- **The wire**: a greeting in clear (`CCSH1` and 16 random bytes each way),
+  then frames of length and a sealed body (ChaCha20-Poly1305, one key each way
+  made by HKDF from the secret of the invitation and both greetings, a counter
+  as nonce). The body is a flag and JSON, deflated from `PACKED_FROM` bytes on.
+  Who has not the secret cannot open the first frame and is dropped; there is no
+  other password. The invitation is `cc1:<address>:<port>:<secret in hex>`;
+  the address is the one of this network unless another is written in the panel.
+- One thread reads each connection and one writes it, so the app never waits on
+  a socket; they wake the loop as the extension host does. `Session::close`
+  says `Bye`, and it is called when the app exits and when the session is
+  dropped.
+- `CODE_CANVAS_SHARE_ON` is the address to listen on instead of every one of the
+  computer: tests use `127.0.0.1`, which the firewall of Windows does not ask
+  about. Under a script the invitation is also written to `<data dir>/invite.txt`.
 
 ### crates/code-canvas/src/themes.rs
 
