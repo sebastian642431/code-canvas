@@ -437,6 +437,39 @@ impl Repo {
         self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
     }
 
+    pub fn replace_shown(
+        &mut self,
+        index: usize,
+        shown: &str,
+        real: &str,
+        row_of: impl Fn(u32) -> (u32, bool),
+        opts: &ScanOptions,
+    ) -> Vec<(u32, u32)> {
+        let rel = self.files[index].rel_path.clone();
+        let mut file = build_file(rel.clone(), shown, opts);
+        let SourceFile { analysis, names, name_at, implemented, loaded, .. } = build_file(rel, real, opts);
+        let starts =
+            |loaded: &OnceLock<Loaded>| loaded.get().map(|loaded| loaded.line_starts.clone()).unwrap_or_default();
+        let (of_real, of_shown) = (starts(&loaded), starts(&file.loaded));
+        let start = |starts: &[u32], line: u32| starts.get(line as usize).copied().unwrap_or(0);
+        let mut symbols = analysis.symbols;
+        let places: Vec<(u32, u32)> = symbols.iter().map(|symbol| (symbol.line, symbol.body_end)).collect();
+        let rows = file.lines.max(1);
+        for symbol in &mut symbols {
+            let (row, seen) = row_of(symbol.line);
+            let (last, _) = row_of(symbol.body_end.saturating_sub(1).max(symbol.line));
+            let (row, last, seen) = (row.min(rows - 1), last.min(rows - 1), seen && row < rows);
+            let within = symbol.name_start.saturating_sub(start(&of_real, symbol.line));
+            symbol.name_start = if seen { start(&of_shown, row) + within } else { u32::MAX };
+            (symbol.line, symbol.body_end) = (row, last.max(row) + 1);
+        }
+        (file.analysis.symbols, file.analysis.impl_traits) = (symbols, Vec::new());
+        (file.names, file.name_at, file.implemented) = (names, name_at, implemented);
+        self.files[index] = file;
+        self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
+        places
+    }
+
     pub fn reindex_symbols(&mut self) {
         self.symbols = crate::refs::SymbolIndex::build(&self.files);
     }

@@ -59,6 +59,8 @@ pub struct SearchResults {
     pub current: Option<usize>,
 }
 
+type FoundLines = HashMap<usize, (u32, String)>;
+
 pub struct Selection {
     pub sym: SymRef,
     pub rel: Relations,
@@ -115,6 +117,7 @@ pub struct Page {
     pub only_connected: bool,
     pub curves_dirty: bool,
     pub search: Option<SearchResults>,
+    found: Option<(Vec<Site>, FoundLines)>,
     pub git: Option<GitState>,
     git_rx: Option<Receiver<Option<GitState>>>,
     pub only_changed: bool,
@@ -185,13 +188,42 @@ pub struct Diffed {
     pub rows: Vec<Row>,
     lines: Vec<u32>,
     pub plain: String,
+    committed: Option<String>,
+    symbols: Vec<(u32, u32)>,
 }
 
 impl Diffed {
     pub fn row(&self, line: u32) -> u32 {
         crate::git::row_of(&self.lines, self.rows.len(), line)
     }
+
+    fn text(&self) -> &str {
+        self.committed.as_deref().unwrap_or(&self.plain)
+    }
+
+    fn place(&self, line: u32) -> (u32, bool) {
+        row_seen(&self.rows, &self.lines, line)
+    }
 }
+
+fn row_seen(rows: &[Row], lines: &[u32], line: u32) -> (u32, bool) {
+    use crate::git::RowKind;
+    let row = crate::git::row_of(lines, rows.len(), line);
+    let seen = |at: &Row| matches!(at.kind, RowKind::Same | RowKind::Added) && at.line == line;
+    (row, rows.get(row as usize).is_some_and(seen))
+}
+
+fn found_in(line: &str, query: &str) -> Vec<u16> {
+    let exact = query.chars().any(|c| c.is_uppercase());
+    let (hay, needle) = match exact {
+        true => (line.to_string(), query.to_string()),
+        false => (line.to_ascii_lowercase(), query.to_ascii_lowercase()),
+    };
+    let col = |at: usize| line.get(..at).map_or(0, |before| before.chars().count()).min(u16::MAX as usize);
+    hay.match_indices(needle.as_str()).map(|(at, _)| col(at) as u16).collect()
+}
+
+const MAX_HITS: usize = 5000;
 
 const MAX_DIFFS: usize = 400;
 
@@ -306,6 +338,7 @@ impl Page {
             only_connected: false,
             curves_dirty: true,
             search: None,
+            found: None,
             git: None,
             git_rx: None,
             only_changed: false,
@@ -628,15 +661,18 @@ impl Page {
             };
             match made {
                 Some(shown) => {
-                    r.repo.replace_source(index, &shown.text, &options);
+                    let (rows, lines) = (shown.rows, shown.lines);
+                    let place = |line: u32| row_seen(&rows, &lines, line);
+                    let symbols = r.repo.replace_shown(index, &shown.text, new, place, &options);
                     r.repo.files[index].fold = shown.fold;
                     let numbered = |row: &Row| match row.kind {
                         crate::git::RowKind::Same | crate::git::RowKind::Added => row.line + 1,
                         _ => 0,
                     };
-                    r.repo.files[index].numbers = Some(shown.rows.iter().map(numbered).collect());
+                    r.repo.files[index].numbers = Some(rows.iter().map(numbered).collect());
                     let plain = canvas_core::scan::normalise(&text).0;
-                    self.diffs.insert(rel.clone(), Diffed { stamp, rows: shown.rows, lines: shown.lines, plain });
+                    let committed = committed.is_some().then(|| canvas_core::scan::normalise(new).0);
+                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, lines, plain, committed, symbols });
                 }
                 None => {
                     if self.diffs.remove(rel).is_none() {
@@ -1020,15 +1056,80 @@ impl Page {
 
     pub fn run_search(&mut self, query: String) {
         self.search = None;
+        self.found = None;
         let Some(r) = self.ready() else { return };
         if query.trim().is_empty() {
             return;
         }
         let t = Instant::now();
-        let (hits, truncated) = r.repo.search_text(&query, 5000);
+        let (mut hits, mut truncated) = r.repo.search_text(&query, MAX_HITS);
+        let diffed = self.diffs.iter().filter_map(|(rel, shown)| Some((r.repo.file_index(rel)? as u32, shown)));
+        let diffed: HashMap<u32, &Diffed> = diffed.collect();
+        let mut lines = FoundLines::new();
+        if !diffed.is_empty() {
+            let len = query.chars().count().min(u16::MAX as usize) as u16;
+            let mut found: Vec<(Site, Option<(u32, String)>)> =
+                hits.into_iter().filter(|hit| !diffed.contains_key(&hit.file)).map(|hit| (hit, None)).collect();
+            for (&file, shown) in &diffed {
+                for (line, text) in shown.text().lines().enumerate() {
+                    let (row, seen) = shown.place(line as u32);
+                    let folded = r.repo.files[file as usize].line(row as usize).chars().count().min(u16::MAX as usize);
+                    for col in found_in(text, &query) {
+                        let site = match seen {
+                            true => Site { file, line: row, col, len },
+                            false => Site { file, line: row, col: 0, len: folded as u16 },
+                        };
+                        found.push((site, Some((line as u32, text.trim_start().chars().take(160).collect()))));
+                    }
+                }
+            }
+            found.sort_by_key(|(site, _)| site.file);
+            truncated |= found.len() > MAX_HITS;
+            found.truncate(MAX_HITS);
+            lines = found.iter().enumerate().filter_map(|(i, (_, line))| Some((i, line.clone()?))).collect();
+            hits = found.into_iter().map(|(site, _)| site).collect();
+        }
         let ms = t.elapsed().as_secs_f32() * 1000.0;
         log::info!("search '{query}': {} hits in {ms:.1} ms", hits.len());
+        self.found = (!lines.is_empty()).then(|| (hits.clone(), lines));
         self.search = Some(SearchResults { query, hits, truncated, ms, current: None });
+    }
+
+    pub fn found_lines(&self) -> Option<&FoundLines> {
+        let (search, (hits, lines)) = (self.search.as_ref()?, self.found.as_ref()?);
+        (search.hits == *hits).then_some(lines)
+    }
+
+    pub fn line_count(&self, rel_path: &str) -> Option<usize> {
+        self.diffs.get(rel_path).map(|shown| shown.lines.len())
+    }
+
+    pub fn symbol_line(&self, sym: SymRef) -> u32 {
+        let Some(r) = self.ready() else { return 0 };
+        let shown = self.diffs.get(&r.repo.files[sym.file as usize].rel_path);
+        let real = shown.and_then(|shown| shown.symbols.get(sym.index as usize));
+        real.map_or(r.repo.sym(sym).line, |(line, _)| *line)
+    }
+
+    pub fn site_line(&self, site: Site, of: Option<SymRef>) -> u32 {
+        let Some(r) = self.ready() else { return site.line };
+        let rel = &r.repo.files[site.file as usize].rel_path;
+        match of.filter(|sym| r.repo.sym_site(*sym) == site) {
+            Some(sym) => self.symbol_line(sym),
+            None => self.line_of(rel, site.line).unwrap_or(site.line),
+        }
+    }
+
+    pub fn signature(&self, sym: SymRef) -> String {
+        let Some(r) = self.ready() else { return String::new() };
+        let shown = self.diffs.get(&r.repo.files[sym.file as usize].rel_path);
+        match shown.and_then(|shown| Some((shown, shown.symbols.get(sym.index as usize)?))) {
+            Some((shown, &(line, end))) => {
+                let lines = shown.text().lines().skip(line as usize).take(end.saturating_sub(line) as usize);
+                canvas_core::refs::signature(lines)
+            }
+            None => r.repo.sym_signature(sym),
+        }
     }
 
     pub fn poll(&mut self) -> Option<Loaded> {
@@ -1138,7 +1239,10 @@ impl Page {
             return false;
         }
         let Some(r) = self.ready() else { return false };
-        let rel = r.repo.relations(sym, clicked);
+        let mut rel = r.repo.relations(sym, clicked);
+        let of_file = |at: &Site| self.line_of(&r.repo.files[at.file as usize].rel_path, at.line).is_some();
+        rel.items
+            .retain(|item| matches!(item.kind, RelKind::Definition | RelKind::Implementation) || of_file(&item.from));
         log::info!(
             "relations of '{}': {} items in {:.1} ms{}",
             r.repo.sym_name(sym),
@@ -1156,7 +1260,7 @@ impl Page {
         let file = r.repo.files.get(sym.file as usize)?;
         file.analysis.symbols.get(sym.index as usize)?;
         let site = r.repo.sym_site(sym);
-        Some((self.root.join(&file.rel_path), self.line_of(&file.rel_path, site.line)?, site.col as u32))
+        Some((self.root.join(&file.rel_path), self.symbol_line(sym), site.col as u32))
     }
 
     fn selected_names(&self) -> Vec<(String, String, u32)> {

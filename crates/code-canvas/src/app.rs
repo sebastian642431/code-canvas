@@ -4158,7 +4158,8 @@ impl App {
                 match n.kind {
                     NodeKind::File(fi) => {
                         let f = &r.repo.files[fi];
-                        let mut status = format!("{}  ·  {} lines  ·  {}", f.rel_path, f.line_count(), f.lang.name());
+                        let lines = page.line_count(&f.rel_path).unwrap_or(f.line_count());
+                        let mut status = format!("{}  ·  {lines} lines  ·  {}", f.rel_path, f.lang.name());
                         if let Some(note) = &f.note {
                             status.push_str(&format!("  ·  {note}"));
                         }

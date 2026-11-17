@@ -230,6 +230,28 @@ fn is_call(text: &str, toks: &[Token], k: usize) -> bool {
     }
 }
 
+pub fn signature<'a>(lines: impl Iterator<Item = &'a str>) -> String {
+    let mut out = String::new();
+    for text in lines.take(6) {
+        let text = text.trim();
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let cut = text.find('{').or_else(|| text.strip_suffix(':').map(|t| t.len()));
+        match cut {
+            Some(c) => {
+                out.push_str(text[..c].trim_end());
+                break;
+            }
+            None => out.push_str(text),
+        }
+        if text.ends_with(';') || out.len() > 400 {
+            break;
+        }
+    }
+    out
+}
+
 impl Repo {
     pub fn sym(&self, r: SymRef) -> &Symbol {
         &self.files[r.file as usize].analysis.symbols[r.index as usize]
@@ -268,25 +290,8 @@ impl Repo {
     pub fn sym_signature(&self, r: SymRef) -> String {
         let f = &self.files[r.file as usize];
         let s = self.sym(r);
-        let mut out = String::new();
-        for line in s.line..(s.line + 6).min(s.body_end).min(f.line_count() as u32) {
-            let text = f.line(line as usize).trim();
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            let cut = text.find('{').or_else(|| text.strip_suffix(':').map(|t| t.len()));
-            match cut {
-                Some(c) => {
-                    out.push_str(text[..c].trim_end());
-                    break;
-                }
-                None => out.push_str(text),
-            }
-            if text.ends_with(';') || out.len() > 400 {
-                break;
-            }
-        }
-        out
+        let lines = s.line..(s.line + 6).min(s.body_end).min(f.line_count() as u32);
+        signature(lines.map(|line| f.line(line as usize)))
     }
 
     pub fn sym_at(&self, file: u32, line: u32) -> Option<SymRef> {

@@ -2224,6 +2224,7 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
         );
     });
     ui.spacing_mut().item_spacing.y = 0.0;
+    let found_lines = page.found_lines();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, ROW_H, search.hits.len(), |ui, range| {
         for i in range {
             let hit = search.hits[i];
@@ -2237,13 +2238,14 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
                 painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
             }
             let mid = rect.center().y;
-            let place = format!("{}:{}", f.name, hit.line + 1);
+            let real = found_lines.and_then(|lines| lines.get(&i));
+            let place = format!("{}:{}", f.name, real.map_or(hit.line, |(line, _)| *line) + 1);
             let galley = painter.layout_no_wrap(place, FontId::proportional(12.0), pal().text_dim);
             let pw = galley.size().x;
             painter.galley(Pos2::new(rect.left() + 14.0, mid - galley.size().y * 0.5), galley, pal().text_dim);
             let x = rect.left() + 22.0 + pw;
             let clip = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(rect.right() - 8.0, rect.bottom()));
-            let line = f.line(hit.line as usize).trim_start();
+            let line = real.map_or_else(|| f.line(hit.line as usize).trim_start(), |(_, text)| text.as_str());
             let preview: String = line.chars().take(160).collect();
             painter.with_clip_rect(clip).text(
                 Pos2::new(x, mid),
@@ -2499,8 +2501,8 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                         });
                     });
                     let place = match repo.sym_container(sel.sym) {
-                        Some(cn) => format!("{}:{}  ·  {cn}", file.rel_path, sym.line + 1),
-                        None => format!("{}:{}", file.rel_path, sym.line + 1),
+                        Some(cn) => format!("{}:{}  ·  {cn}", file.rel_path, page.symbol_line(sel.sym) + 1),
+                        None => format!("{}:{}", file.rel_path, page.symbol_line(sel.sym) + 1),
                     };
                     if ui
                         .link(RichText::new(place).monospace().size(11.0))
@@ -2510,7 +2512,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                         actions.push(Action::FlyToSite(def));
                     }
                     ui.add_space(3.0);
-                    ui.label(RichText::new(repo.sym_signature(sel.sym)).monospace().size(12.0).color(pal().text));
+                    ui.label(RichText::new(page.signature(sel.sym)).monospace().size(12.0).color(pal().text));
                     ui.add_space(4.0);
 
                     for kind in RelKind::ALL {
@@ -2527,7 +2529,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                                 let site = if kind == RelKind::OutgoingCall { rel.to } else { rel.from };
                                 let f = &repo.files[site.file as usize];
                                 let who = rel.other.map(|o| repo.sym_name(o)).unwrap_or("");
-                                let text = format!("{}:{}  {who}", f.name, site.line + 1);
+                                let text = format!("{}:{}  {who}", f.name, page.site_line(site, rel.other) + 1);
                                 if ui
                                     .link(RichText::new(text).monospace().size(11.0))
                                     .on_hover_text(&f.rel_path)
