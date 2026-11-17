@@ -1977,6 +1977,40 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - `text_fit` cuts what does not fit at the end, which then reads "…".
 - The folder menu lays its rows out by hand, as wide as its longest name needs
   within limits, so that the menu does not stretch.
+- **One change of a file is applied with the header a diff of only that change
+  would have** (`git::alone`). `git apply` starts looking at the line the new
+  side of the `@@` header names, and that number counts every change above,
+  also the ones not being applied: with another change higher up, staging,
+  unstaging or discarding one change landed lines away (and discarding
+  damaged the file). The side the patch is applied to is exact already, so the
+  other side is rewritten from it: a zero count means "after this line", so the
+  start is one more for an insertion and one less for a deletion.
+- **Discarding** reads the status again when it runs and sorts files by whether
+  the last commit has them (`git::discard`): those it has go back to it, staged
+  part included; those it does not have (a staged new file, the new name of a
+  staged rename) go back to what is staged, and only if they changed since.
+  The question lists exactly what will change (`FileChange::goes_back`,
+  `git::what_is_lost`); with nothing to discard it says so and asks nothing.
+  Paths go to git through `--pathspec-from-file`.
+- `FileChange::from` is the old path of a rename: the committed text is read
+  from it (`Page::want_heads`), so a renamed and changed file has a diff.
+- **What the app wrote itself is told apart by what it wrote**
+  (`Watcher::write` keeps a hash of the bytes; `Watcher::poll` drops a notice
+  only while the file on disk is those bytes). It used to ignore the path for
+  two seconds, and a program that wrote the file right after a save was not
+  seen and then lost at the next save.
+- **A card can show one text while its symbols are another's**
+  (`Repo::replace_shown`): with the diff on, or a commit shown, the card has the
+  diff's rows, but search in files, symbols and their uses are those of the
+  real text, placed on the rows; a symbol in folded lines sits on the row that
+  folds it. Hits keep the row for the canvas and the line for the panel
+  (`Page::found_lines`). Find in the file being looked at still walks the rows.
+- The wish to draw diffs again is kept while a commit is shown, even when no
+  card shows one right now (`Page::diff_due`): leaving the editor of a commit's
+  only file gave plain text for good. The timeline is read again when the head
+  moves (`timeline_stale`), keeping its rows meanwhile.
+- The palette's diff commands take the page's `DiffView` and only turn it on or
+  off; they used to put side by side, folding and "around" back to default.
 - Git panel: discarding a new file has nothing to go back to, so it removes the
   file (to the recycle bin). Of the commit actions, amending is the one that works
   without a message.

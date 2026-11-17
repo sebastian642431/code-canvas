@@ -23,7 +23,7 @@ fn stamp(path: &Path) -> Stamp {
 
 struct Own {
     at: Instant,
-    left: Option<Stamp>,
+    left: Stamp,
 }
 
 pub struct Watcher {
@@ -76,13 +76,9 @@ impl Watcher {
         self.watched = folders.to_vec();
     }
 
-    pub fn expect(&mut self, path: &Path) {
-        self.own.insert(path.to_path_buf(), Own { at: Instant::now(), left: None });
-    }
-
     pub fn write(&mut self, path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
         std::fs::write(path, contents.as_ref())?;
-        self.own.insert(path.to_path_buf(), Own { at: Instant::now(), left: Some(stamp_of(contents.as_ref())) });
+        self.own.insert(path.to_path_buf(), Own { at: Instant::now(), left: stamp_of(contents.as_ref()) });
         Ok(())
     }
 
@@ -96,15 +92,12 @@ impl Watcher {
             self.pending.insert(path, now);
         }
         self.own.retain(|_, own| own.at.elapsed() < OWN);
-        for (path, own) in self.own.iter_mut().filter(|(_, own)| own.left.is_none()) {
-            own.left = Some(stamp(path));
-        }
         if self.pending.is_empty() || self.pending.values().any(|t| t.elapsed() < SETTLE) {
             return None;
         }
         let mut batch = Batch::default();
         for (path, _) in self.pending.drain() {
-            if self.own.get(&path).is_some_and(|own| own.left == Some(stamp(&path))) {
+            if self.own.get(&path).is_some_and(|own| own.left == stamp(&path)) {
                 continue;
             }
             self.own.remove(&path);
@@ -149,9 +142,8 @@ mod tests {
         std::fs::write(&saved, "TWO\n").unwrap();
         assert_eq!(seen(&mut watcher, &saved).map(|files| files.len()), Some(1), "the same size, written later");
 
-        watcher.expect(&mirrored);
-        std::fs::write(&mirrored, "one\n").unwrap();
-        assert_eq!(seen(&mut watcher, &mirrored), None, "written after saying it would");
+        watcher.write(&mirrored, "one\n").unwrap();
+        assert_eq!(seen(&mut watcher, &mirrored), None, "its own write");
         assert_eq!(seen(&mut watcher, &mirrored), None, "the same write, told twice");
         std::fs::remove_file(&mirrored).unwrap();
         assert_eq!(seen(&mut watcher, &mirrored), Some(vec![mirrored.clone()]), "deleted by another program");

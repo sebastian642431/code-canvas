@@ -69,9 +69,9 @@ impl Camera {
         }
         let mut at = *self;
         at.zoom_at(screen, viewport, tall.round() / tall);
-        let offset = at.view(viewport).offset;
-        for axis in 0..2 {
-            at.center[axis] += (offset[axis] * at.zoom).round() / at.zoom - offset[axis];
+        let (offset, zoom) = (at.view(viewport).offset, at.zoom);
+        for (centre, offset) in at.center.iter_mut().zip(offset) {
+            *centre += (offset * zoom).round() / zoom - offset;
         }
         let moved = (at.zoom - self.zoom).abs() > self.zoom * 1.0e-4
             || (0..2).any(|axis| ((at.center[axis] - self.center[axis]) * at.zoom).abs() > 0.05);
@@ -121,9 +121,7 @@ mod tests {
         let rested = camera.rested([200.0, 150.0], vp, 13.0).expect("it was between pixels");
         let tall = 13.0 * rested.zoom;
         assert!((tall - tall.round()).abs() < 1e-3, "{tall}");
-        let offset = rested.view(vp).offset;
-        for axis in 0..2 {
-            let at = offset[axis] * rested.zoom;
+        for at in rested.view(vp).offset.map(|offset| offset * rested.zoom) {
             assert!((at - at.round()).abs() < 1e-2, "{at}");
         }
         assert!(rested.rested([200.0, 150.0], vp, 13.0).is_none(), "and it stays there");

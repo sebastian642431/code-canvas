@@ -520,11 +520,13 @@ impl App {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if quiet {
-            self.watcher.expect(&path);
-        }
         self.sharing.mirrored.insert((folder, rel.to_string()), mark_of(text));
-        if let Err(e) = std::fs::write(&path, format!("{text}\n")) {
+        let whole = format!("{text}\n");
+        let written = match quiet {
+            true => self.watcher.write(&path, whole),
+            false => std::fs::write(&path, whole),
+        };
+        if let Err(e) = written {
             log::warn!("share: {} could not be written: {e}", path.display());
         }
     }
