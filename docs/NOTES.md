@@ -1696,6 +1696,12 @@ Configuration carries no comments either; what they said:
   Several folders go in one `-Folders` value, separated by commas. It calls
   `PrintWindow` with flag 2 (`PW_RENDERFULLCONTENT`), which captures what the GPU
   drew and not just the frame.
+- `scripts/draw_icon.py` draws the app's icon (a C whose mouth holds a card) into
+  `assets/icon_source.png`, four times too big and shrunk, so its edges are
+  smooth. Change the colours or the shapes there, then run `make_icon.py`.
+- `scripts/install.ps1` saves the taskbar's pinned shortcut again when it points
+  at the app: Windows keeps the icon a pin was made with, and a new icon would
+  not show there.
 - `scripts/make_icon.py` builds every icon asset from one square image. Requires
   Pillow.
 

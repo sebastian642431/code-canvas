@@ -35,6 +35,17 @@ function New-Shortcut([string]$path) {
 }
 New-Shortcut (Join-Path ([Environment]::GetFolderPath("Programs")) "Code Canvas.lnk")
 if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "Code Canvas.lnk") }
+$pinned = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+if (Test-Path $pinned) {
+    foreach ($file in Get-ChildItem -Path $pinned -Filter *.lnk) {
+        $link = $shell.CreateShortcut($file.FullName)
+        if ($link.TargetPath -eq $exe) {
+            $link.IconLocation = "$exe,0"
+            $link.Save()
+            Write-Host "Pinned:    $($file.Name) shows the new icon"
+        }
+    }
+}
 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
 
 if ($ContextMenu) {
