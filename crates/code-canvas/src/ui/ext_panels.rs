@@ -6,10 +6,7 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 
-use super::{
-    c, icon, panel_title, search_field, section, small_icon, well, Action, LeftPanel, UiState, ACCENT, BORDER, CARD,
-    HOVER, RAISED, ROW_H, TEXT, TEXT_DIM, TEXT_FAINT, WELL,
-};
+use super::{c, icon, pal, panel_title, search_field, section, small_icon, well, Action, LeftPanel, UiState, ROW_H};
 use crate::ext::{Extensions, Installed, Level, NodeStatus, Severity, Status};
 use crate::icons;
 use crate::page::Page;
@@ -17,9 +14,9 @@ use canvas_render::theme;
 
 fn severity_color(s: Severity) -> Color32 {
     c(match s {
-        Severity::Error => theme::PROBLEM_ERROR,
-        Severity::Warning => theme::PROBLEM_WARNING,
-        Severity::Info | Severity::Hint => theme::PROBLEM_INFO,
+        Severity::Error => theme::get().problem_error,
+        Severity::Warning => theme::get().problem_warning,
+        Severity::Info | Severity::Hint => theme::get().problem_info,
     })
 }
 
@@ -34,17 +31,17 @@ fn severity_glyph(s: Severity) -> &'static str {
 /// A small rounded button with a label.
 fn pill(ui: &mut egui::Ui, label: &str, strong: bool) -> bool {
     let font = FontId::proportional(12.0);
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font, TEXT);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, pal().text);
     let size = Vec2::new(galley.size().x + 18.0, 22.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let fill = match (strong, resp.hovered()) {
-        (true, false) => ACCENT.gamma_multiply(0.85),
-        (true, true) => ACCENT,
-        (false, false) => RAISED,
-        (false, true) => HOVER,
+        (true, false) => pal().accent.gamma_multiply(0.85),
+        (true, true) => pal().accent,
+        (false, false) => pal().raised,
+        (false, true) => pal().hover,
     };
     ui.painter().rect_filled(rect, 6.0, fill);
-    let color = if strong { Color32::from_rgb(8, 10, 16) } else { TEXT };
+    let color = if strong { pal().on_accent } else { pal().text };
     ui.painter().galley(rect.center() - galley.size() * 0.5, galley, color);
     resp.clicked()
 }
@@ -71,13 +68,13 @@ fn icon_slot(ui: &egui::Ui, slot: Rect, texture: Option<&egui::TextureHandle>, e
             egui::Image::new(t).corner_radius(6).tint(tint).paint_at(ui, slot);
         }
         None => {
-            ui.painter().rect_filled(slot, 8.0, RAISED);
+            ui.painter().rect_filled(slot, 8.0, pal().raised);
             ui.painter().text(
                 slot.center(),
                 Align2::CENTER_CENTER,
                 icons::PUZZLE,
                 FontId::proportional(18.0),
-                TEXT_DIM,
+                pal().text_dim,
             );
         }
     }
@@ -95,7 +92,9 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             ext.search();
         }
-        ui.label(RichText::new("Enter to search Open VSX, the open extension registry").size(11.0).color(TEXT_FAINT));
+        ui.label(
+            RichText::new("Enter to search Open VSX, the open extension registry").size(11.0).color(pal().text_faint),
+        );
         if let NodeStatus::Missing(why) = &ext.node {
             ui.add_space(4.0);
             ui.label(
@@ -103,7 +102,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     "Node.js was not found. Extensions that run code (linters, formatters, language servers) need it.",
                 )
                 .size(11.5)
-                .color(c(theme::PROBLEM_WARNING)),
+                .color(c(theme::get().problem_warning)),
             )
             .on_hover_text(why);
         }
@@ -115,7 +114,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
             ui.spacing_mut().item_spacing.y = 5.0;
             section(ui, icons::PACKAGE, &format!("Installed  ·  {}", ext.installed.len()));
             if let (NodeStatus::Ready(version), true) = (&ext.node, ext.host_running) {
-                ui.label(RichText::new(format!("    running on Node.js {version}")).size(11.0).color(TEXT_FAINT));
+                ui.label(RichText::new(format!("    running on Node.js {version}")).size(11.0).color(pal().text_faint));
             }
             if ext.installed.is_empty() && ext.installing.is_empty() {
                 well(ui, |ui| {
@@ -124,7 +123,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                             "Nothing yet. Search above: ESLint and Prettier are a good start for a JavaScript or TypeScript project.",
                         )
                         .size(12.0)
-                        .color(TEXT_DIM),
+                        .color(pal().text_dim),
                     );
                 });
             }
@@ -132,7 +131,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                 well(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(RichText::new(format!("Installing {label} …")).size(12.5).color(TEXT));
+                        ui.label(RichText::new(format!("Installing {label} …")).size(12.5).color(pal().text));
                     });
                 });
             }
@@ -140,13 +139,13 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                 let texture = extension_icon(ui.ctx(), &mut st.ext_icons, e);
                 // Right of the name, like VS Code: how long it took to start, or what is wrong.
                 let (state, color) = match e.status {
-                    Status::Active => (format!("{}  {} ms", icons::HISTORY, e.activation_ms), TEXT_FAINT),
-                    Status::Activating => ("starting …".to_string(), TEXT_DIM),
-                    Status::Failed => ("failed to start".to_string(), c(theme::PROBLEM_ERROR)),
-                    Status::Declarative => (String::new(), TEXT_FAINT),
-                    Status::Disabled => ("disabled".to_string(), TEXT_FAINT),
-                    Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => ("needs Node.js".to_string(), c(theme::PROBLEM_WARNING)),
-                    Status::Idle => (String::new(), TEXT_FAINT),
+                    Status::Active => (format!("{}  {} ms", icons::HISTORY, e.activation_ms), pal().text_faint),
+                    Status::Activating => ("starting …".to_string(), pal().text_dim),
+                    Status::Failed => ("failed to start".to_string(), c(theme::get().problem_error)),
+                    Status::Declarative => (String::new(), pal().text_faint),
+                    Status::Disabled => ("disabled".to_string(), pal().text_faint),
+                    Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => ("needs Node.js".to_string(), c(theme::get().problem_warning)),
+                    Status::Idle => (String::new(), pal().text_faint),
                 };
                 let mut open = false;
                 let mut row = Frame::NONE.corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(8, 7)).begin(ui);
@@ -165,13 +164,13 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                                     ui.label(RichText::new(&state).size(11.0).color(color));
                                 }
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                    let name_color = if e.enabled { TEXT } else { TEXT_DIM };
+                                    let name_color = if e.enabled { pal().text } else { pal().text_dim };
                                     let name = RichText::new(&e.display_name).size(13.5).strong().color(name_color);
                                     open |= ui.add(egui::Label::new(name).truncate().sense(Sense::click())).clicked();
                                 });
                             });
                             let second = if e.status == Status::Failed && !e.error.is_empty() { &e.error } else { &e.description };
-                            let second_color = if e.status == Status::Failed { c(theme::PROBLEM_ERROR) } else { TEXT_DIM };
+                            let second_color = if e.status == Status::Failed { c(theme::get().problem_error) } else { pal().text_dim };
                             ui.add(egui::Label::new(RichText::new(second).size(12.0).color(second_color)).truncate());
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -191,7 +190,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                                     if !e.unsupported.is_empty() {
                                         by.push_str(&format!("  ·  {} features not available yet", e.unsupported.len()));
                                     }
-                                    let label = ui.add(egui::Label::new(RichText::new(by).size(11.5).color(TEXT_FAINT)).truncate());
+                                    let label = ui.add(egui::Label::new(RichText::new(by).size(11.5).color(pal().text_faint)).truncate());
                                     if !e.unsupported.is_empty() {
                                         label.on_hover_text(e.unsupported.join("\n"));
                                     }
@@ -201,7 +200,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     });
                 }
                 if ui.rect_contains_pointer(row.content_ui.min_rect().expand(6.0)) {
-                    row.frame.fill = WELL;
+                    row.frame.fill = pal().well;
                 }
                 row.end(ui);
                 if open {
@@ -217,27 +216,27 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                 ui.horizontal(|ui| {
                     ui.add_space(6.0);
                     ui.spinner();
-                    ui.label(RichText::new("Searching …").size(12.0).color(TEXT_DIM));
+                    ui.label(RichText::new("Searching …").size(12.0).color(pal().text_dim));
                 });
             }
             if !ext.market_error.is_empty() {
                 well(ui, |ui| {
-                    ui.label(RichText::new(format!("The registry could not be reached: {}", ext.market_error)).size(12.0).color(c(theme::PROBLEM_ERROR)));
+                    ui.label(RichText::new(format!("The registry could not be reached: {}", ext.market_error)).size(12.0).color(c(theme::get().problem_error)));
                 });
             }
             for item in &ext.results {
                 let id = item.id();
                 well(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&item.display_name).size(13.5).strong().color(TEXT));
+                        ui.label(RichText::new(&item.display_name).size(13.5).strong().color(pal().text));
                         if item.verified {
-                            ui.label(icon(icons::CIRCLE_CHECK, 12.0, ACCENT)).on_hover_text("Verified publisher");
+                            ui.label(icon(icons::CIRCLE_CHECK, 12.0, pal().accent)).on_hover_text("Verified publisher");
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ext.installing.contains(&id) {
                                 ui.spinner();
                             } else if ext.is_installed(&id) {
-                                ui.label(RichText::new("installed").size(11.5).color(TEXT_FAINT));
+                                ui.label(RichText::new("installed").size(11.5).color(pal().text_faint));
                             } else if pill(ui, "Install", true) {
                                 op = Some(Op::Install(item.namespace.clone(), item.name.clone()));
                             }
@@ -246,11 +245,11 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     ui.label(
                         RichText::new(format!("{} · {} downloads · {}", item.namespace, compact(item.downloads), item.version))
                             .size(11.5)
-                            .color(TEXT_FAINT),
+                            .color(pal().text_faint),
                     );
                     if !item.description.is_empty() {
                         let short: String = item.description.chars().take(140).collect();
-                        ui.label(RichText::new(short).size(12.0).color(TEXT_DIM));
+                        ui.label(RichText::new(short).size(12.0).color(pal().text_dim));
                     }
                 });
             }
@@ -282,7 +281,7 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
         } else {
             format!("{errors} errors · {warnings} warnings · in {} files", files.len())
         };
-        ui.label(RichText::new(summary).size(11.5).color(TEXT_DIM));
+        ui.label(RichText::new(summary).size(11.5).color(pal().text_dim));
     });
     let Some(repo) = page.and_then(|p| p.ready()).map(|r| &r.repo) else { return };
 
@@ -306,19 +305,19 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
             }
             let painter = ui.painter();
             if resp.hovered() {
-                painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, Color32::from_rgb(20, 22, 27));
+                painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
             }
             let mid = rect.center().y;
             match row {
                 Row::File(rel, errors, warnings) => {
                     let name = rel.rsplit('/').next().unwrap_or(rel);
-                    let galley = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.5), TEXT);
+                    let galley = painter.layout_no_wrap(name.to_string(), FontId::proportional(12.5), pal().text);
                     let w = galley.size().x;
-                    painter.galley(Pos2::new(rect.left() + 12.0, mid - galley.size().y * 0.5), galley, TEXT);
+                    painter.galley(Pos2::new(rect.left() + 12.0, mid - galley.size().y * 0.5), galley, pal().text);
                     let counts = format!("{}", errors + warnings);
-                    let cg = painter.layout_no_wrap(counts, FontId::proportional(11.5), TEXT_DIM);
+                    let cg = painter.layout_no_wrap(counts, FontId::proportional(11.5), pal().text_dim);
                     let cx = rect.right() - 12.0 - cg.size().x;
-                    painter.galley(Pos2::new(cx, mid - cg.size().y * 0.5), cg, TEXT_DIM);
+                    painter.galley(Pos2::new(cx, mid - cg.size().y * 0.5), cg, pal().text_dim);
                     let dir = rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
                     let clip = Rect::from_min_max(
                         Pos2::new(rect.left() + 20.0 + w, rect.top()),
@@ -329,7 +328,7 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
                         Align2::LEFT_CENTER,
                         dir,
                         FontId::proportional(11.5),
-                        TEXT_FAINT,
+                        pal().text_faint,
                     );
                     if resp.clicked() {
                         actions.push(Action::FlyToPath(rel.to_string()));
@@ -346,9 +345,9 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
                         severity_color(d.severity),
                     );
                     let place = format!("{}", d.line + 1);
-                    let pg = painter.layout_no_wrap(place, FontId::monospace(11.0), TEXT_FAINT);
+                    let pg = painter.layout_no_wrap(place, FontId::monospace(11.0), pal().text_faint);
                     let px = rect.right() - 12.0 - pg.size().x;
-                    painter.galley(Pos2::new(px, mid - pg.size().y * 0.5), pg, TEXT_FAINT);
+                    painter.galley(Pos2::new(px, mid - pg.size().y * 0.5), pg, pal().text_faint);
                     let clip = Rect::from_min_max(
                         Pos2::new(rect.left() + 42.0, rect.top()),
                         Pos2::new(px - 6.0, rect.bottom()),
@@ -359,7 +358,7 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
                         Align2::LEFT_CENTER,
                         first,
                         FontId::proportional(12.0),
-                        TEXT,
+                        pal().text,
                     );
                     if resp.clicked() {
                         if let Some(file) = repo.file_index(rel) {
@@ -401,7 +400,7 @@ pub fn extension_icon(
 pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
     let Some(e) = ext.installed.iter().find(|e| e.id == st.extension) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
-            ui.label(RichText::new("This extension is not installed any more.").size(12.0).color(TEXT_DIM));
+            ui.label(RichText::new("This extension is not installed any more.").size(12.0).color(pal().text_dim));
         });
         return;
     };
@@ -413,16 +412,18 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
             if let Some(texture) = extension_icon(ui.ctx(), &mut st.ext_icons, e) {
                 ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::splat(22.0)).corner_radius(4));
             }
-            ui.label(RichText::new(&e.display_name).size(14.0).color(TEXT));
+            ui.label(RichText::new(&e.display_name).size(14.0).color(pal().text));
         });
-        ui.label(RichText::new(format!("{} · {}", e.publisher, e.version)).size(11.5).color(TEXT_FAINT));
+        ui.label(RichText::new(format!("{} · {}", e.publisher, e.version)).size(11.5).color(pal().text_faint));
         if !e.description.is_empty() {
             ui.add_space(2.0);
-            ui.label(RichText::new(&e.description).size(12.0).color(TEXT_DIM));
+            ui.label(RichText::new(&e.description).size(12.0).color(pal().text_dim));
         }
         if e.status == Status::Failed {
             ui.label(
-                RichText::new(format!("It failed to start: {}", e.error)).size(11.5).color(c(theme::PROBLEM_ERROR)),
+                RichText::new(format!("It failed to start: {}", e.error))
+                    .size(11.5)
+                    .color(c(theme::get().problem_error)),
             );
         }
     });
@@ -431,11 +432,11 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
             if !e.views.is_empty() {
                 section(ui, icons::LAYOUT_GRID, "Views");
                 well(ui, |ui| {
-                    ui.label(RichText::new(e.views.join("  ·  ")).size(12.0).color(TEXT));
+                    ui.label(RichText::new(e.views.join("  ·  ")).size(12.0).color(pal().text));
                     ui.label(
                         RichText::new("Shown by VS Code in the side bar. Code Canvas cannot show an extension's own views and webviews yet.")
                             .size(11.5)
-                            .color(TEXT_FAINT),
+                            .color(pal().text_faint),
                     );
                 });
             }
@@ -447,16 +448,16 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
                     continue;
                 }
                 if resp.hovered() {
-                    ui.painter().rect_filled(rect, 6.0, Color32::from_rgb(20, 22, 27));
+                    ui.painter().rect_filled(rect, 6.0, pal().row);
                 }
                 let clip = rect.shrink2(Vec2::new(8.0, 0.0));
-                ui.painter().with_clip_rect(clip).text(clip.left_center(), Align2::LEFT_CENTER, title, FontId::proportional(12.5), TEXT);
+                ui.painter().with_clip_rect(clip).text(clip.left_center(), Align2::LEFT_CENTER, title, FontId::proportional(12.5), pal().text);
                 if resp.on_hover_text(id).clicked() {
                     run = Some((id.clone(), title.clone()));
                 }
             }
             if e.commands.is_empty() {
-                ui.label(RichText::new("    It has no commands: it works on its own.").size(11.5).color(TEXT_FAINT));
+                ui.label(RichText::new("    It has no commands: it works on its own.").size(11.5).color(pal().text_faint));
             }
         });
     });
@@ -474,7 +475,9 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
 pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
     let Some(entry) = ext.webviews.iter().find(|w| w.key == st.webview) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
-            ui.label(RichText::new("This view is gone: its extension is not running.").size(12.0).color(TEXT_DIM));
+            ui.label(
+                RichText::new("This view is gone: its extension is not running.").size(12.0).color(pal().text_dim),
+            );
         });
         return;
     };
@@ -483,10 +486,10 @@ pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) 
     ui.allocate_rect(rect, Sense::hover());
     if !crate::webview::AVAILABLE {
         let text = "Webviews are only available on Windows for now.";
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), TEXT_DIM);
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
     } else if waiting {
         let text = format!("Starting {} …", entry.title);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), TEXT_DIM);
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
         ext.resolve_webview(&key);
     }
     st.webview_rect = Some(rect);
@@ -507,23 +510,23 @@ pub fn notices(ctx: &egui::Context, st: &mut UiState, canvas: Rect, ext: &mut Ex
             ui.spacing_mut().item_spacing.y = 6.0;
             for (i, n) in ext.notices.iter().enumerate() {
                 let color = match n.level {
-                    Level::Info => ACCENT,
-                    Level::Warn => c(theme::PROBLEM_WARNING),
-                    Level::Error => c(theme::PROBLEM_ERROR),
+                    Level::Info => pal().accent,
+                    Level::Warn => c(theme::get().problem_warning),
+                    Level::Error => c(theme::get().problem_error),
                 };
                 Frame::NONE
-                    .fill(CARD)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .fill(pal().card)
+                    .stroke(Stroke::new(1.0, pal().border))
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(10, 7))
                     .show(ui, |ui| {
                         ui.set_max_width(420.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.label(icon(icons::PUZZLE, 13.0, color));
-                            ui.label(RichText::new(&n.source).size(12.0).color(TEXT));
+                            ui.label(RichText::new(&n.source).size(12.0).color(pal().text));
                             let limit = if n.actions.is_empty() { 300 } else { 900 };
                             let text: String = n.text.chars().take(limit).collect();
-                            ui.label(RichText::new(text).size(12.0).color(TEXT_DIM));
+                            ui.label(RichText::new(text).size(12.0).color(pal().text_dim));
                         });
                         if !n.actions.is_empty() {
                             ui.add_space(2.0);

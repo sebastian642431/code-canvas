@@ -118,10 +118,6 @@ pub struct SceneGpu {
     pub block_count: u32,
 }
 
-fn dir_border(depth: u16) -> u32 {
-    theme::DIR_BORDERS[depth as usize % theme::DIR_BORDERS.len()]
-}
-
 fn dominant(counts: &[u32; 11]) -> u32 {
     theme::kind_index(canvas_core::syntax::dominant_kind(counts))
 }
@@ -153,20 +149,21 @@ impl SceneData {
         let mut frames = Vec::with_capacity(layout.nodes.len());
         let mut blocks = Vec::new();
         let mut block_start = Vec::with_capacity(layout.nodes.len() + 1);
+        let colors = theme::get();
         for n in &layout.nodes {
             block_start.push(blocks.len() as u32);
             match n.kind {
                 NodeKind::Dir => frames.push(RectInstance::new(
                     n.rect,
-                    if n.collapsed { theme::DIR_COLLAPSED_FILL } else { theme::DIR_FILL },
-                    dir_border(n.depth),
+                    if n.collapsed { colors.dir_collapsed_fill } else { colors.dir_fill },
+                    colors.dir_border(n.depth as usize),
                     6.0,
                     1.0,
                 )),
                 NodeKind::File(fi) => {
                     let f = &repo.files[fi];
-                    let fill = if f.note.is_some() { theme::CARD_NOTE_FILL } else { theme::CARD_FILL };
-                    frames.push(RectInstance::new(n.rect, fill, theme::CARD_BORDER, 3.0, 1.0));
+                    let fill = if f.note.is_some() { colors.card_note_fill } else { colors.card_fill };
+                    frames.push(RectInstance::new(n.rect, fill, colors.card_border, 3.0, 1.0));
                     push_blocks(fi, f, &mut blocks);
                 }
             }

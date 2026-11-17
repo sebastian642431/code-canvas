@@ -61,9 +61,9 @@ pub struct CanvasOverlay {
 
 fn severity_color(severity: Severity) -> u32 {
     match severity {
-        Severity::Error => theme::PROBLEM_ERROR,
-        Severity::Warning => theme::PROBLEM_WARNING,
-        Severity::Info | Severity::Hint => theme::PROBLEM_INFO,
+        Severity::Error => theme::get().problem_error,
+        Severity::Warning => theme::get().problem_warning,
+        Severity::Info | Severity::Hint => theme::get().problem_info,
     }
 }
 
@@ -72,7 +72,7 @@ fn with_alpha(color: u32, alpha: f32) -> u32 {
 }
 
 fn rel_color(kind: RelKind) -> u32 {
-    theme::REL_COLORS[kind.index()]
+    theme::get().rel_colors()[kind.index()]
 }
 
 /// Rebuild the relation curves of a page and update each selection's
@@ -112,7 +112,7 @@ fn dep_curves(out: &mut Vec<CurveVertex>, r: &Ready, node: usize, deps: &DepFilt
                 continue;
             }
             let (Some(a), Some(b)) = (anchor(e.from, e.line), anchor(e.to, 0)) else { continue };
-            let color = with_alpha(if out_edge { theme::DEP_OUT } else { theme::DEP_IN }, 0.7);
+            let color = with_alpha(if out_edge { theme::get().dep_out } else { theme::get().dep_in }, 0.7);
             push_curve(out, a, b, color, 1.25 * scale);
             drawn += 1;
         }
@@ -130,7 +130,7 @@ pub fn build_curves(page: &mut Page, filters: &RelFilters, deps: &DepFilters, sc
             let a = r.layout.anchor(&Site { file: e.from, line: e.line, col: 0, len: 0 });
             let b = r.layout.anchor(&Site { file: e.to, line: 0, col: 0, len: 0 });
             if let (Some((a, _)), Some((b, _))) = (a, b) {
-                push_curve(&mut out, a, b, with_alpha(theme::DEP_OUT, 0.16), scale);
+                push_curve(&mut out, a, b, with_alpha(theme::get().dep_out, 0.16), scale);
             }
         }
     }
@@ -222,7 +222,7 @@ fn selection_overlay(
             at,
             text: repo.sym_name(sel.sym).to_string(),
             border: 0xffffffff,
-            text_color: theme::CHIP_TEXT,
+            text_color: theme::get().chip_text,
             bold: true,
             sym: Some(sel.sym),
         });
@@ -284,7 +284,7 @@ fn selection_overlay(
                 at,
                 text: if rel.kind == RelKind::Implementation { format!("impl {name}") } else { name.to_string() },
                 border: with_alpha(color, 0.35 + 0.65 * opacity),
-                text_color: theme::CHIP_TEXT_DIM,
+                text_color: theme::get().chip_text_dim,
                 bold: false,
                 sym: Some(other),
             });
@@ -346,7 +346,7 @@ pub fn build(
                             left: c[0] - tw * 0.5,
                             top,
                             size,
-                            color: theme::LABEL_DIR,
+                            color: theme::get().label_dir,
                             max_w: tw + 2.0,
                             bold: true,
                         });
@@ -360,7 +360,7 @@ pub fn build(
                                 left: c[0] - sw * 0.5,
                                 top: top + size * 1.45,
                                 size: sub_size,
-                                color: theme::UI_TEXT_DIM,
+                                color: theme::get().ui_text_dim,
                                 max_w: sw + 2.0,
                                 bold: false,
                             });
@@ -391,7 +391,7 @@ pub fn build(
                             left,
                             top,
                             size,
-                            color: if is_root { theme::UI_TEXT } else { theme::LABEL_DIR },
+                            color: if is_root { theme::get().ui_text } else { theme::get().label_dir },
                             max_w,
                             bold: true,
                         });
@@ -402,7 +402,7 @@ pub fn build(
                                 left: marker.x + size * 0.35,
                                 top,
                                 size,
-                                color: theme::UI_TEXT_DIM,
+                                color: theme::get().ui_text_dim,
                                 max_w: f32::INFINITY,
                                 bold: true,
                             });
@@ -426,7 +426,7 @@ pub fn build(
                             left,
                             top,
                             size,
-                            color: if unsaved { theme::UI_TEXT } else { theme::LABEL_FILE },
+                            color: if unsaved { theme::get().ui_text } else { theme::get().label_file },
                             max_w: w_px,
                             bold: false,
                         });
@@ -439,11 +439,11 @@ pub fn build(
 
     // --- hover and selection of nodes --------------------------------------
     if let Some(n) = page.hover.and_then(|h| layout.nodes.get(h)) {
-        out.over.push(RectInstance::new(n.rect, 0, theme::HOVER, if n.is_dir() { 6.0 } else { 3.0 }, 1.5));
+        out.over.push(RectInstance::new(n.rect, 0, theme::get().canvas_hover, if n.is_dir() { 6.0 } else { 3.0 }, 1.5));
     }
     if let Some(n) = page.selected.and_then(|i| layout.nodes.get(i)) {
         let radius = if n.is_dir() { 6.0 } else { 3.0 };
-        out.over.push(RectInstance::new(n.rect, theme::SELECT_FILL, theme::SELECT, radius, 2.0));
+        out.over.push(RectInstance::new(n.rect, theme::get().select_fill, theme::get().select, radius, 2.0));
     }
 
     // --- search hits ---------------------------------------------------------
@@ -501,9 +501,9 @@ pub fn build(
                 continue;
             }
             let color = match change.change {
-                Change::Added | Change::Untracked => theme::GIT_ADDED,
-                Change::Deleted | Change::Conflicted => theme::GIT_REMOVED,
-                Change::Modified | Change::Renamed => theme::GIT_MODIFIED,
+                Change::Added | Change::Untracked => theme::get().git_added,
+                Change::Deleted | Change::Conflicted => theme::get().git_removed,
+                Change::Modified | Change::Renamed => theme::get().git_modified,
             };
             let strip = (3.0 * s / z).max(1.5);
             out.over.push(RectInstance::new(
@@ -523,9 +523,9 @@ pub fn build(
             let bar = (2.5 * s / z).min(CARD_PAD * 0.6);
             for h in &change.hunks {
                 let (c, first, count) = match h.kind {
-                    HunkKind::Added => (theme::GIT_ADDED, h.line, h.count),
-                    HunkKind::Modified => (theme::GIT_MODIFIED, h.line, h.count),
-                    HunkKind::Removed => (theme::GIT_REMOVED, h.line, 0),
+                    HunkKind::Added => (theme::get().git_added, h.line, h.count),
+                    HunkKind::Modified => (theme::get().git_modified, h.line, h.count),
+                    HunkKind::Removed => (theme::get().git_removed, h.line, 0),
                 };
                 if first > lines {
                     continue;
@@ -638,7 +638,7 @@ pub fn build(
                         left: p[0],
                         top: p[1] + (z * LINE_H - size * 1.25) * 0.5,
                         size,
-                        color: if d.color & 0xff != 0 { d.color } else { theme::LABEL_DIR },
+                        color: if d.color & 0xff != 0 { d.color } else { theme::get().label_dir },
                         max_w: 2000.0 * s,
                         bold: false,
                     });
@@ -669,7 +669,7 @@ pub fn build(
                             at,
                             text: format!("{} {}", repo.sym(sym).kind.badge(), repo.sym_name(sym)),
                             border: 0x7aa2f7ff,
-                            text_color: theme::CHIP_TEXT,
+                            text_color: theme::get().chip_text,
                             bold: false,
                             sym: None,
                         });
@@ -700,7 +700,7 @@ pub fn build(
         placed.push(rect);
         out.chips.push(RectInstance::new(
             rect,
-            theme::CHIP_FILL,
+            theme::get().chip_fill,
             chip.border,
             4.0 * s,
             if chip.bold { 1.5 } else { 1.0 },

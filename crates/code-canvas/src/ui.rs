@@ -25,6 +25,7 @@ use crate::page::{build_tree, Page, PageState, RelFilters};
 mod deps_panel;
 mod ext_panels;
 mod git_panel;
+mod settings_panel;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LeftPanel {
@@ -39,6 +40,8 @@ pub enum LeftPanel {
     /// One installed extension (`UiState::extension`): what it offers.
     Extension,
     Help,
+    /// The theme and its colours.
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -84,6 +87,9 @@ pub struct UiState {
     pub extension: String,
     /// Icons of installed extensions, by extension id (`None`: it has none).
     ext_icons: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// The theme chosen and the colours changed on top of it. The app keeps
+    /// it in step with what is on screen and on disk.
+    pub theme: crate::themes::ThemeFile,
 }
 
 impl Default for UiState {
@@ -106,6 +112,7 @@ impl Default for UiState {
             webview: String::new(),
             webview_rect: None,
             ext_icons: Default::default(),
+            theme: Default::default(),
         }
     }
 }
@@ -180,6 +187,12 @@ pub enum Action {
     SetOnlyChanged(bool),
     /// Pick a `.vsix` file and install it.
     InstallVsix,
+    /// Use a built-in theme (a key of `theme::PRESETS`).
+    SetTheme(&'static str),
+    /// Change one colour of the theme: `(key, 0xRRGGBBAA)`.
+    SetColor(&'static str, u32),
+    /// Forget every colour changed by hand.
+    ResetColors,
     // The window itself (it has no system title bar).
     DragWindow,
     ToggleMaximize,
@@ -203,23 +216,60 @@ fn c(rgba: u32) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-// Design tokens.
-const CHROME: Color32 = Color32::from_rgb(10, 11, 14);
-const CARD: Color32 = Color32::from_rgb(16, 17, 21);
-const WELL: Color32 = Color32::from_rgb(11, 12, 15);
-const RAISED: Color32 = Color32::from_rgb(27, 29, 36);
-const HOVER: Color32 = Color32::from_rgb(34, 37, 46);
-const BORDER: Color32 = Color32::from_rgb(34, 37, 46);
-const TEXT: Color32 = Color32::from_rgb(230, 231, 236);
-const TEXT_DIM: Color32 = Color32::from_rgb(138, 142, 153);
-const TEXT_FAINT: Color32 = Color32::from_rgb(92, 96, 108);
-const ACCENT: Color32 = Color32::from_rgb(90, 150, 255);
+/// The interface's colours: the "Interface" group of the theme in use
+/// (`canvas_render::theme`), ready for egui. Take them with [`pal`].
+#[derive(Clone, Copy)]
+struct Pal {
+    /// The window behind everything, and the rails.
+    chrome: Color32,
+    /// Panels.
+    card: Color32,
+    /// Text fields and other insets.
+    well: Color32,
+    /// A row of a list that stands out a little.
+    row: Color32,
+    /// Buttons, selected rows.
+    raised: Color32,
+    hover: Color32,
+    active: Color32,
+    selection: Color32,
+    border: Color32,
+    border_strong: Color32,
+    text: Color32,
+    text_dim: Color32,
+    text_faint: Color32,
+    accent: Color32,
+    /// Text drawn on top of the accent colour.
+    on_accent: Color32,
+}
+
+fn pal() -> Pal {
+    let t = theme::get();
+    Pal {
+        chrome: c(t.chrome),
+        card: c(t.card),
+        well: c(t.well),
+        row: c(t.row),
+        raised: c(t.raised),
+        hover: c(t.hover),
+        active: c(t.active),
+        selection: c(t.selection),
+        border: c(t.border),
+        border_strong: c(t.border_strong),
+        text: c(t.text),
+        text_dim: c(t.text_dim),
+        text_faint: c(t.text_faint),
+        accent: c(t.accent),
+        on_accent: c(t.on_accent),
+    }
+}
+
 const ROW_H: f32 = 24.0;
 const HEADER_H: f32 = 40.0;
 const RAIL_W: f32 = 44.0;
 const GAP: i8 = 6;
 
-/// Fonts and the app's dark look (call once).
+/// Fonts and the app's look (call once).
 pub fn style(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
     // Lucide icons as a fallback font: icon code points render anywhere text does.
@@ -243,39 +293,44 @@ pub fn style(ctx: &egui::Context) {
         ],
     });
 
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = CHROME;
-    v.window_fill = CARD;
-    v.extreme_bg_color = WELL;
-    v.faint_bg_color = RAISED;
-    v.window_stroke = Stroke::new(1.0, BORDER);
-    v.slider_trailing_fill = true;
-    v.handle_shape = egui::style::HandleShape::Circle;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.inactive.bg_fill = RAISED;
-    v.widgets.inactive.weak_bg_fill = RAISED;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.inactive.corner_radius = CornerRadius::same(6);
-    v.widgets.hovered.bg_fill = HOVER;
-    v.widgets.hovered.weak_bg_fill = HOVER;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(58, 63, 78));
-    v.widgets.hovered.corner_radius = CornerRadius::same(6);
-    v.widgets.active.bg_fill = Color32::from_rgb(44, 49, 62);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(44, 49, 62);
-    v.widgets.active.corner_radius = CornerRadius::same(6);
-    v.selection.bg_fill = Color32::from_rgb(52, 64, 88);
-    v.selection.stroke = Stroke::new(1.0, TEXT);
-    v.hyperlink_color = ACCENT;
-    // Always dark, whatever the system theme is.
-    ctx.set_theme(egui::Theme::Dark);
-    ctx.set_visuals_of(egui::Theme::Dark, v);
+    apply_theme(ctx);
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = Vec2::new(6.0, 5.0);
         s.spacing.button_padding = Vec2::new(8.0, 4.0);
         s.spacing.slider_rail_height = 5.0;
         s.interaction.tooltip_delay = 0.4;
     });
+}
+
+/// Give egui the colours of the theme in use (again, when it changes).
+pub fn apply_theme(ctx: &egui::Context) {
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = pal().chrome;
+    v.window_fill = pal().card;
+    v.extreme_bg_color = pal().well;
+    v.faint_bg_color = pal().raised;
+    v.window_stroke = Stroke::new(1.0, pal().border);
+    v.slider_trailing_fill = true;
+    v.handle_shape = egui::style::HandleShape::Circle;
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, pal().border);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, pal().text);
+    v.widgets.inactive.bg_fill = pal().raised;
+    v.widgets.inactive.weak_bg_fill = pal().raised;
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, pal().text);
+    v.widgets.inactive.corner_radius = CornerRadius::same(6);
+    v.widgets.hovered.bg_fill = pal().hover;
+    v.widgets.hovered.weak_bg_fill = pal().hover;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, pal().border_strong);
+    v.widgets.hovered.corner_radius = CornerRadius::same(6);
+    v.widgets.active.bg_fill = pal().active;
+    v.widgets.active.weak_bg_fill = pal().active;
+    v.widgets.active.corner_radius = CornerRadius::same(6);
+    v.selection.bg_fill = pal().selection;
+    v.selection.stroke = Stroke::new(1.0, pal().text);
+    v.hyperlink_color = pal().accent;
+    // Always dark, whatever the system theme is.
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, v);
 }
 
 fn icon(glyph: &str, size: f32, color: Color32) -> RichText {
@@ -288,11 +343,11 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, size: Vec2, active: bool, hover_f
     if ui.is_rect_visible(rect) {
         let inner = rect.shrink2(Vec2::new(4.0, 4.0).min(size * 0.15));
         if active {
-            ui.painter().rect_filled(inner, 8.0, RAISED);
+            ui.painter().rect_filled(inner, 8.0, pal().raised);
         } else if resp.hovered() {
             ui.painter().rect_filled(inner, 8.0, hover_fill);
         }
-        let color = if active || resp.hovered() { TEXT } else { TEXT_DIM };
+        let color = if active || resp.hovered() { pal().text } else { pal().text_dim };
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
     }
     resp
@@ -302,11 +357,11 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, size: Vec2, active: bool, hover_f
 fn check(ui: &mut egui::Ui, on: &mut bool, label: &str, enabled: bool, dim: bool) -> egui::Response {
     let font = FontId::proportional(if dim { 12.0 } else { 13.0 });
     let text_color = if !enabled {
-        TEXT_FAINT
+        pal().text_faint
     } else if dim {
-        TEXT_DIM
+        pal().text_dim
     } else {
-        TEXT
+        pal().text
     };
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, text_color);
     let size = Vec2::new(16.0 + 8.0 + galley.size().x, 20.0);
@@ -317,10 +372,10 @@ fn check(ui: &mut egui::Ui, on: &mut bool, label: &str, enabled: bool, dim: bool
     }
     if ui.is_rect_visible(rect) {
         let boxr = Rect::from_center_size(Pos2::new(rect.left() + 8.0, rect.center().y), Vec2::splat(16.0));
-        let fill = if resp.hovered() && enabled { HOVER } else { RAISED };
+        let fill = if resp.hovered() && enabled { pal().hover } else { pal().raised };
         ui.painter().rect_filled(boxr, 4.0, fill);
         if *on {
-            let color = if enabled { TEXT } else { TEXT_FAINT };
+            let color = if enabled { pal().text } else { pal().text_faint };
             ui.painter().text(boxr.center(), Align2::CENTER_CENTER, icons::CHECK, FontId::proportional(12.0), color);
         }
         ui.painter().galley(Pos2::new(rect.left() + 24.0, rect.center().y - galley.size().y * 0.5), galley, text_color);
@@ -333,15 +388,15 @@ fn section(ui: &mut egui::Ui, glyph: &str, title: &str) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        ui.label(icon(glyph, 14.0, TEXT_DIM));
-        ui.label(RichText::new(title).size(13.5).color(TEXT));
+        ui.label(icon(glyph, 14.0, pal().text_dim));
+        ui.label(RichText::new(title).size(13.5).color(pal().text));
     });
     ui.add_space(2.0);
 }
 
 /// A recessed rounded area inside a panel.
 fn well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    Frame::NONE.fill(WELL).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(8)).show(ui, |ui| {
+    Frame::NONE.fill(pal().well).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         add(ui);
     });
@@ -349,10 +404,10 @@ fn well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 
 /// A side panel: a rounded card with a gap around it.
 fn card_panel(ui: &mut egui::Ui, panel: egui::Panel, add: impl FnOnce(&mut egui::Ui)) {
-    panel.frame(Frame::NONE.fill(CHROME).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: GAP })).show(
+    panel.frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: GAP })).show(
         ui,
         |ui| {
-            Frame::NONE.fill(CARD).corner_radius(CornerRadius::same(10)).show(ui, |ui| {
+            Frame::NONE.fill(pal().card).corner_radius(CornerRadius::same(10)).show(ui, |ui| {
                 ui.set_min_height(ui.available_height());
                 ui.set_width(ui.available_width());
                 add(ui);
@@ -388,6 +443,7 @@ pub fn build(
             LeftPanel::Changes => git_panel::changes_panel(ui, pages.get_mut(active), actions),
             LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
             LeftPanel::Help => help_panel(ui),
+            LeftPanel::Settings => settings_panel::settings_panel(ui, st, actions),
         });
     }
     if let Some(panel) = st.right {
@@ -410,7 +466,7 @@ pub fn build(
 }
 
 fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
-    egui::Panel::top("header").frame(Frame::NONE.fill(CHROME)).exact_size(HEADER_H).show(ui, |ui| {
+    egui::Panel::top("header").frame(Frame::NONE.fill(pal().chrome)).exact_size(HEADER_H).show(ui, |ui| {
         let bar = ui.max_rect();
         // The empty parts of the header move the window. Added first, so
         // every button placed afterwards wins over it.
@@ -438,8 +494,10 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             ui.painter().image(logo.id(), at, uv, Color32::WHITE);
             ui.add_space(2.0);
             let rescan = ui.add(
-                egui::Button::new(RichText::new(format!("{}  Rescan", icons::REFRESH_CW)).size(13.0).color(TEXT_DIM))
-                    .frame(false),
+                egui::Button::new(
+                    RichText::new(format!("{}  Rescan", icons::REFRESH_CW)).size(13.0).color(pal().text_dim),
+                )
+                .frame(false),
             );
             if rescan.on_hover_text("Reload the folder from disk (F5)").clicked() {
                 actions.push(Action::Rescan);
@@ -455,7 +513,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 if resp.hovered() {
                     ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(196, 43, 28));
                 }
-                let col = if resp.hovered() { Color32::WHITE } else { TEXT_DIM };
+                let col = if resp.hovered() { Color32::WHITE } else { pal().text_dim };
                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(16.0), col);
                 if resp.on_hover_text("Close").clicked() {
                     actions.push(Action::CloseWindow);
@@ -466,9 +524,9 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 ] {
                     let (rect, resp) = ui.allocate_exact_size(wb, Sense::click());
                     if resp.hovered() {
-                        ui.painter().rect_filled(rect, 0.0, HOVER);
+                        ui.painter().rect_filled(rect, 0.0, pal().hover);
                     }
-                    let col = if resp.hovered() { TEXT } else { TEXT_DIM };
+                    let col = if resp.hovered() { pal().text } else { pal().text_dim };
                     ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), col);
                     if resp.on_hover_text(tip).clicked() {
                         actions.push(if action == 1 { Action::ToggleMaximize } else { Action::Minimize });
@@ -486,14 +544,14 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             let center = bar.center().x.clamp(left_end + 12.0 + w * 0.5, right_start - 12.0 - w * 0.5);
             let rect = Rect::from_center_size(Pos2::new(center, bar.center().y), Vec2::new(w, 28.0));
             let resp = ui.interact(rect, egui::Id::unique("goto"), Sense::click());
-            let fill = if resp.hovered() { RAISED } else { Color32::from_rgb(18, 19, 24) };
-            ui.painter().rect(rect, 7.0, fill, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+            let fill = if resp.hovered() { pal().raised } else { pal().row };
+            ui.painter().rect(rect, 7.0, fill, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
             ui.painter().text(
                 Pos2::new(rect.left() + 12.0, rect.center().y),
                 Align2::LEFT_CENTER,
                 icons::SEARCH,
                 FontId::proportional(14.0),
-                TEXT_DIM,
+                pal().text_dim,
             );
             let hint = if w > 330.0 { "Go to a file or folder by name (Ctrl+P)" } else { "Go to file (Ctrl+P)" };
             ui.painter().text(
@@ -501,7 +559,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                 Align2::LEFT_CENTER,
                 hint,
                 FontId::proportional(13.0),
-                TEXT_DIM,
+                pal().text_dim,
             );
             if resp.clicked() {
                 st.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true });
@@ -512,7 +570,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
 
 fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option<&Page>, info: &FrameInfo) {
     let mut panel_to_show = None;
-    egui::Panel::bottom("status").frame(Frame::NONE.fill(CHROME).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
+    egui::Panel::bottom("status").frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
         ui,
         |ui| {
             ui.horizontal_centered(|ui| {
@@ -526,13 +584,13 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
                     if git.behind > 0 {
                         text.push_str(&format!(" ↓{}", git.behind));
                     }
-                    let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(TEXT)).sense(Sense::click()));
+                    let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
                     if label.on_hover_text("Source control").clicked() {
                         panel_to_show = Some(LeftPanel::Changes);
                     }
                     ui.add_space(10.0);
                 }
-                ui.label(RichText::new(&info.status).size(12.0).color(TEXT_DIM));
+                ui.label(RichText::new(&info.status).size(12.0).color(pal().text_dim));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let st = info.stats;
                     let perf = format!(
@@ -542,7 +600,7 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
                         info.frame_ms,
                         info.zoom
                     );
-                    ui.label(RichText::new(perf).size(12.0).color(TEXT_FAINT)).on_hover_text(format!(
+                    ui.label(RichText::new(perf).size(12.0).color(pal().text_faint)).on_hover_text(format!(
                         "level of detail: {}\ncode instances: {}\nboxes: {}\ntoken chunks cached: {}\ntext chunks cached: {}\nCPU time per frame: {:.2} ms",
                         st.lod.map(|l| l.name()).unwrap_or("-"),
                         st.code_instances,
@@ -556,7 +614,7 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
                     if errors + warnings > 0 {
                         ui.add_space(8.0);
                         let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
-                        let color = if errors > 0 { c(theme::PROBLEM_ERROR) } else { c(theme::PROBLEM_WARNING) };
+                        let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
                         let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
                         if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
                             panel_to_show = Some(LeftPanel::Problems);
@@ -564,7 +622,7 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
                     }
                     for (_, text) in &ext.status_items {
                         ui.add_space(8.0);
-                        ui.label(RichText::new(text).size(12.0).color(TEXT_DIM));
+                        ui.label(RichText::new(text).size(12.0).color(pal().text_dim));
                     }
                 });
             });
@@ -576,7 +634,7 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
 }
 
 fn rail_frame() -> Frame {
-    Frame::NONE.fill(CHROME).inner_margin(Margin { left: 5, right: 5, top: 0, bottom: GAP })
+    Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 5, right: 5, top: 0, bottom: GAP })
 }
 
 fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option<&Page>) {
@@ -594,17 +652,22 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
             (LeftPanel::Extensions, crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE), "Extensions"),
             (LeftPanel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions"),
         ] {
-            let resp = icon_button(ui, glyph, b, st.left == Some(panel), HOVER);
+            let resp = icon_button(ui, glyph, b, st.left == Some(panel), pal().hover);
             if panel == LeftPanel::Problems {
                 // A dot on the icon while there is something to look at.
                 let (errors, warnings) = ext.totals();
                 if errors + warnings > 0 {
-                    let color = if errors > 0 { c(theme::PROBLEM_ERROR) } else { c(theme::PROBLEM_WARNING) };
+                    let color =
+                        if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
                     ui.painter().circle_filled(resp.rect.right_top() + Vec2::new(-9.0, 9.0), 3.5, color);
                 }
             }
-            if panel == LeftPanel::Changes && page.and_then(|p| p.git.as_ref()).is_some_and(|g| !g.changes.is_empty()) {
-                ui.painter().circle_filled(resp.rect.right_top() + Vec2::new(-9.0, 9.0), 3.5, c(theme::GIT_MODIFIED));
+            if panel == LeftPanel::Changes {
+                // How many files git reports as changed, as VS Code shows it.
+                let changed = page.and_then(|p| p.git.as_ref()).map_or(0, |g| g.changes.len());
+                if changed > 0 {
+                    count_badge(ui, resp.rect, changed);
+                }
             }
             if resp.on_hover_text(tip).clicked() {
                 if st.left == Some(panel) {
@@ -615,24 +678,38 @@ fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option
             }
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-            if icon_button(ui, icons::PANEL_LEFT, b, false, HOVER)
+            if icon_button(ui, icons::PANEL_LEFT, b, false, pal().hover)
                 .on_hover_text("Show or hide the left panel (Ctrl+B)")
                 .clicked()
             {
                 st.toggle_left();
             }
-            if icon_button(ui, icons::CIRCLE_HELP, b, st.left == Some(LeftPanel::Help), HOVER)
-                .on_hover_text("Keyboard and mouse shortcuts")
-                .clicked()
-            {
-                if st.left == Some(LeftPanel::Help) {
-                    st.left = None;
-                } else {
-                    st.show_left(LeftPanel::Help);
+            for (panel, glyph, tip) in [
+                (LeftPanel::Settings, icons::SETTINGS, "Settings: theme and colours"),
+                (LeftPanel::Help, icons::CIRCLE_HELP, "Keyboard and mouse shortcuts"),
+            ] {
+                if icon_button(ui, glyph, b, st.left == Some(panel), pal().hover).on_hover_text(tip).clicked() {
+                    if st.left == Some(panel) {
+                        st.left = None;
+                    } else {
+                        st.show_left(panel);
+                    }
                 }
             }
         });
     });
+}
+
+/// A number in the corner of a rail icon: a pill in the accent colour,
+/// "99+" beyond two digits.
+fn count_badge(ui: &egui::Ui, icon: Rect, count: usize) {
+    let text = if count > 99 { "99+".to_string() } else { count.to_string() };
+    let galley = ui.painter().layout_no_wrap(text, FontId::proportional(9.5), pal().on_accent);
+    let size = Vec2::new((galley.size().x + 7.0).max(14.0), 14.0);
+    // Its right edge stays inside the rail however many digits there are.
+    let pill = Rect::from_min_size(Pos2::new(icon.right() - size.x, icon.bottom() - size.y - 2.0), size);
+    ui.painter().rect_filled(pill, 7.0, pal().accent);
+    ui.painter().galley(pill.center() - galley.size() * 0.5, galley, pal().on_accent);
 }
 
 fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
@@ -643,7 +720,7 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
             (RightPanel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names"),
             (RightPanel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which"),
         ] {
-            if icon_button(ui, glyph, b, st.right == Some(panel), HOVER).on_hover_text(tip).clicked() {
+            if icon_button(ui, glyph, b, st.right == Some(panel), pal().hover).on_hover_text(tip).clicked() {
                 if st.right == Some(panel) {
                     st.right = None;
                 } else {
@@ -661,9 +738,9 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
             let active = st.right == Some(RightPanel::Webview) && st.webview == w.key;
             let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
             if active {
-                ui.painter().rect_filled(rect.shrink(4.0), 8.0, RAISED);
+                ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().raised);
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect.shrink(4.0), 8.0, HOVER);
+                ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
             }
             let installed = ext.installed.iter().find(|e| e.id == w.extension);
             match installed.and_then(|e| ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e)) {
@@ -677,7 +754,7 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
                         Align2::CENTER_CENTER,
                         icons::PUZZLE,
                         FontId::proportional(17.0),
-                        TEXT_DIM,
+                        pal().text_dim,
                     );
                 }
             }
@@ -691,7 +768,7 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
             }
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-            if icon_button(ui, icons::PANEL_RIGHT, b, false, HOVER)
+            if icon_button(ui, icons::PANEL_RIGHT, b, false, pal().hover)
                 .on_hover_text("Show or hide the right panel")
                 .clicked()
             {
@@ -703,7 +780,7 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
 
 fn panel_title(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(title).size(14.0).color(TEXT));
+        ui.label(RichText::new(title).size(14.0).color(pal().text));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             right(ui);
@@ -714,9 +791,9 @@ fn panel_title(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)
 fn small_icon(ui: &mut egui::Ui, glyph: &str, tip: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 6.0, HOVER);
+        ui.painter().rect_filled(rect, 6.0, pal().hover);
     }
-    let color = if resp.hovered() { TEXT } else { TEXT_DIM };
+    let color = if resp.hovered() { pal().text } else { pal().text_dim };
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), color);
     resp.on_hover_text(tip).clicked()
 }
@@ -724,13 +801,13 @@ fn small_icon(ui: &mut egui::Ui, glyph: &str, tip: &str) -> bool {
 /// A text field with a leading icon, in a rounded well.
 fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, glyph: &str) -> egui::Response {
     Frame::NONE
-        .fill(WELL)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(pal().well)
+        .stroke(Stroke::new(1.0, pal().border))
         .corner_radius(CornerRadius::same(7))
         .inner_margin(Margin::symmetric(8, 5))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(icon(glyph, 14.0, TEXT_DIM));
+                ui.label(icon(glyph, 14.0, pal().text_dim));
                 ui.add(egui::TextEdit::singleline(text).hint_text(hint).frame(Frame::NONE).desired_width(f32::INFINITY))
             })
             .inner
@@ -759,13 +836,13 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
     };
     let count = if pages.len() > 1 { format!("  {}/{}", active + 1, pages.len()) } else { String::new() };
     let label = format!("{}  {title}{count}  {}", icons::FOLDER, icons::CHEVRON_DOWN);
-    let button = ui.menu_button(RichText::new(label).size(13.5).color(TEXT), |ui| {
+    let button = ui.menu_button(RichText::new(label).size(13.5).color(pal().text), |ui| {
         // As wide as its longest folder name needs, within sensible limits:
         // rows are laid out by hand so the menu does not stretch.
         let font = FontId::proportional(13.0);
         let longest = pages
             .iter()
-            .map(|p| ui.painter().layout_no_wrap(p.title.clone(), font.clone(), TEXT).size().x)
+            .map(|p| ui.painter().layout_no_wrap(p.title.clone(), font.clone(), pal().text).size().x)
             .fold(0.0f32, f32::max);
         let width = (longest + 86.0).clamp(210.0, 420.0);
         ui.set_width(width);
@@ -776,12 +853,12 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
             let close_at = Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(22.0));
             let close = ui.interact(close_at, ui.scope_id().with(("close folder", i)), Sense::click());
             if i == active {
-                ui.painter().rect_filled(rect, 6.0, RAISED);
+                ui.painter().rect_filled(rect, 6.0, pal().raised);
             } else if ui.rect_contains_pointer(rect) {
-                ui.painter().rect_filled(rect, 6.0, HOVER);
+                ui.painter().rect_filled(rect, 6.0, pal().hover);
             }
             let mid = rect.center().y;
-            let color = if i == active { TEXT } else { TEXT_DIM };
+            let color = if i == active { pal().text } else { pal().text_dim };
             ui.painter().text(
                 Pos2::new(rect.left() + 10.0, mid),
                 Align2::LEFT_CENTER,
@@ -798,19 +875,19 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
                 Align2::LEFT_CENTER,
                 &p.title,
                 font.clone(),
-                TEXT,
+                pal().text,
             );
             // The close button shows on the row under the pointer.
             if ui.rect_contains_pointer(rect) {
                 if close.hovered() {
-                    ui.painter().rect_filled(close_at, 5.0, Color32::from_rgb(52, 56, 68));
+                    ui.painter().rect_filled(close_at, 5.0, pal().border_strong);
                 }
                 ui.painter().text(
                     close_at.center(),
                     Align2::CENTER_CENTER,
                     icons::X,
                     FontId::proportional(13.0),
-                    TEXT_DIM,
+                    pal().text_dim,
                 );
             }
             let files = match &p.state {
@@ -829,22 +906,34 @@ fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: u
         if !pages.is_empty() {
             ui.add_space(3.0);
             let (line, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
-            ui.painter().rect_filled(line, 0.0, BORDER);
+            ui.painter().rect_filled(line, 0.0, pal().border);
             ui.add_space(3.0);
         }
         let (rect, resp) = row(ui);
         if resp.hovered() {
-            ui.painter().rect_filled(rect, 6.0, HOVER);
+            ui.painter().rect_filled(rect, 6.0, pal().hover);
         }
         let mid = rect.center().y;
-        ui.painter().text(Pos2::new(rect.left() + 10.0, mid), Align2::LEFT_CENTER, icons::PLUS, font.clone(), TEXT_DIM);
-        ui.painter().text(Pos2::new(rect.left() + 32.0, mid), Align2::LEFT_CENTER, "Open folder…", font.clone(), TEXT);
+        ui.painter().text(
+            Pos2::new(rect.left() + 10.0, mid),
+            Align2::LEFT_CENTER,
+            icons::PLUS,
+            font.clone(),
+            pal().text_dim,
+        );
+        ui.painter().text(
+            Pos2::new(rect.left() + 32.0, mid),
+            Align2::LEFT_CENTER,
+            "Open folder…",
+            font.clone(),
+            pal().text,
+        );
         ui.painter().text(
             Pos2::new(rect.right() - 10.0, mid),
             Align2::RIGHT_CENTER,
             "Ctrl+O",
             FontId::proportional(11.5),
-            TEXT_FAINT,
+            pal().text_faint,
         );
         if resp.clicked() {
             actions.push(Action::OpenFolder);
@@ -893,7 +982,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
 
     let Some(page) = page else {
         ui.add_space(8.0);
-        ui.vertical_centered(|ui| ui.label(RichText::new("No folder open").color(TEXT_DIM)));
+        ui.vertical_centered(|ui| ui.label(RichText::new("No folder open").color(pal().text_dim)));
         return;
     };
     let selected_path = page
@@ -904,7 +993,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     let has_selection = page.selected.is_some();
     let PageState::Ready(r) = &mut page.state else {
         ui.add_space(8.0);
-        ui.vertical_centered(|ui| ui.label(RichText::new("Scanning…").color(TEXT_DIM)));
+        ui.vertical_centered(|ui| ui.label(RichText::new("Scanning…").color(pal().text_dim)));
         return;
     };
     if r.tree_dirty {
@@ -932,7 +1021,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         let note = if m.len() >= 5000 { "5000+ files".to_string() } else { format!("{} files", m.len()) };
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            ui.label(RichText::new(note).size(11.0).color(TEXT_DIM));
+            ui.label(RichText::new(note).size(11.0).color(pal().text_dim));
         });
     }
 
@@ -966,15 +1055,15 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             let painter = ui.painter();
             let row_bg = rect.shrink2(Vec2::new(6.0, 0.0));
             if has_selection && path == selected_path {
-                painter.rect_filled(row_bg, 6.0, RAISED);
+                painter.rect_filled(row_bg, 6.0, pal().raised);
             } else if resp.hovered() {
-                painter.rect_filled(row_bg, 6.0, Color32::from_rgb(20, 22, 27));
+                painter.rect_filled(row_bg, 6.0, pal().row);
             }
             let mid = rect.center().y;
             // Indent guides.
             for d in 0..depth {
                 let gx = rect.left() + 22.0 + d as f32 * 16.0;
-                painter.vline(gx, rect.y_range(), Stroke::new(1.0, Color32::from_rgb(26, 28, 34)));
+                painter.vline(gx, rect.y_range(), Stroke::new(1.0, pal().raised));
             }
             let x0 = rect.left() + 14.0 + depth as f32 * 16.0;
             if is_dir {
@@ -984,27 +1073,28 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                     Align2::CENTER_CENTER,
                     chevron,
                     FontId::proportional(13.0),
-                    TEXT_DIM,
+                    pal().text_dim,
                 );
             }
             // Checkbox: is it on the canvas?
             let on = !hidden && !locked;
             let cb = Rect::from_center_size(Pos2::new(x0 + 27.0, mid), Vec2::splat(15.0));
-            painter.rect_filled(cb, 4.0, RAISED);
+            painter.rect_filled(cb, 4.0, pal().raised);
             if on {
-                painter.text(cb.center(), Align2::CENTER_CENTER, icons::CHECK, FontId::proportional(11.0), TEXT);
+                painter.text(cb.center(), Align2::CENTER_CENTER, icons::CHECK, FontId::proportional(11.0), pal().text);
             }
             let mut text_x = x0 + 42.0;
             let color = if !on {
-                TEXT_FAINT
+                pal().text_faint
             } else if is_dir {
-                TEXT
+                pal().text
             } else {
-                Color32::from_rgb(196, 199, 208)
+                // Files: a step below folders.
+                c(theme::mix(theme::get().text, theme::get().text_dim, 0.35))
             };
             if !is_dir {
                 let glyph = file_glyph(name);
-                let ic = if on { TEXT_DIM } else { TEXT_FAINT };
+                let ic = if on { pal().text_dim } else { pal().text_faint };
                 painter.text(
                     Pos2::new(text_x + 7.0, mid),
                     Align2::CENTER_CENTER,
@@ -1027,7 +1117,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             if is_dir {
                 // How many files are inside.
                 let at = Pos2::new(rect.right() - 14.0, mid);
-                painter.text(at, Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.0), TEXT_FAINT);
+                painter.text(at, Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.0), pal().text_faint);
             }
 
             if resp.hovered() && on {
@@ -1065,7 +1155,7 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             actions.push(Action::Search(st.search_query.clone()));
         }
-        ui.label(RichText::new("Enter to search · lowercase ignores case").size(11.0).color(TEXT_FAINT));
+        ui.label(RichText::new("Enter to search · lowercase ignores case").size(11.0).color(pal().text_faint));
     });
     let Some(page) = page else { return };
     let Some(r) = page.ready() else { return };
@@ -1076,7 +1166,7 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
         ui.label(
             RichText::new(format!("{}{more} results for “{}” · {:.0} ms", search.hits.len(), search.query, search.ms))
                 .size(11.0)
-                .color(TEXT_DIM),
+                .color(pal().text_dim),
         );
     });
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1090,13 +1180,13 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
             }
             let painter = ui.painter();
             if resp.hovered() {
-                painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, Color32::from_rgb(20, 22, 27));
+                painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
             }
             let mid = rect.center().y;
             let place = format!("{}:{}", f.name, hit.line + 1);
-            let galley = painter.layout_no_wrap(place, FontId::proportional(12.0), TEXT_DIM);
+            let galley = painter.layout_no_wrap(place, FontId::proportional(12.0), pal().text_dim);
             let pw = galley.size().x;
-            painter.galley(Pos2::new(rect.left() + 14.0, mid - galley.size().y * 0.5), galley, TEXT_DIM);
+            painter.galley(Pos2::new(rect.left() + 14.0, mid - galley.size().y * 0.5), galley, pal().text_dim);
             let x = rect.left() + 22.0 + pw;
             let clip = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(rect.right() - 8.0, rect.bottom()));
             let line = f.line(hit.line as usize).trim_start();
@@ -1106,7 +1196,7 @@ fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, action
                 Align2::LEFT_CENTER,
                 preview,
                 FontId::monospace(12.0),
-                TEXT,
+                pal().text,
             );
             if resp.clicked() {
                 actions.push(Action::FlyToSite(hit));
@@ -1166,9 +1256,9 @@ fn help_panel(ui: &mut egui::Ui) {
                 well(ui, |ui| {
                     for (what, keys) in rows {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(*what).size(12.5).color(TEXT));
+                            ui.label(RichText::new(*what).size(12.5).color(pal().text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(*keys).size(12.0).color(TEXT_DIM));
+                                ui.label(RichText::new(*keys).size(12.0).color(pal().text_dim));
                             });
                         });
                     }
@@ -1197,7 +1287,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
             }
             if let Some(p) = page.filter(|p| p.only_connected && selections > 0) {
                 let n = p.connected_files(&st.filters).len();
-                ui.label(RichText::new(format!("{n} connected files shown")).size(11.0).color(c(theme::UI_WARN)));
+                ui.label(RichText::new(format!("{n} connected files shown")).size(11.0).color(c(theme::get().ui_warn)));
             }
         });
 
@@ -1207,7 +1297,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.spacing_mut().slider_width = 92.0;
             let pct = |ui: &mut egui::Ui, v: f32| {
-                ui.label(RichText::new(format!("{:>3.0}%", v * 100.0)).monospace().size(11.0).color(TEXT_DIM));
+                ui.label(RichText::new(format!("{:>3.0}%", v * 100.0)).monospace().size(11.0).color(pal().text_dim));
             };
             for kind in RelKind::ALL {
                 let i = kind.index();
@@ -1215,12 +1305,12 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(11.0, 20.0), Sense::hover());
                     let sw = Rect::from_center_size(rect.center(), Vec2::splat(11.0));
-                    ui.painter().rect_filled(sw, 3.0, c(theme::REL_COLORS[i]));
+                    ui.painter().rect_filled(sw, 3.0, c(theme::get().rel_colors()[i]));
                     check(ui, &mut st.filters.enabled[i], kind.label(), true, false);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         pct(ui, st.filters.opacity[i]);
                         ui.add(egui::Slider::new(&mut st.filters.opacity[i], 0.05..=1.0).show_value(false));
-                        ui.label(RichText::new(count.to_string()).monospace().size(11.0).color(TEXT_DIM));
+                        ui.label(RichText::new(count.to_string()).monospace().size(11.0).color(pal().text_dim));
                     });
                 });
                 ui.horizontal(|ui| {
@@ -1247,7 +1337,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                 ui.label(
                     RichText::new("Click a name on a card to see where it is defined and used. Zoomed out, click inside a function to select it.")
                         .size(12.0)
-                        .color(TEXT_DIM),
+                        .color(pal().text_dim),
                 );
                 ui.add_space(4.0);
                 ui.label(
@@ -1256,7 +1346,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                         r.repo.symbols.count
                     ))
                     .size(11.0)
-                    .color(TEXT_FAINT),
+                    .color(pal().text_faint),
                 );
             });
         });
@@ -1270,7 +1360,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
             let file = &repo.files[sel.sym.file as usize];
             let def = repo.sym_site(sel.sym);
             Frame::NONE
-                .fill(WELL)
+                .fill(pal().well)
                 .corner_radius(CornerRadius::same(8))
                 .inner_margin(Margin::same(9))
                 .outer_margin(Margin { left: 10, right: 10, top: 0, bottom: 6 })
@@ -1278,13 +1368,13 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         Frame::NONE
-                            .fill(RAISED)
+                            .fill(pal().raised)
                             .corner_radius(CornerRadius::same(4))
                             .inner_margin(Margin::symmetric(5, 1))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(sym.kind.badge()).monospace().size(11.0).color(ACCENT));
+                                ui.label(RichText::new(sym.kind.badge()).monospace().size(11.0).color(pal().accent));
                             });
-                        ui.label(RichText::new(repo.sym_name(sel.sym)).monospace().size(13.5).color(TEXT));
+                        ui.label(RichText::new(repo.sym_name(sel.sym)).monospace().size(13.5).color(pal().text));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if small_icon(ui, icons::X, "Deselect") {
                                 actions.push(Action::RemoveSymbol(i));
@@ -1303,7 +1393,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                         actions.push(Action::FlyToSite(def));
                     }
                     ui.add_space(3.0);
-                    ui.label(RichText::new(repo.sym_signature(sel.sym)).monospace().size(12.0).color(TEXT));
+                    ui.label(RichText::new(repo.sym_signature(sel.sym)).monospace().size(12.0).color(pal().text));
                     ui.add_space(4.0);
 
                     for kind in RelKind::ALL {
@@ -1313,7 +1403,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                         }
                         let title = RichText::new(format!("{}  {}", kind.label(), items.len()))
                             .size(12.5)
-                            .color(c(theme::REL_COLORS[kind.index()]));
+                            .color(c(theme::get().rel_colors()[kind.index()]));
                         let id = (page.id, sel.sym.file, sel.sym.index, kind.index());
                         egui::CollapsingHeader::new(title).id_salt(id).show(ui, |ui| {
                             for rel in items.iter().take(200) {
@@ -1334,21 +1424,23 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                                 ui.label(
                                     RichText::new(format!("… and {} more", items.len() - 200))
                                         .size(11.0)
-                                        .color(TEXT_DIM),
+                                        .color(pal().text_dim),
                                 );
                             }
                         });
                     }
                     if sel.outside > 0 {
                         ui.label(
-                            RichText::new(format!("Outside the canvas  {}", sel.outside)).size(12.0).color(TEXT_DIM),
+                            RichText::new(format!("Outside the canvas  {}", sel.outside))
+                                .size(12.0)
+                                .color(pal().text_dim),
                         );
                     }
                     let mut note = format!("searched in {:.0} ms", sel.rel.search_ms);
                     if sel.rel.truncated {
                         note.push_str(" · results truncated");
                     }
-                    ui.label(RichText::new(note).size(10.0).color(TEXT_FAINT));
+                    ui.label(RichText::new(note).size(10.0).color(pal().text_faint));
                 });
         }
         ui.add_space(8.0);
@@ -1357,7 +1449,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
 
 fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>) {
     let message = match page {
-        None => Some(("Open a folder with Ctrl+O, the + button, or drop it here".to_string(), TEXT)),
+        None => Some(("Open a folder with Ctrl+O, the + button, or drop it here".to_string(), pal().text)),
         Some(p) => match &p.state {
             PageState::Loading { progress, started, .. } => Some((
                 format!(
@@ -1367,10 +1459,10 @@ fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>) {
                     progress.discovered.load(Ordering::Relaxed),
                     started.elapsed().as_secs_f32()
                 ),
-                TEXT,
+                pal().text,
             )),
-            PageState::Failed(e) => Some((e.clone(), c(theme::UI_WARN))),
-            PageState::Waiting => Some((format!("{} will be read when it is shown", p.title), TEXT_DIM)),
+            PageState::Failed(e) => Some((e.clone(), c(theme::get().ui_warn))),
+            PageState::Waiting => Some((format!("{} will be read when it is shown", p.title), pal().text_dim)),
             PageState::Ready(_) => None,
         },
     };
@@ -1384,27 +1476,27 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
     let resp =
         egui::Area::new(egui::Id::unique("toolbar")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
             Frame::NONE
-                .fill(CARD)
-                .stroke(Stroke::new(1.0, BORDER))
+                .fill(pal().card)
+                .stroke(Stroke::new(1.0, pal().border))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(5, 4))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let b = Vec2::splat(30.0);
-                        if icon_button(ui, icons::SCAN, b, false, HOVER)
+                        if icon_button(ui, icons::SCAN, b, false, pal().hover)
                             .on_hover_text("Show the whole canvas (F)")
                             .clicked()
                         {
                             actions.push(Action::Fit);
                         }
-                        if icon_button(ui, icons::LOCATE_FIXED, b, false, HOVER)
+                        if icon_button(ui, icons::LOCATE_FIXED, b, false, pal().hover)
                             .on_hover_text("Go to the selected symbols or file (L)")
                             .clicked()
                         {
                             actions.push(Action::FrameSelection);
                         }
-                        if icon_button(ui, icons::WAND_SPARKLES, b, false, HOVER)
+                        if icon_button(ui, icons::WAND_SPARKLES, b, false, pal().hover)
                             .on_hover_text("Format the selected file with the installed formatter (Shift+Alt+F formats the file under the pointer)")
                             .clicked()
                         {
@@ -1412,18 +1504,18 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                         }
                         ui.add_space(4.0);
                         let (sep, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
-                        ui.painter().rect_filled(sep, 0.0, BORDER);
+                        ui.painter().rect_filled(sep, 0.0, pal().border);
                         ui.add_space(4.0);
-                        if icon_button(ui, icons::MINUS, b, false, HOVER).on_hover_text("Zoom out").clicked() {
+                        if icon_button(ui, icons::MINUS, b, false, pal().hover).on_hover_text("Zoom out").clicked() {
                             actions.push(Action::ZoomBy(1.0 / 1.4));
                         }
                         ui.label(
                             RichText::new(format!("{:>4.0}%", info.zoom * 100.0))
                                 .monospace()
                                 .size(11.0)
-                                .color(TEXT_DIM),
+                                .color(pal().text_dim),
                         );
-                        if icon_button(ui, icons::PLUS, b, false, HOVER).on_hover_text("Zoom in").clicked() {
+                        if icon_button(ui, icons::PLUS, b, false, pal().hover).on_hover_text("Zoom in").clicked() {
                             actions.push(Action::ZoomBy(1.4));
                         }
                     });
@@ -1481,6 +1573,8 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("View: Extensions".into(), Action::ShowLeft(LeftPanel::Extensions)),
         ("View: Problems".into(), Action::ShowLeft(LeftPanel::Problems)),
         ("View: Keyboard Shortcuts".into(), Action::ShowLeft(LeftPanel::Help)),
+        ("Preferences: Settings".into(), Action::ShowLeft(LeftPanel::Settings)),
+        ("Preferences: Colour Theme".into(), Action::ShowLeft(LeftPanel::Settings)),
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),
         ("View: Reload the Folder from Disk".into(), Action::Rescan),
@@ -1514,8 +1608,8 @@ fn quick_open(
     let resp =
         egui::Area::new(egui::Id::unique("quick_open")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
             Frame::NONE
-                .fill(CARD)
-                .stroke(Stroke::new(1.0, Color32::from_rgb(58, 63, 78)))
+                .fill(pal().card)
+                .stroke(Stroke::new(1.0, pal().border_strong))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::same(8))
                 .show(ui, |ui| {
@@ -1579,7 +1673,7 @@ fn quick_open(
                             let (rect, resp) =
                                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
                             if i == q.selected || resp.hovered() {
-                                let fill = if i == q.selected { RAISED } else { Color32::from_rgb(20, 22, 27) };
+                                let fill = if i == q.selected { pal().raised } else { pal().row };
                                 ui.painter().rect_filled(rect, 6.0, fill);
                             }
                             let clip = rect.shrink2(Vec2::new(12.0, 0.0));
@@ -1588,14 +1682,14 @@ fn quick_open(
                                 Align2::LEFT_CENTER,
                                 label,
                                 FontId::proportional(13.0),
-                                TEXT,
+                                pal().text,
                             );
                             if resp.clicked() {
                                 chosen = Some(i);
                             }
                         }
                         if rows.is_empty() {
-                            ui.label(RichText::new("No matching commands").color(TEXT_DIM));
+                            ui.label(RichText::new("No matching commands").color(pal().text_dim));
                         }
                         if enter && !rows.is_empty() {
                             chosen = chosen.or(Some(q.selected));
@@ -1657,11 +1751,7 @@ fn quick_open(
                         let (rect, resp) =
                             ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
                         if i == q.selected || resp.hovered() {
-                            ui.painter().rect_filled(
-                                rect,
-                                6.0,
-                                if i == q.selected { RAISED } else { Color32::from_rgb(20, 22, 27) },
-                            );
+                            ui.painter().rect_filled(rect, 6.0, if i == q.selected { pal().raised } else { pal().row });
                         }
                         let glyph = if *is_dir { icons::FOLDER } else { file_glyph(name) };
                         ui.painter().text(
@@ -1669,15 +1759,15 @@ fn quick_open(
                             Align2::CENTER_CENTER,
                             glyph,
                             FontId::proportional(13.0),
-                            TEXT_DIM,
+                            pal().text_dim,
                         );
                         let label = if *is_dir { format!("{name}/") } else { name.to_string() };
-                        let galley = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), TEXT);
+                        let galley = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), pal().text);
                         let name_w = galley.size().x;
                         ui.painter().galley(
                             Pos2::new(rect.left() + 32.0, rect.center().y - galley.size().y * 0.5),
                             galley,
-                            TEXT,
+                            pal().text,
                         );
                         let clip =
                             Rect::from_min_max(Pos2::new(rect.left() + 44.0 + name_w, rect.top()), rect.right_bottom());
@@ -1686,14 +1776,14 @@ fn quick_open(
                             Align2::LEFT_CENTER,
                             dir,
                             FontId::proportional(11.0),
-                            TEXT_FAINT,
+                            pal().text_faint,
                         );
                         if resp.clicked() {
                             chosen = Some(path.to_string());
                         }
                     }
                     if !query.is_empty() && results.is_empty() {
-                        ui.label(RichText::new("No matches").color(TEXT_DIM));
+                        ui.label(RichText::new("No matches").color(pal().text_dim));
                     }
                     if enter {
                         chosen = chosen.or_else(|| results.get(q.selected).map(|r| r.1.to_string()));
@@ -1738,15 +1828,15 @@ fn tooltip(ctx: &egui::Context, canvas: Rect, info: &FrameInfo) {
         .interactable(false)
         .show(ctx, |ui| {
             Frame::NONE
-                .fill(CARD)
-                .stroke(Stroke::new(1.0, BORDER))
+                .fill(pal().card)
+                .stroke(Stroke::new(1.0, pal().border))
                 .corner_radius(CornerRadius::same(7))
                 .inner_margin(Margin::symmetric(9, 6))
                 .show(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    ui.label(RichText::new(title).size(13.0).color(TEXT));
+                    ui.label(RichText::new(title).size(13.0).color(pal().text));
                     if !detail.is_empty() {
-                        ui.label(RichText::new(detail).size(11.0).color(TEXT_DIM));
+                        ui.label(RichText::new(detail).size(11.0).color(pal().text_dim));
                     }
                 });
         });

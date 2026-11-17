@@ -131,7 +131,8 @@ impl TextLayer {
         let start = file.line_starts[first] as usize;
         let end = file.line_starts.get(last).map(|&e| e as usize - 1).unwrap_or(file.text.len());
 
-        let default = Attrs::new().family(Family::Monospace).color(theme::glyph_color(theme::TOKEN_COLORS[8]));
+        let colors = theme::get().token_colors();
+        let default = Attrs::new().family(Family::Monospace).color(theme::glyph_color(colors[8]));
         let mut spans: Vec<(&str, Attrs)> = Vec::new();
         let mut cursor = start;
         for line in first..last {
@@ -140,7 +141,7 @@ impl TextLayer {
                 if s > cursor {
                     spans.push((&file.text[cursor..s], default.clone()));
                 }
-                let color = theme::TOKEN_COLORS[theme::kind_index(t.kind) as usize];
+                let color = colors[theme::kind_index(t.kind) as usize];
                 spans.push((&file.text[s..e], default.clone().color(theme::glyph_color(color))));
                 cursor = e;
             }
@@ -179,7 +180,7 @@ impl TextLayer {
 
     /// Width in pixels of a label (shapes and caches it).
     pub fn measure(&mut self, text: &str, size: f32, bold: bool) -> f32 {
-        let l = Label { text, left: 0.0, top: 0.0, size, color: theme::UI_TEXT, max_w: f32::MAX, bold };
+        let l = Label { text, left: 0.0, top: 0.0, size, color: theme::get().ui_text, max_w: f32::MAX, bold };
         let key = self.label_buffer(&l);
         self.labels[&key].buffer.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
     }
@@ -251,6 +252,7 @@ impl TextLayer {
             }
         }
 
+        let code_color = theme::get().tok_ident;
         let mut world_areas: Vec<TextArea> = Vec::with_capacity(areas_code.len() + world_labels.len());
         for (key, left, top, scale, bounds) in &areas_code {
             world_areas.push(TextArea {
@@ -259,7 +261,7 @@ impl TextLayer {
                 top: *top,
                 scale: *scale,
                 bounds: *bounds,
-                default_color: theme::glyph_color(theme::TOKEN_COLORS[8]),
+                default_color: theme::glyph_color(code_color),
                 custom_glyphs: &[],
             });
         }
@@ -313,6 +315,13 @@ impl TextLayer {
             self.chunks.retain(|_, c| frame - c.last_used < EVICT_AFTER);
             self.labels.retain(|_, c| frame - c.last_used < EVICT_AFTER);
         }
+    }
+
+    /// Forget all shaped text: its colours are part of it, so a new theme
+    /// needs it shaped again.
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.labels.clear();
     }
 
     /// Forget every cached chunk of a page (e.g. when it is closed).

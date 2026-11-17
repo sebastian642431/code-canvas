@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use canvas_core::deps::DepKind;
 use canvas_core::layout::NodeKind;
-use egui::{Align, Align2, Color32, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Vec2};
+use egui::{Align, Align2, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Vec2};
 
-use super::{c, check, panel_title, section, well, Action, UiState, ROW_H, TEXT, TEXT_DIM, TEXT_FAINT};
+use super::{c, check, pal, panel_title, section, well, Action, UiState, ROW_H};
 use crate::icons;
 use crate::page::{Page, Ready};
 use canvas_render::theme;
@@ -57,7 +57,7 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
         panel_title(ui, "Dependencies", |_| {});
     });
     let Some((page, r)) = page.and_then(|p| Some((p, p.ready()?))) else {
-        ui.label(RichText::new("    Open a folder to see its dependencies.").size(11.5).color(TEXT_DIM));
+        ui.label(RichText::new("    Open a folder to see its dependencies.").size(11.5).color(pal().text_dim));
         return;
     };
     let deps = &r.deps;
@@ -72,7 +72,7 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                     deps.ms
                 ))
                 .size(11.5)
-                .color(TEXT_DIM),
+                .color(pal().text_dim),
             );
 
             section(ui, icons::EYE, "Show");
@@ -91,9 +91,9 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                         check(ui, &mut st.deps.kinds[kind.index()], kind.label(), n > 0, false);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(RichText::new(thousands(n)).monospace().size(12.0).color(if n > 0 {
-                                TEXT_DIM
+                                pal().text_dim
                             } else {
-                                TEXT_FAINT
+                                pal().text_faint
                             }));
                         });
                     });
@@ -106,7 +106,7 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                         thousands(deps.unresolved as usize)
                     ))
                     .size(11.0)
-                    .color(TEXT_FAINT),
+                    .color(pal().text_faint),
                 );
             });
 
@@ -115,7 +115,7 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                 ui.label(
                     RichText::new("    Click a file or a folder to see what it depends on.")
                         .size(11.5)
-                        .color(TEXT_FAINT),
+                        .color(pal().text_faint),
                 );
                 return;
             };
@@ -126,18 +126,22 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                 ui.label(
                     RichText::new(format!("    {} of its {} edges are drawn", thousands(drawn), thousands(total)))
                         .size(11.0)
-                        .color(TEXT_FAINT),
+                        .color(pal().text_faint),
                 );
             }
             ui.spacing_mut().item_spacing.y = 0.0;
-            for (outgoing, title, color) in [(true, "Depends on", theme::DEP_OUT), (false, "Used by", theme::DEP_IN)] {
+            for (outgoing, title, color) in
+                [(true, "Depends on", theme::get().dep_out), (false, "Used by", theme::get().dep_in)]
+            {
                 let list = neighbours(r, node, outgoing, &st.deps.kinds);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.add_space(6.0);
                     let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                     ui.painter().circle_filled(dot.center(), 4.0, c(color));
-                    ui.label(RichText::new(format!("{title}  ·  {}", thousands(list.len()))).size(12.5).color(TEXT));
+                    ui.label(
+                        RichText::new(format!("{title}  ·  {}", thousands(list.len()))).size(12.5).color(pal().text),
+                    );
                 });
                 for (file, count) in list.iter().take(200) {
                     let f = &r.repo.files[*file as usize];
@@ -147,29 +151,29 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                     }
                     let painter = ui.painter();
                     if resp.hovered() {
-                        painter.rect_filled(rect.shrink2(Vec2::new(4.0, 0.0)), 6.0, Color32::from_rgb(20, 22, 27));
+                        painter.rect_filled(rect.shrink2(Vec2::new(4.0, 0.0)), 6.0, pal().row);
                     }
                     let mid = rect.center().y;
                     let mut right = rect.right() - 10.0;
                     if *count > 1 {
-                        let g = painter.layout_no_wrap(count.to_string(), FontId::monospace(11.0), TEXT_FAINT);
+                        let g = painter.layout_no_wrap(count.to_string(), FontId::monospace(11.0), pal().text_faint);
                         right -= g.size().x;
-                        painter.galley(Pos2::new(right, mid - g.size().y * 0.5), g, TEXT_FAINT);
+                        painter.galley(Pos2::new(right, mid - g.size().y * 0.5), g, pal().text_faint);
                         right -= 6.0;
                     }
                     let clip =
                         Rect::from_min_max(Pos2::new(rect.left() + 22.0, rect.top()), Pos2::new(right, rect.bottom()));
                     let clipped = painter.with_clip_rect(clip);
-                    let ng = clipped.layout_no_wrap(f.name.clone(), FontId::proportional(12.5), TEXT);
+                    let ng = clipped.layout_no_wrap(f.name.clone(), FontId::proportional(12.5), pal().text);
                     let nw = ng.size().x;
-                    clipped.galley(Pos2::new(clip.left(), mid - ng.size().y * 0.5), ng, TEXT);
+                    clipped.galley(Pos2::new(clip.left(), mid - ng.size().y * 0.5), ng, pal().text);
                     let dir = f.rel_path.rsplit_once('/').map_or("", |(d, _)| d);
                     clipped.text(
                         Pos2::new(clip.left() + nw + 8.0, mid),
                         Align2::LEFT_CENTER,
                         dir,
                         FontId::proportional(11.5),
-                        TEXT_FAINT,
+                        pal().text_faint,
                     );
                     if resp.clicked() {
                         actions.push(Action::FlyToPath(f.rel_path.clone()));
@@ -180,11 +184,11 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                     ui.label(
                         RichText::new(format!("        and {} more", thousands(list.len() - 200)))
                             .size(11.0)
-                            .color(TEXT_FAINT),
+                            .color(pal().text_faint),
                     );
                 }
                 if list.is_empty() {
-                    ui.label(RichText::new("        nothing outside it").size(11.5).color(TEXT_FAINT));
+                    ui.label(RichText::new("        nothing outside it").size(11.5).color(pal().text_faint));
                 }
             }
         });

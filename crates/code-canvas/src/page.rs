@@ -534,6 +534,16 @@ impl Page {
         out
     }
 
+    /// Build the GPU scene again from the layout as it is: its colours come
+    /// from the theme, so a new theme needs a new scene.
+    pub fn rebuild_scene(&mut self, renderer: &Renderer, device: &wgpu::Device) {
+        if let PageState::Ready(r) = &mut self.state {
+            let scene = SceneData::build(&r.repo, &r.layout);
+            r.gpu = renderer.create_scene(device, &r.repo.name, scene);
+            self.curves_dirty = true;
+        }
+    }
+
     /// Rebuild the layout and the GPU scene after the filter changed
     /// (collapse, hide, "only connected"). Keeps the selection by path.
     pub fn relayout(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {

@@ -25,7 +25,7 @@ pub enum Step {
     Select(String),
     /// `search <text>`: search in files.
     Search(String),
-    /// `left files|search|extensions|problems|changes|help|none`
+    /// `left files|search|extensions|problems|changes|settings|help|none`
     Left(String),
     /// `install <publisher.name>`: install an extension from Open VSX.
     Install(String),

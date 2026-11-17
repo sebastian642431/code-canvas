@@ -57,10 +57,16 @@ the running app without clicking around (and in a repeatable way), script it —
 
 ## Design
 
-The look follows the concept: near-black chrome, panels as rounded cards, Lucide
-icons, one accent colour. New UI goes in `crates/code-canvas/src/ui.rs` and should
-reuse the helpers there (`section`, `well`, `check`, `icon_button`) rather than raw
-egui widgets, so everything stays consistent.
+The look follows the concept: dark chrome, panels as rounded cards, Lucide icons, one
+accent colour. New UI goes in `crates/code-canvas/src/ui.rs` and should reuse the
+helpers there (`section`, `well`, `check`, `icon_button`) rather than raw egui
+widgets, so everything stays consistent.
+
+Colours are never written where they are used: they come from the theme
+(`crates/canvas-render/src/theme.rs`), which the user can change in the settings
+panel. In the interface take them with `pal()` (`pal().text`, `pal().card`); on the
+canvas with `theme::get()`. A colour that has no name yet gets one line in the table
+of that file, with its value in each built-in theme.
 
 ## Good first issues
 
@@ -68,4 +74,4 @@ egui widgets, so everything stays consistent.
 - More keywords / languages in `canvas-core/src/syntax.rs` (with a test).
 - Line numbers next to the code.
 - Configurable skip lists (`ScanOptions`) from a config file.
-- A settings panel (font size, theme colours).
+- More settings in the settings panel (font size, keyboard shortcuts).

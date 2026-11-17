@@ -511,7 +511,9 @@ impl Extensions {
         self.installed.iter().any(|e| e.id == id)
     }
 
-    fn notice(&mut self, level: Level, source: &str, text: impl Into<String>) {
+    /// Tell the user something: a message that shows for a while and stays
+    /// in the log.
+    pub fn notice(&mut self, level: Level, source: &str, text: impl Into<String>) {
         let text = text.into();
         self.log_line(&format!("[{source}] {text}"));
         self.notices.push(Notice {

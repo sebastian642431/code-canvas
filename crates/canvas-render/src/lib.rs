@@ -119,6 +119,13 @@ pub struct Renderer {
     curves: DynBuffer,
     curve_vertices: u32,
     pub text: TextLayer,
+    /// The syntax colours the shaders read, and the theme they were taken from.
+    palette_buf: wgpu::Buffer,
+    theme_revision: u64,
+}
+
+fn palette(t: &theme::Theme) -> Vec<[f32; 4]> {
+    t.token_colors().iter().map(|&c| theme::to_f32(c)).collect()
 }
 
 fn instance_layout<'a>(stride: u64, attrs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
@@ -178,11 +185,11 @@ impl Renderer {
         };
         let world_cam = cam_buf("world camera");
         let screen_cam = cam_buf("screen camera");
-        let palette: Vec<[f32; 4]> = theme::TOKEN_COLORS.iter().map(|&c| theme::to_f32(c)).collect();
+        let theme_revision = theme::revision();
         let palette_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("palette"),
-            contents: bytemuck::cast_slice(&palette),
-            usage: wgpu::BufferUsages::UNIFORM,
+            contents: bytemuck::cast_slice(&palette(&theme::get())),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind = |cam: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -317,6 +324,8 @@ impl Renderer {
             curves: DynBuffer::new(device, "curves", wgpu::BufferUsages::VERTEX),
             curve_vertices: 0,
             text: TextLayer::new(device, queue, format),
+            palette_buf,
+            theme_revision,
         }
     }
 
@@ -339,6 +348,14 @@ impl Renderer {
         overlay: &Overlay,
     ) -> FrameStats {
         let mut stats = FrameStats::default();
+        let colors = theme::get();
+        if self.theme_revision != theme::revision() {
+            // The theme changed: new syntax colours for the shaders, and the
+            // shaped text carries the old ones.
+            self.theme_revision = theme::revision();
+            queue.write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(&palette(&colors)));
+            self.text.clear();
+        }
         let lod = Lod::for_zoom(view.zoom);
         let world_rect = view.world_rect();
 
@@ -437,7 +454,7 @@ impl Renderer {
         }
 
         {
-            let bg = theme::BACKGROUND;
+            let bg = theme::to_f32(colors.background).map(f64::from);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("canvas"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

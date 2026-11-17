@@ -49,13 +49,14 @@ struct Drag {
 }
 
 /// Left panels in the order their index is saved in the session.
-const LEFT_PANELS: [LeftPanel; 6] = [
+const LEFT_PANELS: [LeftPanel; 7] = [
     LeftPanel::Files,
     LeftPanel::Search,
     LeftPanel::Help,
     LeftPanel::Extensions,
     LeftPanel::Problems,
     LeftPanel::Changes,
+    LeftPanel::Settings,
 ];
 
 pub struct App {
@@ -111,6 +112,11 @@ pub struct App {
     webviews: crate::webview::WebViews,
     /// Folders webview pages may load files from (to notice changes).
     webview_roots: Vec<PathBuf>,
+    /// The theme (`theme::revision`) the interface and the scenes were last
+    /// built with.
+    theme_revision: u64,
+    /// The choice of theme changed since it was last written to disk.
+    theme_dirty: bool,
 }
 
 impl App {
@@ -136,7 +142,11 @@ impl App {
                 initial_active = at;
             }
         }
+        // The colours first: everything built from here on takes them.
+        let chosen = crate::themes::load();
+        canvas_render::theme::set(chosen.resolve());
         let mut ui = UiState::default();
+        ui.theme = chosen;
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
         ui.last_right = RightPanel::Symbols;
         ui.left = saved.left_open.then_some(ui.last_left);
@@ -176,6 +186,8 @@ impl App {
             auto_rescan: None,
             webviews: crate::webview::WebViews::new(),
             webview_roots: Vec::new(),
+            theme_revision: canvas_render::theme::revision(),
+            theme_dirty: false,
         }
     }
 
@@ -213,7 +225,38 @@ impl App {
         self.ui.floating.iter().any(|r| r.contains(pt))
     }
 
+    /// The user chose a theme or changed a colour (`self.ui.theme`): use it.
+    /// What is on screen follows in [`App::follow_theme`].
+    fn theme_changed(&mut self) {
+        canvas_render::theme::set(self.ui.theme.resolve());
+        self.theme_dirty = true;
+        self.request_redraw();
+    }
+
+    /// Bring everything that keeps colours of its own up to date with the
+    /// theme in use: egui's look, the web pages and the pages' GPU scenes
+    /// (the renderer sees to its own buffers).
+    fn follow_theme(&mut self) {
+        // Pages that finished loading since the theme changed get it now.
+        self.webviews.retheme();
+        let revision = canvas_render::theme::revision();
+        if self.theme_revision == revision {
+            return;
+        }
+        self.theme_revision = revision;
+        if let Some(g) = &self.gfx {
+            ui::apply_theme(&g.egui);
+            for page in &mut self.pages {
+                page.rebuild_scene(&g.renderer, &g.device);
+            }
+        }
+        self.request_redraw();
+    }
+
     fn save_session(&mut self) {
+        if std::mem::take(&mut self.theme_dirty) {
+            crate::themes::save(&self.ui.theme);
+        }
         self.session_dirty = false;
         self.last_save = Instant::now();
         let s = self.scale();
@@ -255,6 +298,33 @@ impl App {
     }
 
     // ----- pages -------------------------------------------------------
+
+    /// A file was dropped on the window while a folder is open: put a copy
+    /// of it in that folder. Nothing is ever overwritten. The copy runs in
+    /// the background (it may be a large video); the file watcher shows it
+    /// on the canvas once it is there.
+    fn drop_file(&mut self, file: PathBuf) {
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(name) = file.file_name().map(|n| n.to_os_string()) else { return };
+        let (folder, shown) = (page.root.clone(), name.to_string_lossy().into_owned());
+        let target = folder.join(&name);
+        if file.parent().is_some_and(|p| p == folder) {
+            return; // it is already here
+        }
+        if target.exists() {
+            let text = format!("\"{shown}\" was not copied: this folder already has a file with that name.");
+            self.ext.notice(ext::Level::Warn, "files", text);
+            self.request_redraw();
+            return;
+        }
+        self.ext.notice(ext::Level::Info, "files", format!("Copying \"{shown}\" into {}", folder.display()));
+        self.request_redraw();
+        std::thread::spawn(move || {
+            if let Err(e) = std::fs::copy(&file, &target) {
+                log::error!("could not copy {} to {}: {e}", file.display(), target.display());
+            }
+        });
+    }
 
     fn open_folder(&mut self, path: PathBuf, saved: Option<PageSession>) {
         let path = canvas_core::scan::clean_path(path.canonicalize().unwrap_or(path));
@@ -1009,29 +1079,17 @@ impl App {
         let cmd = self.mods.control_key() || self.mods.super_key();
         let shift = self.mods.shift_key();
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
+        // The key by name, as the shortcut tables below (and web pages) spell it.
+        let name = match &event.logical_key {
+            Key::Named(NamedKey::F1) => "f1".to_string(),
+            Key::Named(NamedKey::F5) => "f5".to_string(),
+            Key::Named(NamedKey::Tab) => "tab".to_string(),
+            Key::Character(c) => c.to_lowercase(),
+            _ => String::new(),
+        };
 
-        // Shortcuts that work even while typing in a text field.
-        // Ctrl+Shift+P or F1: the command palette. Ctrl+P: go to a file.
-        let palette = matches!(&event.logical_key, Key::Named(NamedKey::F1))
-            || matches!(&event.logical_key, Key::Character(c) if cmd && shift && c.as_str().eq_ignore_ascii_case("p"));
-        if palette {
-            self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true });
-            self.request_redraw();
+        if self.global_chord(&name, cmd, shift) {
             return;
-        }
-        if let Key::Character(c) = &event.logical_key {
-            if cmd && c.as_str().eq_ignore_ascii_case("p") {
-                self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true });
-                self.request_redraw();
-                return;
-            }
-        }
-        if let Key::Character(c) = &event.logical_key {
-            if cmd && shift && c.as_str().eq_ignore_ascii_case("f") {
-                self.ui.show_left(LeftPanel::Search);
-                self.request_redraw();
-                return;
-            }
         }
         if typing || self.ui.quick.is_some() {
             return;
@@ -1048,11 +1106,13 @@ impl App {
             }
         }
 
+        if self.window_chord(&name, cmd, shift) {
+            return;
+        }
+
         match &event.logical_key {
             Key::Named(NamedKey::F12) => self.go_to_definition(),
-            Key::Named(NamedKey::Tab) if cmd => self.cycle(if shift { -1 } else { 1 }),
             Key::Named(NamedKey::Home) => self.frame_all(),
-            Key::Named(NamedKey::F5) => self.rescan(),
             Key::Named(NamedKey::Escape) => {
                 if self.pages.get(self.active).is_some_and(|p| !p.selections.is_empty()) {
                     self.clear_symbols();
@@ -1067,16 +1127,6 @@ impl App {
             Key::Named(NamedKey::ArrowUp) => self.pan(0.0, 160.0),
             Key::Named(NamedKey::ArrowDown) => self.pan(0.0, -160.0),
             Key::Character(c) => match (cmd, c.to_lowercase().as_str()) {
-                (true, "o") | (true, "t") => self.pick_folder(),
-                (true, "w") => self.close_page(self.active),
-                (true, "r") => self.rescan(),
-                (true, "b") => {
-                    self.ui.toggle_left();
-                    self.request_redraw();
-                }
-                (true, d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
-                    self.switch_to((d.as_bytes()[0] - b'1') as usize)
-                }
                 (false, "f") => self.frame_all(),
                 (false, "l") => self.frame_selection(),
                 (_, "+") | (_, "=") => self.zoom_center(1.25),
@@ -1084,6 +1134,56 @@ impl App {
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    /// Shortcuts that work wherever the keyboard is, a text field included:
+    /// the command palette (Ctrl+Shift+P or F1), go to a file (Ctrl+P) and
+    /// search in files (Ctrl+Shift+F). `key` is lower case: `"p"`, `"f1"`.
+    fn global_chord(&mut self, key: &str, cmd: bool, shift: bool) -> bool {
+        match (key, cmd, shift) {
+            ("f1", _, _) | ("p", true, true) => {
+                self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true })
+            }
+            ("p", true, false) => self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true }),
+            ("f", true, true) => self.ui.show_left(LeftPanel::Search),
+            _ => return false,
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// Shortcuts of the window: folders, tabs, panels. Not while typing in
+    /// one of the app's own text fields.
+    fn window_chord(&mut self, key: &str, cmd: bool, shift: bool) -> bool {
+        match (cmd, key) {
+            (_, "f5") | (true, "r") => self.rescan(),
+            (true, "tab") => self.cycle(if shift { -1 } else { 1 }),
+            (true, "o") | (true, "t") => self.pick_folder(),
+            (true, "w") => self.close_page(self.active),
+            (true, "b") => {
+                self.ui.toggle_left();
+                self.request_redraw();
+            }
+            (true, d) if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
+                self.switch_to((d.as_bytes()[0] - b'1') as usize)
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// A chord pressed while a web page (an extension's panel) had the
+    /// keyboard: the same shortcuts as in the window.
+    fn page_chord(&mut self, k: &crate::webview::PageKey) {
+        if k.alt {
+            return;
+        }
+        if self.global_chord(&k.key, k.ctrl, k.shift) {
+            // These open a text field of the app: typing must reach it.
+            self.webviews.focus_app();
+        } else {
+            self.window_chord(&k.key, k.ctrl, k.shift);
         }
     }
 
@@ -1291,6 +1391,18 @@ impl App {
                 self.relayout();
                 self.frame_all();
             }
+            Action::SetTheme(key) => {
+                self.ui.theme.set_base(key);
+                self.theme_changed();
+            }
+            Action::SetColor(key, color) => {
+                self.ui.theme.set_color(key, color);
+                self.theme_changed();
+            }
+            Action::ResetColors => {
+                self.ui.theme.colors.clear();
+                self.theme_changed();
+            }
             Action::InstallVsix => {
                 let picked = rfd::FileDialog::new()
                     .set_title("Install an extension from a .vsix file")
@@ -1365,6 +1477,7 @@ impl App {
                 "extensions" => self.ui.show_left(LeftPanel::Extensions),
                 "problems" => self.ui.show_left(LeftPanel::Problems),
                 "changes" => self.ui.show_left(LeftPanel::Changes),
+                "settings" => self.ui.show_left(LeftPanel::Settings),
                 id if id.contains('.') => {
                     // `left publisher.name`: that extension's own panel.
                     self.ui.extension = id.to_string();
@@ -1632,6 +1745,9 @@ impl App {
         }
         for (handle, message) in self.webviews.poll() {
             self.ext.webview_message(&handle, message);
+        }
+        for key in self.webviews.take_keys() {
+            self.page_chord(&key);
         }
         // Notices fade out by themselves: keep ticking while one is up.
         busy |= !self.ext.notices.is_empty();
@@ -2225,7 +2341,10 @@ impl ApplicationHandler for App {
             WindowEvent::DroppedFile(path) => {
                 if path.is_dir() {
                     self.open_folder(path, None);
+                } else if self.pages.get(self.active).is_some() {
+                    self.drop_file(path);
                 } else if let Some(parent) = path.parent() {
+                    // Nothing is open yet: show the folder the file is in.
                     self.open_folder(parent.to_path_buf(), None);
                 }
                 self.save_session();
@@ -2319,6 +2438,7 @@ impl ApplicationHandler for App {
             return;
         }
         self.poll_pages();
+        self.follow_theme();
         let now = Instant::now();
         if self.next_repaint.is_some_and(|t| t <= now) {
             self.next_repaint = None;

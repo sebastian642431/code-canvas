@@ -19,6 +19,7 @@ mod overlay;
 mod page;
 mod script;
 mod session;
+mod themes;
 mod ui;
 mod watch;
 mod webview;
