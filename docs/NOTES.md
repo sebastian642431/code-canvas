@@ -790,6 +790,12 @@ Graphics and the frame
   workspace, taking it off the canvas, forgetting it, the shortcut.
 - Discarding drops the unsaved edits of the files git will put back, not of new
   files git does not know (`drop_edits`), and not before knowing git is free.
+- **A batch of the watcher is not dropped** when the folder cannot be read again
+  right now (something not saved, a scan just done): its files are reloaded one
+  by one and the scan waits (`rescan_later`). A file changed on disk while it
+  has unsaved changes says so once (`changed_under`).
+- Going to a file the canvas has but is not showing (only changed files, only
+  connected ones, a commit) shows everything again; it does not scan.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest

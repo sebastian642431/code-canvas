@@ -195,6 +195,8 @@ pub struct App {
     hover_probe: Option<((u32, u32, u32), Instant, bool)>,
     watcher: crate::watch::Watcher,
     auto_rescan: Option<Instant>,
+    rescan_later: HashSet<u32>,
+    changed_under: HashSet<(u32, String)>,
     webviews: crate::webview::WebViews,
     webview_roots: Vec<PathBuf>,
     copies: Vec<crate::files::Copying>,
@@ -312,6 +314,8 @@ impl App {
             hover_probe: None,
             watcher: crate::watch::Watcher::new(),
             auto_rescan: None,
+            rescan_later: HashSet::new(),
+            changed_under: HashSet::new(),
             webviews: {
                 let mut webviews = crate::webview::WebViews::new();
                 webviews.set_follow(follow_chat);
@@ -342,7 +346,7 @@ impl App {
             player_shown: false,
             commit_from: None,
             sharing: Default::default(),
-            workspace: saved.workspace.iter().filter(|known| known.path.is_dir()).cloned().collect(),
+            workspace: saved.workspace.clone(),
             frame_all_when_read: false,
             agents: crate::agents::Agents::listen(),
             agent_followed: None,
@@ -849,7 +853,9 @@ impl App {
         let inside = self.pages.iter().enumerate().filter_map(|(i, p)| {
             let mut root = ext::path_key(&p.root.to_string_lossy());
             root.push('/');
-            key.starts_with(&root).then(|| (i, path.to_string_lossy().replace('\\', "/")[root.len()..].to_string()))
+            let whole = path.to_string_lossy().replace('\\', "/");
+            let rel = whole.get(root.len()..).filter(|_| key.starts_with(&root) && key.len() == whole.len())?;
+            Some((i, rel.to_string()))
         });
         let on_canvas = |(i, rel): &(usize, String)| {
             self.pages[*i].ready().is_some_and(|r| r.layout.node_for_path(&r.repo, rel).is_some())
@@ -891,6 +897,20 @@ impl App {
             Some((i, _)) if waiting => self.pages[i].ensure_scanned(),
             Some((i, rel)) => {
                 let (s, vp) = (self.scale(), self.viewport());
+                let page = &mut self.pages[i];
+                let read = page.ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
+                let narrowed = page.only_changed || page.only_connected || page.showing.is_some();
+                if read && narrowed && !page.filter.hidden.contains(&rel) {
+                    page.only_changed = false;
+                    page.only_connected = false;
+                    if page.showing.is_some() {
+                        page.show_commit(None);
+                    }
+                    self.switch_to(i);
+                    self.relayout();
+                    self.show_when_read = Some((path, at));
+                    return self.request_redraw();
+                }
                 let page = &mut self.pages[i];
                 if page.extra.contains(&rel) {
                     let text = format!("{rel} is hidden on the canvas: tick it in the explorer to see it.");
@@ -1027,27 +1047,22 @@ impl App {
             self.pages[i].refresh_git();
             let rescan = !fresh.is_empty() || known[i].len() > ONE_BY_ONE;
             if rescan {
-                let (big, recent) = (
-                    self.pages[i].ready().is_some_and(|r| r.repo.files.len() > 60_000),
-                    self.auto_rescan.is_some_and(|t| t.elapsed() < Duration::from_secs(4)),
-                );
-                if !big && !recent && !self.pages[i].is_loading() && self.pages[i].editors.values().all(|e| !e.dirty) {
-                    log::info!("{}: files were added or removed, scanning again", root.display());
-                    self.auto_rescan = Some(Instant::now());
-                    let (s, vp) = (self.scale(), self.viewport());
-                    let p = &mut self.pages[i];
-                    p.restore_camera = p.portable_camera(s, vp);
-                    p.framed = false;
-                    p.editors.clear();
-                    p.editing = None;
-                    p.reveal = fresh.iter().find(|rel| root.join(rel).is_file()).cloned();
-                    p.start_scan();
+                let reveal = fresh.iter().find(|rel| root.join(rel).is_file()).cloned();
+                if self.rescan_quietly(i, reveal) {
+                    continue;
                 }
-                continue;
+                self.rescan_later.insert(self.pages[i].id);
+                known[i].truncate(ONE_BY_ONE * 2);
             }
             for rel in std::mem::take(&mut known[i]) {
                 let page = &mut self.pages[i];
                 if page.editors.get(&rel).is_some_and(|e| e.dirty) {
+                    if self.changed_under.insert((page.id, rel.clone())) {
+                        let text = format!(
+                            "{rel} was changed by another program while it has changes not saved here. Saving will replace what that program wrote."
+                        );
+                        self.ext.notice(ext::Level::Warn, "Files", text);
+                    }
                     continue;
                 }
                 let caret = page.editors.remove(&rel).map(|e| e.caret);
@@ -1096,6 +1111,44 @@ impl App {
             self.follow_change(index, &rel, line);
         }
         self.request_redraw();
+    }
+
+    fn rescan_quietly(&mut self, i: usize, reveal: Option<String>) -> bool {
+        let Some(page) = self.pages.get(i) else { return true };
+        let big = page.ready().is_some_and(|r| r.repo.files.len() > 60_000);
+        let recent = self.auto_rescan.is_some_and(|t| t.elapsed() < Duration::from_secs(4));
+        if big {
+            return true;
+        }
+        if recent || page.is_loading() || page.editors.values().any(|e| e.dirty) {
+            return false;
+        }
+        log::info!("{}: files were added or removed, scanning again", page.root.display());
+        self.auto_rescan = Some(Instant::now());
+        let (s, vp) = (self.scale(), self.viewport());
+        let p = &mut self.pages[i];
+        p.restore_camera = p.portable_camera(s, vp);
+        p.framed = false;
+        p.editors.clear();
+        p.editing = None;
+        p.reveal = reveal;
+        p.start_scan();
+        true
+    }
+
+    fn rescan_what_waited(&mut self) {
+        for id in self.rescan_later.clone() {
+            match self.pages.iter().position(|page| page.id == id) {
+                Some(i) => {
+                    if self.rescan_quietly(i, None) {
+                        self.rescan_later.remove(&id);
+                    }
+                }
+                None => {
+                    self.rescan_later.remove(&id);
+                }
+            }
+        }
     }
 
     fn offer_checker(&mut self, rel: &str) {
@@ -1627,6 +1680,7 @@ impl App {
             return false;
         }
         editor.mark_saved();
+        self.changed_under.remove(&(page.id, rel.to_string()));
         log::info!("saved {}", path.display());
         if let (Some(folder), Some(session)) = (page.shared, self.sharing.session.as_mut()) {
             session.saved(folder, rel);
@@ -2328,7 +2382,9 @@ impl App {
         root.push('/');
         let inside = |path: &PathBuf| {
             let text = path.to_string_lossy().replace('\\', "/");
-            ext::path_key(&text).starts_with(&root).then(|| text[root.len()..].to_string())
+            let key = ext::path_key(&text);
+            let rel = text.get(root.len()..).filter(|_| key.starts_with(&root) && key.len() == text.len())?;
+            Some(rel.to_string())
         };
         let places: Vec<(String, u32, u32)> =
             places.iter().filter_map(|(path, line, col)| Some((inside(path)?, *line, *col))).collect();
@@ -3515,6 +3571,9 @@ impl App {
         }
         busy |= self.unsent_edit.is_some();
         busy |= self.poll_share();
+        if !self.rescan_later.is_empty() {
+            self.rescan_what_waited();
+        }
         busy |= self.poll_agents();
         if self.claude_offer_due.is_some_and(|due| due <= Instant::now()) {
             self.claude_offer_due = None;
@@ -3725,7 +3784,7 @@ impl App {
         if changed {
             g.window.request_redraw();
         }
-        if self.frame_all_when_read && self.pages.iter().all(|page| page.ready().is_some() && page.framed) {
+        if self.frame_all_when_read && self.pages.iter().all(|page| !page.is_loading() && !page.is_waiting()) {
             self.frame_all_when_read = false;
             self.frame_every_folder();
         }
