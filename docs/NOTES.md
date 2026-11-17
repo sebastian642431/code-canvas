@@ -1750,6 +1750,11 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
   gives the new one its name, and `clean_up` removes the old file the next time
   the app starts. If the second rename fails the first is undone: better the old
   version than none.
+- `code-canvas.old.exe` can be taken: it is a program still running when the app
+  was updated before and not closed since, or when two of them are open. Then
+  nothing can be renamed onto it ("access denied") and the update failed for
+  good. `swap` goes on to `code-canvas.old-1.exe` and the next ones (`ASIDES`),
+  and `clean_up` removes all of them that nobody runs.
 - What is trusted:
   - `parse_release` takes the download only from the releases of this repository,
     whatever GitHub's answer says. A program from somewhere else is not taken,

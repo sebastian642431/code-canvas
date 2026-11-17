@@ -72,20 +72,38 @@ fn latest() -> Result<Release, String> {
     parse_release(&json).ok_or_else(|| "no release".to_string())
 }
 
-pub fn swap(exe: &Path, fresh: &Path) -> Result<(), String> {
-    let old = exe.with_extension("old.exe");
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(exe, &old).map_err(|e| format!("the running program could not be moved aside: {e}"))?;
-    if let Err(e) = std::fs::rename(fresh, exe) {
-        let _ = std::fs::rename(&old, exe);
-        return Err(format!("the new version could not be put in place: {e}"));
+const ASIDES: usize = 8;
+
+fn aside(exe: &Path, nth: usize) -> PathBuf {
+    match nth {
+        0 => exe.with_extension("old.exe"),
+        nth => exe.with_extension(format!("old-{nth}.exe")),
     }
-    Ok(())
+}
+
+pub fn swap(exe: &Path, fresh: &Path) -> Result<(), String> {
+    let mut failed = String::new();
+    for old in (0..ASIDES).map(|nth| aside(exe, nth)) {
+        let _ = std::fs::remove_file(&old);
+        match std::fs::rename(exe, &old) {
+            Ok(()) => {
+                if let Err(e) = std::fs::rename(fresh, exe) {
+                    let _ = std::fs::rename(&old, exe);
+                    return Err(format!("the new version could not be put in place: {e}"));
+                }
+                return Ok(());
+            }
+            Err(e) => failed = e.to_string(),
+        }
+    }
+    Err(format!("the running program could not be moved aside: {failed}"))
 }
 
 pub fn clean_up() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(exe.with_extension("old.exe"));
+        for nth in 0..ASIDES {
+            let _ = std::fs::remove_file(aside(&exe, nth));
+        }
         let _ = std::fs::remove_file(exe.with_extension("new.exe"));
     }
 }
@@ -328,6 +346,21 @@ mod tests {
 
         assert!(swap(&exe, &fresh).is_err());
         assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_copy_still_in_use_does_not_stop_the_next_update() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-update-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("code-canvas.old.exe")).unwrap();
+        std::fs::write(dir.join("code-canvas.old.exe").join("held"), "a copy that cannot be removed").unwrap();
+        let (exe, fresh) = (dir.join("code-canvas.exe"), dir.join("code-canvas.new.exe"));
+        std::fs::write(&exe, "running").unwrap();
+        std::fs::write(&fresh, "newer").unwrap();
+        swap(&exe, &fresh).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "newer");
+        assert_eq!(std::fs::read_to_string(dir.join("code-canvas.old-1.exe")).unwrap(), "running");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
