@@ -179,6 +179,7 @@ impl App {
                 initial_active = at;
             }
         }
+        crate::page::forget_old_scans();
         let chosen = crate::themes::load();
         canvas_render::theme::set(chosen.resolve());
         let mut ext = Extensions::new(session::data_dir(), waker);
@@ -616,6 +617,7 @@ impl App {
             if !p.is_loading() {
                 p.restore_camera = p.portable_camera(s, vp);
                 p.framed = false;
+                p.read_again = true;
                 p.start_scan();
                 self.request_redraw();
             }
@@ -2730,6 +2732,24 @@ impl App {
                     self.pages.iter_mut().filter_map(Page::ready_mut).map(|r| r.repo.trim_text(share)).sum();
                 log::debug!("text over its budget: {} MB let go", freed >> 20);
             }
+        }
+        let idle = self.drag.is_none() && self.last_input.elapsed() > Duration::from_millis(400);
+        let share = (budget / self.pages.len().max(1)) as u64;
+        for page in self.pages.iter_mut().filter(|page| idle && page.target.is_none()) {
+            let (at, batch) = (page.warm_at, page.warm_batch);
+            let Some(r) = page.ready().filter(|r| at < r.repo.files.len() && r.repo.text_bytes / 3 * 4 < share) else {
+                continue;
+            };
+            let started = Instant::now();
+            page.warm_at = r.repo.warm(at, batch);
+            let took = started.elapsed();
+            page.warm_batch = match took.as_millis() {
+                0..=5 => (batch * 2).min(8192),
+                14.. => (batch / 2).max(64),
+                _ => batch,
+            };
+            busy = true;
+            break;
         }
         busy |= self.follow_now();
         busy |= !self.ext.notices.is_empty();

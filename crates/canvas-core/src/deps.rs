@@ -113,22 +113,39 @@ fn range(starts: &[u32], file: u32) -> Option<std::ops::Range<usize>> {
     Some(*starts.get(f)? as usize..*starts.get(f + 1)? as usize)
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileDeps {
+    pub edges: Vec<(u32, u32, DepKind)>,
+    pub unresolved: u32,
+    pub external: u32,
+}
+
 pub fn analyze(repo: &Repo) -> Deps {
+    analyze_keeping(repo).0
+}
+
+pub fn analyze_keeping(repo: &Repo) -> (Deps, Vec<FileDeps>) {
     let started = Instant::now();
     let ix = Index::build(&repo.files);
-    let parts: Vec<Scratch> = repo
+    let per_file: Vec<FileDeps> = repo
         .files
         .par_iter()
         .enumerate()
-        .fold(Scratch::default, |mut s, (fi, f)| {
-            scan_file(&ix, fi as u32, f, &mut s);
-            s
+        .map_init(Scratch::default, |s, (fi, f)| {
+            if let Some(Some(known)) = repo.kept_deps.get(fi) {
+                return known.clone();
+            }
+            s.edges.clear();
+            (s.unresolved, s.external) = (0, 0);
+            scan_file(&ix, fi as u32, f, s);
+            let edges = s.edges.iter().map(|e| (e.to, e.line, e.kind)).collect();
+            FileDeps { edges, unresolved: s.unresolved, external: s.external }
         })
         .collect();
-    let mut edges = Vec::with_capacity(parts.iter().map(|p| p.edges.len()).sum());
+    let mut edges = Vec::with_capacity(per_file.iter().map(|p| p.edges.len()).sum());
     let (mut unresolved, mut external) = (0, 0);
-    for p in parts {
-        edges.extend_from_slice(&p.edges);
+    for (from, p) in per_file.iter().enumerate() {
+        edges.extend(p.edges.iter().map(|&(to, line, kind)| Edge { from: from as u32, to, line, kind }));
         unresolved += p.unresolved;
         external += p.external;
     }
@@ -136,7 +153,7 @@ pub fn analyze(repo: &Repo) -> Deps {
     deps.unresolved = unresolved;
     deps.external = external;
     deps.ms = started.elapsed().as_millis();
-    deps
+    (deps, per_file)
 }
 
 const MAX_STATEMENT_LINES: usize = 40;
@@ -295,10 +312,10 @@ fn code(f: &SourceFile, i: usize) -> &str {
 }
 
 fn scan_file(ix: &Index, fi: u32, f: &SourceFile, s: &mut Scratch) {
+    let Some(scanner) = scanner_for(&f.name) else { return };
     if f.text().is_empty() {
         return;
     }
-    let Some(scanner) = scanner_for(&f.name) else { return };
     let first = s.edges.len();
     match scanner {
         Scanner::Js => scan_js(ix, fi, f, s),

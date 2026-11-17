@@ -23,6 +23,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [layout.rs](#cratescanvas-coresrclayoutrs) ·
   [refs.rs](#cratescanvas-coresrcrefsrs) ·
   [scan.rs](#cratescanvas-coresrcscanrs) ·
+  [store.rs](#cratescanvas-coresrcstorers) ·
   [symbols.rs](#cratescanvas-coresrcsymbolsrs) ·
   [syntax.rs](#cratescanvas-coresrcsyntaxrs)
 - [canvas-render](#canvas-render):
@@ -76,6 +77,7 @@ to run things. These notes were rescued from the comments the code used to have.
 | `CODE_CANVAS_SCRIPT` | `script.rs`, `app.rs` | Steps to run inside the app, see [script.rs](#cratescode-canvassrcscriptrs). Also makes the run *quiet* (below). |
 | `CODE_CANVAS_BENCH` | `bench.rs`, `app.rs` | `CODE_CANVAS_BENCH=1 code-canvas <folder>` runs the frame-time benchmark. Also makes the run quiet. |
 | `CODE_CANVAS_DATA_DIR` | `session::data_dir` | Replaces the data directory, so a test leaves the real session alone. |
+| `CODE_CANVAS_NO_CACHE` | `page::scan_cache` | Set to anything: scans neither read nor write what a scan found. |
 | `CODE_CANVAS_TEXT_MB` | `page::text_budget` | How many megabytes of file text are kept in memory before the least recently used is let go and read again on demand (768 by default). |
 | `CODE_CANVAS_BACKEND` | `app.rs` | `vulkan\|dx12\|metal\|gl` overrides the graphics API (default on Windows: Direct3D 12). |
 | `CODE_CANVAS_NO_VSYNC` | `app.rs` | See "Measuring" in [ARCHITECTURE.md](ARCHITECTURE.md). |
@@ -101,6 +103,7 @@ on Linux and `~/Library/Application Support/code-canvas` on macOS, unless
 | `defaults.json` | `ext/mod.rs` | The default extensions this installation already got. |
 | `settings.json` | extension host | VS Code-style settings, see [EXTENSIONS.md](EXTENSIONS.md). |
 | `extensions/` | `ext/market.rs` | Installed extensions, unpacked. |
+| `scans/<hash of the folder's path>.bin` | `canvas-core/store.rs`, `page.rs` | What the last scan of that folder found. Safe to delete: the folder is read whole the next time. One not used for 30 days is removed at start. |
 | `code-canvas.log` | `main.rs` | The log, see [ARCHITECTURE.md](ARCHITECTURE.md). |
 
 The extension host script is embedded in the executable and written here at start.
@@ -297,8 +300,14 @@ Text on demand
   the index is rebuilt after every save without reading a file, and what draws a
   symbol's name does not read its file. `Symbol::name_start` still points into the
   text: the relations compare it with token offsets.
-- Not done by this: the scan itself still reads every file, so the peak while a
-  huge folder opens is as before. The cache of what a scan computes is next.
+- `Repo::warm` reads the text of files that were taken from the store, a batch at
+  a time, while the app is idle (`App::poll_background`, only for folders whose
+  text fits the budget): a moment after opening, a folder is as it was when every
+  file was read at the scan. Until then a file changed from outside has no "text
+  before" to compare with, and the canvas goes to its top instead of to the line.
+- `ScanOptions::cache` is where what the scan finds is kept (`store.rs`);
+  `reuse: false` reads everything and only writes. `Repo::reused` is how many
+  files were not read; `Repo::kept_deps` their imports, for `deps::analyze_keeping`.
 The phases are in "Loading a folder" in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - `scan` leaves **two cores free**: a scan of a huge folder must not starve the
@@ -323,6 +332,34 @@ The phases are in "Loading a folder" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - `LOAD_PROFILE`: CPU nanoseconds per loading step, summed over all threads, as
   `[stat, read, normalise, analyse]`. Only `scan_bench` reads it.
 - `ScanOptions::skip_files` are lockfiles: huge and rarely useful.
+
+### crates/canvas-core/src/store.rs
+
+What a scan found out about each file, kept on disk so the folder opens again
+without reading the files that did not change.
+
+- A file is taken from it when its **size and modification time** are what they
+  were (`SourceFile::stamp`, from the directory walk, which costs no open). Then
+  its `SourceFile` is made with no text (`SourceFile::kept`): everything the far
+  views, the layout, the symbol index and the two filters need is in the record,
+  and the text is read when it is first asked for.
+- `made_with` is written at the start and must match: the format number, the
+  crate's version, the tab width and the limits of `ScanOptions`. **Change
+  `FORMAT` whenever what `syntax::analyze` or the symbol scanner produce changes
+  between two builds of the same version**, or an old record will be believed.
+- Layout of the file: the header, one record per file, then a table (path, stamp,
+  where its record is) and, last, where the table starts. Records are written as
+  they are made, `BATCH` files at a time, and read one by one with positional
+  reads from any thread: neither side ever holds the whole file, which for a huge
+  folder is gigabytes.
+- The imports of a file are kept with it, already resolved to file numbers. They
+  are reused only when the set of files is exactly the same (`same_files`, a hash
+  of every path): with a file more or less, what a path resolves to may differ,
+  and every file's imports are worked out again, which reads every file.
+- `keep` writes after a scan in which anything was read, and otherwise only
+  touches the file, so `page::forget_old_scans` knows it is in use.
+- A record that does not decode is a file that is read. Nothing here can make the
+  scan fail.
 
 ### crates/canvas-core/src/symbols.rs
 
@@ -1136,6 +1173,9 @@ Details:
 
 ### crates/code-canvas/src/page.rs
 
+- `scan_cache`: one file per folder path in `scans/` of the data directory.
+  `Page::read_again` (F5, "Rescan") makes the next scan ignore it and read every
+  file; the scans the app starts by itself, when files appear or go, use it.
 - **Source control shows what is typed, not only what is saved.**
   `Page::preview_unsaved` replaces the entry of every unsaved file in
   `GitState::changes` with one made from its text against `HEAD` (`heads`, read

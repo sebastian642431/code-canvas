@@ -4,6 +4,7 @@ pub mod geom;
 pub mod layout;
 pub mod refs;
 pub mod scan;
+pub mod store;
 pub mod symbols;
 pub mod syntax;
 

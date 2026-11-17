@@ -171,7 +171,7 @@ Without arguments the previous session is restored. Folders can also be opened w
 | Search in files | `Ctrl+Shift+F` |
 | Open a folder in a new canvas | `Ctrl+O` |
 | Next / previous canvas | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| Close the canvas / reload from disk | `Ctrl+W` / `F5` |
+| Close the canvas / read everything from disk again | `Ctrl+W` / `F5` |
 
 ## Performance
 
@@ -194,20 +194,25 @@ And on **Chromium** (a shallow clone: **514,507 files / 63.7 M lines**), same ma
 | Open, files already in the disk cache | **~19 s** (walk 3 s, read + analyse 12 s, layout 0.7 s) |
 | Open, first time after cloning | 7.6 min — almost all of it the disk reading 5 GB of small files |
 | CPU time per frame, whole repository on screen | **~5 ms** |
-| Memory | ~4 GB: every file's text is kept in memory today |
+| Memory | ~4 GB, when every file's text was kept in memory |
 
-Two thirds of the warm time is the operating system opening 470,000 files, which more
-threads do not speed up. The fix for that, for the cold start of every later open and
-for the memory is the same and is next: cache what the scan computes per file and
-read a file's text only when it is on screen.
+Two thirds of that warm time was the operating system opening 470,000 files, which
+more threads do not speed up. That is what the next two things are for; Chromium has
+not been measured again with them yet.
 
-Above 768 MB of text the files' text is not kept: it is read again when a file is
-looked at, and a small filter per file says which ones a search or the relations of a
-name have to read. On the cargo registry as it is today (51,600 files, 18.8 M lines,
-782 MB of text) with the budget set to 64 MB: **1,460 MB → 835 MB** of memory, the
-relations of a name in 62 ms the first time (10 ms with everything in memory, and
-again once read), a search for a phrase in 23 ms, a search for something in thousands
-of files in half a second (0.1 s in memory). Chromium has not been measured again yet.
+**A folder opened again reads only what changed.** What a scan finds out about each
+file is kept on disk, and a file whose size and date are the same is not opened: its
+text is read when it is looked at. **Above 768 MB of text** the text is not kept in
+memory at all, and a small filter per file says which ones a search, or the relations
+of a name, have to read. On the cargo registry as it is today (51,600 files, 18.8 M
+lines, 782 MB of text), same machine:
+
+| | first time | opened again |
+|---|---|---|
+| Open | 3.7 s | **1.4 s**, no file read |
+| Memory once open | 1,360 MB | **690 MB** |
+| Relations of a name (996 of them) | 10 ms | 28 ms |
+| A phrase searched in every file | 12 ms | 6 ms |
 
 How (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): parallel walk and load;
 tokens produced on demand per visible chunk instead of stored; static geometry uploaded
@@ -251,8 +256,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Git: staging part of a file; the diff of a commit.
 - [x] Text read on demand: above a budget (768 MB) the text of the files is let go
       after the scan and read again when it is looked at, searched or related.
-- [ ] A scan cache for instant re-open of huge folders; cheaper single-file updates
-      on them (today they rebuild the whole layout).
+- [x] What a scan finds is kept on disk: a folder opened again reads only the files
+      that changed (`F5` reads everything again).
+- [ ] Cheaper single-file updates on huge folders (today they rebuild the whole layout).
 - [ ] Faster symbol indexing (parallel, lazy) and memory-mapped sources for 1M+ file monorepos.
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
 - [ ] Line numbers, configurable skip lists.

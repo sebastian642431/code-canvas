@@ -15,6 +15,8 @@ pub struct ScanOptions {
     pub max_files: usize,
     pub skip_dirs: Vec<String>,
     pub skip_files: Vec<String>,
+    pub cache: Option<PathBuf>,
+    pub reuse: bool,
 }
 
 impl Default for ScanOptions {
@@ -42,6 +44,8 @@ impl Default for ScanOptions {
             .into_iter()
             .map(String::from)
             .collect(),
+            cache: None,
+            reuse: true,
         }
     }
 }
@@ -108,11 +112,12 @@ pub struct SourceFile {
     root: Option<Arc<Path>>,
     lines: u32,
     used: AtomicU32,
-    idents: Box<[u64]>,
-    threes: Box<[u64]>,
-    names: Box<str>,
-    name_at: Box<[u32]>,
-    implemented: Box<[(u32, Box<str>)]>,
+    pub(crate) idents: Box<[u64]>,
+    pub(crate) threes: Box<[u64]>,
+    pub(crate) names: Box<str>,
+    pub(crate) name_at: Box<[u32]>,
+    pub(crate) implemented: Box<[(u32, Box<str>)]>,
+    pub(crate) stamp: (u64, u64),
     pub analysis: Analysis,
     pub max_cols: u32,
     pub note: Option<String>,
@@ -133,7 +138,7 @@ fn three_bit(a: u8, b: u8, c: u8, bits: usize) -> usize {
     (three.wrapping_mul(0x9e37_79b1) >> 7) as usize & (bits - 1)
 }
 
-fn three_filter(text: &str) -> Box<[u64]> {
+pub(crate) fn three_filter(text: &str) -> Box<[u64]> {
     let bits = (text.len() / 2).clamp(64, 1 << 23).next_power_of_two();
     let mut filter = vec![0u64; bits / 64];
     for three in text.as_bytes().windows(3) {
@@ -143,7 +148,7 @@ fn three_filter(text: &str) -> Box<[u64]> {
     filter.into_boxed_slice()
 }
 
-fn ident_filter(text: &str) -> Box<[u64]> {
+pub(crate) fn ident_filter(text: &str) -> Box<[u64]> {
     let bits = (text.len() / 2).clamp(64, 1 << 22).next_power_of_two();
     let mut filter = vec![0u64; bits / 64];
     for ident in text.as_bytes().split(|b| !crate::refs::ident_byte(*b)).filter(|run| !run.is_empty()) {
@@ -292,6 +297,7 @@ impl SourceFile {
             names: Box::default(),
             name_at: Box::default(),
             implemented: Box::default(),
+            stamp: (0, 0),
             loaded: OnceLock::from(Loaded::new(text, line_starts)),
             root: None,
             used: AtomicU32::new(0),
@@ -300,6 +306,22 @@ impl SourceFile {
             note: None,
             fold: 0,
         }
+    }
+
+    pub(crate) fn kept(
+        rel_path: String,
+        root: Arc<Path>,
+        lines: u32,
+        max_cols: u32,
+        note: Option<String>,
+        analysis: Analysis,
+    ) -> Self {
+        let mut file = SourceFile::with_text(rel_path, String::new(), vec![0], max_cols);
+        if note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
+            (file.root, file.loaded, file.lines) = (Some(root), OnceLock::new(), lines);
+        }
+        (file.note, file.analysis) = (note, analysis);
+        file
     }
 
     fn placeholder(rel_path: String, note: String) -> Self {
@@ -334,9 +356,32 @@ pub struct Repo {
     pub scan_ms: u128,
     pub timings: ScanTimings,
     pub symbols: crate::refs::SymbolIndex,
+    pub kept_deps: Vec<Option<crate::deps::FileDeps>>,
+    pub reused: usize,
+    pub text_bytes: u64,
 }
 
 impl Repo {
+    pub fn make_filters(&mut self) {
+        self.files.par_iter_mut().for_each(|f| {
+            let made = match (f.idents.is_empty() && f.root.is_some(), f.loaded.get()) {
+                (true, Some(loaded)) => Some((ident_filter(&loaded.text), three_filter(&loaded.text))),
+                _ => None,
+            };
+            if let Some((idents, threes)) = made {
+                (f.idents, f.threes) = (idents, threes);
+            }
+        });
+    }
+
+    pub fn warm(&self, from: usize, count: usize) -> usize {
+        let end = (from + count).min(self.files.len());
+        self.files[from..end].par_iter().filter(|f| f.root.is_some() && !f.has_text()).for_each(|f| {
+            f.loaded.get_or_init(|| f.read());
+        });
+        end
+    }
+
     pub fn trim_text(&mut self, keep: usize) -> usize {
         let mut held: Vec<(u32, usize, usize)> = Vec::new();
         for (index, f) in self.files.iter().enumerate() {
@@ -496,7 +541,7 @@ fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
     file
 }
 
-type Found = (PathBuf, String, Option<u64>);
+type Found = (PathBuf, String, Option<u64>, Option<u64>);
 
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "ico", "icns", "cur", "webp", "avif", "tif", "tiff", "psd", "woff", "woff2",
@@ -549,8 +594,11 @@ impl ignore::ParallelVisitor for Visitor<'_> {
             return ignore::WalkState::Continue;
         }
         let rel = entry.path().strip_prefix(self.c.root).unwrap_or(entry.path()).to_string_lossy().replace('\\', "/");
-        let size = if cfg!(windows) { entry.metadata().ok().map(|m| m.len()) } else { None };
-        self.local.push((entry.into_path(), rel, size));
+        let known = if cfg!(windows) || self.c.opts.cache.is_some() { entry.metadata().ok() } else { None };
+        let size = known.as_ref().map(|m| m.len());
+        let changed =
+            known.and_then(|m| m.modified().ok()).and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+        self.local.push((entry.into_path(), rel, size, changed.map(|since| since.as_nanos() as u64)));
         if let Some(p) = self.c.progress {
             p.discovered.fetch_add(1, Ordering::Relaxed);
         }
@@ -605,25 +653,42 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
     let walk_ms = started.elapsed().as_millis();
     let t_load = Instant::now();
     let dir: Arc<Path> = Arc::from(root.as_path());
-    let load = || -> Vec<SourceFile> {
+    let kept = opts.cache.as_deref().filter(|_| opts.reuse).and_then(|file| crate::store::Kept::read(file, opts));
+    let same_files =
+        kept.as_ref().is_some_and(|k| k.same_files(paths.len(), paths.iter().map(|found| found.1.as_str())));
+    let hits = AtomicUsize::new(0);
+    let load = || -> Vec<(SourceFile, Option<crate::deps::FileDeps>)> {
         paths
             .par_iter()
-            .map(|(path, rel, size)| {
-                let mut f = load_file(path, rel.clone(), *size, opts);
-                if f.note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
-                    f.root = Some(dir.clone());
-                }
+            .map(|(path, rel, size, changed)| {
+                let stamp = size.zip(*changed);
+                let had = kept.as_ref().zip(stamp).and_then(|(kept, stamp)| kept.file(rel, stamp, &dir));
+                let hit = had.is_some();
+                hits.fetch_add(hit as usize, Ordering::Relaxed);
+                let loaded = had.unwrap_or_else(|| {
+                    let mut f = load_file(path, rel.clone(), *size, opts);
+                    if f.note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
+                        f.root = Some(dir.clone());
+                    }
+                    f.stamp = stamp.unwrap_or_default();
+                    (f, crate::deps::FileDeps::default())
+                });
                 if let Some(p) = &progress {
                     p.loaded.fetch_add(1, Ordering::Relaxed);
                 }
-                f
+                (loaded.0, (hit && same_files).then_some(loaded.1))
             })
             .collect()
     };
-    let files = match &pool {
+    let (files, kept_deps): (Vec<SourceFile>, Vec<Option<crate::deps::FileDeps>>) = match &pool {
         Ok(pool) => pool.install(load),
         Err(_) => load(),
-    };
+    }
+    .into_iter()
+    .unzip();
+    drop(kept);
+    let reused = hits.load(Ordering::Relaxed);
+    let text_bytes = files.iter().filter(|f| f.root.is_some()).map(|f| f.stamp.0).sum();
 
     let load_ms = t_load.elapsed().as_millis();
     let t_tree = Instant::now();
@@ -664,6 +729,9 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
         scan_ms: started.elapsed().as_millis(),
         timings: ScanTimings { walk_ms, load_ms, tree_ms, index_ms },
         symbols,
+        kept_deps,
+        reused,
+        text_bytes,
     }
 }
 

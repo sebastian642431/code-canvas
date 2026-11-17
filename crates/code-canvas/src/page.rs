@@ -141,6 +141,9 @@ pub struct Page {
     pub diffs: HashMap<String, Diffed>,
     diff_stale: bool,
     diff_editing: Option<String>,
+    pub read_again: bool,
+    pub warm_at: usize,
+    pub warm_batch: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -171,6 +174,33 @@ impl Diffed {
 }
 
 const MAX_DIFFS: usize = 400;
+
+const SCANS_KEPT_DAYS: u64 = 30;
+
+fn scans_folder() -> PathBuf {
+    crate::session::data_dir().join("scans")
+}
+
+fn scan_cache(root: &std::path::Path) -> Option<PathBuf> {
+    if std::env::var_os("CODE_CANVAS_NO_CACHE").is_some() {
+        return None;
+    }
+    let name = root.to_string_lossy().to_lowercase();
+    let hash = canvas_core::store::names_hash(std::iter::once(name.as_str()));
+    Some(scans_folder().join(format!("{hash:016x}.bin")))
+}
+
+pub fn forget_old_scans() {
+    std::thread::spawn(|| {
+        let Ok(entries) = std::fs::read_dir(scans_folder()) else { return };
+        for entry in entries.flatten() {
+            let age = entry.metadata().and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
+            if age.is_some_and(|age| age.as_secs() > SCANS_KEPT_DAYS * 86_400) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    });
+}
 
 pub fn text_budget() -> usize {
     let megabytes = std::env::var("CODE_CANVAS_TEXT_MB").ok().and_then(|mb| mb.parse::<usize>().ok());
@@ -259,6 +289,9 @@ impl Page {
             diffs: HashMap::new(),
             diff_stale: false,
             diff_editing: None,
+            read_again: false,
+            warm_at: 0,
+            warm_batch: 256,
         };
         if let Some(s) = saved {
             page.filter.collapsed = s.collapsed.iter().cloned().collect();
@@ -739,12 +772,18 @@ impl Page {
         let root = self.root.clone();
         let p = progress.clone();
         let filter = LayoutFilter { only_files: None, ..self.filter.clone() };
+        let reuse = !std::mem::take(&mut self.read_again);
+        (self.warm_at, self.warm_batch) = (0, 256);
         std::thread::Builder::new()
             .name(format!("scan {}", self.title))
             .spawn(move || {
                 let t = Instant::now();
-                let mut repo = scan::scan(&root, &ScanOptions::default(), Some(p));
-                let deps = canvas_core::deps::analyze(&repo);
+                let options = ScanOptions { cache: scan_cache(&root), reuse, ..Default::default() };
+                let mut repo = scan::scan(&root, &options, Some(p));
+                let (deps, per_file) = canvas_core::deps::analyze_keeping(&repo);
+                if let Err(why) = canvas_core::store::keep(&mut repo, &per_file, &options) {
+                    log::warn!("what the scan found was not kept: {why}");
+                }
                 let freed = repo.trim_text(text_budget());
                 if freed > 0 {
                     log::info!("'{}': {} MB of text let go, read again when it is looked at", repo.name, freed >> 20);
@@ -762,9 +801,10 @@ impl Page {
                 let scene = SceneData::build(&repo, &layout);
                 let total_ms = t.elapsed().as_millis();
                 log::info!(
-                    "scanned '{}': {} files, {} lines, {} symbols, scan {} ms (index {} ms), total {} ms",
+                    "scanned '{}': {} files ({} not read again), {} lines, {} symbols, scan {} ms (index {} ms), total {} ms",
                     repo.name,
                     repo.files.len(),
+                    repo.reused,
                     repo.total_lines,
                     repo.symbols.count,
                     repo.scan_ms,
