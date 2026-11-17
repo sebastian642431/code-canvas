@@ -28,11 +28,11 @@ trash.workspace = true
 resvg.workspace = true
 image.workspace = true
 zip.workspace = true
+pulldown-cmark.workspace = true
 
 # Extensions' webviews: a browser view inside the window (WebView2).
 [target.'cfg(windows)'.dependencies]
 wry.workspace = true
-pulldown-cmark.workspace = true
 
 [build-dependencies]
 winresource = "0.1"
