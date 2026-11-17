@@ -464,6 +464,7 @@ fn file_name(rel: &str) -> String {
 }
 
 pub fn normalise(raw: &str) -> (String, Vec<u32>, u32) {
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
     let mut text = String::with_capacity(raw.len());
     let mut starts = vec![0u32];
     let mut col = 0usize;

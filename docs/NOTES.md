@@ -830,8 +830,27 @@ Graphics and the frame
 - git is run with `--literal-pathspecs` (a path like `app/[slug]/page.tsx` is
   that path, not a pattern) and the diff a change is cut from does not follow
   the user's `diff.noprefix` or text conversions.
-- An editor keeps the line ends most lines of the file have, not CRLF for one
-  stray one.
+- **A file keeps its bytes where nothing was typed.** Every line of an editor
+  remembers its own end (`Editor::ends`), so a file with both kinds keeps both;
+  a new line gets the kind most lines have. The mark some programs put at the
+  start of a file (U+FEFF) is not text: `scan::normalise`, `share::body` and
+  `Editor::open` take it off, so column 1 is the first letter, and
+  `Editor::text` puts it back. Saving a file with nothing changed writes
+  nothing (`save_file`).
+- **Find compares letter by letter** (`App::found_in`): a letter is lowered
+  only when that gives one letter, so the columns found are the columns of the
+  text (`İ` lowers to two, and lowering the whole line moved every match after
+  it). The list shown stops at 5000 matches; Replace all asks again without
+  that stop and is one step of undo (`Editor::replace_each`: the lines from the
+  first match to the last are rewritten as one change). After replacing one
+  match the next one is the first that starts after what was put, so putting
+  `aa` for `a` goes on to the next `a` instead of into its own text.
+- A click puts the caret at the nearest gap between letters, not before the
+  letter under the pointer (`on_canvas_click`, `cell_in`); a double click still
+  takes the word under it.
+- A path taken from the list of paths closes the list unless it is a folder,
+  whose files come next. It used to open again on the name just taken, and the
+  next Enter took it once more.
 - **The status bar says little**: the branch, what is not saved, and one short
   thing about where you are (the folder and its files, the file under the
   pointer, the caret). The path of the folder, its lines and symbols and how

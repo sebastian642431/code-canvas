@@ -23,7 +23,9 @@ struct Change {
 pub struct Editor {
     pub rel_path: String,
     lines: Vec<String>,
-    eol: &'static str,
+    ends: Vec<bool>,
+    windows: bool,
+    marked: bool,
     final_newline: bool,
     pub caret: Pos,
     pub anchor: Option<Pos>,
@@ -51,16 +53,21 @@ fn is_word(c: char) -> bool {
 
 impl Editor {
     pub fn open(rel_path: String, source: &str) -> Editor {
-        let (windows, all) = (source.matches("\r\n").count(), source.matches('\n').count());
-        let eol = if windows * 2 > all { "\r\n" } else { "\n" };
+        let marked = source.starts_with('\u{feff}');
+        let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+        let (with_return, all) = (source.matches("\r\n").count(), source.matches('\n').count());
+        let windows = with_return * 2 > all;
         let final_newline = source.ends_with('\n');
         let body = source.strip_suffix('\n').unwrap_or(source);
+        let ends: Vec<bool> = body.split('\n').map(|l| l.ends_with('\r')).collect();
         let lines: Vec<String> = body.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect();
         Editor {
             rel_path,
             on_disk: lines.join("\n"),
             lines,
-            eol,
+            ends,
+            windows,
+            marked,
             final_newline,
             caret: Pos::default(),
             anchor: None,
@@ -74,9 +81,16 @@ impl Editor {
     }
 
     pub fn text(&self) -> String {
-        let mut out = self.lines.join(self.eol);
-        if self.final_newline {
-            out.push_str(self.eol);
+        let mut out = String::new();
+        if self.marked {
+            out.push('\u{feff}');
+        }
+        let last = self.lines.len() - 1;
+        for (i, line) in self.lines.iter().enumerate() {
+            out.push_str(line);
+            if i < last || self.final_newline {
+                out.push_str(if self.ends[i] { "\r\n" } else { "\n" });
+            }
         }
         out
     }
@@ -149,6 +163,15 @@ impl Editor {
         let end_pos = Pos::new(start.line + last, if last == 0 { start.col } else { 0 } + new[last].chars().count());
         new[0].insert_str(0, &head);
         new[last].push_str(&tail);
+        let old: Vec<bool> = self.ends[start.line..=end.line].to_vec();
+        let end_of = |i: usize| match i {
+            _ if new.len() == old.len() => old[i],
+            _ if i == last => old[old.len() - 1],
+            _ if i + 1 < old.len() => old[i],
+            _ => self.windows,
+        };
+        let ends: Vec<bool> = (0..new.len()).map(end_of).collect();
+        self.ends.splice(start.line..=end.line, ends);
         self.lines.splice(start.line..=end.line, new);
         end_pos
     }
@@ -304,6 +327,21 @@ impl Editor {
 
     pub fn line(&self, i: usize) -> &str {
         self.lines.get(i).map_or("", String::as_str)
+    }
+
+    pub fn replace_each(&mut self, places: &[(Pos, Pos)], with: &str) {
+        let (Some(first), Some(last)) = (places.first(), places.last()) else { return };
+        let caret = self.caret;
+        let (top, bottom) = (first.0.line, last.1.line);
+        let mut lines: Vec<String> = self.lines[top..=bottom].to_vec();
+        for (from, to) in places.iter().rev() {
+            let line = &mut lines[from.line - top];
+            let (a, b) = (byte_at(line, from.col), byte_at(line, to.col));
+            line.replace_range(a..b, with);
+        }
+        let end = Pos::new(bottom, self.line_len(bottom));
+        self.replace(Pos::new(top, 0), end, &lines.join("\n"));
+        self.caret = self.clamp(caret);
     }
 
     pub fn complete(&mut self, from: usize, text: &str) {
@@ -613,10 +651,35 @@ four",
     }
 
     #[test]
-    fn a_file_keeps_the_line_ends_most_of_its_lines_have() {
-        assert_eq!(Editor::open("a".into(), "a\nb\nc\r\nd\n").text(), "a\nb\nc\nd\n");
-        assert_eq!(Editor::open("a".into(), "a\r\nb\r\nc\nd\r\n").text(), "a\r\nb\r\nc\r\nd\r\n");
-        assert_eq!(Editor::open("a".into(), "one line").text(), "one line");
+    fn every_line_keeps_its_own_end_and_new_lines_get_the_one_most_have() {
+        for mixed in ["a\nb\nc\r\nd\n", "a\r\nb\r\nc\nd\r\n", "one line", "\u{feff}a\r\nb\n"] {
+            assert_eq!(Editor::open("a".into(), mixed).text(), mixed);
+        }
+        let mut e = Editor::open("a".into(), "\u{feff}a\r\nb\r\nc\nd\r\n");
+        assert_eq!(e.display_source(), "a\nb\nc\nd", "the mark at the start of the file is not text");
+        at(&mut e, 0, 0);
+        e.insert("X");
+        at(&mut e, 2, 1);
+        e.insert("\nnew");
+        assert_eq!(e.text(), "\u{feff}Xa\r\nb\r\nc\r\nnew\nd\r\n");
+        at(&mut e, 1, 1);
+        e.move_to(Pos::new(2, 0), true);
+        e.insert("");
+        assert_eq!(e.text(), "\u{feff}Xa\r\nbc\r\nnew\nd\r\n", "two lines joined end as the second did");
+    }
+
+    #[test]
+    fn replacing_every_place_is_one_step_of_undo() {
+        let mut e = Editor::open("a".into(), "one two\nthree\ntwo two\n");
+        at(&mut e, 1, 2);
+        let places =
+            [(Pos::new(0, 4), Pos::new(0, 7)), (Pos::new(2, 0), Pos::new(2, 3)), (Pos::new(2, 4), Pos::new(2, 7))];
+        e.replace_each(&places, "2");
+        assert_eq!(e.display_source(), "one 2\nthree\n2 2");
+        assert_eq!(e.caret, Pos::new(1, 2));
+        assert!(e.undo());
+        assert_eq!(e.display_source(), "one two\nthree\ntwo two");
+        assert!(!e.undo());
     }
 
     #[test]

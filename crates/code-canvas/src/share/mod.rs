@@ -25,6 +25,7 @@ const MOST_WAITING: usize = MOST_TEXT * 2 + (32 << 20);
 const MOST_KNOCKING: usize = 24;
 
 pub fn body(text: &str) -> String {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = text.strip_suffix('\n').unwrap_or(text);
     let text = text.strip_suffix('\r').unwrap_or(text);
     text.replace("\r\n", "\n").replace('\r', "\n")

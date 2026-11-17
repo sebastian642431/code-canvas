@@ -1322,7 +1322,7 @@ impl App {
         let world = page.camera.view(self.viewport()).to_world(point);
         let first = n.cell_rect(0, 0, 1);
         let last = n.cell_rect(lines.saturating_sub(1) as u32, 0, 1);
-        let inside = [world[0].max(first.x), world[1].clamp(first.y, last.bottom() - 0.01)];
+        let inside = [world[0].max(first.x) + first.w * 0.5, world[1].clamp(first.y, last.bottom() - 0.01)];
         n.cell_at(inside, lines).map(|(line, col)| (line as usize, col as usize))
     }
 
@@ -1386,29 +1386,48 @@ impl App {
         }
     }
 
-    fn find_refresh(&mut self, travel: bool) {
-        let Some(find) = self.ui.find.as_mut() else { return };
-        let Some(page) = self.pages.get_mut(self.active) else { return };
+    fn found_in(page: &Page, file: &str, query: &str, most: usize) -> Vec<Site> {
         let mut hits: Vec<Site> = Vec::new();
-        let file = page.ready().and_then(|r| Some(&r.repo.files[r.repo.file_index(&find.file)?]));
-        if let (Some(f), false) = (file, find.query.is_empty()) {
-            let index = page.ready().and_then(|r| r.repo.file_index(&find.file)).unwrap_or_default() as u32;
-            let exact = find.query.chars().any(char::is_uppercase);
-            let wanted = if exact { find.query.clone() } else { find.query.to_lowercase() };
-            let len = find.query.chars().count().min(400) as u16;
-            'lines: for line in 0..f.line_count() {
-                let text = if exact { f.line(line).to_string() } else { f.line(line).to_lowercase() };
-                let mut from = 0;
-                while let Some(at) = text.get(from..).and_then(|rest| rest.find(&wanted)) {
-                    let col = text[..from + at].chars().count().min(u16::MAX as usize) as u16;
-                    hits.push(Site { file: index, line: line as u32, col, len });
-                    from += at + wanted.len().max(1);
-                    if hits.len() >= 5000 {
-                        break 'lines;
-                    }
+        let Some(r) = page.ready() else { return hits };
+        let Some(index) = r.repo.file_index(file).filter(|_| !query.is_empty()) else { return hits };
+        let f = &r.repo.files[index];
+        let exact = query.chars().any(char::is_uppercase);
+        let same = |c: char| {
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(one), None) if !exact => one,
+                _ => c,
+            }
+        };
+        let wanted: Vec<char> = query.chars().map(same).collect();
+        let len = wanted.len().min(400) as u16;
+        'lines: for line in 0..f.line_count() {
+            let text: Vec<char> = f.line(line).chars().map(same).collect();
+            let mut from = 0;
+            while from + wanted.len() <= text.len() {
+                if text[from..from + wanted.len()] != wanted[..] {
+                    from += 1;
+                    continue;
+                }
+                let col = from.min(u16::MAX as usize) as u16;
+                hits.push(Site { file: index as u32, line: line as u32, col, len });
+                from += wanted.len();
+                if hits.len() >= most {
+                    break 'lines;
                 }
             }
         }
+        hits
+    }
+
+    fn find_refresh(&mut self, travel: bool) {
+        self.find_again(travel, 5000);
+    }
+
+    fn find_again(&mut self, travel: bool, most: usize) {
+        let Some(find) = self.ui.find.as_mut() else { return };
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let hits = Self::found_in(page, &find.file, &find.query, most);
         find.count = hits.len();
         find.at = find.at.min(hits.len().saturating_sub(1));
         let current = hits.get(find.at).copied();
@@ -1438,22 +1457,33 @@ impl App {
             return;
         }
         self.sync_diffs();
-        self.find_refresh(false);
+        self.find_again(false, if all { usize::MAX } else { 5000 });
         let Some((with, at)) = self.ui.find.as_ref().map(|find| (find.with.clone(), find.at)) else { return };
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let hits: Vec<Site> = page.search.as_ref().map(|found| found.hits.clone()).unwrap_or_default();
-        let chosen: Vec<Site> =
-            if all { hits.into_iter().rev().collect() } else { hits.get(at).copied().into_iter().collect() };
+        let chosen: Vec<Site> = if all { hits } else { hits.get(at).copied().into_iter().collect() };
         let Some(editor) = page.editor_mut().filter(|_| !chosen.is_empty()) else { return };
-        for hit in &chosen {
+        let place = |editor: &crate::editor::Editor, hit: &Site| {
             let (line, col) = (hit.line as usize, hit.col as usize);
-            let from = editor.pos_at_display(line, col);
-            let to = editor.pos_at_display(line, col + hit.len as usize);
+            (editor.pos_at_display(line, col), editor.pos_at_display(line, col + hit.len as usize))
+        };
+        let mut after = None;
+        if all {
+            let places: Vec<_> = chosen.iter().map(|hit| place(editor, hit)).collect();
+            editor.replace_each(&places, &with);
+        } else if let Some(hit) = chosen.first() {
+            let (from, to) = place(editor, hit);
             editor.move_to(from, false);
             editor.move_to(to, true);
             editor.insert(&with);
+            after = Some((hit.line, editor.display_col(editor.caret) as u16));
         }
         self.after_edit();
+        if let (Some(after), Some(find)) = (after, self.ui.find.as_mut()) {
+            let hits = self.pages.get(self.active).and_then(|page| page.search.as_ref()).map(|found| &found.hits);
+            let next = hits.and_then(|hits| hits.iter().position(|hit| (hit.line, hit.col) >= after));
+            find.at = next.unwrap_or(0);
+        }
         self.find_refresh(!all);
     }
 
@@ -1642,9 +1672,12 @@ impl App {
             Offered::Paths(items) => {
                 let Some(candidate) = items.get(index) else { return };
                 let text = crate::paths::completion(candidate, &editor.rel_path, editor.line(editor.caret.line));
+                let more = candidate.is_dir;
                 editor.complete(offer.start, &text);
                 self.after_edit();
-                self.update_completion();
+                if more {
+                    self.update_completion();
+                }
             }
             Offered::Code { serial, items, .. } => {
                 let Some((at, item)) = items.get(index) else { return };
@@ -1719,7 +1752,7 @@ impl App {
     fn save_file(&mut self, index: usize, rel: &str, format: bool) -> bool {
         let Some(page) = self.pages.get_mut(index) else { return false };
         let path = page.root.join(rel);
-        let Some(editor) = page.editors.get_mut(rel) else { return false };
+        let Some(editor) = page.editors.get_mut(rel).filter(|editor| editor.dirty) else { return false };
         self.watcher.expect(&path);
         if let Err(e) = std::fs::write(&path, editor.text()) {
             log::error!("cannot save {}: {e}", path.display());
@@ -2570,6 +2603,9 @@ impl App {
                 let f = &r.repo.files[fi];
                 if let Some((line, col)) = n.cell_at(world, f.line_count()) {
                     if readable && !ctrl && can_edit && f.note.is_none() && page.showing.is_none() {
+                        let half = n.cell_rect(0, 0, 1).w * 0.5;
+                        let near = n.cell_at([world[0] + half, world[1]], f.line_count());
+                        let col = near.filter(|_| !double).map_or(col, |(_, col)| col);
                         caret_at = Some((f.rel_path.clone(), line as usize, col as usize));
                     } else if zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
                         let fi = fi as u32;
