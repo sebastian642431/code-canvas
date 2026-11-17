@@ -163,7 +163,10 @@ mod tests {
         let home = |key: &str| if key.starts_with("view:") { Side::Right } else { Side::Left };
         let mut rails = Rails { left: keys(&["view:chat", "files"]), right: keys(&["symbols", "search"]), homes: 0 };
         rails.at_home(home);
-        assert_eq!((rails.left.clone(), rails.right.clone()), (keys(&["files", "symbols", "search"]), keys(&["view:chat"])));
+        assert_eq!(
+            (rails.left.clone(), rails.right.clone()),
+            (keys(&["files", "symbols", "search"]), keys(&["view:chat"]))
+        );
         rails.place(&available(), "symbols", Side::Right, None);
         rails.at_home(home);
         assert_eq!(rails.side_of("symbols"), Some(Side::Right), "what is moved after that stays where it was put");
@@ -171,7 +174,8 @@ mod tests {
 
     #[test]
     fn a_damaged_file_never_shows_an_icon_twice() {
-        let rails = Rails { left: keys(&["files", "symbols", "files"]), right: keys(&["symbols", "unknown"]), homes: 0 };
+        let rails =
+            Rails { left: keys(&["files", "symbols", "files"]), right: keys(&["symbols", "unknown"]), homes: 0 };
         assert_eq!(rails.arrange(&available()), [keys(&["files", "symbols", "search"]), keys(&["view:chat"])]);
     }
 }

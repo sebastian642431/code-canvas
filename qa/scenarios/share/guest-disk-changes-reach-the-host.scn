@@ -1,0 +1,42 @@
+title: Another program on the guest's side (an extension, an assistant) appends to a file, makes a new one in a new folder and a file is deleted there: the host's folder follows each
+folders: share-text
+limit: 80
+expect-log: share: share-text is shared, 4 files
+expect-log: share: Beto made made/by-guest.txt
+expect-log: share: Beto removed other.txt
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: line 12\nappended on the guest's side\n$
+expect-file: share-text\made\by-guest.txt :: ^made on the guest's side\n$
+absent-file: share-text\other.txt
+guest-expect-log: share: notes.txt changed on this side
+guest-expect-log: share: made/by-guest.txt is new on this side
+
+wait 3000
+share start writers
+wait 34000
+fit
+wait 1500
+mark host-after-the-guests-changes
+wait 1500
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 5000
+touch notes.txt appended on the guest's side
+wait 4000
+touch made/by-guest.txt made on the guest's side
+wait 8000
+delete other.txt
+wait 600
+answer Delete
+wait 7000
+fit
+wait 1500
+mark guest-after-its-changes
+wait 1500
+quit
+wait 1500

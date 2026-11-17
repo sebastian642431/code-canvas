@@ -32,7 +32,7 @@ pub fn body(text: &str) -> String {
 
 fn weight(msg: &Msg) -> usize {
     let texts = match msg {
-        Msg::File { text, path, .. } => text.len() + path.len(),
+        Msg::File { text, path, .. } | Msg::Make { text, path, .. } => text.len() + path.len(),
         Msg::Edit { op, .. } => {
             let inserted = |part: &ot::Part| match part {
                 ot::Part::Insert(text) => text.len(),
@@ -121,6 +121,8 @@ pub enum Event {
     Gone { folder: u32, path: String },
     Edit { folder: u32, path: String, op: TextOp, by: u32 },
     Save { folder: u32, path: String, by: u32 },
+    Make { folder: u32, path: String, text: String, by: u32 },
+    Drop { folder: u32, path: String, by: u32 },
     Role(bool),
     Come(u32),
     Ended(String),
@@ -426,6 +428,18 @@ impl Session {
         }
     }
 
+    pub fn made(&mut self, folder: u32, path: &str, text: &str) {
+        if !self.host && self.writer() {
+            self.to(HOST, Msg::Make { folder, path: path.to_string(), text: text.to_string() });
+        }
+    }
+
+    pub fn dropped(&mut self, folder: u32, path: &str) {
+        if !self.host && self.writer() {
+            self.to(HOST, Msg::Drop { folder, path: path.to_string() });
+        }
+    }
+
     fn again(&mut self, id: u32, folder: u32, path: &str) {
         let Some(doc) = self.docs.get_mut(&(folder, path.to_string())) else { return };
         let epoch = doc.links.get(&id).map_or(doc.epoch, |link| link.epoch) + 1;
@@ -651,6 +665,19 @@ impl Session {
                 let known = self.docs.contains_key(&(folder, path.clone()));
                 if known && self.person(from).is_some_and(|person| person.writer) {
                     events.push(Event::Save { folder, path, by: from });
+                }
+            }
+            Msg::Make { folder, path, text } if self.host => {
+                let fits = wire::safe_path(&path) && self.shares(folder) && text.len() <= LARGEST_FILE;
+                let fresh = !self.docs.contains_key(&(folder, path.clone()));
+                if fits && fresh && self.person(from).is_some_and(|person| person.writer) {
+                    events.push(Event::Make { folder, path, text: body(&text), by: from });
+                }
+            }
+            Msg::Drop { folder, path } if self.host => {
+                let known = self.docs.contains_key(&(folder, path.clone()));
+                if known && wire::safe_path(&path) && self.person(from).is_some_and(|person| person.writer) {
+                    events.push(Event::Drop { folder, path, by: from });
                 }
             }
             Msg::Said { folder, path, epoch, seen } => {

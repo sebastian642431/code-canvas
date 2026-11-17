@@ -1694,8 +1694,9 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   with one, the file is written too, told to the watcher as its own
   (`Watcher::expect`), and the editor counts as saved. Files not saved of a
   shared folder do not hold the guest's app from closing (`App::unsaved`).
-- **Readers**: `Page::read_only` refuses to start editing, and the host refuses
-  the edits anyway (`Session::edit`), sending the file back.
+- **Readers**: `Page::read_only` refuses to start editing and to make, rename
+  or delete files, and the host refuses the edits anyway (`Session::edit`),
+  sending the file back. Nothing a reader's disk does is sent.
 - **Where someone is** (`Seen`) is said in terms of the layout, not of pixels or
   world places, because two apps lay the same folder out differently (folded
   folders, hidden files, a diff open): the node at the middle of the view and
@@ -1710,13 +1711,33 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   Who has not the secret cannot open the first frame and is dropped; there is no
   other password. The invitation is `cc1:<address>:<port>:<secret in hex>`;
   the address is the one of this network unless another is written in the panel.
-- **The other side is not trusted**, either way:
-  - A path that arrives is checked before it is anything (`wire::safe_path`):
-    no `..`, no drive, no `.git` in any spelling Windows takes for it. A guest
-    that wrote a host's `.git/config` and then ran `git status` there would run
-    whatever that config names. For the same reason a page under
-    `<data dir>/shared` never runs git (`Page::no_git`) and never reaches an
-    extension (`Extensions::trusted`): a language server builds what it opens.
+- **Sharing is not limited, it is warned about.** Someone who shares with their
+  own second computer wants all of it to work there, so a guest's folder is a
+  folder like any other: extensions and assistants get it, and what they (or
+  any program) write in it reaches the host. What that opens up is said once
+  each time, in the app's own question, before sharing and before joining
+  (`share_ask`, `Asked::Share`): only with someone you trust. For a while a
+  guest's folder never reached an extension; that made the guest's right bar
+  useless and was taken out.
+  - **What changes on a guest's disk** goes the way the host's does, the other
+    way round (`share_flush`, the part for a guest who can edit): a file whose
+    text is not the session's is sent as an edit and a save, a file the session
+    does not have is `Msg::Make`, one that is gone is `Msg::Drop`. The host
+    writes or recycles the file and its own watcher does the rest, so everyone,
+    the maker included, hears of it the usual way. A file made is taken only
+    where there is none (`Sharing::made` lets its maker write it again until it
+    is shared), and only one the guest's own canvas shows, so what is ignored
+    stays where it was built.
+  - A guest's folder is written by the session too, and the watcher names those
+    writes like any other. `Sharing::mirrored` keeps a mark of the last text
+    put in each file: a file that still has it was not changed by anyone here,
+    however far the session's text has moved on since.
+  - What stays checked is not a limit on anyone's work: a path that arrives is
+    checked before it is anything (`wire::safe_path`): no `..`, no drive, no
+    `.git` in any spelling Windows takes for it. A page under
+    `<data dir>/shared` does not run git (`Page::no_git`): there is no
+    repository there to ask; source control for a guest has to be asked of the
+    host, which is not done yet.
   - Before the secret is proven nothing is set aside: the greeting has a deadline
     for the whole of it (`Hurried`), the first message is at most `wire::FIRST`
     bytes, a message is read as it comes and not into a buffer of the size it
@@ -1746,8 +1767,8 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
 - `Link::waiting` is let go when the other side says what it has (`Msg::Said`,
   every `SAID_EVERY` edits it receives without sending): someone who only reads
   made the other keep every edit of the session.
-- The wire is version 2: an app of the version before is told it is another
-  version, instead of failing on a message it does not know.
+- The wire has a version (3 now: `Make` and `Drop` came with it): an app of
+  another version is told so, instead of failing on a message it does not know.
 - A guest's folder is held by a file it keeps open (`.held`); a second app
   starting cleans only the folders nobody holds.
 - One thread reads each connection and one writes it, so the app never waits on

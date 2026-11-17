@@ -21,6 +21,8 @@ pub(super) struct Sharing {
     refused: HashSet<u32>,
     too_much: HashSet<(u32, String)>,
     settle: Vec<(u32, String)>,
+    made: HashMap<(u32, String), u64>,
+    mirrored: HashMap<(u32, String), u64>,
     _held: Option<std::fs::File>,
     said: Option<Seen>,
     said_at: Instant,
@@ -42,6 +44,8 @@ impl Default for Sharing {
             refused: HashSet::new(),
             too_much: HashSet::new(),
             settle: Vec::new(),
+            made: HashMap::new(),
+            mirrored: HashMap::new(),
             _held: None,
             said: None,
             said_at: Instant::now(),
@@ -74,6 +78,13 @@ fn in_use(dir: &std::path::Path) -> bool {
     }
     let age = std::fs::metadata(&held).and_then(|file| file.modified()).ok().and_then(|at| at.elapsed().ok());
     age.is_some_and(|age| age < Duration::from_secs(86_400))
+}
+
+fn mark_of(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn own_name() -> String {
@@ -119,6 +130,8 @@ impl App {
 
     pub(super) fn share_op(&mut self, op: ShareOp) {
         match op {
+            ShareOp::Offer => self.share_ask(false),
+            ShareOp::Enter => self.share_ask(true),
             ShareOp::Start => self.share_start(),
             ShareOp::Stop => self.share_stop(None),
             ShareOp::Join => {
@@ -179,6 +192,33 @@ impl App {
             }
         }
         self.request_redraw();
+    }
+
+    fn share_ask(&mut self, join: bool) {
+        if self.sharing.session.is_some() {
+            return;
+        }
+        if join && Invite::read(&self.ui.share.typed).is_none() {
+            let text = "That is not an invitation: it starts with cc1: and is copied whole from who shares.";
+            return self.ext.notice(ext::Level::Warn, "Sharing", text);
+        }
+        let (title, text, yes) = match join {
+            false => (
+                "Share this session?",
+                "Whoever has the invitation opens your folders on their computer. Someone you let edit changes your files, and so do the extensions and assistants they use. Share it only with someone you trust.",
+                "Share",
+            ),
+            true => (
+                "Join this session?",
+                "Its folders are copied to this computer, and your extensions and assistants work on them as on your own: that can run what those files say. Join only a session of someone you trust.",
+                "Join",
+            ),
+        };
+        let ask = ui::Ask::new(ui::Asked::Share { join }, title, text.to_string())
+            .choice(yes, ui::ChoiceLook::Main, ui::Answer::Yes)
+            .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+        self.ui.share.open = false;
+        self.ui.ask = Some(ask);
     }
 
     fn share_start(&mut self) {
@@ -314,11 +354,14 @@ impl App {
             return;
         }
         self.sharing.looked_over = Instant::now();
-        let Some(session) = self.sharing.session.as_ref().filter(|session| session.host) else { return };
+        let Some(session) = self.sharing.session.as_ref().filter(|session| session.host || session.writer()) else {
+            return;
+        };
         let mut found = Vec::new();
         for page in &self.pages {
-            let Some(r) = page.ready().filter(|_| session.shares(page.id)) else { continue };
-            let known: HashSet<String> = session.paths(page.id).into_iter().collect();
+            let Some(folder) = self.share_folder_of(page) else { continue };
+            let Some(r) = page.ready() else { continue };
+            let known: HashSet<String> = session.paths(folder).into_iter().collect();
             for file in r.repo.files.iter().filter(|file| file.note.is_none()) {
                 let key = (page.id, file.rel_path.clone());
                 if !known.contains(&file.rel_path) && !self.sharing.too_much.contains(&key) {
@@ -354,10 +397,12 @@ impl App {
         self.sharing.edited = now;
         let mut removed: Vec<(u32, String)> = Vec::new();
         let mut later: Vec<(u32, String)> = Vec::new();
+        let mut written: Vec<(u32, String, String)> = Vec::new();
+        let mut made: Vec<(u32, String, String)> = Vec::new();
         let mut room = share::MOST_TEXT.saturating_sub(self.sharing.session.as_ref().map_or(0, Session::text_kept));
         for (id, rel) in std::mem::take(&mut self.sharing.touched) {
             let Some(page) = self.pages.iter().find(|page| page.id == id) else { continue };
-            let Some(folder) = self.share_folder_of(page).filter(|_| host) else { continue };
+            let Some(folder) = self.share_folder_of(page) else { continue };
             if page.editors.contains_key(&rel) {
                 continue;
             }
@@ -365,6 +410,38 @@ impl App {
                 later.push((id, rel));
                 continue;
             };
+            if !host {
+                let Some(session) = self.sharing.session.as_ref().filter(|session| session.writer()) else { continue };
+                let path = page.root.join(&rel);
+                let key = (folder, rel.clone());
+                let size = std::fs::metadata(&path).ok().filter(|file| file.is_file()).map(|file| file.len() as usize);
+                let text = match size {
+                    Some(size) if size <= share::LARGEST_FILE && share::wire::safe_path(&rel) => {
+                        std::fs::read_to_string(&path).ok().map(|text| share::body(&text))
+                    }
+                    Some(_) => None,
+                    None => {
+                        if session.text(folder, &rel).is_some() && !path.exists() {
+                            removed.push(key.clone());
+                        }
+                        None
+                    }
+                };
+                let Some(text) = text else { continue };
+                let mark = mark_of(&text);
+                match session.text(folder, &rel) {
+                    Some(known) if known == text || self.sharing.mirrored.get(&key) == Some(&mark) => {}
+                    Some(_) => written.push((folder, rel, text)),
+                    None => {
+                        let shown = r.repo.file_index(&rel).is_some_and(|file| r.repo.files[file].note.is_none());
+                        if shown && self.sharing.made.get(&key) != Some(&mark) {
+                            self.sharing.made.insert(key, mark);
+                            made.push((folder, rel, text));
+                        }
+                    }
+                }
+                continue;
+            }
             self.sharing.revs.remove(&(id, rel.clone()));
             let known = self.sharing.session.as_ref().is_some_and(|session| session.text(folder, &rel).is_some());
             let path = page.root.join(&rel);
@@ -396,8 +473,20 @@ impl App {
         for (folder, rel, text) in changed {
             session.changed(folder, &rel, &text);
         }
+        for (folder, rel, text) in written {
+            log::info!("share: {rel} changed on this side, the others get it");
+            session.changed(folder, &rel, &text);
+            session.saved(folder, &rel);
+        }
+        for (folder, rel, text) in made {
+            log::info!("share: {rel} is new on this side, the one sharing gets it");
+            session.made(folder, &rel, &text);
+        }
         for (folder, rel) in removed {
-            session.removed(folder, &rel);
+            match host {
+                true => session.removed(folder, &rel),
+                false => session.dropped(folder, &rel),
+            }
         }
     }
 
@@ -413,6 +502,7 @@ impl App {
         if quiet {
             self.watcher.expect(&path);
         }
+        self.sharing.mirrored.insert((folder, rel.to_string()), mark_of(text));
         if let Err(e) = std::fs::write(&path, format!("{text}\n")) {
             log::warn!("share: {} could not be written: {e}", path.display());
         }
@@ -507,6 +597,16 @@ impl App {
                 self.sharing.waiting.insert(id, root);
             }
             Event::File { folder, path, text, .. } => {
+                if self.sharing.made.remove(&(folder, path.clone())).is_some() {
+                    let page =
+                        self.share_page(folder).map(|index| (self.pages[index].id, self.pages[index].root.clone()));
+                    let here = page.as_ref().and_then(|(_, root)| crate::files::inside(root, &path).ok());
+                    let mine = here.and_then(|file| std::fs::read_to_string(file).ok()).map(|mine| share::body(&mine));
+                    if let (Some((id, _)), true) = (page, mine.is_some_and(|mine| mine != text)) {
+                        self.sharing.touched.push((id, path));
+                        return;
+                    }
+                }
                 if let Some(index) = self.share_page(folder) {
                     let id = self.pages[index].id;
                     if let Some(editor) = self.pages[index].editors.get_mut(&path) {
@@ -549,6 +649,34 @@ impl App {
             Event::Save { folder, path, .. } => {
                 if let Some(index) = self.share_page(folder) {
                     self.save_file(index, &path, true);
+                }
+            }
+            Event::Make { folder, path, text, by } => {
+                let Some(index) = self.share_page(folder) else { return };
+                let Ok(file) = crate::files::inside(&self.pages[index].root, &path) else { return };
+                let key = (folder, path.clone());
+                if file.exists() && !self.sharing.made.contains_key(&key) {
+                    log::warn!("share: {path} is here already: what {} made does not replace it", who(self, by));
+                    return;
+                }
+                if let Some(parent) = file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let whole = if text.is_empty() { String::new() } else { format!("{text}\n") };
+                match std::fs::write(&file, whole) {
+                    Ok(()) => {
+                        log::info!("share: {} made {path}", who(self, by));
+                        self.sharing.made.insert(key, 0);
+                    }
+                    Err(e) => log::warn!("share: {path} could not be made: {e}"),
+                }
+            }
+            Event::Drop { folder, path, by } => {
+                let Some(index) = self.share_page(folder) else { return };
+                let file = crate::files::inside(&self.pages[index].root, &path);
+                match file.and_then(|file| crate::files::recycle(&file)) {
+                    Ok(()) => log::info!("share: {} removed {path}", who(self, by)),
+                    Err(why) => log::warn!("share: {path} could not be removed: {why}"),
                 }
             }
             Event::Role(writer) => {

@@ -168,6 +168,12 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   at the top to **follow** them: your canvas goes where theirs goes until you
   move it or press Esc. *Bring everyone to what I see* makes the others follow
   you.
+- **Nothing is held back for who joins**: their own extensions and assistants
+  work on your folders as on theirs, and the files they make, change, rename or
+  delete (if you let them edit) are made, changed, renamed or deleted on your
+  computer. That is what makes it good for working on your other computer, and
+  why the app asks before sharing and before joining: only with someone you
+  trust.
 - It ends when you say so, and by itself when the app closes. Whoever joined is
   left with nothing of yours on their disk.
 - On the same network it works as it is. From outside, both computers need a way
@@ -361,9 +367,11 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] A workspace: folders dragged onto the canvas and taken off it.
 - [x] Sharing a session: others see and edit your folders live from their own app,
       as readers or writers, with everyone's pointer, caret and view, and following.
-- [ ] Sharing across networks without a VPN or a forwarded port (a relay); files
-      made, renamed and deleted by those who join; pictures and other files that
-      are not text.
+- [x] Those who join use their own extensions and assistants on the shared
+      folders, and make, rename and delete files there.
+- [ ] Sharing across networks without a VPN or a forwarded port (a relay);
+      source control for those who join; pictures and other files that are not
+      text.
 - [ ] Linux / macOS packaging, a web build (WebGPU).
 
 ## Project layout

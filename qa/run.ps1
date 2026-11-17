@@ -95,27 +95,26 @@ if ($folders.Count -gt 0) { $first = Start-Process -FilePath $Exe -ArgumentList 
 $running += , @($first, $data, '')
 $problems = @()
 
-if ($steps.guest.Count -gt 0) {
-    $invite = Join-Path $data 'invite.txt'
-    $deadline = (Get-Date).AddSeconds(30)
-    while (-not (Test-Path $invite) -and (Get-Date) -lt $deadline -and -not $first.HasExited) { Start-Sleep -Milliseconds 100 }
-    if (Test-Path $invite) {
+$invite = Join-Path $data 'invite.txt'
+$guestDue = $steps.guest.Count -gt 0
+$inviteBy = (Get-Date).AddSeconds(30)
+$seen = @{}
+$pictures = 0
+$deadline = (Get-Date).AddSeconds($limit)
+while (@($running | Where-Object { -not $_[0].HasExited }).Count -gt 0 -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 100
+    if ($guestDue -and (Test-Path $invite)) {
+        $guestDue = $false
         Start-Sleep -Milliseconds 200
         New-Item -ItemType Directory -Force -Path $guestData | Out-Null
         $env:CODE_CANVAS_DATA_DIR = $guestData
         $env:CODE_CANVAS_SCRIPT = $guestScript.Replace('{INVITE}', (Get-Content $invite -Raw).Trim())
         $second = Start-Process -FilePath $Exe -PassThru
         $running += , @($second, $guestData, 'guest-')
-    } else {
+    } elseif ($guestDue -and (Get-Date) -gt $inviteBy) {
+        $guestDue = $false
         $problems += 'the host never shared its session (no invite.txt)'
     }
-}
-
-$seen = @{}
-$pictures = 0
-$deadline = (Get-Date).AddSeconds($limit)
-while (@($running | Where-Object { -not $_[0].HasExited }).Count -gt 0 -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 100
     foreach ($one in $running) {
         $marks = Join-Path $one[1] 'marks'
         if (-not (Test-Path $marks)) { continue }

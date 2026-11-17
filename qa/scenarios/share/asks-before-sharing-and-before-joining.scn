@@ -1,0 +1,44 @@
+title: Sharing and joining say what they open up and ask first; Cancel shares nothing, an invitation that is not one never gets to the question
+folders: share-text
+limit: 60
+expect-log: share: share-text is shared, 4 files
+forbid-log: WARN.*script
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share offer
+wait 800
+mark a-asks-before-sharing
+wait 400
+answer Cancel
+wait 800
+mark b-cancelled-nothing-shared
+wait 400
+share offer
+wait 600
+answer Share
+wait 1500
+mark c-sharing-the-panel-with-the-invitation
+wait 22000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share enter not-an-invitation
+wait 800
+mark d-not-an-invitation-no-question
+wait 400
+share enter {INVITE}
+wait 800
+mark e-asks-before-joining
+wait 400
+answer Join
+wait 5000
+fit
+wait 1200
+mark f-joined
+wait 1000
+quit
+wait 1500

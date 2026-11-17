@@ -2658,8 +2658,10 @@ pub enum ShareMode {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShareOp {
+    Offer,
     Start,
     Stop,
+    Enter,
     Join,
     SetWriter(u32, bool),
     SendAway(u32),
@@ -3033,7 +3035,7 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     dim(ui, if view.guests_write { "They type in your files. You can change it for each one." } else { "They only look. You can let each one edit later." });
                     if ask_button(ui, "Start sharing", ChoiceLook::Main) {
                         actions.push(Action::Share(ShareOp::Changed));
-                        actions.push(Action::Share(ShareOp::Start));
+                        actions.push(Action::Share(ShareOp::Offer));
                     }
                     menu_gap(ui);
                     ui.label(RichText::new("Join someone's session").size(13.0).color(pal().text));
@@ -3041,7 +3043,7 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ask_button(ui, "Join", ChoiceLook::Plain) || entered) && !view.typed.trim().is_empty() {
                         actions.push(Action::Share(ShareOp::Changed));
-                        actions.push(Action::Share(ShareOp::Join));
+                        actions.push(Action::Share(ShareOp::Enter));
                     }
                 }
                 ShareMode::Hosting => {
@@ -3120,6 +3122,7 @@ pub enum Asked {
     Delete { folder: std::path::PathBuf, path: String },
     Git { folder: std::path::PathBuf, op: crate::git::GitOp },
     Close { folder: std::path::PathBuf, forget: bool },
+    Share { join: bool },
     Exit,
 }
 

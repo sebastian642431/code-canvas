@@ -619,8 +619,8 @@ impl App {
     fn file_op(&mut self, op: FileOp) {
         let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
         let changes = !matches!(op, FileOp::Reveal(_) | FileOp::Terminal(_) | FileOp::CopyPath { .. });
-        if changes && self.pages[self.active].shared.is_some() {
-            let text = "Files are made, renamed and deleted by the one who shares the folder.";
+        if changes && self.pages[self.active].shared.is_some() && self.pages[self.active].read_only {
+            let text = "You are looking, not editing: the one who shares can let you make, rename and delete files.";
             return self.ext.notice(ext::Level::Info, "Sharing", text);
         }
         let at = |rel: &str| crate::files::inside(&root, rel);
@@ -1806,6 +1806,10 @@ impl App {
                     self.workspace.retain(|known| known.path != folder);
                 }
                 self.save_session();
+            }
+            (ui::Asked::Share { join }, ui::Answer::Yes) => {
+                self.share_op(if join { ui::ShareOp::Join } else { ui::ShareOp::Start });
+                self.ui.share.open = true;
             }
             (ui::Asked::Exit, ui::Answer::Yes) => {
                 for (i, rel) in self.unsaved() {
@@ -3365,7 +3369,12 @@ impl App {
                         self.ui.share.guests_write = rest.trim() == "writers";
                         Some(ui::ShareOp::Start)
                     }
+                    "offer" => Some(ui::ShareOp::Offer),
                     "stop" => Some(ui::ShareOp::Stop),
+                    "enter" => {
+                        self.ui.share.typed = rest.trim().to_string();
+                        Some(ui::ShareOp::Enter)
+                    }
                     "join" => {
                         let mut words = rest.split_whitespace();
                         self.ui.share.typed = words.next().unwrap_or_default().to_string();
@@ -3387,7 +3396,7 @@ impl App {
                 match op {
                     Some(op) => self.share_op(op),
                     None if verb == "panel" => {}
-                    None => log::warn!("script: share needs start [writers], stop, join <invitation> [name], follow|writer|reader <name>, unfollow or panel"),
+                    None => log::warn!("script: share needs start [writers], offer, stop, join <invitation> [name], enter <invitation>, follow|writer|reader <name>, unfollow or panel"),
                 }
             }
             Step::Agent(said) => match serde_json::from_str(&said) {
@@ -3464,6 +3473,9 @@ impl App {
                 let (rel, text) = what.split_once(' ').unwrap_or((what.as_str(), ""));
                 let file = self.pages.get(self.active).map(|page| page.root.join(rel));
                 let written = file.as_ref().map(|file| {
+                    if let Some(parent) = file.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
                     let mut all = std::fs::read_to_string(file).unwrap_or_default();
                     all.push_str(&text.replace("\\n", "\n"));
                     all.push('\n');

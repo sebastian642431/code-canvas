@@ -100,8 +100,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   en su propio lienzo, y lo que cualquiera escribe aparece para todos mientras se
   escribe. Cada invitado entra como lector o como escritor (lo cambiás cuando
   quieras), se ve el puntero, el cursor y la vista de cada persona con su nombre y
-  color, y podés **seguir** a alguien o traer a todos a lo que estás mirando. Se
-  corta con un botón y sola al cerrar la app. En la misma red funciona directo;
+  color, y podés **seguir** a alguien o traer a todos a lo que estás mirando. A
+  quien entra no se le limita nada: sus extensiones y asistentes trabajan sobre tus
+  carpetas, y los archivos que crea, cambia o borra (si lo dejás editar) se crean,
+  cambian o borran en tu computadora; por eso sirve para trabajar en tu otra PC, y
+  por eso la app avisa antes de compartir y antes de unirse: solo con alguien de
+  confianza. Se corta con un botón y sola al cerrar la app. En la misma red funciona directo;
   desde afuera hace falta una VPN (Tailscale, ZeroTier) o abrir el puerto.
 - **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
   preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas

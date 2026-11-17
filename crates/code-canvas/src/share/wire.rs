@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ot::TextOp;
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const DEFAULT_PORT: u16 = 47800;
 const MAGIC: &[u8; 5] = b"CCSH1";
 const LARGEST: usize = 16 << 20;
@@ -78,6 +78,8 @@ pub enum Msg {
     Gone { folder: u32, path: String },
     Edit { folder: u32, path: String, epoch: u32, number: u64, seen: u64, op: TextOp },
     Save { folder: u32, path: String },
+    Make { folder: u32, path: String, text: String },
+    Drop { folder: u32, path: String },
     Again { folder: u32, path: String },
     Seen { who: u32, at: Seen },
     Come { who: u32 },
