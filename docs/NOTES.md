@@ -1713,12 +1713,16 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - The "go to file" box becomes the command palette when the query starts with `>`,
   as in VS Code. `quick_score` is a subsequence match on a lower-case query
   (`appts` → `src/app/types.ts`).
-- **The two bars.** `Panel` names every panel; which side one opens on is where
-  its icon is (`UiState::side_of`), so nothing opens a panel "on the left": it
-  calls `UiState::show`. `Help` stays at the bottom of the left bar, next to the
-  gear that opens Settings.
+- **The two bars.** `Panel` names every panel; the side one opens on is fixed by
+  what it is (`Panel::home`): the app's own panels on the left, what an
+  extension brings (`Panel::Webview`) on the right. Nothing opens a panel "on
+  the left": it calls `UiState::show`. `Help` stays at the bottom of the left
+  bar, next to the gear that opens Settings.
+  - Icons could be dragged across until 0.3.3. An arrangement saved then is
+    read as an order only: `Rails::arrange` puts each key on its own side
+    whatever list it was saved in, and a drop on the other bar does nothing.
   - `rail_entries` lists the icons there are this frame; `Rails::arrange` puts
-    them in order. An icon never moved sits on its home side after the moved ones.
+    them in order. An icon never moved sits on its side after the moved ones.
     One that is not there now (an extension's view whose condition is false, the
     media viewer before anything was looked at) keeps its place for when it is.
   - An icon is dragged by hand (`RailDrag`, `rail_drop_target`,

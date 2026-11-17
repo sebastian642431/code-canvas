@@ -68,7 +68,7 @@ impl Panel {
 
     fn home(&self) -> Side {
         match self {
-            Panel::Symbols | Panel::Deps | Panel::Media | Panel::Webview(_) => Side::Right,
+            Panel::Webview(_) => Side::Right,
             _ => Side::Left,
         }
     }
@@ -332,7 +332,7 @@ impl UiState {
         if panel.stays_put() {
             return Side::Left;
         }
-        self.rails.side_of(&panel.key()).unwrap_or(panel.home())
+        panel.home()
     }
 
     pub fn open(&self, side: Side) -> Option<&Panel> {
@@ -410,7 +410,10 @@ impl UiState {
         if let Some(open) = &open {
             self.close_panel(open);
         }
-        self.rails.place(available, &key, side, before);
+        if side != panel.home() {
+            return;
+        }
+        self.rails.place(available, &key, before);
         if let Some(open) = open {
             self.show(open);
         }
@@ -1124,17 +1127,6 @@ fn rail(
             if resp.drag_started_by(egui::PointerButton::Primary) {
                 st.rail_drag = Some(RailDrag { key, target: None });
             }
-            let other = side.other();
-            let offer = match other {
-                Side::Left => "Move to the left bar",
-                Side::Right => "Move to the right bar",
-            };
-            resp.context_menu(|ui| {
-                if ui.button(offer).clicked() {
-                    st.rail_move = Some((entry.panel.clone(), other, None));
-                    ui.close();
-                }
-            });
             if resp.on_hover_text(&entry.tip).clicked() {
                 st.toggle(entry.panel.clone());
             }

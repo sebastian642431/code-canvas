@@ -199,8 +199,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 **An app, not a demo**
 - Own title bar and panels, icon rails on both sides, remembers your folders, cameras
   and layout between launches.
-- Every icon of the rails can be dragged to the other side, or reordered (or right
-  click it): the explorer on the right, an assistant's panel on the left, as you like.
+- What is the app's own (files, search, source control, extensions, problems,
+  symbols, dependencies) is on the left; what an extension brings (an assistant's
+  panel, its views) is on the right. The icons of each side can be dragged into
+  another order.
 
 ## Install and run
 

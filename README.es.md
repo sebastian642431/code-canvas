@@ -112,9 +112,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Claude Code**: la extensión oficial, instalada desde el panel de extensiones; su
   panel se abre a la derecha de la ventana.
 - **Es una app**: encabezado y paneles propios, barras de íconos a los costados, y
-  recuerda carpetas, cámaras y disposición entre aperturas. Cada ícono de las barras
-  se puede arrastrar al otro lado o reordenar (o con clic derecho): el explorador a la
-  derecha, el panel de un asistente a la izquierda, como prefieras.
+  recuerda carpetas, cámaras y disposición entre aperturas. Lo propio de la app
+  (archivos, búsqueda, control de código, extensiones, problemas, símbolos,
+  dependencias) va a la izquierda; lo que trae una extensión (el panel de un
+  asistente, sus vistas) va a la derecha. Los íconos de cada lado se pueden reordenar.
 
 ## Instalar y abrir
 
