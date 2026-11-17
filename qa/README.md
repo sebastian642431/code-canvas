@@ -50,7 +50,8 @@ quit
 | `guest-expect-log` | As `expect-log`, for the second instance. |
 
 In steps and in `expect-file`, `{FIX}` is the folder of the fixtures, `{WORK}`
-the folder of the run, `{REPO}` this repository.
+the folder of the run, `{REPO}` this repository. In an `agent` step they are
+written with forward slashes, because what follows is JSON.
 
 The steps are the ones of `CODE_CANVAS_SCRIPT`: see the table in
 [docs/NOTES.md](../docs/NOTES.md), `script.rs`. `mark <name>` takes a picture

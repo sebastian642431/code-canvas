@@ -1,54 +1,38 @@
-title: The buttons that open and close each side, clicks on the rail icons, and an icon moved to the top of its bar
-expect-file: {WORK}\data\session.json :: "left": \[\s*"deps",\s*"files"
+title: The button at the top hides and shows the files; a click on an icon opens its card and the same click closes it; an icon goes to the top of its bar and then to the other bar while its card stays open
+expect-file: {WORK}\data\session.json :: "right": \[\s*"deps"
+expect-file: {WORK}\data\session.json :: "cards": \[\s*"deps"
 folders: git-changes
 forbid-log: WARN.*script
 
 wait 3000
-left none
-right none
-wait 500
-mark a-closed
-wait 500
-ui click 1684 872
-wait 700
-mark b-right-button-nothing-on-the-right
-wait 500
-ui click 22 872
-wait 700
-mark c-left-button
-wait 500
-ui click 22 872
+mark a-start
+wait 400
+ui click 65 20
 wait 600
-right symbols
-wait 500
-ui click 22 872
-wait 500
-ui click 22 872
-wait 700
-mark d-left-button-reopens-symbols
-wait 500
-ui click 22 129
-wait 800
-mark e-click-changes-icon
-wait 500
-ui click 22 129
+mark b-files-hidden-by-the-button
+wait 400
+ui click 65 20
 wait 600
-mark f-click-it-again-closes
-wait 500
+mark c-files-back
+wait 400
+ui click 26 98
+wait 700
+mark d-search-card-by-a-click-on-its-icon
+wait 400
+ui click 26 98
+wait 600
+mark e-closed-by-the-same-click
+wait 400
 move deps left files
 wait 800
-mark g-deps-first-on-the-bar
-wait 500
+mark f-deps-first-on-the-bar
+wait 400
 right deps
 wait 700
-mark h-deps-open-its-icon-is-the-tab
-wait 500
+mark g-deps-card-open
+wait 400
 move deps right
 wait 800
-mark i-deps-on-the-right-bar
-wait 500
-left files
-wait 600
-mark j-files
-wait 500
+mark h-deps-icon-on-the-right-bar-its-card-still-open
+wait 400
 quit

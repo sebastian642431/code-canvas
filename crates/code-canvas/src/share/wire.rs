@@ -56,6 +56,10 @@ impl Seen {
     }
 }
 
+pub fn turns_text(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
 pub fn safe_path(path: &str) -> bool {
     let part = |part: &str| {
         let bare = part.trim_end_matches(['.', ' ']).to_lowercase();

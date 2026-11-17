@@ -181,7 +181,7 @@ impl App {
                 (Some(file), Some((first, count))) => {
                     let all = r.repo.files[file].line_count() as u32;
                     let first = page.row_of(&rel, first).min(all.saturating_sub(1));
-                    node.line_rects(first..(first + count).min(all)).into_iter().map(on_screen).collect()
+                    node.line_rects(first..first.saturating_add(count).min(all)).into_iter().map(on_screen).collect()
                 }
                 _ => Vec::new(),
             };

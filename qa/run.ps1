@@ -80,11 +80,17 @@ if ($all.Count -gt 0) {
 }
 $folders = @($wanted | ForEach-Object { Join-Path $fix ($_ -replace '/', '\') })
 
-function Fill([string]$text) {
-    return $text.Replace('{FIX}', $fix).Replace('{WORK}', $Work).Replace('{REPO}', $repo)
+function Fill([string]$step) {
+    $places = @{ '{FIX}' = $fix; '{WORK}' = $Work; '{REPO}' = $repo }
+    foreach ($name in $places.Keys) {
+        $path = $places[$name]
+        if ($step.TrimStart().StartsWith('agent ')) { $path = $path.Replace('\', '/') }
+        $step = $step.Replace($name, $path)
+    }
+    return $step
 }
-$hostScript = Fill (($steps.host) -join '; ')
-$guestScript = Fill (($steps.guest) -join '; ')
+$hostScript = (@($steps.host) | ForEach-Object { Fill $_ }) -join '; '
+$guestScript = (@($steps.guest) | ForEach-Object { Fill $_ }) -join '; '
 
 $env:CODE_CANVAS_SHARE_ON = '127.0.0.1'
 $env:CLAUDE_CONFIG_DIR = Join-Path $Work 'claude'

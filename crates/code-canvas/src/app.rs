@@ -1492,7 +1492,8 @@ impl App {
             return true;
         }
         let file = page.ready().and_then(|r| r.repo.file_index(&rel));
-        let mut row = page.row_of(&rel, line);
+        let last = page.ready().zip(file).map(|(r, file)| r.repo.files[file].line_count().saturating_sub(1) as u32);
+        let mut row = page.row_of(&rel, line).min(last.unwrap_or(u32::MAX));
         let column = page.ready().zip(file).and_then(|(r, file)| {
             let node = r.layout.file_node.get(file).filter(|&&node| node != canvas_core::layout::NONE)?;
             Some(r.layout.nodes[*node as usize].fold)

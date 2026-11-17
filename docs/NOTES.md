@@ -1755,7 +1755,13 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   shared folder do not hold the guest's app from closing (`App::unsaved`).
 - **Readers**: `Page::read_only` refuses to start editing and to make, rename
   or delete files, and the host refuses the edits anyway (`Session::edit`),
-  sending the file back. Nothing a reader's disk does is sent.
+  sending the file back. Nothing a reader's disk does is sent: a file changed
+  or deleted there is written again as the session has it (`share_flush`), so
+  a reader never looks at text nobody else has.
+- What is typed into a shared text has no control characters but the line
+  break and the tab (`Session::edit`), and a name has none at all, nor the
+  marks that turn the direction of text (`wire::turns_text`): a name is shown
+  in notices and beside carets.
 - **Where someone is** (`Seen`) is said in terms of the layout, not of pixels or
   world places, because two apps lay the same folder out differently (folded
   folders, hidden files, a diff open): the node at the middle of the view and

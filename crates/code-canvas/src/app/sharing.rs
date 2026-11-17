@@ -408,6 +408,7 @@ impl App {
         let mut later: Vec<(u32, String)> = Vec::new();
         let mut written: Vec<(u32, String, String)> = Vec::new();
         let mut made: Vec<(u32, String, String)> = Vec::new();
+        let mut back: Vec<(u32, String)> = Vec::new();
         let mut room = share::MOST_TEXT.saturating_sub(self.sharing.session.as_ref().map_or(0, Session::text_kept));
         for (id, rel) in std::mem::take(&mut self.sharing.touched) {
             let Some(page) = self.pages.iter().find(|page| page.id == id) else { continue };
@@ -420,7 +421,8 @@ impl App {
                 continue;
             };
             if !host {
-                let Some(session) = self.sharing.session.as_ref().filter(|session| session.writer()) else { continue };
+                let Some(session) = self.sharing.session.as_ref() else { continue };
+                let writer = session.writer();
                 let path = page.root.join(&rel);
                 let key = (folder, rel.clone());
                 let size = std::fs::metadata(&path).ok().filter(|file| file.is_file()).map(|file| file.len() as usize);
@@ -430,8 +432,10 @@ impl App {
                     }
                     Some(_) => None,
                     None => {
-                        if session.text(folder, &rel).is_some() && !path.exists() {
-                            removed.push(key.clone());
+                        match session.text(folder, &rel).is_some() && !path.exists() {
+                            true if writer => removed.push(key.clone()),
+                            true => back.push(key.clone()),
+                            false => {}
                         }
                         None
                     }
@@ -440,7 +444,9 @@ impl App {
                 let mark = mark_of(&text);
                 match session.text(folder, &rel) {
                     Some(known) if known == text || self.sharing.mirrored.get(&key) == Some(&mark) => {}
-                    Some(_) => written.push((folder, rel, text)),
+                    Some(_) if writer => written.push((folder, rel, text)),
+                    Some(_) => back.push(key),
+                    None if !writer => {}
                     None => {
                         let shown = r.repo.file_index(&rel).is_some_and(|file| r.repo.files[file].note.is_none());
                         if shown && self.sharing.made.get(&key) != Some(&mark) {
@@ -478,6 +484,12 @@ impl App {
             }
         }
         self.sharing.touched = later;
+        for (folder, rel) in back {
+            let kept = self.sharing.session.as_ref().and_then(|session| session.text(folder, &rel));
+            if let Some(text) = kept.map(str::to_string) {
+                self.share_mirror(folder, &rel, &text, false);
+            }
+        }
         let Some(session) = self.sharing.session.as_mut() else { return };
         for (folder, rel, text) in changed {
             session.changed(folder, &rel, &text);

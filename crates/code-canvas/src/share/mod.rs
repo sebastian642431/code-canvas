@@ -458,7 +458,8 @@ impl Session {
         if link.epoch != epoch {
             return None;
         }
-        let carries = |part: &ot::Part| matches!(part, ot::Part::Insert(text) if text.contains('\r'));
+        let odd = |c: char| c.is_control() && c != '\n' && c != '\t';
+        let carries = |part: &ot::Part| matches!(part, ot::Part::Insert(text) if text.chars().any(odd));
         let allowed = allowed && !op.parts.iter().any(carries);
         let fitted = if allowed { link.receive(op, number, seen, host) } else { None };
         let applied = fitted.and_then(|op| Some((op.apply(&doc.text)?, op)));
@@ -596,7 +597,7 @@ impl Session {
                 }
                 let name = match name.trim() {
                     "" => format!("Guest {from}"),
-                    name => name.chars().take(40).collect(),
+                    name => name.chars().filter(|c| !c.is_control() && !wire::turns_text(*c)).take(40).collect(),
                 };
                 let taken = self.people.iter().filter(|person| person.name == name).count();
                 let name = if taken > 0 { format!("{name} ({})", taken + 1) } else { name };
