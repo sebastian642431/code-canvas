@@ -3027,6 +3027,10 @@ impl App {
             Action::RevealInFiles(path) => {
                 self.ui.bare = false;
                 self.ui.show(Panel::Files);
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    let node = page.ready().and_then(|r| r.layout.node_for_path(&r.repo, &path));
+                    page.selected = node.or(page.selected);
+                }
                 self.ui.explorer_reveal = Some(path);
                 self.request_redraw();
             }
