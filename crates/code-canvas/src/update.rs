@@ -23,9 +23,13 @@ const ASSET: &str = "code-canvas.exe";
 /// How often the latest release is looked up while the app stays open.
 const EVERY: Duration = Duration::from_secs(6 * 3600);
 
-/// The version of this build.
+/// The version of this build. `CODE_CANVAS_PRETEND_VERSION` replaces it, to
+/// see how an offered update looks without waiting for a release.
 pub fn current() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        std::env::var("CODE_CANVAS_PRETEND_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,10 +162,30 @@ pub fn open_page(url: &str) {
     }
 }
 
+/// Where the updater stands: shown in Settings and in the status bar.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum State {
+    /// Nothing has been looked up yet (or looking is switched off).
+    #[default]
+    Unknown,
+    Checking,
+    UpToDate,
+    /// This version is on offer.
+    Available(String),
+    /// It is being downloaded and put in place.
+    Installing(String),
+    /// The last look failed (no network, most likely).
+    Failed(String),
+}
+
 /// What the updater has to tell the app.
 pub enum News {
     /// A release newer than this build exists (told once per version).
     Available(Release),
+    /// The user asked, and this build is the latest.
+    UpToDate,
+    /// The user asked, and the answer could not be had.
+    CheckFailed(String),
     /// The new version is in place: start this program and leave.
     Installed(PathBuf),
     Failed(String),
@@ -176,12 +200,49 @@ pub struct Updater {
     pub offer: Option<Release>,
     /// The version the user was already told about.
     told: Option<String>,
+    /// The user asked for this look: say how it went, whatever the answer.
+    asked: bool,
+    /// A look finished: `Ok` when the answer arrived.
+    last: Option<Result<(), String>>,
     waker: fn(),
 }
 
 impl Updater {
     pub fn new(enabled: bool, waker: fn()) -> Self {
-        Updater { enabled, checked: None, check: None, installing: None, offer: None, told: None, waker }
+        Updater {
+            enabled,
+            checked: None,
+            check: None,
+            installing: None,
+            offer: None,
+            told: None,
+            asked: false,
+            last: None,
+            waker,
+        }
+    }
+
+    /// Look for a newer release now, because the user asked (it works with
+    /// the automatic look switched off too).
+    pub fn check_now(&mut self) {
+        self.checked = None;
+        self.told = None;
+        self.asked = true;
+    }
+
+    pub fn state(&self) -> State {
+        if self.installing.is_some() {
+            return State::Installing(self.offer.as_ref().map(|r| r.version.clone()).unwrap_or_default());
+        }
+        if self.check.is_some() {
+            return State::Checking;
+        }
+        match (&self.offer, &self.last) {
+            (Some(release), _) => State::Available(release.version.clone()),
+            (None, Some(Ok(()))) => State::UpToDate,
+            (None, Some(Err(why))) => State::Failed(why.clone()),
+            (None, None) => State::Unknown,
+        }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -202,22 +263,36 @@ impl Updater {
         if let Some(rx) = &self.check {
             if let Ok(found) = rx.try_recv() {
                 self.check = None;
+                let asked = std::mem::take(&mut self.asked);
                 match found {
                     Ok(release) if newer(current(), &release.version) => {
                         let fresh = self.told.as_deref() != Some(release.version.as_str());
                         self.offer = Some(release.clone());
+                        self.last = Some(Ok(()));
                         if fresh {
                             self.told = Some(release.version.clone());
                             return Some(News::Available(release));
                         }
                     }
-                    Ok(_) => self.offer = None,
-                    Err(why) => log::debug!("looking for updates: {why}"),
+                    Ok(_) => {
+                        self.offer = None;
+                        self.last = Some(Ok(()));
+                        if asked {
+                            return Some(News::UpToDate);
+                        }
+                    }
+                    Err(why) => {
+                        log::debug!("looking for updates: {why}");
+                        self.last = Some(Err(why.clone()));
+                        if asked {
+                            return Some(News::CheckFailed(why));
+                        }
+                    }
                 }
             }
         }
         let due = self.checked.is_none_or(|at| at.elapsed() > EVERY);
-        if self.enabled && due && self.check.is_none() {
+        if (self.enabled || self.asked) && due && self.check.is_none() {
             self.checked = Some(Instant::now());
             let (tx, rx) = mpsc::channel();
             let waker = self.waker;

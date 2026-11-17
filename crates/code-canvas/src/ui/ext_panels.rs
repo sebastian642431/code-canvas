@@ -29,7 +29,7 @@ fn severity_glyph(s: Severity) -> &'static str {
 }
 
 /// A small rounded button with a label.
-fn pill(ui: &mut egui::Ui, label: &str, strong: bool) -> bool {
+pub(super) fn pill(ui: &mut egui::Ui, label: &str, strong: bool) -> bool {
     let font = FontId::proportional(12.0);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, pal().text);
     let size = Vec2::new(galley.size().x + 18.0, 22.0);
@@ -475,6 +475,48 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
     if back {
         st.show_left(LeftPanel::Extensions);
     }
+}
+
+/// The media viewer: a header with the file's name, and under it the place
+/// where the app puts the browser view that shows the file.
+pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    let Some(path) = st.media.clone() else {
+        Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.label(
+                RichText::new("Click an image, a video or a PDF to see it here.").size(12.0).color(pal().text_dim),
+            );
+        });
+        return;
+    };
+    let mut close = false;
+    Frame::NONE.inner_margin(Margin { left: 12, right: 6, top: 8, bottom: 6 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                close = small_icon(ui, icons::X, "Close");
+                let glyph = crate::codicons::glyph("link-external").unwrap_or(icons::SHARE_2);
+                if small_icon(ui, glyph, "Open with the system's program for this file") {
+                    actions.push(Action::OpenExternally(path.clone()));
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let label = egui::Label::new(RichText::new(name).size(13.5).color(pal().text)).truncate();
+                    ui.add(label).on_hover_text(path.display().to_string());
+                });
+            });
+        });
+    });
+    if close {
+        st.right = None;
+        return;
+    }
+    let rect = ui.available_rect_before_wrap().shrink(1.0);
+    ui.allocate_rect(rect, Sense::hover());
+    if !crate::webview::AVAILABLE {
+        let text = "Seeing media inside the app is only available on Windows for now.";
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
+    }
+    st.webview_rect = Some(rect);
 }
 
 /// The panel an extension's webview is shown in. The page itself is a

@@ -19,6 +19,7 @@ mod icon;
 mod icon_theme;
 mod icons;
 mod keys;
+mod media;
 mod overlay;
 mod page;
 mod paths;

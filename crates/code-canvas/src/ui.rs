@@ -53,6 +53,8 @@ pub enum RightPanel {
     Deps,
     /// An extension's webview (`UiState::webview`).
     Webview,
+    /// An image, video, audio file or PDF (`UiState::media`).
+    Media,
 }
 
 /// The file icon theme in use (`icon_theme.rs`) and the images of it drawn
@@ -203,6 +205,10 @@ pub struct UiState {
     /// Show one folder at a time, instead of all of them side by side.
     pub single: bool,
     pub prefs: crate::prefs::Prefs,
+    /// The file shown by [`RightPanel::Media`].
+    pub media: Option<std::path::PathBuf>,
+    /// Whether a newer version of the app exists (`update.rs`).
+    pub update: crate::update::State,
     /// The names offered under the caret, when a path is being typed.
     pub completion: Option<CompletionView>,
     /// Who writes commit messages when asked (`commit_ai.rs`).
@@ -238,6 +244,8 @@ impl Default for UiState {
             naming: None,
             single: false,
             prefs: Default::default(),
+            media: None,
+            update: Default::default(),
             completion: None,
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
@@ -316,6 +324,14 @@ pub enum Action {
     /// Change who writes commit messages.
     SetCommitAi(crate::commit_ai::Settings),
     SetPrefs(crate::prefs::Prefs),
+    /// Show an image, video, audio file or PDF in the viewer.
+    OpenMedia(std::path::PathBuf),
+    /// Open a file with the program the system uses for it.
+    OpenExternally(std::path::PathBuf),
+    /// Look for a newer version of the app now.
+    CheckUpdates,
+    /// Download the newer version on offer and restart into it.
+    InstallUpdate,
     /// Take one of the names offered under the caret.
     AcceptCompletion(usize),
     /// Show only the files git reports as changed.
@@ -601,7 +617,7 @@ pub fn build(
     st.webview_rect = None;
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
-    status_bar(ui, st, ext, pages.get(active), info);
+    status_bar(ui, st, ext, pages.get(active), info, actions);
     left_rail(ui, st, ext, pages.get(active));
     right_rail(ui, st, ext);
 
@@ -624,6 +640,7 @@ pub fn build(
             RightPanel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
             RightPanel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
             RightPanel::Webview => ext_panels::webview_panel(ui, st, ext),
+            RightPanel::Media => ext_panels::media_panel(ui, st, actions),
         });
     }
 
@@ -756,8 +773,16 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     });
 }
 
-fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option<&Page>, info: &FrameInfo) {
+fn status_bar(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &Extensions,
+    page: Option<&Page>,
+    info: &FrameInfo,
+    actions: &mut Vec<Action>,
+) {
     let mut panel_to_show = None;
+    let mut update_now = false;
     egui::Panel::bottom("status").frame(Frame::NONE.fill(pal().chrome).inner_margin(Margin::symmetric(12, 0))).exact_size(24.0).show(
         ui,
         |ui| {
@@ -780,6 +805,25 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
                 }
                 ui.label(RichText::new(&info.status).size(12.0).color(pal().text_dim));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // The version, at the very end; a newer one is offered next to it.
+                    let version = RichText::new(format!("v{}", crate::update::current())).size(12.0).color(pal().text_faint);
+                    let label = ui.add(egui::Label::new(version).sense(Sense::click()));
+                    if label.on_hover_text("Code Canvas version: click for Settings, where updates are").clicked() {
+                        panel_to_show = Some(LeftPanel::Settings);
+                    }
+                    if let crate::update::State::Available(new) = &st.update {
+                        let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
+                        let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);
+                        let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
+                        if label.on_hover_text("Download the new version and restart into it").clicked() {
+                            update_now = true;
+                        }
+                        ui.add_space(6.0);
+                    } else if let crate::update::State::Installing(new) = &st.update {
+                        ui.label(RichText::new(format!("Downloading {new}…")).size(12.0).color(pal().accent));
+                        ui.add_space(6.0);
+                    }
+                    ui.add_space(6.0);
                     let st = info.stats;
                     let perf = format!(
                         "{}  ·  {} draws  ·  {:.2} ms  ·  {:.3}x",
@@ -818,6 +862,9 @@ fn status_bar(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Optio
     );
     if let Some(panel) = panel_to_show {
         st.show_left(panel);
+    }
+    if update_now {
+        actions.push(Action::InstallUpdate);
     }
 }
 
@@ -918,6 +965,14 @@ fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
                 } else {
                     st.show_right(panel);
                 }
+            }
+        }
+        // The media viewer, once something has been looked at.
+        if st.media.is_some() {
+            let active = st.right == Some(RightPanel::Media);
+            let tip = "The image, video or PDF you last looked at";
+            if icon_button(ui, icons::IMAGE, b, active, pal().hover).on_hover_text(tip).clicked() {
+                st.right = if active { None } else { Some(RightPanel::Media) };
             }
         }
         // Extensions' own interfaces: what their manifests put in the bars.
@@ -2010,6 +2065,8 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("View: Problems".into(), Action::ShowLeft(LeftPanel::Problems)),
         ("View: Keyboard Shortcuts".into(), Action::ShowLeft(LeftPanel::Help)),
         ("Preferences: Settings".into(), Action::ShowLeft(LeftPanel::Settings)),
+        ("Code Canvas: Check for Updates".into(), Action::CheckUpdates),
+        (format!("Code Canvas: About (version {})", crate::update::current()), Action::ShowLeft(LeftPanel::Settings)),
         ("Preferences: Colour Theme".into(), Action::ShowLeft(LeftPanel::Settings)),
         ("View: Folders Side by Side, or One at a Time".into(), Action::ToggleSideBySide),
         ("View: Show the Whole Canvas".into(), Action::Fit),

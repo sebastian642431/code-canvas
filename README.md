@@ -41,8 +41,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   new file or folder, rename, delete (to the recycle bin), copy path, reveal in the
   file manager, open a terminal there.
 - Drop a file on the window to copy it into the selected folder.
-- **Updates**: a newer release is offered in a notice when the app starts; *Update and
-  restart* downloads it and puts it in place. Can be switched off in the settings.
+- **Updates**: a newer release is offered in a notice when the app starts and in the
+  status bar, next to the version; *Update and restart* downloads it and restarts into
+  it. Settings shows the version and has *Check for updates*.
+- **Images, video, audio and PDF**: click one (on the canvas, in the file tree, or a
+  link an assistant gives) and it opens in a viewer panel. Windows only for now.
 - An assistant's panel (Claude Code) stays scrolled to what it is writing until you
   scroll up.
 - Several folders open are shown **side by side**, each in its own pane with its own

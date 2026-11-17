@@ -267,6 +267,9 @@ mod platform {
         html: HashMap<String, String>,
         /// Folders files may be served from.
         roots: Vec<PathBuf>,
+        /// Single files that may be served wherever they are: what the user
+        /// opened in the media viewer.
+        files: Vec<PathBuf>,
     }
 
     struct View {
@@ -312,6 +315,17 @@ mod platform {
             "wasm" => "application/wasm",
             "mp3" => "audio/mpeg",
             "wav" => "audio/wav",
+            "ogg" | "opus" => "audio/ogg",
+            "m4a" | "aac" => "audio/mp4",
+            "flac" => "audio/flac",
+            "mp4" | "m4v" => "video/mp4",
+            "webm" => "video/webm",
+            "mov" => "video/quicktime",
+            "mkv" => "video/x-matroska",
+            "ogv" => "video/ogg",
+            "bmp" => "image/bmp",
+            "avif" => "image/avif",
+            "pdf" => "application/pdf",
             _ => "application/octet-stream",
         }
     }
@@ -364,18 +378,62 @@ mod platform {
         let Ok(real) = file.canonicalize() else { return respond(404, "text/plain", Vec::new()) };
         let key = |p: &Path| crate::ext::path_key(&canvas_core::scan::clean_path(p.to_path_buf()).to_string_lossy());
         let real_key = key(&real);
-        let allowed = shared.lock().unwrap().roots.iter().any(|root| {
-            let mut prefix = key(root);
-            prefix.push('/');
-            real_key.starts_with(&prefix)
-        });
+        let allowed = {
+            let shared = shared.lock().unwrap();
+            shared.files.iter().any(|f| key(f) == real_key)
+                || shared.roots.iter().any(|root| {
+                    let mut prefix = key(root);
+                    prefix.push('/');
+                    real_key.starts_with(&prefix)
+                })
+        };
         if !allowed {
             return respond(403, "text/plain", b"outside the allowed folders".to_vec());
         }
-        match std::fs::read(&real) {
-            Ok(bytes) => respond(200, mime(&real), bytes),
-            Err(_) => respond(404, "text/plain", Vec::new()),
+        // Video and audio are asked for in pieces (`Range: bytes=a-b`): that
+        // is what makes seeking work, and a long video is never read whole.
+        let range = request.headers().get("Range").and_then(|v| v.to_str().ok()).and_then(parse_range);
+        match range {
+            Some((from, to)) => serve_range(&real, from, to),
+            None => match std::fs::read(&real) {
+                Ok(bytes) => respond(200, mime(&real), bytes),
+                Err(_) => respond(404, "text/plain", Vec::new()),
+            },
         }
+    }
+
+    /// `bytes=a-b` or `bytes=a-`: the first byte wanted and, if given, the last.
+    fn parse_range(header: &str) -> Option<(u64, Option<u64>)> {
+        let (from, to) = header.trim().strip_prefix("bytes=")?.split(',').next()?.split_once('-')?;
+        Some((from.trim().parse().ok()?, to.trim().parse().ok()))
+    }
+
+    /// One piece of a file, as a `206 Partial Content` answer.
+    fn serve_range(path: &Path, from: u64, to: Option<u64>) -> Response<Cow<'static, [u8]>> {
+        use std::io::{Read, Seek, SeekFrom};
+        const PIECE: u64 = 4 * 1024 * 1024;
+        let Ok(mut file) = std::fs::File::open(path) else { return respond(404, "text/plain", Vec::new()) };
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        if from >= size {
+            return Response::builder()
+                .status(416)
+                .header("Content-Range", format!("bytes */{size}"))
+                .body(Cow::Borrowed(&[][..]))
+                .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])));
+        }
+        let last = to.unwrap_or(u64::MAX).min(size - 1).min(from + PIECE - 1);
+        let mut bytes = vec![0u8; (last - from + 1) as usize];
+        if file.seek(SeekFrom::Start(from)).is_err() || file.read_exact(&mut bytes).is_err() {
+            return respond(404, "text/plain", Vec::new());
+        }
+        Response::builder()
+            .status(206)
+            .header(CONTENT_TYPE, mime(path))
+            .header("Accept-Ranges", "bytes")
+            .header("Content-Range", format!("bytes {from}-{last}/{size}"))
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Cow::Owned(bytes))
+            .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[][..])))
     }
 
     fn bounds(r: Rect) -> wry::Rect {
@@ -402,6 +460,19 @@ mod platform {
 
         pub fn set_roots(&mut self, roots: Vec<PathBuf>) {
             self.shared.lock().unwrap().roots = roots.into_iter().map(|r| r.canonicalize().unwrap_or(r)).collect();
+        }
+
+        /// Let pages load this one file, wherever it is (the media viewer's).
+        pub fn allow_file(&mut self, file: &Path) {
+            let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+            let mut shared = self.shared.lock().unwrap();
+            if !shared.files.contains(&file) {
+                shared.files.push(file);
+                // Only the recent ones stay allowed.
+                if shared.files.len() > 64 {
+                    shared.files.remove(0);
+                }
+            }
         }
 
         /// The extension set (or replaced) the page of `handle`.
@@ -566,8 +637,19 @@ mod platform {
 
         /// Give the keyboard back to the window, so that what is typed next
         /// reaches the app and not the page.
-        pub fn focus_app(&self) {
+        /// Give the keyboard to the page on screen, as a click on it does.
+        pub fn focus_page(&self) {
             if let Some(view) = self.shown.as_ref().and_then(|h| self.views.get(h)) {
+                let _ = view.web.focus();
+            }
+        }
+
+        /// Give the keyboard back to the app's window. A page that was clicked
+        /// keeps the keyboard, even hidden, until someone takes it: any of the
+        /// views can hand it to the window they all live in.
+        pub fn focus_app(&self) {
+            let shown = self.shown.as_ref().and_then(|h| self.views.get(h));
+            if let Some(view) = shown.or_else(|| self.views.values().next()) {
                 let _ = view.web.focus_parent();
             }
         }
@@ -591,6 +673,7 @@ mod platform {
             WebViews
         }
         pub fn set_roots(&mut self, _roots: Vec<PathBuf>) {}
+        pub fn allow_file(&mut self, _file: &std::path::Path) {}
         pub fn set_html(&mut self, _handle: &str, _html: String) {}
         pub fn post(&mut self, _handle: &str, _message: &Value) {}
         pub fn close(&mut self, _handle: &str) {}
@@ -602,6 +685,7 @@ mod platform {
             Vec::new()
         }
         pub fn focus_app(&self) {}
+        pub fn focus_page(&self) {}
         pub fn retheme(&mut self) {}
         pub fn set_follow(&mut self, _follow: bool) {}
     }

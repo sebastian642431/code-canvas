@@ -1009,7 +1009,24 @@ impl App {
         true
     }
 
+    /// Show an image, a video, an audio file or a PDF in the viewer panel.
+    /// False when `path` is none of those.
+    fn open_media(&mut self, path: &Path) -> bool {
+        let Some(kind) = crate::media::kind(path).filter(|_| path.is_file()) else { return false };
+        self.webviews.allow_file(path);
+        self.webviews.set_html(crate::media::HANDLE, crate::media::page(path, kind));
+        self.ui.media = Some(path.to_path_buf());
+        self.ui.right = Some(RightPanel::Media);
+        self.request_redraw();
+        true
+    }
+
     fn reveal_file(&mut self, path: &Path) {
+        // Pictures and the like are looked at, wherever they are; code is
+        // gone to on the canvas.
+        if self.open_media(path) {
+            return;
+        }
         if let Some((i, rel)) = self.locate_file(path) {
             self.switch_to(i);
             self.apply(Action::FlyToPath(rel));
@@ -1276,6 +1293,13 @@ impl App {
             }
         }
 
+        // A card that is a picture, a video or a PDF: show it.
+        let media = hit.and_then(|h| match r.layout.nodes[h].kind {
+            NodeKind::File(fi) => Some(page.root.join(&r.repo.files[fi].rel_path)),
+            NodeKind::Dir => None,
+        });
+        let media = media.filter(|p| !double && crate::media::kind(p).is_some() && caret_at.is_none());
+
         page.selected = hit;
         // Readable code is an editor: a click puts the caret there (Shift
         // extends the selection, a double click takes the word). Ctrl+click
@@ -1297,6 +1321,9 @@ impl App {
         // A click anywhere else leaves the editor (what was typed is kept).
         if !ctrl {
             page.editing = None;
+        }
+        if let Some(file) = media {
+            self.open_media(&file);
         }
         let Some(node) = hit else {
             self.request_redraw();
@@ -1469,7 +1496,15 @@ impl App {
             Action::ZoomBy(f) => self.zoom_center(f),
             Action::FrameSelection => self.frame_selection(),
             Action::FlyToSite(site) => self.frame_site(site),
+            Action::OpenMedia(path) => {
+                self.open_media(&path);
+            }
+            Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
             Action::FlyToPath(path) => {
+                // A picture or a video is also shown, not just gone to.
+                if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
+                    self.open_media(&file);
+                }
                 let node = self
                     .pages
                     .get(self.active)
@@ -1648,6 +1683,18 @@ impl App {
                 self.request_redraw();
             }
             Action::AcceptCompletion(index) => self.accept_completion(index),
+            Action::CheckUpdates => {
+                self.updater.check_now();
+                self.request_redraw();
+            }
+            Action::InstallUpdate => {
+                if self.updater.install() {
+                    self.ext.notice(ext::Level::Info, "Code Canvas", "downloading the new version…");
+                } else if let Some(release) = &self.updater.offer {
+                    crate::update::open_page(&release.page);
+                }
+                self.request_redraw();
+            }
             Action::SetPrefs(prefs) => {
                 crate::prefs::save(&prefs);
                 let versions = prefs.check_versions != self.ui.prefs.check_versions;
@@ -1925,6 +1972,19 @@ impl App {
             }
             Step::Zoom(f) => self.apply(Action::ZoomBy(f)),
             Step::Quick(text) => self.ui.quick = Some(QuickOpen { query: text, selected: 0, focus: true }),
+            Step::Updates => self.apply(Action::CheckUpdates),
+            Step::Focus(what) => match what.as_str() {
+                "page" => self.webviews.focus_page(),
+                _ => self.webviews.focus_app(),
+            },
+            Step::Open(path) => {
+                let given = PathBuf::from(&path);
+                let file = match self.pages.get(self.active) {
+                    Some(page) if given.is_relative() => page.root.join(given),
+                    _ => given,
+                };
+                self.apply(Action::OpenMedia(file));
+            }
             Step::Resize(w, h) => {
                 if let Some(g) = &self.gfx {
                     let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
@@ -2149,6 +2209,15 @@ impl App {
                 self.ext.notice(ext::Level::Error, "Code Canvas", format!("the update was not installed: {why}"));
                 self.request_redraw();
             }
+            Some(News::UpToDate) => {
+                let text = format!("version {} is the latest", crate::update::current());
+                self.ext.notice(ext::Level::Info, "Code Canvas", text);
+                self.request_redraw();
+            }
+            Some(News::CheckFailed(why)) => {
+                self.ext.notice(ext::Level::Warn, "Code Canvas", format!("could not look for a new version: {why}"));
+                self.request_redraw();
+            }
             None => {}
         }
         for (about, choice) in self.ext.take_answers() {
@@ -2365,6 +2434,7 @@ impl App {
         let (mut full, canvas_pts) = {
             let g = self.gfx.as_mut().unwrap();
             let raw = g.egui_state.take_egui_input(&g.window);
+            self.ui.update = self.updater.state();
             let info = FrameInfo { stats: &self.stats, frame_ms: self.frame_ms, zoom, tooltip, status };
             let mut canvas = egui::Rect::NOTHING;
             let (ui_state, pages, active, ext) = (&mut self.ui, &mut self.pages, self.active, &mut self.ext);
@@ -2410,6 +2480,17 @@ impl App {
                     let entry = self.ext.webviews.iter().find(|w| w.key == self.ui.webview)?;
                     Some((entry.handle.clone()?, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
                 });
+            // The media viewer is a page of the app's own, shown the same way.
+            let media = (self.ui.right == Some(RightPanel::Media) && self.ui.media.is_some())
+                .then_some(())
+                .and(self.ui.webview_rect)
+                .map(|r| {
+                    (
+                        crate::media::HANDLE.to_string(),
+                        Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s),
+                    )
+                });
+            let shown = shown.or(media);
             let g = self.gfx.as_ref().unwrap();
             let t = Instant::now();
             self.webviews.show(&g.window, shown.as_ref().map(|(h, r)| (h.as_str(), *r)));
@@ -2944,6 +3025,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => match state {
                 ElementState::Pressed => {
+                    // A press that reaches the window is on the app's own
+                    // interface, not on a web page: the keyboard follows it.
+                    // Without this, a box clicked while an extension's panel
+                    // had the keyboard opened but could not be typed in.
+                    self.webviews.focus_app();
                     self.focus_pane_at(self.cursor);
                     // Only presses that start on the canvas belong to the canvas.
                     if self.drag.is_none() && !self.over_ui(self.cursor) {

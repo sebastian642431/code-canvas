@@ -1843,6 +1843,14 @@ const commands = permissive('commands', {
         return Promise.reject(e);
       }
     }
+    // Opening a file: the app shows it (a picture in its viewer, code on the canvas).
+    if (id === 'vscode.open' || id === 'revealInExplorer') {
+      const target = args[0];
+      const uri = target instanceof Uri ? target : typeof target === 'string' ? Uri.parse(target) : null;
+      if (uri && uri.scheme === 'file') send({ type: 'reveal', path: appPath(uri) });
+      else if (uri) send({ type: 'openExternal', url: uri.toString() });
+      return Promise.resolve();
+    }
     if (id === 'setContext') {
       // Context keys decide which of an extension's views are shown (the
       // `when` of each view): the app keeps them.

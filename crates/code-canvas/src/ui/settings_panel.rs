@@ -37,6 +37,41 @@ pub(super) fn settings_panel(
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let (base_key, base) = st.theme.base();
 
+            // Which version this is, and whether there is a newer one.
+            section(ui, icons::INFO, "Code Canvas");
+            well(ui, |ui| {
+                use crate::update::State;
+                ui.label(RichText::new(format!("Version {}", crate::update::current())).size(13.0).color(pal().text));
+                let (text, color) = match &st.update {
+                    State::Unknown if st.prefs.check_updates => {
+                        ("It has not looked for a newer version yet.".to_string(), pal().text_faint)
+                    }
+                    State::Unknown => {
+                        ("Looking for new versions is switched off (below).".to_string(), pal().text_faint)
+                    }
+                    State::Checking => ("Looking for a newer version…".to_string(), pal().text_dim),
+                    State::UpToDate => ("This is the latest version.".to_string(), pal().text_dim),
+                    State::Available(new) => (format!("Version {new} is available."), pal().accent),
+                    State::Installing(new) => {
+                        (format!("Downloading version {new}; the app restarts when it is ready."), pal().accent)
+                    }
+                    State::Failed(why) => (format!("Could not look for a newer version: {why}"), pal().text_dim),
+                };
+                ui.label(RichText::new(text).size(12.0).color(color));
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    if matches!(st.update, State::Available(_))
+                        && super::ext_panels::pill(ui, "Update and restart", true)
+                    {
+                        actions.push(Action::InstallUpdate);
+                    }
+                    let busy = matches!(st.update, State::Checking | State::Installing(_));
+                    if !busy && super::ext_panels::pill(ui, "Check for updates", false) {
+                        actions.push(Action::CheckUpdates);
+                    }
+                });
+            });
+
             section(ui, icons::PALETTE, "Theme");
             well(ui, |ui| {
                 for (key, name, _) in theme::PRESETS {

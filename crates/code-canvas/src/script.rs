@@ -37,6 +37,14 @@ pub enum Step {
     Command(String),
     /// `answer <choice>`: press that button of the notice that is asking.
     Answer(String),
+    /// `open <path>`: show an image, video or PDF in the viewer (a path
+    /// in the folder, or anywhere on the disk).
+    Open(String),
+    /// `focus page|app`: give the keyboard to the webview on screen, or
+    /// back to the window (what clicking one or the other does).
+    Focus(String),
+    /// `updates`: look for a newer version of the app now.
+    Updates,
     /// `resize <width> <height>`: resize the window (physical pixels).
     Resize(u32, u32),
     /// `palette <text>`: open the command palette with a filter typed in.
@@ -95,6 +103,9 @@ fn parse_step(text: &str) -> Option<Step> {
         "format" => Step::Format(arg.into()),
         "command" => Step::Command(arg.into()),
         "answer" => Step::Answer(arg.into()),
+        "open" => Step::Open(arg.into()),
+        "focus" => Step::Focus(arg.into()),
+        "updates" => Step::Updates,
         "resize" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<u32>());
             Step::Resize(parts.next()?.ok()?, parts.next()?.ok()?)
