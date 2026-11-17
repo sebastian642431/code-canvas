@@ -1,0 +1,28 @@
+title: An icon goes to the other bar, its open panel goes with it, and it is still there after a restart of the arrangement
+expect-file: {WORK}\data\session.json :: "right": \[\s*"deps"
+expect-file: {WORK}\data\session.json :: "homes": 2
+folders: git-changes
+forbid-log: WARN.*script
+
+wait 3000
+left files
+wait 600
+mark a-everything-at-home
+wait 400
+move deps right
+wait 800
+mark b-deps-on-the-right-bar
+wait 400
+right deps
+wait 800
+mark c-deps-open-on-the-right
+wait 400
+move files right deps
+wait 800
+mark d-files-open-moved-with-its-icon
+wait 400
+move files left
+wait 800
+mark e-files-back-on-the-left
+wait 400
+quit

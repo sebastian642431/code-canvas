@@ -340,7 +340,11 @@ impl UiState {
         if panel.stays_put() {
             return Side::Left;
         }
-        panel.home()
+        self.rails.side_of(&panel.key()).unwrap_or(panel.home())
+    }
+
+    pub fn rails_at_home(&mut self) {
+        self.rails.at_home(|key| Panel::from_key(key).map_or(Side::Left, |panel| panel.home()));
     }
 
     pub fn open(&self, side: Side) -> Option<&Panel> {
@@ -413,8 +417,14 @@ impl UiState {
     }
 
     fn move_panel(&mut self, available: &[(String, Side)], panel: &Panel, side: Side, before: Option<&str>) {
-        if side == panel.home() {
-            self.rails.place(available, &panel.key(), before);
+        let key = panel.key();
+        let open = Side::BOTH.into_iter().find_map(|from| self.open(from).filter(|shown| shown.key() == key).cloned());
+        if let Some(open) = &open {
+            self.close_panel(open);
+        }
+        self.rails.place(available, &key, side, before);
+        if let Some(open) = open {
+            self.show(open);
         }
     }
 
@@ -914,11 +924,37 @@ fn status_bar(
                     save = label.on_hover_text(tip).clicked();
                     ui.add_space(10.0);
                 }
-                ui.label(RichText::new(&info.status).size(12.0).color(pal().text_dim));
+                let more = page.and_then(|page| page.ready().map(|r| (page, r))).map(|(page, r)| {
+                    format!(
+                        "{}\n{} files  ·  {} lines  ·  {} symbols\nread in {} ms",
+                        page.root.display(),
+                        r.repo.files.len(),
+                        r.repo.total_lines,
+                        r.repo.symbols.count,
+                        r.load_ms
+                    )
+                });
+                let said = ui.add(egui::Label::new(RichText::new(&info.status).size(12.0).color(pal().text_dim)).truncate());
+                if let Some(more) = more {
+                    said.on_hover_text(more);
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let stats = info.stats;
+                    let drawn = format!(
+                        "Code Canvas {}: click for Settings, where updates are\n\nzoom {:.0}%  ·  {}  ·  {} draws  ·  {:.2} ms a frame\ncode instances {}  ·  boxes {}\ntoken chunks {}  ·  text chunks {}",
+                        crate::update::current(),
+                        info.zoom * 100.0,
+                        stats.lod.map(|l| l.name()).unwrap_or("-"),
+                        stats.draw_calls,
+                        info.frame_ms,
+                        stats.code_instances,
+                        stats.frame_instances,
+                        stats.token_chunks,
+                        stats.cached_chunks
+                    );
                     let version = RichText::new(format!("v{}", crate::update::current())).size(12.0).color(pal().text_faint);
                     let label = ui.add(egui::Label::new(version).sense(Sense::click()));
-                    if label.on_hover_text("Code Canvas version: click for Settings, where updates are").clicked() {
+                    if label.on_hover_text(drawn).clicked() {
                         settings = true;
                     }
                     if let crate::update::State::Available(new) = &st.update {
@@ -933,27 +969,9 @@ fn status_bar(
                         ui.label(RichText::new(format!("Downloading {new}…")).size(12.0).color(pal().accent));
                         ui.add_space(6.0);
                     }
-                    ui.add_space(6.0);
-                    let st = info.stats;
-                    let perf = format!(
-                        "{}  ·  {} draws  ·  {:.2} ms  ·  {:.3}x",
-                        st.lod.map(|l| l.name()).unwrap_or("-"),
-                        st.draw_calls,
-                        info.frame_ms,
-                        info.zoom
-                    );
-                    ui.label(RichText::new(perf).size(12.0).color(pal().text_faint)).on_hover_text(format!(
-                        "level of detail: {}\ncode instances: {}\nboxes: {}\ntoken chunks cached: {}\ntext chunks cached: {}\nCPU time per frame: {:.2} ms",
-                        st.lod.map(|l| l.name()).unwrap_or("-"),
-                        st.code_instances,
-                        st.frame_instances,
-                        st.token_chunks,
-                        st.cached_chunks,
-                        info.frame_ms
-                    ));
                     let (errors, warnings) = ext.totals();
                     if errors + warnings > 0 {
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
                         let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
                         let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
                         let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
@@ -962,8 +980,8 @@ fn status_bar(
                         }
                     }
                     for (_, text) in &ext.status_items {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(text).size(12.0).color(pal().text_dim));
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
                     }
                 });
             });
@@ -1164,7 +1182,19 @@ fn rail(
             if resp.drag_started_by(egui::PointerButton::Primary) {
                 st.rail_drag = Some(RailDrag { key, target: None });
             }
-            if resp.on_hover_text(&entry.tip).clicked() {
+            let other = side.other();
+            let offer = match other {
+                Side::Left => "Move to the left bar",
+                Side::Right => "Move to the right bar",
+            };
+            resp.context_menu(|ui| {
+                ui.set_width(200.0);
+                if menu_row(ui, icons::PANEL_LEFT, offer) {
+                    st.rail_move = Some((entry.panel.clone(), other, None));
+                    ui.close();
+                }
+            });
+            if resp.on_hover_text(format!("{}\nDrag it to reorder it or to the other bar", entry.tip)).clicked() {
                 st.toggle(entry.panel.clone());
             }
         }
@@ -1197,9 +1227,6 @@ fn rail(
 
 fn rail_drop_target(ui: &egui::Ui, st: &mut UiState, side: Side, zone: Rect, slots: &[(String, Rect)]) {
     let Some(drag) = st.rail_drag.as_mut() else { return };
-    if Panel::from_key(&drag.key).is_none_or(|panel| panel.home() != side) {
-        return;
-    }
     let reach = match side {
         Side::Left => Rect::from_min_max(zone.min, zone.max + Vec2::new(RAIL_REACH, 0.0)),
         Side::Right => Rect::from_min_max(zone.min - Vec2::new(RAIL_REACH, 0.0), zone.max),

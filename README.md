@@ -208,9 +208,9 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Own title bar and panels, icon rails on both sides, remembers your folders, cameras
   and layout between launches.
 - What is the app's own (files, search, source control, extensions, problems,
-  symbols, dependencies) is on the left; what an extension brings (an assistant's
-  panel, its views) is on the right. The icons of each side can be dragged into
-  another order.
+  symbols, dependencies) starts on the left and what an extension brings (an
+  assistant's panel, its views) on the right. Any icon can be dragged to another
+  place or to the other bar (or right click it), and stays where you put it.
 
 ## Install and run
 

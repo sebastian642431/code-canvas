@@ -801,6 +801,12 @@ Graphics and the frame
   the user's `diff.noprefix` or text conversions.
 - An editor keeps the line ends most lines of the file have, not CRLF for one
   stray one.
+- **The status bar says little**: the branch, what is not saved, and one short
+  thing about where you are (the folder and its files, the file under the
+  pointer, the caret). The path of the folder, its lines and symbols and how
+  long it took to read are the hint of that text; what a frame cost is the hint
+  of the version. Numbers that are there to be looked up are not there to be
+  read all day.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1827,20 +1833,23 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - The "go to file" box becomes the command palette when the query starts with `>`,
   as in VS Code. `quick_score` is a subsequence match on a lower-case query
   (`appts` → `src/app/types.ts`).
-- **The two bars.** `Panel` names every panel; the side one opens on is fixed by
-  what it is (`Panel::home`): the app's own panels on the left, what an
-  extension brings (`Panel::Webview`) on the right. Nothing opens a panel "on
-  the left": it calls `UiState::show`. `Help` stays at the bottom of the left
-  bar, next to the gear that opens Settings.
+- **The two bars.** `Panel` names every panel; which side one opens on is where
+  its icon is (`UiState::side_of`), so nothing opens a panel "on the left": it
+  calls `UiState::show`. An icon never moved is on its home side
+  (`Panel::home`): the app's own panels on the left, what an extension brings
+  (`Panel::Webview`) on the right. `Help` stays at the bottom of the left bar,
+  next to the gear that opens Settings.
   - **The icon of the open panel is a tab of it** (`rail_tab`): filled with the
     panel's colour, round on the outer side, reaching the edge of the bar, with a
     small inward curve above and below where it meets the panel. For that the
     panel's corner on the bar's side is square, the line egui draws between the
     bar and the panel is off, and the panel goes down to the status bar: a gap
     under it, with round corners, read as a loose strip.
-  - Icons could be dragged across until 0.3.3. An arrangement saved then is
-    read as an order only: `Rails::arrange` puts each key on its own side
-    whatever list it was saved in, and a drop on the other bar does nothing.
+  - The homes changed once (symbols and dependencies were on the right). An
+    arrangement saved before that is taken home one time (`Rails::at_home`,
+    `Rails::homes`); what is moved afterwards stays where it was put. For one
+    version (0.3.3) the sides were fixed and a drop on the other bar did
+    nothing: people arrange the bars as they like, so that went.
   - `rail_entries` lists the icons there are this frame; `Rails::arrange` puts
     them in order. An icon never moved sits on its side after the moved ones.
     One that is not there now (an extension's view whose condition is false, the

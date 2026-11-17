@@ -119,7 +119,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
   recuerda carpetas, cámaras y disposición entre aperturas. Lo propio de la app
   (archivos, búsqueda, control de código, extensiones, problemas, símbolos,
   dependencias) va a la izquierda; lo que trae una extensión (el panel de un
-  asistente, sus vistas) va a la derecha. Los íconos de cada lado se pueden reordenar.
+  asistente, sus vistas) va a la derecha; cualquier ícono se puede arrastrar a otro
+  lugar o a la otra barra (o con clic derecho) y queda donde lo dejaste.
 
 ## Instalar y abrir
 

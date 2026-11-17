@@ -271,6 +271,7 @@ impl App {
         ui.key_file = crate::keys::load();
         ui.keys = Keymap::new(&ui.key_file);
         ui.rails = saved.rails.clone();
+        ui.rails_at_home();
         ui.restore(Side::Left, saved.left_open, &saved.left_last);
         ui.restore(Side::Right, saved.right_open, &saved.right_last);
         ui.single = saved.single;
@@ -3967,20 +3968,10 @@ impl App {
             PageState::Loading { .. } => (format!("Scanning {} …", page.root.display()), None),
             PageState::Failed(e) => (e.clone(), None),
             PageState::Ready(r) => {
-                let overview = || {
-                    format!(
-                        "{}  ·  {} files  ·  {} lines  ·  {} symbols  ·  loaded in {} ms",
-                        r.repo.root.display(),
-                        r.repo.files.len(),
-                        r.repo.total_lines,
-                        r.repo.symbols.count,
-                        r.load_ms
-                    )
-                };
+                let overview = || format!("{}  ·  {} files", page.title, r.repo.files.len());
                 if let Some(editor) = page.editor() {
-                    let state = if editor.dirty { "  ·  not saved (Ctrl+S)" } else { "" };
                     let place = format!("Ln {}, Col {}", editor.caret.line + 1, editor.display_col(editor.caret) + 1);
-                    return (format!("Editing {}  ·  {place}{state}  ·  Esc to leave", editor.rel_path), None);
+                    return (format!("{}  ·  {place}", editor.rel_path), None);
                 }
                 let Some(n) = page.hover.or(page.selected).and_then(|i| r.layout.nodes.get(i)) else {
                     return (overview(), None);
