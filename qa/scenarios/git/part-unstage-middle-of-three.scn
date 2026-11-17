@@ -1,0 +1,31 @@
+title: Three changes staged, then the removal of step_6 unstaged from line 22; committed and the rest discarded, the file must have the replacement, eleven() and step_6 back in its place with one empty line on each side
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: let two = 2;\n    two\n\}\n[\s\S]*fn step_5\(\) -> u32 \{\n    5\n\}\n\nfn step_6\(\) -> u32 \{\n    6\n\}\n\nfn step_7\(\) -> u32 \{\n    7\n[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+wait 600
+part stage src/steps.rs 6
+wait 1500
+part stage src/steps.rs 21
+wait 1500
+part stage src/steps.rs 39
+wait 1500
+part unstage src/steps.rs 22
+wait 1500
+mark unstaged
+wait 600
+git commit two of three
+wait 1500
+git discard src/steps.rs
+wait 600
+answer Discard
+wait 1500
+mark end
+wait 600
+quit

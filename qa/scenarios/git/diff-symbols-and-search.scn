@@ -1,0 +1,44 @@
+title: With the diff on (lines folded) a symbol inside the folded lines of a changed file must still be found (select step_9), a function that only exists in removed lines must not become a symbol (select step_6), and search in files must give the same hits as with the diff off
+folders: git-changes
+forbid-log: script: ignoring
+forbid-log: no symbol named 'step_9'
+forbid-log: relations of 'step_6'
+forbid-log: search 'step_': (?!14 )[0-9]+ hits
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+select step_9
+wait 1200
+mark 1-plain-step-9
+wait 500
+select step_6
+wait 800
+search step_
+wait 1500
+mark 2-plain-search
+wait 500
+left changes
+diff on
+wait 1500
+select step_9
+wait 1200
+mark 3-diff-step-9
+wait 500
+select step_6
+wait 1200
+mark 4-diff-step-6
+wait 500
+search step_
+wait 1500
+mark 5-diff-search
+wait 500
+right symbols
+wait 1200
+mark 6-diff-symbols-panel
+wait 500
+diff off
+wait 1200
+quit

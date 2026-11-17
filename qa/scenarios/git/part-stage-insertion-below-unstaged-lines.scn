@@ -1,0 +1,22 @@
+title: An added line is staged alone while four lines added above it stay unstaged; committed and the rest discarded, the line must sit after "line 8" (index check: git show :insert.txt)
+folders: git-shifted
+expect-file: git-shifted/insert.txt :: ^line 1\n[\s\S]*line 8\ninserted\nline 9\n[\s\S]*line 12\n$
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto insert.txt
+wait 1000
+part stage insert.txt 13
+wait 1500
+mark staged
+wait 600
+git commit only the inserted line
+wait 1500
+git discard insert.txt
+wait 500
+answer Discard
+wait 1500
+mark end
+wait 600
+quit

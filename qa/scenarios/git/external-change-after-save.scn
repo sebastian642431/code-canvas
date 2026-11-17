@@ -1,0 +1,32 @@
+title: A file is edited and saved in the app, then another program appends a line to it: the card must show that line, and editing and saving again must keep it (the diff and the stage of a change rely on the text the app holds)
+folders: git-changes
+expect-file: git-changes/src/util.rs :: ^// second\n// first\npub fn double[\s\S]*// appended by another program\n$
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/util.rs
+wait 1000
+edit src/util.rs 1 1
+type // first
+key enter
+key save
+wait 1200
+key escape
+touch src/util.rs // appended by another program
+wait 3000
+mark 1-after-touch
+wait 500
+edit src/util.rs 1 1
+wait 500
+type // second
+key enter
+wait 500
+mark 2-typed
+wait 500
+key save
+wait 1200
+quit
+wait 1000
+answer Close without saving
+wait 800

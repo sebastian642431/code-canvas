@@ -1,0 +1,22 @@
+title: A file typed in and not saved is staged: it is saved first, then staged whole (git diff empty for it, index holds the typed line), and quitting asks nothing
+folders: git-changes
+expect-file: git-changes/src/util.rs :: ^pub fn double\(n: u32\) -> u32 \{\n// typed before staging\n    n \* 2\n
+forbid-log: script: ignoring
+forbid-log: script: Answer
+
+wait 3000
+left changes
+edit src/util.rs 2 1
+type // typed before staging
+key enter
+wait 800
+mark typed
+wait 500
+git stage src/util.rs
+wait 1500
+mark staged
+wait 500
+quit
+wait 1000
+answer Close without saving
+wait 800

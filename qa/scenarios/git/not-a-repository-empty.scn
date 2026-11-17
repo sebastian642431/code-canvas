@@ -1,0 +1,33 @@
+title: An empty folder that is not a repository: the changes panel, staging, committing, discarding, a commit and the diff neither crash nor create anything
+folders: empty
+absent-file: empty/.git
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+wait 800
+mark 1-panel
+wait 500
+part stage nothing.txt 1
+wait 1200
+git stage
+wait 1200
+git commit nothing here
+wait 1200
+git discard
+wait 800
+mark 2-discard-asked
+wait 500
+answer Discard
+wait 1200
+commit 0
+wait 1000
+diff on
+wait 1000
+diff split
+wait 1000
+changed on
+wait 1000
+mark 3-end
+wait 500
+quit

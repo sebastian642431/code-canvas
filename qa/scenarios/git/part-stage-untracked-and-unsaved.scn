@@ -1,0 +1,33 @@
+title: 'part stage' on a new untracked file, on a file changed only in the editor (not saved) and on line 39 of steps.rs while it has unsaved text: nothing wrong is staged, nothing is saved behind the user's back
+folders: git-changes
+expect-file: git-changes/src/util.rs :: ^pub fn double\(n: u32\) -> u32 \{\n    n \* 2\n
+expect-file: git-changes/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n
+expect-file: git-changes/src/new_file.rs :: ^pub fn fresh\(\) \{\}\n$
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+part stage src/new_file.rs 1
+wait 1500
+mark untracked
+wait 600
+edit src/util.rs 2 1
+type // typed, not saved
+key enter
+wait 800
+part stage src/util.rs 2
+wait 1500
+mark unsaved
+wait 600
+edit src/steps.rs 1 1
+type // top
+key enter
+wait 800
+part stage src/steps.rs 39
+wait 1500
+mark unsaved-shifted
+wait 600
+quit
+wait 800
+answer Close without saving
+wait 1000

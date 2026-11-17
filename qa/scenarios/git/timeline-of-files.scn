@@ -1,0 +1,33 @@
+title: The timeline of the selected file: a renamed file shows its three commits (through the rename), a file of one commit shows one, a new untracked file shows none, a selected symbol keeps its file's timeline (manual check of the pictures, bottom of the left panel)
+folders: git-renamed
+forbid-log: script: ignoring
+
+wait 3000
+left files
+wait 500
+goto src/new_name.rs
+wait 1500
+mark 1-renamed-three-commits
+wait 500
+goto src/main.rs
+wait 1500
+mark 2-one-commit
+wait 500
+goto src/fresh.rs
+wait 1500
+mark 3-new-file-none
+wait 500
+select kept
+wait 1500
+mark 4-symbol-of-renamed
+wait 500
+goto src
+wait 1500
+mark 5-folder
+wait 500
+left changes
+goto src/new_name.rs
+wait 1500
+mark 6-changes-panel
+wait 500
+quit

@@ -1,0 +1,46 @@
+title: A commit shown while the diff of the working tree is on, then split and unfolded, another commit, then commit off and diff off: the working tree's own diff comes back first, then every card is plain text
+folders: git-history
+forbid-log: script: ignoring
+forbid-log: commit needs off
+
+wait 3000
+left changes
+touch src/util.rs // changed in the working tree
+wait 2500
+diff on
+wait 1500
+goto src/util.rs
+wait 1200
+mark 1-worktree-diff
+wait 500
+commit 5
+wait 1800
+mark 2-commit-a-label
+wait 500
+diff split
+wait 1500
+mark 3-commit-split
+wait 500
+diff unfold
+wait 1500
+mark 4-commit-split-unfold
+wait 500
+commit 4
+wait 1800
+mark 5-other-commit-split-unfold
+wait 500
+diff together
+diff fold
+commit off
+wait 1800
+goto src/util.rs
+wait 1200
+mark 6-commit-off-worktree-diff
+wait 500
+diff off
+wait 1500
+fit
+wait 1200
+mark 7-all-off
+wait 500
+quit

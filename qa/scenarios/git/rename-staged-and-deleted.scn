@@ -1,0 +1,44 @@
+title: A staged rename whose file was changed afterwards, and a file deleted on disk: the panel and the diff show them, the deleted file is staged and unstaged, discarded (it comes back); discarding the renamed file says something sane and loses nothing
+folders: git-rename-staged
+expect-file: git-rename-staged/src/removed.rs :: ^pub fn removed\(\) \{\}\n$
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+wait 500
+mark 1-panel
+wait 500
+diff on
+wait 1500
+goto src/new_name.rs
+wait 1200
+mark 2-diff-renamed
+wait 500
+diff off
+wait 800
+part stage src/new_name.rs 2
+wait 1500
+mark 3-part-staged
+wait 500
+git stage src/removed.rs
+wait 1200
+mark 4-deletion-staged
+wait 500
+git unstage src/removed.rs
+wait 1200
+git discard src/removed.rs
+wait 600
+answer Discard
+wait 1500
+mark 5-deleted-file-back
+wait 500
+git discard src/new_name.rs
+wait 600
+mark 6-asked
+wait 500
+answer Discard
+wait 1500
+mark 7-renamed-discarded
+wait 500
+quit

@@ -1,0 +1,30 @@
+title: A changed file is opened in the editor (caret only, nothing typed) and then discarded: typing and saving afterwards must give the committed text plus the typed line, not the discarded text back
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: ^// after\nfn step_1\(\) -> u32 \{\n    1\n\}\n\nfn step_2\(\) -> u32 \{\n    2\n\}[\s\S]*fn step_6\(\)[\s\S]*\n    11\n
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+edit src/steps.rs 1 1
+wait 800
+git discard src/steps.rs
+wait 600
+answer Discard
+wait 2000
+mark discarded
+wait 500
+type // after
+key enter
+wait 500
+key save
+wait 1200
+mark end
+wait 500
+quit
+wait 1000
+answer Close without saving
+wait 800

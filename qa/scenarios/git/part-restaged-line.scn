@@ -1,0 +1,29 @@
+title: Line 39 is staged, then changed again on disk: unstaging at 39 must take only the staged change out of the index (index as committed there), the file keeps the newer text; staging at 39 afterwards puts the newer text in the index
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: fn step_11\(\) -> u32 \{\n    eleven\(\)\+ 1\n\}
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+part stage src/steps.rs 39
+wait 1500
+edit src/steps.rs 39 13
+type  + 1
+key save
+wait 1500
+key escape
+wait 500
+mark 1-staged-and-changed-again
+wait 500
+part unstage src/steps.rs 39
+wait 1500
+mark 2-unstaged
+wait 500
+part stage src/steps.rs 39
+wait 1500
+mark 3-staged-newer
+wait 500
+quit

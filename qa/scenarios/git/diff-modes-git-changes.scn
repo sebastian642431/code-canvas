@@ -1,0 +1,43 @@
+title: The diff inside the card of steps.rs: on, split, unfold, together, around 0, around 50, off; after off the card is the plain file with its own line numbers and no removed line left
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: let two = 2;\n    two\n[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+wait 500
+mark 0-plain
+wait 500
+diff on
+wait 1200
+mark 1-on
+wait 500
+diff split
+wait 1200
+mark 2-split
+wait 500
+diff unfold
+wait 1200
+mark 3-split-unfold
+wait 500
+diff together
+wait 1200
+mark 4-unfold
+wait 500
+diff fold
+diff around 0
+wait 1200
+mark 5-around-0
+wait 500
+diff around 50
+wait 1200
+mark 6-around-50
+wait 500
+diff off
+wait 1200
+mark 7-off
+wait 500
+quit

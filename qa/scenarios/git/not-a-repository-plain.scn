@@ -1,0 +1,58 @@
+title: A folder that is not a repository: the changes panel says so, staging a change, staging a file, committing, discarding, showing a commit and the diff do nothing harmful and say something sane; no file changes
+folders: plain
+expect-file: plain/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n\}\n[\s\S]*fn step_14\(\) -> u32 \{\n    14\n\}\n$
+absent-file: plain/.git
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+wait 800
+mark 1-panel
+wait 500
+part stage src/steps.rs 2
+wait 1500
+mark 2-part-stage
+wait 500
+git stage src/steps.rs
+wait 1200
+git commit nothing to commit here
+wait 1500
+mark 3-stage-and-commit
+wait 500
+git discard
+wait 800
+mark 4-discard-asked
+wait 500
+answer Discard
+wait 1500
+mark 5-discarded
+wait 500
+commit 0
+wait 1200
+diff on
+wait 1200
+changed on
+wait 1200
+mark 6-commit-diff-only-changed
+wait 500
+changed off
+diff off
+commit off
+wait 1000
+edit src/steps.rs 2 1
+type // typed in a folder without git
+key enter
+wait 800
+git discard src/steps.rs
+wait 800
+answer Cancel
+wait 800
+mark 7-typed
+wait 500
+key undo
+key undo
+wait 500
+quit
+wait 1000
+answer Close without saving
+wait 800

@@ -1,0 +1,27 @@
+title: Unsaved text, discard asked and answered Cancel: the typed text is still in the editor (saving writes it), the other changes of the file stay
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: ^// kept after cancel\nfn step_1[\s\S]*let two = 2;[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+edit src/steps.rs 1 1
+type // kept after cancel
+key enter
+wait 800
+git discard src/steps.rs
+wait 600
+answer Cancel
+wait 1200
+mark cancelled
+wait 500
+key save
+wait 1200
+quit
+wait 1000
+answer Close without saving
+wait 800

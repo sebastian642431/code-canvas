@@ -1,0 +1,36 @@
+title: Only the changed files on the canvas: with the diff on, while a commit is shown and after everything is committed (nothing changed: the canvas says so or is empty, and all files come back with 'changed off')
+folders: git-changes
+expect-file: git-changes/.git/logs/HEAD :: commit: everything
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+changed on
+wait 1500
+mark 1-only-changed
+wait 500
+diff on
+wait 1500
+mark 2-only-changed-diff
+wait 500
+commit 0
+wait 1800
+mark 3-only-changed-commit
+wait 500
+commit off
+wait 1500
+diff off
+wait 1000
+git stage
+wait 1200
+mark 4-all-staged
+wait 500
+git commit everything
+wait 2000
+mark 5-nothing-changed
+wait 500
+changed off
+wait 1500
+mark 6-all-files
+wait 500
+quit

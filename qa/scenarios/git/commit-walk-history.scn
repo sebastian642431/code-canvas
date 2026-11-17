@@ -1,0 +1,47 @@
+title: Every commit of the graph shown on the canvas one after the other without going back (the one that deleted a file, the merge, the first), then off: every card shows its real text again
+folders: git-history
+forbid-log: script: ignoring
+forbid-log: commit needs off
+
+wait 3000
+left changes
+wait 500
+mark 00-before
+wait 500
+commit 0
+wait 1800
+mark 01-commit-0
+wait 500
+commit 1
+wait 1800
+mark 02-commit-1
+wait 500
+commit 2
+wait 1800
+mark 03-commit-2
+wait 500
+commit 3
+wait 1800
+mark 04-commit-3
+wait 500
+commit 4
+wait 1800
+mark 05-commit-4
+wait 500
+commit 5
+wait 1800
+mark 06-commit-5
+wait 500
+commit 6
+wait 1800
+mark 07-commit-6
+wait 500
+commit off
+wait 1800
+mark 08-off
+wait 500
+fit
+wait 1200
+mark 09-off-fit
+wait 500
+quit

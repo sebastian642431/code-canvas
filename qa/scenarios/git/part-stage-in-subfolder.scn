@@ -1,0 +1,21 @@
+title: The opened folder is app/ inside the repository: line 2 and line 6 of src/util.rs staged, then line 2 unstaged; index must hold only 'n + n + n', other/thing.txt outside the folder stays unstaged
+folders: git-subfolder/app
+expect-file: git-subfolder/app/src/util.rs :: n \+ n\n\}\n\npub fn triple\(n: u32\) -> u32 \{\n    n \+ n \+ n\n
+expect-file: git-subfolder/other/thing.txt :: ^one\nTWO\nthree\n$
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/util.rs
+wait 1200
+part stage src/util.rs 2
+wait 1500
+part stage src/util.rs 6
+wait 1500
+mark both
+wait 600
+part unstage src/util.rs 2
+wait 1500
+mark end
+wait 600
+quit

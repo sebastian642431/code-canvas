@@ -1,0 +1,22 @@
+title: The changed body of c() is staged alone (every body is the same text, four lines added above stay unstaged); committed and the rest discarded, c() must hold 3 and d() still 0
+folders: git-shifted
+expect-file: git-shifted/same.rs :: ^fn a\(\)[\s\S]*fn c\(\) -> u32 \{\n    3\n\}[\s\S]*fn d\(\) -> u32 \{\n    0\n\}
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto same.rs
+wait 1000
+part stage same.rs 14
+wait 1500
+mark staged
+wait 600
+git commit only the body of c
+wait 1500
+git discard same.rs
+wait 500
+answer Discard
+wait 1500
+mark end
+wait 600
+quit

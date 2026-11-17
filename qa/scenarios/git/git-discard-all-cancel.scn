@@ -1,0 +1,19 @@
+title: Discard every change, answered Cancel: nothing changes on disk or in the index
+folders: git-mixed
+expect-file: git-mixed/a.txt :: ^a1\nA2 staged\na3\na4 not staged\n$
+expect-file: git-mixed/b.txt :: ^b1\nB2 not staged\nb3\n$
+expect-file: git-mixed/added.txt :: added and staged
+expect-file: git-mixed/untracked.txt :: nobody knows me
+absent-file: git-mixed/gone.txt
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+git discard
+wait 600
+answer Cancel
+wait 1200
+mark end
+wait 500
+quit

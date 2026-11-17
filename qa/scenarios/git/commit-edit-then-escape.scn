@@ -1,0 +1,34 @@
+title: A commit of one file is shown, the file is opened in the editor and left with Escape (nothing typed): picture 3 must show the commit's diff again and the banner '1 file', as picture 6 does for a commit of five files (manual check of pictures 3 and 6)
+folders: git-history
+forbid-log: script: ignoring
+forbid-log: commit needs off
+
+wait 3000
+left changes
+commit 2
+wait 1800
+mark 1-commit-of-one-file
+wait 500
+edit src/main.rs 1 1
+wait 1000
+mark 2-editing
+wait 500
+key escape
+wait 1500
+mark 3-after-escape
+wait 500
+commit 6
+wait 1800
+mark 4-commit-of-five-files
+wait 500
+edit src/main.rs 1 1
+wait 1000
+mark 5-editing
+wait 500
+key escape
+wait 1500
+mark 6-after-escape
+wait 500
+commit off
+wait 1500
+quit

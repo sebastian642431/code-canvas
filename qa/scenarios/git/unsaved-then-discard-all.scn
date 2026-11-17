@@ -1,0 +1,32 @@
+title: Discard every change while two files have unsaved text (one changed on disk, one not): both are as committed on disk and on the canvas, the untracked file survives, quitting asks nothing
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n\}\n\nfn step_2\(\) -> u32 \{\n    2\n\}[\s\S]*fn step_6\(\)[\s\S]*\n    11\n
+expect-file: git-changes/src/util.rs :: ^pub fn double\(n: u32\) -> u32 \{\n    n \* 2\n
+expect-file: git-changes/src/new_file.rs :: fresh
+forbid-log: script: ignoring
+forbid-log: nothing offers
+forbid-log: script: Answer\("Close
+
+wait 3000
+left changes
+edit src/steps.rs 1 1
+type // one
+key enter
+edit src/util.rs 1 1
+type // two
+key enter
+wait 800
+mark typed
+wait 500
+git discard
+wait 600
+mark asked
+wait 500
+answer Discard
+wait 2000
+mark end
+wait 500
+quit
+wait 1000
+answer Close without saving
+wait 800

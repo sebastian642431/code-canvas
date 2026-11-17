@@ -1,0 +1,21 @@
+title: A new file is staged and then changed again: discarding its changes must give the staged text back (or at least say something clear); the file must not keep the later line
+folders: git-mixed
+expect-file: git-mixed/added.txt :: ^added and staged\n$
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+touch added.txt changed after staging
+wait 2500
+mark 1-added-and-modified
+wait 500
+git discard added.txt
+wait 600
+mark 2-asked
+wait 500
+answer Discard
+wait 1500
+mark 3-end
+wait 500
+quit

@@ -1,0 +1,21 @@
+title: Discarding a file after answering Discard: the file is as committed again (also when part of it was staged), the card shows it, the untracked file survives
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n\}\n\nfn step_2\(\) -> u32 \{\n    2\n\}[\s\S]*fn step_6\(\)[\s\S]*\n    11\n
+expect-file: git-changes/src/new_file.rs :: fresh
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+part stage src/steps.rs 39
+wait 1200
+git discard src/steps.rs
+wait 600
+answer Discard
+wait 1500
+mark end
+wait 500
+quit

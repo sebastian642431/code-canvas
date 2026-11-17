@@ -1,0 +1,21 @@
+title: One change of a CRLF file (line 2) and the one of a file with tabs are staged, the appended CRLF line stays unstaged; index must hold 'SECOND line\r' and the tabbed line, bytes on disk untouched
+folders: odd-files
+expect-file: odd-files/crlf.txt :: ^first line\r\nSECOND line\r\nthird line\r\nfourth line\r\n$
+expect-file: odd-files/tabs.go :: \t\tprintln\("tabs changed"\)\n
+forbid-log: script: ignoring
+
+wait 4000
+left changes
+goto crlf.txt
+wait 1200
+part stage crlf.txt 2
+wait 1500
+mark crlf
+wait 600
+part stage tabs.go 5
+wait 1500
+goto tabs.go
+wait 1200
+mark tabs
+wait 600
+quit

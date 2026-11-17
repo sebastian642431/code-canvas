@@ -1,0 +1,32 @@
+title: The timeline of files of a history with a merge: steps.rs (first, notes and a step), side.rs (on the side), then steps.rs changed and committed from the app: the new commit appears at the top of its timeline without selecting it again
+folders: git-history
+expect-file: git-history/.git/logs/HEAD :: commit: from the app
+forbid-log: script: ignoring
+
+wait 3000
+left files
+goto src/steps.rs
+wait 1500
+mark 1-steps-two-commits
+wait 500
+goto src/side.rs
+wait 1500
+mark 2-side-one-commit
+wait 500
+goto src/steps.rs
+wait 1200
+touch src/steps.rs // one more line
+wait 2500
+git stage src/steps.rs
+wait 1200
+git commit from the app
+wait 2000
+mark 3-steps-after-commit
+wait 500
+goto src/util.rs
+wait 1200
+goto src/steps.rs
+wait 1500
+mark 4-steps-selected-again
+wait 500
+quit

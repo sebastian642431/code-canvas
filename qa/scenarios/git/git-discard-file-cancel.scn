@@ -1,0 +1,20 @@
+title: Discarding a file asks first, and Cancel leaves the file and the index untouched
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: let two = 2;\n    two\n[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+git discard src/steps.rs
+wait 600
+mark asked
+wait 500
+answer Cancel
+wait 1200
+mark end
+wait 500
+quit

@@ -1,0 +1,24 @@
+title: The whole file is staged, then the removal of "line 8" is unstaged alone; committed and the rest discarded, the file must be the four new lines and lines 1 to 12 in order
+folders: git-shifted
+expect-file: git-shifted/delete.txt :: ^// one\n// two\n// three\n// four\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\n$
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto delete.txt
+wait 1000
+git stage delete.txt
+wait 1500
+part unstage delete.txt 12
+wait 1500
+mark unstaged
+wait 600
+git commit the four lines only
+wait 1500
+git discard delete.txt
+wait 500
+answer Discard
+wait 1500
+mark end
+wait 600
+quit

@@ -1,0 +1,18 @@
+title: Both changes of a CRLF file staged one by one, then the appended line unstaged: index must hold only 'SECOND line\r', no line ending changed anywhere
+folders: odd-files
+expect-file: odd-files/crlf.txt :: ^first line\r\nSECOND line\r\nthird line\r\nfourth line\r\n$
+forbid-log: script: ignoring
+
+wait 4000
+left changes
+goto crlf.txt
+wait 1200
+part stage crlf.txt 4
+wait 1500
+part stage crlf.txt 2
+wait 1500
+part unstage crlf.txt 4
+wait 1500
+mark end
+wait 600
+quit

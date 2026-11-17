@@ -1,0 +1,22 @@
+title: "Discard this change" of the card's menu on the removed step_6 (the 1->2 replacement above stays): step_6 must come back between step_5 and step_7 with one empty line on each side
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: let two = 2;\n    two\n\}\n[\s\S]*fn step_5\(\) -> u32 \{\n    5\n\}\n\nfn step_6\(\) -> u32 \{\n    6\n\}\n\nfn step_7\(\) -> u32 \{\n    7\n[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1200
+menu 1000 622
+wait 500
+mark menu
+wait 600
+ui click 1100 532
+wait 500
+mark asked
+wait 600
+answer Discard
+wait 1500
+mark end
+wait 600
+quit

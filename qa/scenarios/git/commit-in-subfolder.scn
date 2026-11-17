@@ -1,0 +1,27 @@
+title: The opened folder is app/ of a larger repository: a commit that touched files inside and outside shows only the ones inside, one that touched nothing inside says so, the first commit shows the folder's files; off gives the working text back
+folders: git-subfolder-history/app
+forbid-log: script: ignoring
+forbid-log: commit needs off
+
+wait 3000
+left changes
+wait 500
+mark 0-before
+wait 500
+commit 0
+wait 1800
+mark 1-inside-and-outside
+wait 500
+commit 1
+wait 1800
+mark 2-only-outside
+wait 500
+commit 2
+wait 1800
+mark 3-first
+wait 500
+commit off
+wait 1800
+mark 4-off
+wait 500
+quit

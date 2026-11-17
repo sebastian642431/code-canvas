@@ -1,0 +1,22 @@
+title: Staging the same change twice, then a line with no change (1): the second and third say there is nothing to stage, index holds only line 39's change
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: let two = 2;\n    two\n\}\n[\s\S]*step_5\(\) -> u32 \{\n    5\n\}\n\nfn step_7[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+wait 600
+part stage src/steps.rs 39
+wait 1500
+part stage src/steps.rs 39
+wait 1500
+mark twice
+wait 600
+part stage src/steps.rs 1
+wait 1500
+mark end
+wait 600
+quit

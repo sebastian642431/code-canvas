@@ -1,0 +1,29 @@
+title: Stage a file, stage all, unstage the new file, commit: git log must have 'steps only' with src/steps.rs alone, new_file.rs stays untracked, then a commit with nothing staged only says so
+folders: git-changes
+expect-file: git-changes/.git/logs/HEAD :: ^(?![\s\S]*nothing is staged)[\s\S]*commit: steps only
+expect-file: git-changes/src/new_file.rs :: fresh
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+git stage src/steps.rs
+wait 1200
+mark staged-one
+wait 500
+git stage
+wait 1200
+mark staged-all
+wait 500
+git unstage src/new_file.rs
+wait 1200
+git commit steps only
+wait 1500
+mark committed
+wait 500
+git commit nothing is staged now
+wait 1500
+mark nothing
+wait 500
+git unstage
+wait 1000
+quit

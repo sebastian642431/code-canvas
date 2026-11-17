@@ -1,0 +1,24 @@
+title: Discard every change with staged, unstaged, a staged deletion, a staged new file and untracked files: tracked files are as committed, untracked files survive (the staged new file: see the report)
+folders: git-mixed
+expect-file: git-mixed/a.txt :: ^a1\na2\na3\n$
+expect-file: git-mixed/b.txt :: ^b1\nb2\nb3\n$
+expect-file: git-mixed/gone.txt :: ^gone\n$
+expect-file: git-mixed/untracked.txt :: nobody knows me
+expect-file: git-mixed/sub/also untracked.txt :: nor me
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+wait 500
+mark before
+wait 500
+git discard
+wait 600
+mark asked
+wait 500
+answer Discard
+wait 1500
+mark end
+wait 500
+quit

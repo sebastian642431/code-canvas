@@ -1,0 +1,50 @@
+title: Files whose folder and name have spaces and accents: the diff inside their cards, stage and unstage by path, one change staged from the card's menu, a file with no final newline staged by line, discard of the accented one; index must hold only line 2 of 'with space/a file.js' and the change of no_newline.txt
+folders: git-spaces
+expect-file: git-spaces/with space/a file.js :: ^export function hello\(name\) \{\n  return `hello \$\{name\}`;\n\}\n\nexport const more = 1;\n$
+expect-file: git-spaces/año ñ/día €.txt :: ^uno\ndos\ntres\n$
+expect-file: git-spaces/no_newline.txt :: ^one\nTWO$
+forbid-log: script: ignoring
+forbid-log: nothing offers
+
+wait 3000
+left changes
+wait 500
+diff on
+wait 1500
+mark 1-diff-on
+wait 500
+diff off
+wait 1000
+git stage with space/a file.js
+wait 1200
+git stage año ñ/día €.txt
+wait 1200
+mark 2-both-staged
+wait 500
+git unstage with space/a file.js
+wait 1200
+git unstage año ñ/día €.txt
+wait 1200
+part stage no_newline.txt 2
+wait 1200
+goto with space/a file.js
+wait 1500
+mark 3-card
+wait 500
+menu 900 290
+wait 600
+mark 4-menu
+wait 500
+ui click 1000 309
+wait 1500
+mark 5-staged-from-menu
+wait 500
+git discard año ñ/día €.txt
+wait 600
+mark 6-asked
+wait 500
+answer Discard
+wait 1500
+mark 7-end
+wait 500
+quit

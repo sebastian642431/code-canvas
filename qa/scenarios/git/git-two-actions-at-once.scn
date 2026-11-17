@@ -1,0 +1,13 @@
+title: Two source control actions with no pause between them (stage all, then commit): the second must not be lost without a word; git log must have the commit
+folders: git-changes
+expect-file: git-changes/.git/logs/HEAD :: commit: right after staging
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+git stage
+git commit right after staging
+wait 2500
+mark end
+wait 500
+quit

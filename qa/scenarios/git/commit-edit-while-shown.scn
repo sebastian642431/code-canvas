@@ -1,0 +1,49 @@
+title: While an old commit is shown a file of it is edited and saved: the editor holds the file as it is on disk now (not the commit's text), the save writes the current text plus the typed line, and after commit off the card shows it
+folders: git-history
+expect-file: git-history/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n\}\n\nfn step_2\(\) -> u32 \{\n    2\n\}\n\nfn step_3\(\) -> u32 \{\n// typed while the commit was shown\n    3 \+ 0\n\}\n[\s\S]*fn step_14\(\) -> u32 \{\n    14\n\}\n$
+expect-file: git-history/src/main.rs :: ^// unsaved before the commit\nmod steps;\nmod util;\n\nfn main\(\) \{\n    println!\("\{\} \{\}", steps::step_1\(\), util::triple\(2\)\);\n\}\n$
+forbid-log: script: ignoring
+forbid-log: commit needs off
+
+wait 3000
+left changes
+edit src/main.rs 1 1
+type // unsaved before the commit
+key enter
+key escape
+wait 800
+commit 4
+wait 1800
+mark 1-commit
+wait 500
+edit src/steps.rs 10 1
+wait 1000
+mark 2-editing
+wait 500
+type // typed while the commit was shown
+key enter
+wait 800
+key save
+wait 1200
+key escape
+wait 1200
+mark 3-after-save
+wait 500
+commit 2
+wait 1800
+mark 4-commit-triple-main-unsaved
+wait 500
+commit off
+wait 1800
+mark 5-off
+wait 500
+key save
+wait 1200
+goto src/steps.rs
+wait 1200
+mark 6-steps
+wait 500
+quit
+wait 1000
+answer Close without saving
+wait 800

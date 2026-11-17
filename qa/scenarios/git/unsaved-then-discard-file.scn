@@ -1,0 +1,36 @@
+title: A changed file with more text typed and not saved is discarded: disk and card are as committed, no typed text is left in the editor (typing again and saving gives the committed text plus the new word only), quitting asks nothing
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: ^// again\nfn step_1\(\) -> u32 \{\n    1\n\}\n\nfn step_2\(\) -> u32 \{\n    2\n\}[\s\S]*fn step_6\(\)[\s\S]*\n    11\n
+forbid-log: script: ignoring
+forbid-log: nothing offers
+forbid-log: script: Answer\("Close
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+edit src/steps.rs 1 1
+type // typed and never saved
+key enter
+wait 800
+mark typed
+wait 500
+git discard src/steps.rs
+wait 600
+answer Discard
+wait 2000
+mark discarded
+wait 500
+edit src/steps.rs 1 1
+type // again
+key enter
+wait 500
+key save
+wait 1200
+mark again
+wait 500
+quit
+wait 1000
+answer Close without saving
+wait 800

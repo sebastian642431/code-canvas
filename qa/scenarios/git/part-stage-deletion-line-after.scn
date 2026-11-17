@@ -1,0 +1,16 @@
+title: The pure deletion of step_6 is staged from the line after it (22); index must hold only the four removed lines
+folders: git-changes
+expect-file: git-changes/src/steps.rs :: let two = 2;\n    two\n\}\n[\s\S]*step_5\(\) -> u32 \{\n    5\n\}\n\nfn step_7[\s\S]*eleven\(\)
+forbid-log: script: ignoring
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1000
+zoom 0.5
+wait 600
+part stage src/steps.rs 22
+wait 1500
+mark end
+wait 600
+quit

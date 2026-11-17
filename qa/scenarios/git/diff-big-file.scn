@@ -1,0 +1,56 @@
+title: A 12000 line file changed at its first and last line: the diff inside its card on, around 0, unfold, split, off; the last rows keep the real line numbers (12002 is '// bottom') and nothing is left of the diff after off
+folders: odd-files
+limit: 80
+expect-file: odd-files/big.rs :: ^// top\npub fn f0\(\) -> usize \{ 0 \}\n[\s\S]*pub fn f11999\(\) -> usize \{ 11999 \}\n// bottom\n$
+forbid-log: script: ignoring
+
+wait 4000
+left changes
+edit big.rs 1 1
+type // top
+key enter
+key save
+wait 800
+key escape
+wait 2500
+touch big.rs // bottom
+wait 2500
+tool edit
+goto big.rs
+wait 1200
+find // bottom
+wait 1500
+mark 0-plain-bottom
+wait 500
+diff on
+wait 2500
+goto big.rs
+wait 1500
+mark 1-on
+wait 500
+diff around 0
+wait 2000
+goto big.rs
+wait 1200
+mark 2-around-0
+wait 500
+diff unfold
+wait 2500
+find next
+wait 1500
+mark 3-unfold-bottom
+wait 500
+diff split
+wait 2500
+find next
+wait 1500
+mark 4-split-unfold-bottom
+wait 500
+diff off
+wait 2500
+find next
+wait 1500
+mark 5-off-bottom
+wait 500
+find close
+quit

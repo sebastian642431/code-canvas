@@ -1,0 +1,48 @@
+title: The diff inside the cards of a CRLF file and a file with tabs: on, split, around 0, unfold, off; no stray \r, tabs keep their width, the plain text is back after off
+folders: odd-files
+expect-file: odd-files/crlf.txt :: ^first line\r\nSECOND line\r\nthird line\r\nfourth line\r\n$
+forbid-log: script: ignoring
+
+wait 4000
+left changes
+diff on
+wait 1500
+goto crlf.txt
+wait 1200
+mark 1-crlf-on
+wait 500
+diff split
+wait 1200
+goto crlf.txt
+wait 1200
+mark 2-crlf-split
+wait 500
+diff together
+diff around 0
+wait 1200
+goto crlf.txt
+wait 1200
+mark 3-crlf-around-0
+wait 500
+goto tabs.go
+wait 1200
+mark 4-tabs-around-0
+wait 500
+diff unfold
+diff split
+wait 1200
+goto tabs.go
+wait 1200
+mark 5-tabs-split-unfold
+wait 500
+diff off
+wait 1200
+goto tabs.go
+wait 1200
+mark 6-tabs-off
+wait 500
+goto crlf.txt
+wait 1200
+mark 7-crlf-off
+wait 500
+quit
