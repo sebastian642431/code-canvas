@@ -74,6 +74,8 @@ pub struct UiState {
     logo: Option<egui::TextureHandle>,
     /// What to draw of the dependencies between files.
     pub deps: crate::page::DepFilters,
+    /// Open the folder menu on the next frame (set by scripts).
+    pub open_folder_menu: bool,
     /// Key of the webview shown by [`RightPanel::Webview`].
     pub webview: String,
     /// Where that webview's page goes this frame, in points.
@@ -100,6 +102,7 @@ impl Default for UiState {
             logo: None,
             extension: String::new(),
             deps: Default::default(),
+            open_folder_menu: false,
             webview: String::new(),
             webview_rect: None,
             ext_icons: Default::default(),
@@ -748,7 +751,7 @@ fn file_glyph(name: &str) -> &'static str {
 
 /// The open folders as a menu: pick one, close one, open another. Each
 /// folder is its own canvas.
-fn folder_switcher(ui: &mut egui::Ui, pages: &[Page], active: usize, actions: &mut Vec<Action>) {
+fn folder_switcher(ui: &mut egui::Ui, open: &mut bool, pages: &[Page], active: usize, actions: &mut Vec<Action>) {
     let title = match pages.get(active) {
         Some(p) if p.is_loading() => format!("{} …", p.title),
         Some(p) => p.title.clone(),
@@ -756,42 +759,103 @@ fn folder_switcher(ui: &mut egui::Ui, pages: &[Page], active: usize, actions: &m
     };
     let count = if pages.len() > 1 { format!("  {}/{}", active + 1, pages.len()) } else { String::new() };
     let label = format!("{}  {title}{count}  {}", icons::FOLDER, icons::CHEVRON_DOWN);
-    ui.menu_button(RichText::new(label).size(13.5).color(TEXT), |ui| {
-        ui.set_min_width(300.0);
+    let button = ui.menu_button(RichText::new(label).size(13.5).color(TEXT), |ui| {
+        // As wide as its longest folder name needs, within sensible limits:
+        // rows are laid out by hand so the menu does not stretch.
+        let font = FontId::proportional(13.0);
+        let longest = pages
+            .iter()
+            .map(|p| ui.painter().layout_no_wrap(p.title.clone(), font.clone(), TEXT).size().x)
+            .fold(0.0f32, f32::max);
+        let width = (longest + 86.0).clamp(210.0, 420.0);
+        ui.set_width(width);
+        ui.spacing_mut().item_spacing.y = 1.0;
+        let row = |ui: &mut egui::Ui| ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
         for (i, p) in pages.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if small_icon(ui, icons::X, "Close this folder (Ctrl+W)") {
-                        actions.push(Action::CloseTab(i));
-                        ui.close();
-                    }
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        let text = RichText::new(format!("{}  {}", icons::FOLDER, p.title)).size(13.0);
-                        let files = match &p.state {
-                            PageState::Ready(r) => format!("{} files · ", r.repo.files.len()),
-                            _ => String::new(),
-                        };
-                        let row = ui
-                            .selectable_label(i == active, text)
-                            .on_hover_text(format!("{files}{}", p.root.display()));
-                        if row.clicked() {
-                            actions.push(Action::SwitchTab(i));
-                            ui.close();
-                        }
-                    });
-                });
-            });
+            let (rect, resp) = row(ui);
+            let close_at = Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(22.0));
+            let close = ui.interact(close_at, ui.scope_id().with(("close folder", i)), Sense::click());
+            if i == active {
+                ui.painter().rect_filled(rect, 6.0, RAISED);
+            } else if ui.rect_contains_pointer(rect) {
+                ui.painter().rect_filled(rect, 6.0, HOVER);
+            }
+            let mid = rect.center().y;
+            let color = if i == active { TEXT } else { TEXT_DIM };
+            ui.painter().text(
+                Pos2::new(rect.left() + 10.0, mid),
+                Align2::LEFT_CENTER,
+                icons::FOLDER,
+                font.clone(),
+                color,
+            );
+            let clip = Rect::from_min_max(
+                Pos2::new(rect.left() + 32.0, rect.top()),
+                Pos2::new(close_at.left() - 4.0, rect.bottom()),
+            );
+            ui.painter().with_clip_rect(clip).text(
+                clip.left_center(),
+                Align2::LEFT_CENTER,
+                &p.title,
+                font.clone(),
+                TEXT,
+            );
+            // The close button shows on the row under the pointer.
+            if ui.rect_contains_pointer(rect) {
+                if close.hovered() {
+                    ui.painter().rect_filled(close_at, 5.0, Color32::from_rgb(52, 56, 68));
+                }
+                ui.painter().text(
+                    close_at.center(),
+                    Align2::CENTER_CENTER,
+                    icons::X,
+                    FontId::proportional(13.0),
+                    TEXT_DIM,
+                );
+            }
+            let files = match &p.state {
+                PageState::Ready(r) => format!("{} files · ", r.repo.files.len()),
+                PageState::Waiting => "not read yet · ".to_string(),
+                _ => String::new(),
+            };
+            if close.on_hover_text("Close this folder (Ctrl+W)").clicked() {
+                actions.push(Action::CloseTab(i));
+                ui.close();
+            } else if resp.on_hover_text(format!("{files}{}", p.root.display())).clicked() {
+                actions.push(Action::SwitchTab(i));
+                ui.close();
+            }
         }
         if !pages.is_empty() {
-            ui.separator();
+            ui.add_space(3.0);
+            let (line, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
+            ui.painter().rect_filled(line, 0.0, BORDER);
+            ui.add_space(3.0);
         }
-        if ui.button(format!("{}  Open folder…   Ctrl+O", icons::PLUS)).clicked() {
+        let (rect, resp) = row(ui);
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, 6.0, HOVER);
+        }
+        let mid = rect.center().y;
+        ui.painter().text(Pos2::new(rect.left() + 10.0, mid), Align2::LEFT_CENTER, icons::PLUS, font.clone(), TEXT_DIM);
+        ui.painter().text(Pos2::new(rect.left() + 32.0, mid), Align2::LEFT_CENTER, "Open folder…", font.clone(), TEXT);
+        ui.painter().text(
+            Pos2::new(rect.right() - 10.0, mid),
+            Align2::RIGHT_CENTER,
+            "Ctrl+O",
+            FontId::proportional(11.5),
+            TEXT_FAINT,
+        );
+        if resp.clicked() {
             actions.push(Action::OpenFolder);
             ui.close();
         }
-    })
-    .response
-    .on_hover_text("Switch folder (Ctrl+Tab)");
+    });
+    // A script asked for the menu to be shown (there is no click to open it).
+    if std::mem::take(open) {
+        egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&button.response));
+    }
+    button.response.on_hover_text("Switch folder (Ctrl+Tab)");
 }
 
 fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
@@ -812,7 +876,9 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
                     actions.push(Action::ExpandAll);
                 }
                 // The folder being shown: what is left of the row.
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| folder_switcher(ui, pages, active, actions));
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    folder_switcher(ui, &mut st.open_folder_menu, pages, active, actions)
+                });
             });
         });
     });

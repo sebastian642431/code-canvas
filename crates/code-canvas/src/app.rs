@@ -1478,7 +1478,10 @@ impl App {
             Step::ExpandAll => self.apply(Action::ExpandAll),
             Step::Connected(on) => self.apply(Action::SetOnlyConnected(on)),
             Step::Tab(n) => self.switch_to(n.saturating_sub(1)),
-            Step::Folders => self.ui.show_left(LeftPanel::Files),
+            Step::Folders => {
+                self.ui.show_left(LeftPanel::Files);
+                self.ui.open_folder_menu = true;
+            }
             Step::Zoom(f) => self.apply(Action::ZoomBy(f)),
             Step::Quick(text) => self.ui.quick = Some(QuickOpen { query: text, selected: 0, focus: true }),
             Step::Resize(w, h) => {
