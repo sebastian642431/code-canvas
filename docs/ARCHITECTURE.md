@@ -200,3 +200,6 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
 `resize <width> <height>`, `maximize`, `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.
+
+To see the result, `scripts/screenshot.ps1` (Windows) starts such an instance and
+saves a picture of its window: enough to check a panel or a theme without clicking.
