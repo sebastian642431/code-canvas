@@ -1788,6 +1788,10 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     }
 
     ui.spacing_mut().item_spacing.y = 0.0;
+    let deepest = if matches.is_some() { 0 } else { r.tree.iter().map(|row| row.depth).max().unwrap_or(0) };
+    let indent_room = (ui.available_width() - 200.0).max(0.0);
+    let indent_step = (indent_room / deepest.max(1) as f32).clamp(6.0, 16.0);
+    let indent = |depth: u16| (depth as f32 * indent_step).min(indent_room);
     let mut list = egui::ScrollArea::vertical().auto_shrink([false, false]);
     let row_of =
         reveal.as_ref().filter(|_| matches.is_none()).and_then(|path| r.tree.iter().position(|row| row.path == *path));
@@ -1827,10 +1831,10 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             }
             let mid = rect.center().y;
             for d in 0..depth {
-                let gx = rect.left() + 22.0 + d as f32 * 16.0;
+                let gx = rect.left() + 22.0 + indent(d);
                 painter.vline(gx, rect.y_range(), Stroke::new(1.0, pal().raised));
             }
-            let x0 = rect.left() + 14.0 + depth as f32 * 16.0;
+            let x0 = rect.left() + 14.0 + indent(depth);
             if is_dir && !ignored {
                 let chevron = if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
                 painter.text(
@@ -1942,6 +1946,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 resp.on_hover_text(format!("{path} · {}{state}", change.change.label()));
             } else if unsaved {
                 resp.on_hover_text(format!("{path} · not saved yet"));
+            } else if name != path {
+                resp.on_hover_text(path);
             }
         }
     });
