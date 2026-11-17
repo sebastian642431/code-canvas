@@ -174,6 +174,26 @@ fn site_rect(layout: &Layout, site: &Site) -> Option<Rect> {
     (node != NONE).then(|| layout.nodes[node as usize].cell_rect(site.line, site.col as u32, site.len as u32))
 }
 
+fn fitted(text: &mut TextLayer, name: &str, end: &str, size: f32, bold: bool, room: f32) -> String {
+    let whole = format!("{name}{end}");
+    let count = name.chars().count();
+    if (count + end.chars().count()) as f32 * size <= room {
+        return whole;
+    }
+    let wide = text.measure(&whole, size, bold);
+    if wide <= room {
+        return whole;
+    }
+    let mut keep = ((count as f32 * room / wide) as usize).min(count.saturating_sub(1));
+    loop {
+        let cut: String = name.chars().take(keep).chain("…".chars()).chain(end.chars()).collect();
+        if keep == 0 || text.measure(&cut, size, bold) <= room {
+            return cut;
+        }
+        keep -= 1;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn selection_overlay(
     sel: &Selection,
@@ -314,7 +334,7 @@ pub fn build(
                 let h_px = n.rect.h * z;
                 if w_px > 46.0 * s && h_px > 22.0 * s {
                     let size = (h_px * 0.16).clamp(11.0 * s, 20.0 * s).round();
-                    let label = format!("{}/  +", n.name);
+                    let label = fitted(text, &n.name, "/  +", size, true, w_px - 8.0 * s);
                     let tw = text.measure(&label, size, true).min(w_px - 8.0 * s);
                     let c = view.to_screen(n.rect.center());
                     let two_lines = h_px > size * 4.0;
@@ -357,7 +377,6 @@ pub fn build(
                 let header_px = DIR_HEADER * z;
                 if (header_px >= 10.0 || w_px >= 280.0 * s) && w_px > 50.0 * s {
                     let size = (header_px * 0.55).clamp(11.0 * s, 16.0 * s).round();
-                    let label = format!("{}/", n.name);
                     let left = tl[0] + 8.0 * s;
                     let is_root = n.parent.is_none();
                     let top = if is_root {
@@ -366,6 +385,7 @@ pub fn build(
                         (tl[1] + (header_px - size * 1.3) * 0.5).max(tl[1] + 2.0)
                     };
                     let max_w = w_px - 34.0 * s;
+                    let label = fitted(text, &n.name, "/", size, true, max_w);
                     let tw = text.measure(&label, size, true).min(max_w);
                     let marker = Rect::new(left + tw + 6.0 * s, top - 1.0, size * 1.3 + 2.0, size * 1.3 + 2.0);
                     if free(Rect::new(left - 2.0, top, tw + marker.w + 12.0 * s, size * 1.3), &mut placed) {
@@ -424,6 +444,7 @@ pub fn build(
                     if free(Rect::new(left - 2.0, top, tw + 4.0, size * 1.3), &mut placed) {
                         let unsaved = page.editors.get(&n.rel_path).is_some_and(|e| e.dirty);
                         let shown = if unsaved { format!("● {}", n.name) } else { n.name.clone() };
+                        let shown = fitted(text, &shown, "", size, false, w_px);
                         if crate::markdown::is_markdown(std::path::Path::new(&n.name)) {
                             let word = "Preview";
                             let word_w = text.measure(word, size, false);
