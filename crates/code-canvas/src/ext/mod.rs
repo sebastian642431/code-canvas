@@ -9,7 +9,7 @@ pub mod host;
 pub mod market;
 pub mod when;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -58,6 +58,36 @@ pub enum Status {
     /// Contributes data only (themes, grammars…): nothing to run.
     Declarative,
     Disabled,
+}
+
+/// The extensions a new installation gets by itself, from Open VSX, as
+/// `(namespace, name)`: the assistant, and formatting and linting that work
+/// without setting anything up.
+pub const DEFAULTS: &[(&str, &str)] =
+    &[("Anthropic", "claude-code"), ("esbenp", "prettier-vscode"), ("dbaeumer", "vscode-eslint")];
+
+/// Which of `defaults` are still to be installed. `offered` is the list of
+/// those this installation already got, and is brought up to date with the
+/// ones that are there. Each is offered once: removing one afterwards is the
+/// user's choice, and it does not come back.
+fn defaults_to_install(
+    defaults: &[(&str, &str)],
+    offered: &mut BTreeSet<String>,
+    is_installed: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    let mut wanted = Vec::new();
+    for (namespace, name) in defaults {
+        let id = format!("{namespace}.{name}").to_lowercase();
+        if offered.contains(&id) {
+            continue;
+        }
+        if is_installed(&id) {
+            offered.insert(id);
+        } else {
+            wanted.push((namespace.to_string(), name.to_string()));
+        }
+    }
+    wanted
 }
 
 pub struct Installed {
@@ -352,6 +382,8 @@ pub struct Extensions {
     /// Context keys the extensions set (`setContext`): what `when` clauses
     /// are evaluated against.
     pub contexts: HashMap<String, Value>,
+    /// The default extensions this installation already got (`defaults.json`).
+    offered: BTreeSet<String>,
     /// The latest answer to [`Extensions::request_hover`].
     pub hover: Option<Hover>,
     /// Webviews that went away with their host; reported by `poll`.
@@ -589,6 +621,7 @@ impl Extensions {
             status_items: Vec::new(),
             webviews: Vec::new(),
             contexts: HashMap::new(),
+            offered: BTreeSet::new(),
             hover: None,
             dropped_webviews: Vec::new(),
             host_running: false,
@@ -670,6 +703,35 @@ impl Extensions {
             let found = market::search(&query);
             Job::Search(query, found)
         });
+    }
+
+    /// Install the extensions the app comes with ([`DEFAULTS`]) that this
+    /// installation never got. Called once, when the app starts.
+    pub fn install_defaults(&mut self) {
+        self.offered = std::fs::read_to_string(self.dir.join("defaults.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        let before = self.offered.len();
+        let installed: HashSet<&str> = self.installed.iter().map(|e| e.id.as_str()).collect();
+        let wanted = defaults_to_install(DEFAULTS, &mut self.offered, &|id| installed.contains(id));
+        if self.offered.len() != before {
+            self.save_offered();
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        let names: Vec<&str> = wanted.iter().map(|(_, name)| name.as_str()).collect();
+        self.notice(Level::Info, "Extensions", format!("getting the ones the app comes with: {}", names.join(", ")));
+        for (namespace, name) in &wanted {
+            self.install(namespace, name);
+        }
+    }
+
+    fn save_offered(&self) {
+        let _ = std::fs::create_dir_all(&self.dir);
+        let _ =
+            std::fs::write(self.dir.join("defaults.json"), serde_json::to_string(&self.offered).unwrap_or_default());
     }
 
     pub fn install(&mut self, namespace: &str, name: &str) {
@@ -1024,6 +1086,11 @@ impl Extensions {
                         Ok(dir) => {
                             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             self.notice(Level::Info, "Extensions", format!("installed {name}"));
+                            // One of the app's own: it has been given now.
+                            let ours = DEFAULTS.iter().any(|(ns, n)| format!("{ns}.{n}").to_lowercase() == label);
+                            if ours && self.offered.insert(label.clone()) {
+                                self.save_offered();
+                            }
                             self.restart_host();
                         }
                         Err(e) => self.notice(Level::Error, "Extensions", format!("{label} was not installed: {e}")),
@@ -1477,6 +1544,25 @@ mod tests {
         );
         assert_eq!(manifest_views(&manifest, &nls), vec!["Pull Requests", "Issues"]);
         assert!(manifest_commands(&json!({}), &nls).is_empty());
+    }
+
+    #[test]
+    fn default_extensions_are_offered_once() {
+        let defaults = [("Acme", "one"), ("acme", "two"), ("acme", "three")];
+        let mut offered = BTreeSet::new();
+        // A new installation: "two" is there already (installed by hand).
+        let wanted = defaults_to_install(&defaults, &mut offered, &|id| id == "acme.two");
+        assert_eq!(wanted, vec![("Acme".to_string(), "one".to_string()), ("acme".to_string(), "three".to_string())]);
+        assert_eq!(offered.iter().collect::<Vec<_>>(), vec!["acme.two"]);
+
+        // "one" arrived; "three" did not (no network): only "three" is tried again.
+        offered.insert("acme.one".into());
+        let wanted = defaults_to_install(&defaults, &mut offered, &|id| id != "acme.three");
+        assert_eq!(wanted, vec![("acme".to_string(), "three".to_string())]);
+
+        // Later the user removes "one": it does not come back.
+        offered.insert("acme.three".into());
+        assert!(defaults_to_install(&defaults, &mut offered, &|_| false).is_empty());
     }
 
     #[test]

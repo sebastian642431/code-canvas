@@ -186,6 +186,11 @@ impl App {
         // The colours first: everything built from here on takes them.
         let chosen = crate::themes::load();
         canvas_render::theme::set(chosen.resolve());
+        let mut ext = Extensions::new(session::data_dir(), waker);
+        // Not in scripted or benchmark runs: those must not reach for the network.
+        if std::env::var_os("CODE_CANVAS_SCRIPT").is_none() && std::env::var_os("CODE_CANVAS_BENCH").is_none() {
+            ext.install_defaults();
+        }
         let mut ui = UiState::default();
         ui.theme = chosen;
         ui.key_file = crate::keys::load();
@@ -221,7 +226,7 @@ impl App {
             resize_edge: None,
             session_dirty: false,
             last_save: Instant::now(),
-            ext: Extensions::new(session::data_dir(), waker),
+            ext,
             symbols_stale: None,
             unsent_edit: None,
             hover_probe: None,

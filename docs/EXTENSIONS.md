@@ -27,6 +27,9 @@ it works, what works today, and what does not yet.
 Extensions with code need **Node.js** on the `PATH`. Extensions run with your
 permissions, exactly as in VS Code: install the ones you trust.
 
+A new installation gets three by itself, once (`ext::DEFAULTS`): Claude Code,
+Prettier and ESLint. Removing one is respected: it does not come back.
+
 ## How it works
 
 ```
