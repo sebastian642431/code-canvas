@@ -64,6 +64,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [versions.rs](#cratescode-canvassrcversionsrs) ·
   [watch.rs](#cratescode-canvassrcwatchrs) ·
   [webview.rs](#cratescode-canvassrcwebviewrs)
+- [Repository files](#repository-files)
 - [scripts](#scripts)
 
 ## Quick reference
@@ -552,9 +553,16 @@ Graphics and the frame
 - When the canvas's part of the window moves (a panel opens), what was in the
   middle of it stays in the middle (`Page::pane_center`).
 - A file dropped on the window is copied on a thread (`files::copy_into`);
-  `App::poll_copies` hears when it is done. A copy that git ignores is not listed
-  anywhere, so `App::show_dropped` says so, and opens it in the viewer when it is
+  `App::poll_copies` hears when it is done. A copy that git ignores is not on the
+  canvas, so `App::show_dropped` says so, and opens it in the viewer when it is
   media. The same happens when the file was already there.
+- **What git ignores** is not scanned, so it is not on the canvas, but the file
+  tree lists it dimmed and without a checkbox (`GitState::ignored`, read with the
+  rest of the git state; `page::build_tree` hangs each path from the nearest
+  folder that is on the canvas). An ignored folder is one row: it is not walked
+  (`--directory`), which keeps `target/` or `node_modules/` cheap. At most
+  `MAX_IGNORED` (400) paths. A click opens media or Markdown in the viewer and
+  shows anything else in the system's file manager (`Action::OpenIgnored`).
 - Another frame is requested while text is still being shaped in any pane, while a
   notice is up (they fade by themselves), and once more when the stats changed:
   the status bar shows the previous frame's stats and would otherwise stay stale.
@@ -1336,6 +1344,28 @@ Platforms
   and webviews stay empty (the non-Windows `WebViews` is a stand-in).
 
 ---
+
+## Repository files
+
+Configuration carries no comments either; what they said:
+
+- `.github/workflows/ci.yml` and `release.yml` use a fixed Rust version: a new
+  compiler brings new lints, and they should arrive when the version is raised on
+  purpose, not break an unrelated push.
+- **Releasing.** Pushing a tag like `v0.3.0` (`git tag v0.3.0 && git push origin
+  v0.3.0`) builds the Windows app and publishes it as a GitHub release, so nobody
+  needs Rust to try it. "Run workflow" builds the same zip without publishing a
+  release; it is kept as an artifact of the run. The version in `Cargo.toml` must
+  match the tag: the app compares it with the latest release to offer an update.
+- `Cargo.toml`: `resvg` is built without text, fonts or embedded images, because
+  file icon themes are SVG and icons have none of those. `wry` (the browser view of
+  extensions' webviews, WebView2) is a dependency on Windows only; anything the
+  rest of the code uses must not go in that section.
+- `.gitattributes` gives everyone the same line endings whatever their git
+  settings (`*.ps1` keeps CRLF), and marks fonts, icons and images as binary so
+  they are never touched.
+- `.gitignore` leaves out local media (demo recordings, screenshots): `*.mp4`,
+  `*.mov`.
 
 ## scripts
 

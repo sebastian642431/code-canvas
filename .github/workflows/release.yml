@@ -1,12 +1,5 @@
 name: Release
 
-# Pushing a tag like `v0.1.0` builds the Windows app and publishes it as a
-# GitHub release, so nobody needs Rust to try it:
-#
-#   git tag v0.1.0 && git push origin v0.1.0
-#
-# "Run workflow" builds the same zip without publishing a release (it is kept
-# as an artifact of the run).
 on:
   push:
     tags: ["v*"]
@@ -24,8 +17,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      # A fixed version: a new compiler brings new lints, and they should
-      # arrive when we update on purpose, not break an unrelated push.
       - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
       - name: Build

@@ -2,6 +2,5 @@
 **/*.rs.bk
 .DS_Store
 Thumbs.db
-# Local media (demo recordings, screenshots)
 *.mp4
 *.mov
