@@ -47,16 +47,6 @@ impl TextOp {
         }
     }
 
-    pub fn before(&self) -> usize {
-        self.parts
-            .iter()
-            .map(|part| match part {
-                Part::Retain(n) | Part::Delete(n) => *n,
-                Part::Insert(_) => 0,
-            })
-            .sum()
-    }
-
     #[cfg(test)]
     pub fn changes_nothing(&self) -> bool {
         self.parts.iter().all(|part| matches!(part, Part::Retain(_)))
@@ -70,7 +60,9 @@ impl TextOp {
         let mut op = TextOp::default();
         let (was, is) = (&a[head..a.len() - tail], &b[head..b.len() - tail]);
         if was.contains(&'\n') && is.contains(&'\n') {
-            for change in similar::TextDiff::from_lines(old, new).iter_all_changes() {
+            let by_lines =
+                similar::TextDiff::configure().timeout(std::time::Duration::from_millis(250)).diff_lines(old, new);
+            for change in by_lines.iter_all_changes() {
                 let length = change.value().chars().count();
                 match change.tag() {
                     similar::ChangeTag::Equal => op.retain(length),
@@ -185,7 +177,10 @@ pub struct Link {
     sent: u64,
     received: u64,
     waiting: Vec<(u64, TextOp)>,
+    unsaid: u32,
 }
+
+const SAID_EVERY: u32 = 32;
 
 impl Link {
     pub fn fresh(epoch: u32) -> Link {
@@ -195,7 +190,25 @@ impl Link {
     pub fn send(&mut self, op: &TextOp) -> (u64, u64) {
         self.waiting.push((self.sent, op.clone()));
         self.sent += 1;
+        self.unsaid = 0;
         (self.sent - 1, self.received)
+    }
+
+    pub fn heard(&mut self, mine_seen: u64) {
+        self.waiting.retain(|(number, _)| *number >= mine_seen);
+    }
+
+    pub fn owed(&mut self) -> Option<u64> {
+        self.unsaid += 1;
+        (self.unsaid >= SAID_EVERY).then(|| {
+            self.unsaid = 0;
+            self.received
+        })
+    }
+
+    #[cfg(test)]
+    pub fn kept(&self) -> usize {
+        self.waiting.len()
     }
 
     pub fn receive(&mut self, mut op: TextOp, theirs: u64, mine_seen: u64, i_go_first: bool) -> Option<TextOp> {
@@ -242,6 +255,21 @@ mod tests {
         assert_eq!(far.apply(was).as_deref(), Some(is));
         assert_eq!(far.place(4), 4, "changes at both ends of a file leave its middle alone");
         assert!(far.parts.len() >= 5, "{far:?}");
+    }
+
+    #[test]
+    fn what_was_sent_is_let_go_once_the_other_side_says_it_has_it() {
+        let (mut here, mut there) = (Link::default(), Link::default());
+        let typed = TextOp::between("", "a");
+        for round in 0..100u64 {
+            let (number, seen) = here.send(&typed);
+            assert!(there.receive(typed.clone(), number, seen, false).is_some());
+            if let Some(seen) = there.owed() {
+                here.heard(seen);
+                assert_eq!(here.kept(), 0, "round {round}");
+            }
+        }
+        assert!(here.kept() < SAID_EVERY as usize, "one who only reads still lets the other forget");
     }
 
     #[test]

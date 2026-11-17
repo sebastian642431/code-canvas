@@ -904,6 +904,9 @@ impl App {
         log::info!("wrote {} ({} bytes)", path.display(), text.len());
         self.ext.file_changed(path);
         if let Some((i, rel)) = self.locate_file(path) {
+            if self.sharing.session.is_some() {
+                self.sharing.touched.push((self.pages[i].id, rel.clone()));
+            }
             if let Some(page) = self.pages.get_mut(i) {
                 if page.editors.get(&rel).is_some_and(|e| !e.dirty) {
                     let caret = page.editors.remove(&rel).map(|e| e.caret).unwrap_or_default();
@@ -963,11 +966,11 @@ impl App {
         let mut seen: Option<(usize, String, u32)> = None;
         for path in &batch.files {
             let Some((i, rel)) = self.locate_file(path) else { continue };
-            if self.sharing.session.is_some() {
-                self.sharing.touched.push((self.pages[i].id, rel.clone()));
-            }
             if rel.split('/').any(|part| skip.iter().any(|s| s == part)) {
                 continue;
+            }
+            if self.sharing.session.is_some() {
+                self.sharing.touched.push((self.pages[i].id, rel.clone()));
             }
             let on_canvas = self.pages[i].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
             match (on_canvas, path.is_file()) {

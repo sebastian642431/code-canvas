@@ -1704,6 +1704,25 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   - A save from a guest is for a file that is shared, not for any page whose
     number is guessed. Sending someone away changes the secret: the invitation
     they have stops working.
+- **When the two texts disagree the host's is the true one.** Remote edits of a
+  pass are applied one by one (`share_remote_edit`) and compared once at the end
+  (`share_settle`): a guest takes the session's text, a host sends its own as
+  one more edit. Comparing after each edit against the text after all of them
+  replaced whole files and lost the caret.
+- What keeps the host's text and the session's the same: every editor has a mark
+  no other editor ever had (`Editor::rev` comes from one counter, so a file
+  reloaded is not taken for the one before it), files the watcher names while a
+  page is being read again wait for it (`touched`), and what the app itself
+  writes for an extension is named too (`write_file`).
+- A text never has a carriage return (`body`), and an edit that brings one is
+  refused: the editor would drop it and never again agree with the session.
+- `Link::waiting` is let go when the other side says what it has (`Msg::Said`,
+  every `SAID_EVERY` edits it receives without sending): someone who only reads
+  made the other keep every edit of the session.
+- The wire is version 2: an app of the version before is told it is another
+  version, instead of failing on a message it does not know.
+- A guest's folder is held by a file it keeps open (`.held`); a second app
+  starting cleans only the folders nobody holds.
 - One thread reads each connection and one writes it, so the app never waits on
   a socket; they wake the loop as the extension host does. `Session::close`
   says `Bye`, and it is called when the app exits and when the session is

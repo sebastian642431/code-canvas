@@ -35,6 +35,11 @@ pub struct Editor {
     pub rev: u64,
 }
 
+fn next_rev() -> u64 {
+    static REVS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    REVS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn byte_at(line: &str, col: usize) -> usize {
     line.char_indices().nth(col).map_or(line.len(), |(i, _)| i)
 }
@@ -61,7 +66,7 @@ impl Editor {
             redo: Vec::new(),
             saved_at: Some(0),
             dirty: false,
-            rev: 0,
+            rev: next_rev(),
         }
     }
 
@@ -166,7 +171,7 @@ impl Editor {
 
     fn touch(&mut self) {
         self.dirty = self.saved_at != Some(self.undo.len());
-        self.rev += 1;
+        self.rev = next_rev();
     }
 
     fn offset_of(&self, p: Pos) -> usize {
@@ -187,41 +192,24 @@ impl Editor {
     }
 
     pub fn apply_remote(&mut self, op: &crate::share::ot::TextOp) -> Option<(u32, u32)> {
-        use crate::share::ot::Part;
-        let length = self.lines.iter().map(|line| line.chars().count()).sum::<usize>() + self.lines.len() - 1;
-        if op.before() != length {
-            return None;
+        let was = self.display_source();
+        let is: Vec<char> = op.apply(&was)?.chars().collect();
+        let was: Vec<char> = was.chars().collect();
+        let most = was.len().min(is.len());
+        let head = (0..most).take_while(|i| was[*i] == is[*i]).count();
+        let tail = (0..most - head).take_while(|i| was[was.len() - 1 - i] == is[is.len() - 1 - i]).count();
+        if head + tail == was.len() && was.len() == is.len() {
+            return Some((self.caret.line as u32, 0));
         }
         let (caret, anchor, goal) = (self.offset_of(self.caret), self.anchor.map(|a| self.offset_of(a)), self.goal);
-        let mut at = 0;
-        let mut lines: Option<(usize, usize)> = None;
-        for part in &op.parts {
-            let from = self.pos_of(at);
-            let to = match part {
-                Part::Retain(n) => {
-                    at += n;
-                    continue;
-                }
-                Part::Insert(text) => {
-                    self.replace(from, from, text);
-                    at += text.chars().count();
-                    self.pos_of(at)
-                }
-                Part::Delete(n) => {
-                    let end = self.pos_of(at + n);
-                    self.replace(from, end, "");
-                    from
-                }
-            };
-            lines = Some(match lines {
-                Some((first, last)) => (first.min(from.line), last.max(to.line)),
-                None => (from.line, to.line),
-            });
-        }
+        let (from, to) = (self.pos_of(head), self.pos_of(was.len() - tail));
+        let put: String = is[head..is.len() - tail].iter().collect();
+        self.replace(from, to, &put);
+        let last = self.pos_of(is.len() - tail).line;
         self.caret = self.pos_of(op.place(caret));
         self.anchor = anchor.map(|a| self.pos_of(op.place(a)));
         self.goal = goal;
-        lines.map(|(first, last)| (first as u32, (last - first + 1) as u32))
+        Some((from.line as u32, (last - from.line + 1) as u32))
     }
 
     pub fn become_text(&mut self, body: &str) {
@@ -470,12 +458,17 @@ mod tests {
         let mut e = Editor::open("a.rs".into(), "fn main() {\r\n    run();\r\n}\r\n");
         at(&mut e, 1, 8);
         let (rev, text) = (e.rev, e.display_source());
+        assert_ne!(
+            Editor::open("a.rs".into(), "x").rev,
+            Editor::open("a.rs".into(), "x").rev,
+            "no two editors share a mark"
+        );
         assert_eq!(text, before);
         let after = "// theirs\nfn main() {\n    run();\n    stop();\n}";
         let lines = e.apply_remote(&TextOp::between(before, after));
         assert_eq!(e.display_source(), after);
         assert_eq!(e.caret, Pos::new(2, 8), "the caret is still after run(");
-        assert_eq!(lines, Some((0, 5)), "from the first line touched to where the last one ends");
+        assert_eq!(lines, Some((0, 4)), "from the first line touched to the last");
         assert!(e.dirty && e.rev > rev);
         assert_eq!(
             e.text(),
@@ -487,6 +480,23 @@ mod tests {
         e.apply_remote(&typed_at_caret);
         assert_eq!(e.caret, Pos::new(2, 11), "what is typed where the caret is pushes it");
         assert!(e.apply_remote(&TextOp::between("another text", "x")).is_none(), "an edit for another text is refused");
+        let long: String = "line\n".repeat(4000);
+        let mut big = Editor::open("big.txt".into(), &long);
+        let body = big.display_source();
+        let mut every_other = TextOp::default();
+        for _ in 0..body.chars().count() / 2 {
+            every_other.retain(1);
+            every_other.insert("x");
+            every_other.retain(1);
+        }
+        every_other.retain(body.chars().count() % 2);
+        let started = std::time::Instant::now();
+        assert!(big.apply_remote(&every_other).is_some());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "an edit of many parts costs the text once, not once per part"
+        );
+        assert_eq!(big.display_source(), every_other.apply(&body).unwrap());
         e.become_text("all new\ntext");
         assert_eq!(e.display_source(), "all new\ntext");
         assert!(e.undo());

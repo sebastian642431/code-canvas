@@ -27,7 +27,7 @@ const MOST_KNOCKING: usize = 24;
 pub fn body(text: &str) -> String {
     let text = text.strip_suffix('\n').unwrap_or(text);
     let text = text.strip_suffix('\r').unwrap_or(text);
-    text.replace("\r\n", "\n")
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn weight(msg: &Msg) -> usize {
@@ -141,6 +141,7 @@ pub struct Session {
     docs: HashMap<(u32, String), Doc>,
     folders: Vec<(u32, String)>,
     colors: u8,
+    epochs: u32,
     taken: usize,
     secret: Arc<Mutex<[u8; 16]>>,
 }
@@ -220,9 +221,15 @@ impl Session {
             docs: HashMap::new(),
             folders: Vec::new(),
             colors: 1,
+            epochs: 0,
             taken: 0,
             secret: Arc::new(Mutex::new([0; 16])),
         }
+    }
+
+    fn epoch(&mut self) -> u32 {
+        self.epochs += 1;
+        self.epochs
     }
 
     pub fn open(name: &str, guests_write: bool) -> io::Result<Session> {
@@ -346,8 +353,9 @@ impl Session {
         self.folders.push((id, name.to_string()));
         self.to_all(&Msg::Folder { id, name: name.to_string(), files: files.len() as u32 }, None);
         for (path, text) in files {
-            self.to_all(&Msg::File { folder: id, path: path.clone(), text: text.clone(), epoch: 0 }, None);
-            self.docs.insert((id, path), Doc { text, epoch: 0, links: HashMap::new() });
+            let epoch = self.epoch();
+            self.to_all(&Msg::File { folder: id, path: path.clone(), text: text.clone(), epoch }, None);
+            self.docs.insert((id, path), Doc { text, epoch, links: HashMap::new() });
         }
         self.to_all(&Msg::FolderReady { id }, None);
     }
@@ -380,9 +388,10 @@ impl Session {
         let key = (folder, path.to_string());
         let Some(doc) = self.docs.get_mut(&key) else {
             if self.host && self.shares(folder) {
-                self.docs.insert(key, Doc { text: text.to_string(), epoch: 0, links: HashMap::new() });
+                let epoch = self.epoch();
+                self.docs.insert(key, Doc { text: text.to_string(), epoch, links: HashMap::new() });
                 let (path, text) = (path.to_string(), text.to_string());
-                self.to_all(&Msg::File { folder, path, text, epoch: 0 }, None);
+                self.to_all(&Msg::File { folder, path, text, epoch }, None);
             }
             return;
         };
@@ -434,9 +443,11 @@ impl Session {
         if link.epoch != epoch {
             return None;
         }
+        let carries = |part: &ot::Part| matches!(part, ot::Part::Insert(text) if text.contains('\r'));
+        let allowed = allowed && !op.parts.iter().any(carries);
         let fitted = if allowed { link.receive(op, number, seen, host) } else { None };
-        let applied = fitted.and_then(|op| Some((doc.text.clone(), op.apply(&doc.text)?, op)));
-        let Some((_, text, op)) = applied else {
+        let applied = fitted.and_then(|op| Some((op.apply(&doc.text)?, op)));
+        let Some((text, op)) = applied else {
             match host {
                 true => self.again(from, folder, &path),
                 false => self.to(HOST, Msg::Again { folder, path }),
@@ -444,6 +455,11 @@ impl Session {
             return None;
         };
         doc.text = text;
+        let said = link.owed().map(|seen| Msg::Said { folder, path: path.clone(), epoch, seen });
+        if let Some(said) = said {
+            self.to(from, said);
+        }
+        let doc = self.docs.get_mut(&key)?;
         let mut said = Vec::new();
         for conn in self.conns.iter().filter(|conn| conn.greeted && conn.id != from) {
             let link = doc.links.entry(conn.id).or_insert_with(|| Link::fresh(doc.epoch));
@@ -611,6 +627,7 @@ impl Session {
             }
             Msg::File { folder, path, text, epoch } if !self.host => {
                 self.taken += text.len();
+                let text = body(&text);
                 let mut links = HashMap::new();
                 links.insert(HOST, Link::fresh(epoch));
                 let again =
@@ -634,6 +651,12 @@ impl Session {
                 let known = self.docs.contains_key(&(folder, path.clone()));
                 if known && self.person(from).is_some_and(|person| person.writer) {
                     events.push(Event::Save { folder, path, by: from });
+                }
+            }
+            Msg::Said { folder, path, epoch, seen } => {
+                let link = self.docs.get_mut(&(folder, path)).and_then(|doc| doc.links.get_mut(&from));
+                if let Some(link) = link.filter(|link| link.epoch == epoch) {
+                    link.heard(seen);
                 }
             }
             Msg::Again { folder, path } if self.host => self.again(from, folder, &path),
