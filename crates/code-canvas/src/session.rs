@@ -9,8 +9,9 @@ pub struct Session {
     pub active: usize,
     pub left_open: bool,
     pub right_open: bool,
-    pub left_panel: u8,
-    pub right_panel: u8,
+    pub left_last: String,
+    pub right_last: String,
+    pub rails: crate::rails::Rails,
     pub window: Option<[f32; 2]>,
     pub single: bool,
 }

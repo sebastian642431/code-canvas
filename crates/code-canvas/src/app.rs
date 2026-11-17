@@ -21,7 +21,7 @@ use crate::overlay::{self, CanvasOverlay, SYMBOL_HOVER_MIN_PX};
 use crate::page::{Page, PageState, Ready};
 use crate::script::{Script, Step};
 use crate::session::{self, PageSession, Session};
-use crate::ui::{self, Action, FileOp, FrameInfo, LeftPanel, QuickOpen, RightPanel, UiState};
+use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState};
 
 struct Gfx {
     renderer: Renderer,
@@ -87,16 +87,6 @@ struct Drag {
     moved: bool,
     button: MouseButton,
 }
-
-const LEFT_PANELS: [LeftPanel; 7] = [
-    LeftPanel::Files,
-    LeftPanel::Search,
-    LeftPanel::Help,
-    LeftPanel::Extensions,
-    LeftPanel::Problems,
-    LeftPanel::Changes,
-    LeftPanel::Settings,
-];
 
 pub struct App {
     gfx: Option<Gfx>,
@@ -181,11 +171,10 @@ impl App {
         ui.commit_ai = crate::commit_ai::load();
         ui.key_file = crate::keys::load();
         ui.keys = Keymap::new(&ui.key_file);
-        ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
-        ui.last_right = RightPanel::Symbols;
+        ui.rails = saved.rails.clone();
+        ui.restore(Side::Left, saved.left_open, &saved.left_last);
+        ui.restore(Side::Right, saved.right_open, &saved.right_last);
         ui.single = saved.single;
-        ui.left = saved.left_open.then_some(ui.last_left);
-        ui.right = saved.right_open.then_some(ui.last_right);
         Self {
             gfx: None,
             pages: Vec::new(),
@@ -373,8 +362,9 @@ impl App {
             active: self.active,
             left_open: self.ui.left.is_some(),
             right_open: self.ui.right.is_some(),
-            left_panel: LEFT_PANELS.iter().position(|p| *p == self.ui.last_left).unwrap_or(0) as u8,
-            right_panel: 0,
+            left_last: self.ui.last_left.key(),
+            right_last: self.ui.last_right.key(),
+            rails: self.ui.rails.clone(),
             window,
             single: self.ui.single,
         });
@@ -1000,7 +990,7 @@ impl App {
         self.webviews.allow_file(path);
         self.webviews.set_html(crate::media::HANDLE, crate::media::page(path, kind));
         self.ui.media = Some(path.to_path_buf());
-        self.ui.right = Some(RightPanel::Media);
+        self.ui.show(Panel::Media);
         self.request_redraw();
         true
     }
@@ -1214,7 +1204,7 @@ impl App {
         if page.only_connected {
             self.relayout();
         }
-        self.ui.show_right(RightPanel::Symbols);
+        self.ui.show(Panel::Symbols);
         self.request_redraw();
     }
 
@@ -1329,7 +1319,7 @@ impl App {
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
         let chord = key_name(&event.logical_key).map(|key| Chord::new(&key, cmd, shift, alt));
 
-        if self.ui.left != Some(LeftPanel::Settings) {
+        if !self.ui.is_open(&Panel::Settings) {
             self.ui.rebinding = None;
         }
         if let Some(command) = self.ui.rebinding {
@@ -1381,9 +1371,9 @@ impl App {
         match command {
             Command::Palette => self.ui.quick = Some(QuickOpen { query: ">".into(), selected: 0, focus: true }),
             Command::GoToFile => self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true }),
-            Command::SearchInFiles => self.ui.show_left(LeftPanel::Search),
-            Command::Settings => self.ui.show_left(LeftPanel::Settings),
-            Command::ToggleLeftPanel => self.ui.toggle_left(),
+            Command::SearchInFiles => self.ui.show(Panel::Search),
+            Command::Settings => self.ui.show(Panel::Settings),
+            Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::FormatFile => self.format_file(None),
             Command::GoToDefinition => self.go_to_definition(),
@@ -1606,8 +1596,12 @@ impl App {
             }
             Action::CloseWindow => self.exit_requested = true,
             Action::FormatFile(rel) => self.format_file(rel),
-            Action::ShowLeft(panel) => {
-                self.ui.show_left(panel);
+            Action::RailsChanged => {
+                self.session_dirty = true;
+                self.request_redraw();
+            }
+            Action::Show(panel) => {
+                self.ui.show(panel);
                 self.request_redraw();
             }
             Action::SaveFile => self.save_edit(),
@@ -1767,7 +1761,7 @@ impl App {
             Step::Goto(path) => self.apply(Action::FlyToPath(path)),
             Step::Search(text) => {
                 self.ui.search_query = text.clone();
-                self.ui.show_left(LeftPanel::Search);
+                self.ui.show(Panel::Search);
                 self.apply(Action::Search(text));
             }
             Step::Select(name) => {
@@ -1782,25 +1776,25 @@ impl App {
                 }
             }
             Step::Left(which) => match which.as_str() {
-                "files" => self.ui.show_left(LeftPanel::Files),
-                "search" => self.ui.show_left(LeftPanel::Search),
-                "help" => self.ui.show_left(LeftPanel::Help),
-                "extensions" => self.ui.show_left(LeftPanel::Extensions),
-                "problems" => self.ui.show_left(LeftPanel::Problems),
-                "changes" => self.ui.show_left(LeftPanel::Changes),
-                "settings" => self.ui.show_left(LeftPanel::Settings),
+                "files" => self.ui.show(Panel::Files),
+                "search" => self.ui.show(Panel::Search),
+                "help" => self.ui.show(Panel::Help),
+                "extensions" => self.ui.show(Panel::Extensions),
+                "problems" => self.ui.show(Panel::Problems),
+                "changes" => self.ui.show(Panel::Changes),
+                "settings" => self.ui.show(Panel::Settings),
                 id if id.contains('.') => {
                     self.ui.extension = id.to_string();
-                    self.ui.show_left(LeftPanel::Extension);
+                    self.ui.show(Panel::Extension);
                 }
-                _ => self.ui.left = None,
+                _ => self.ui.close(Side::Left),
             },
             Step::Install(id) => match id.split_once('.') {
                 Some((namespace, name)) => self.ext.install(namespace, name),
                 None => log::warn!("script: install needs publisher.name, got '{id}'"),
             },
             Step::ExtSearch(text) => {
-                self.ui.show_left(LeftPanel::Extensions);
+                self.ui.show(Panel::Extensions);
                 self.ext.query = text;
                 self.ext.search();
             }
@@ -1900,28 +1894,27 @@ impl App {
                 }
             }
             Step::Right(which) => match which.as_str() {
-                "symbols" => self.ui.show_right(RightPanel::Symbols),
-                "deps" => self.ui.show_right(RightPanel::Deps),
+                "symbols" => self.ui.show(Panel::Symbols),
+                "deps" => self.ui.show(Panel::Deps),
                 key if !key.is_empty() && key != "none" => {
                     let items = self.ext.rail_items();
                     let found = items.iter().find(|w| w.view == key || w.extension == key).map(|w| w.view.clone());
                     let open = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
                     match found.or(open.map(|w| w.key.clone())) {
                         Some(k) => {
-                            self.ui.webview = k;
-                            self.ui.right = Some(RightPanel::Webview);
+                            self.ui.show(Panel::Webview(k));
                         }
                         None => log::warn!("script: no webview '{key}'"),
                     }
                 }
-                _ => self.ui.right = None,
+                _ => self.ui.close(Side::Right),
             },
             Step::CollapseAll => self.apply(Action::CollapseAll),
             Step::ExpandAll => self.apply(Action::ExpandAll),
             Step::Connected(on) => self.apply(Action::SetOnlyConnected(on)),
             Step::Tab(n) => self.show_folder(n.saturating_sub(1)),
             Step::Folders => {
-                self.ui.show_left(LeftPanel::Files);
+                self.ui.show(Panel::Files);
                 self.ui.open_folder_menu = true;
             }
             Step::Zoom(f) => self.apply(Action::ZoomBy(f)),
@@ -1948,6 +1941,22 @@ impl App {
                 self.ui.quick = Some(QuickOpen { query: format!(">{text}"), selected: 0, focus: true })
             }
             Step::Maximize => self.apply(Action::ToggleMaximize),
+            Step::Move(what) => {
+                let mut parts = what.split_whitespace();
+                let panel = parts.next().and_then(|name| {
+                    let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
+                    view.map(|w| Panel::Webview(w.view)).or_else(|| Panel::from_key(name))
+                });
+                let side = match parts.next() {
+                    Some("left") => Some(Side::Left),
+                    Some("right") => Some(Side::Right),
+                    _ => None,
+                };
+                match (panel, side) {
+                    (Some(panel), Some(side)) => self.ui.request_move(panel, side, parts.next().map(str::to_string)),
+                    _ => log::warn!("script: move needs <panel> left|right [panel to sit before]"),
+                }
+            }
             Step::Click(x, y) => {
                 self.cursor = [x, y];
                 self.focus_folder_at(self.cursor);
@@ -2072,8 +2081,7 @@ impl App {
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
                 ext::Event::WebviewClosed(handle) => self.webviews.close(&handle),
                 ext::Event::ShowWebview(key) => {
-                    self.ui.webview = key;
-                    self.ui.right = Some(RightPanel::Webview);
+                    self.ui.show(Panel::Webview(key));
                 }
             }
         }
@@ -2403,24 +2411,23 @@ impl App {
         self.canvas = self.canvas_full;
         let shown = self.shown();
         {
-            let shown =
-                (self.ui.right == Some(RightPanel::Webview)).then_some(()).and(self.ui.webview_rect).and_then(|r| {
-                    let entry = self.ext.webviews.iter().find(|w| w.key == self.ui.webview)?;
-                    Some((entry.handle.clone()?, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
-                });
-            let media = (self.ui.right == Some(RightPanel::Media) && self.ui.media.is_some())
-                .then_some(())
-                .and(self.ui.webview_rect)
-                .map(|r| {
-                    (
-                        crate::media::HANDLE.to_string(),
-                        Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s),
-                    )
-                });
-            let shown = shown.or(media);
+            let places: Vec<(String, Rect)> = self
+                .ui
+                .page_places
+                .iter()
+                .filter_map(|(panel, r)| {
+                    let handle = match panel {
+                        Panel::Media => self.ui.media.as_ref().map(|_| crate::media::HANDLE.to_string())?,
+                        Panel::Webview(view) => self.ext.webviews.iter().find(|w| w.key == *view)?.handle.clone()?,
+                        _ => return None,
+                    };
+                    Some((handle, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
+                })
+                .collect();
+            let targets: Vec<(&str, Rect)> = places.iter().map(|(handle, at)| (handle.as_str(), *at)).collect();
             let g = self.gfx.as_ref().unwrap();
             let t = Instant::now();
-            self.webviews.show(&g.window, shown.as_ref().map(|(h, r)| (h.as_str(), *r)));
+            self.webviews.show(&g.window, &targets);
             let ms = t.elapsed().as_secs_f32() * 1000.0;
             if ms > 8.0 {
                 log::debug!("placing the webview took {ms:.1} ms");

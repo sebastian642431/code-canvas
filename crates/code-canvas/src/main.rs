@@ -18,6 +18,7 @@ mod overlay;
 mod page;
 mod paths;
 mod prefs;
+mod rails;
 mod script;
 mod session;
 mod themes;

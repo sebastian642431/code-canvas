@@ -229,8 +229,7 @@ mod platform {
         views: HashMap<String, View>,
         tx: Sender<(String, String)>,
         rx: Receiver<(String, String)>,
-        shown: Option<String>,
-        placed: Option<Rect>,
+        shown: Vec<(String, Rect)>,
         keys: Vec<PageKey>,
         follow: bool,
     }
@@ -383,8 +382,7 @@ mod platform {
                 views: HashMap::new(),
                 tx,
                 rx,
-                shown: None,
-                placed: None,
+                shown: Vec::new(),
                 keys: Vec::new(),
                 follow: true,
             }
@@ -432,45 +430,46 @@ mod platform {
         pub fn close(&mut self, handle: &str) {
             self.views.remove(handle);
             self.shared.lock().unwrap().html.remove(handle);
-            if self.shown.as_deref() == Some(handle) {
-                self.shown = None;
-            }
+            self.shown.retain(|(shown, _)| shown != handle);
         }
 
-        pub fn show(&mut self, window: &winit::window::Window, target: Option<(&str, Rect)>) {
-            let wanted = target.map(|(h, _)| h.to_string());
-            if self.shown != wanted {
-                if let Some(old) = self.shown.take().and_then(|h| self.views.get(&h)) {
-                    let _ = old.web.set_visible(false);
+        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect)]) {
+            let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.shown)
+                .into_iter()
+                .partition(|(shown, _)| targets.iter().any(|(wanted, _)| wanted == shown));
+            for (handle, _) in gone {
+                if let Some(view) = self.views.get(&handle) {
+                    let _ = view.web.set_visible(false);
                 }
             }
-            let Some((handle, area)) = target else { return };
-            if !self.views.contains_key(handle) {
-                if !self.has_html(handle) {
-                    return;
-                }
-                match self.create(window, handle, area) {
-                    Ok(web) => {
-                        let theme = canvas_render::theme::revision();
-                        self.views.insert(handle.to_string(), View { web, ready: false, queued: Vec::new(), theme });
+            for (handle, area) in targets.iter().copied() {
+                if !self.views.contains_key(handle) {
+                    if !self.has_html(handle) {
+                        continue;
                     }
-                    Err(e) => {
-                        log::error!("webview {handle} could not be created: {e}");
-                        return;
+                    match self.create(window, handle, area) {
+                        Ok(web) => {
+                            let theme = canvas_render::theme::revision();
+                            self.views
+                                .insert(handle.to_string(), View { web, ready: false, queued: Vec::new(), theme });
+                        }
+                        Err(e) => {
+                            log::error!("webview {handle} could not be created: {e}");
+                            continue;
+                        }
                     }
                 }
-            }
-            let same = self.shown.as_deref() == Some(handle);
-            if let Some(view) = self.views.get(handle) {
-                if !same || self.placed != Some(area) {
-                    let _ = view.web.set_bounds(bounds(area));
+                let placed = kept.iter().find(|(shown, _)| shown == handle).map(|(_, at)| *at);
+                if let Some(view) = self.views.get(handle) {
+                    if placed != Some(area) {
+                        let _ = view.web.set_bounds(bounds(area));
+                    }
+                    if placed.is_none() {
+                        let _ = view.web.set_visible(true);
+                    }
                 }
-                if !same {
-                    let _ = view.web.set_visible(true);
-                }
+                self.shown.push((handle.to_string(), area));
             }
-            self.placed = Some(area);
-            self.shown = Some(handle.to_string());
         }
 
         fn create(&self, window: &winit::window::Window, handle: &str, area: Rect) -> wry::Result<WebView> {
@@ -551,13 +550,13 @@ mod platform {
         }
 
         pub fn focus_page(&self) {
-            if let Some(view) = self.shown.as_ref().and_then(|h| self.views.get(h)) {
+            if let Some(view) = self.shown.first().and_then(|(handle, _)| self.views.get(handle)) {
                 let _ = view.web.focus();
             }
         }
 
         pub fn focus_app(&self) {
-            let shown = self.shown.as_ref().and_then(|h| self.views.get(h));
+            let shown = self.shown.first().and_then(|(handle, _)| self.views.get(handle));
             if let Some(view) = shown.or_else(|| self.views.values().next()) {
                 let _ = view.web.focus_parent();
             }
@@ -585,7 +584,7 @@ mod platform {
         pub fn set_html(&mut self, _handle: &str, _html: String) {}
         pub fn post(&mut self, _handle: &str, _message: &Value) {}
         pub fn close(&mut self, _handle: &str) {}
-        pub fn show(&mut self, _window: &winit::window::Window, _target: Option<(&str, Rect)>) {}
+        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect)]) {}
         pub fn poll(&mut self) -> Vec<PageMessage> {
             Vec::new()
         }

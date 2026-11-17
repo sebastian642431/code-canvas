@@ -17,8 +17,10 @@ mod settings_panel;
 
 use crate::keys::{Command, Keymap};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LeftPanel {
+pub use crate::rails::Side;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Panel {
     Files,
     Search,
     Extensions,
@@ -27,14 +29,76 @@ pub enum LeftPanel {
     Extension,
     Help,
     Settings,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RightPanel {
     Symbols,
     Deps,
-    Webview,
     Media,
+    Webview(String),
+}
+
+impl Panel {
+    pub fn key(&self) -> String {
+        match self {
+            Panel::Files => "files".to_string(),
+            Panel::Search => "search".to_string(),
+            Panel::Extensions | Panel::Extension => "extensions".to_string(),
+            Panel::Problems => "problems".to_string(),
+            Panel::Changes => "changes".to_string(),
+            Panel::Help => "help".to_string(),
+            Panel::Settings => "settings".to_string(),
+            Panel::Symbols => "symbols".to_string(),
+            Panel::Deps => "deps".to_string(),
+            Panel::Media => "media".to_string(),
+            Panel::Webview(view) => format!("view:{view}"),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Panel> {
+        Some(match key {
+            "files" => Panel::Files,
+            "search" => Panel::Search,
+            "extensions" => Panel::Extensions,
+            "problems" => Panel::Problems,
+            "changes" => Panel::Changes,
+            "help" => Panel::Help,
+            "settings" => Panel::Settings,
+            "symbols" => Panel::Symbols,
+            "deps" => Panel::Deps,
+            "media" => Panel::Media,
+            view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
+        })
+    }
+
+    fn home(&self) -> Side {
+        match self {
+            Panel::Symbols | Panel::Deps | Panel::Media | Panel::Webview(_) => Side::Right,
+            _ => Side::Left,
+        }
+    }
+
+    fn stays_put(&self) -> bool {
+        matches!(self, Panel::Help | Panel::Settings)
+    }
+
+    fn is_page(&self) -> bool {
+        matches!(self, Panel::Media | Panel::Webview(_))
+    }
+}
+
+#[derive(Clone)]
+struct RailDrag {
+    key: String,
+    target: Option<(Side, Option<String>)>,
+}
+
+enum RailLook {
+    Glyph(&'static str),
+    Extension { id: String, codicon: Option<String> },
+}
+
+struct RailEntry {
+    panel: Panel,
+    tip: String,
+    look: RailLook,
 }
 
 #[derive(Default)]
@@ -113,10 +177,10 @@ pub struct QuickOpen {
 }
 
 pub struct UiState {
-    pub left: Option<LeftPanel>,
-    pub right: Option<RightPanel>,
-    pub last_left: LeftPanel,
-    pub last_right: RightPanel,
+    pub left: Option<Panel>,
+    pub right: Option<Panel>,
+    pub last_left: Panel,
+    pub last_right: Panel,
     pub explorer_filter: String,
     pub search_query: String,
     pub quick: Option<QuickOpen>,
@@ -126,8 +190,11 @@ pub struct UiState {
     logo: Option<egui::TextureHandle>,
     pub deps: crate::page::DepFilters,
     pub open_folder_menu: bool,
-    pub webview: String,
-    pub webview_rect: Option<Rect>,
+    pub page_places: Vec<(Panel, Rect)>,
+    pub rails: crate::rails::Rails,
+    rail_order: [Vec<Panel>; 2],
+    rail_drag: Option<RailDrag>,
+    rail_move: Option<(Panel, Side, Option<String>)>,
     pub extension: String,
     ext_icons: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     pub theme: crate::themes::ThemeFile,
@@ -147,10 +214,10 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            left: Some(LeftPanel::Files),
-            right: Some(RightPanel::Symbols),
-            last_left: LeftPanel::Files,
-            last_right: RightPanel::Symbols,
+            left: Some(Panel::Files),
+            right: Some(Panel::Symbols),
+            last_left: Panel::Files,
+            last_right: Panel::Symbols,
             explorer_filter: String::new(),
             search_query: String::new(),
             quick: None,
@@ -161,8 +228,11 @@ impl Default for UiState {
             extension: String::new(),
             deps: Default::default(),
             open_folder_menu: false,
-            webview: String::new(),
-            webview_rect: None,
+            page_places: Vec::new(),
+            rails: Default::default(),
+            rail_order: Default::default(),
+            rail_drag: None,
+            rail_move: None,
             ext_icons: Default::default(),
             theme: Default::default(),
             keys: Keymap::new(&Default::default()),
@@ -181,28 +251,115 @@ impl Default for UiState {
 }
 
 impl UiState {
-    pub fn toggle_left(&mut self) {
-        self.left = match self.left {
-            Some(_) => None,
-            None => Some(self.last_left),
+    pub fn side_of(&self, panel: &Panel) -> Side {
+        if panel.stays_put() {
+            return Side::Left;
+        }
+        self.rails.side_of(&panel.key()).unwrap_or(panel.home())
+    }
+
+    pub fn open(&self, side: Side) -> Option<&Panel> {
+        match side {
+            Side::Left => self.left.as_ref(),
+            Side::Right => self.right.as_ref(),
+        }
+    }
+
+    pub fn is_open(&self, panel: &Panel) -> bool {
+        Side::BOTH.into_iter().any(|side| self.open(side) == Some(panel))
+    }
+
+    pub fn close(&mut self, side: Side) {
+        match side {
+            Side::Left => self.left = None,
+            Side::Right => self.right = None,
+        }
+    }
+
+    pub fn close_panel(&mut self, panel: &Panel) {
+        for side in Side::BOTH {
+            if self.open(side) == Some(panel) {
+                self.close(side);
+            }
+        }
+    }
+
+    fn remember(&mut self, side: Side, panel: Panel) {
+        match side {
+            Side::Left => self.last_left = panel,
+            Side::Right => self.last_right = panel,
+        }
+    }
+
+    pub fn show(&mut self, panel: Panel) {
+        let side = self.side_of(&panel);
+        self.remember(side, panel.clone());
+        match side {
+            Side::Left => self.left = Some(panel),
+            Side::Right => self.right = Some(panel),
+        }
+    }
+
+    pub fn toggle(&mut self, panel: Panel) {
+        if self.is_open(&panel) {
+            self.close_panel(&panel);
+        } else {
+            self.show(panel);
+        }
+    }
+
+    pub fn toggle_side(&mut self, side: Side) {
+        if self.open(side).is_some() {
+            return self.close(side);
+        }
+        let last = match side {
+            Side::Left => self.last_left.clone(),
+            Side::Right => self.last_right.clone(),
         };
+        let wanted =
+            if self.side_of(&last) == side { Some(last) } else { self.rail_order[side.index()].first().cloned() };
+        if let Some(panel) = wanted {
+            self.show(panel);
+        }
     }
 
-    pub fn toggle_right(&mut self) {
-        self.right = match self.right {
-            Some(_) => None,
-            None => Some(self.last_right),
-        };
+    pub fn request_move(&mut self, panel: Panel, side: Side, before: Option<String>) {
+        self.rail_move = Some((panel, side, before));
     }
 
-    pub fn show_left(&mut self, p: LeftPanel) {
-        self.left = Some(p);
-        self.last_left = p;
+    fn move_panel(&mut self, available: &[(String, Side)], panel: &Panel, side: Side, before: Option<&str>) {
+        let key = panel.key();
+        let open = Side::BOTH.into_iter().find_map(|from| self.open(from).filter(|shown| shown.key() == key).cloned());
+        if let Some(open) = &open {
+            self.close_panel(open);
+        }
+        self.rails.place(available, &key, side, before);
+        if let Some(open) = open {
+            self.show(open);
+        }
     }
 
-    pub fn show_right(&mut self, p: RightPanel) {
-        self.right = Some(p);
-        self.last_right = p;
+    pub fn restore(&mut self, side: Side, open: bool, last: &str) {
+        let own = [
+            Panel::Files,
+            Panel::Search,
+            Panel::Changes,
+            Panel::Extensions,
+            Panel::Problems,
+            Panel::Symbols,
+            Panel::Deps,
+        ];
+        let available: Vec<(String, Side)> = own.iter().map(|panel| (panel.key(), panel.home())).collect();
+        let first = self.rails.arrange(&available)[side.index()].first().and_then(|key| Panel::from_key(key));
+        let saved = Panel::from_key(last).filter(|panel| !panel.is_page() && self.side_of(panel) == side);
+        match saved.or(first) {
+            Some(panel) if open => self.show(panel),
+            Some(panel) => {
+                self.close(side);
+                self.remember(side, panel);
+            }
+            None => self.close(side),
+        }
     }
 }
 
@@ -229,7 +386,8 @@ pub enum Action {
     ShowAll,
     Search(String),
     FormatFile(Option<String>),
-    ShowLeft(LeftPanel),
+    Show(Panel),
+    RailsChanged,
     SaveFile,
     RunCommand(String, String),
     DepsChanged,
@@ -463,34 +621,28 @@ pub fn build(
     actions: &mut Vec<Action>,
 ) -> Rect {
     st.floating.clear();
-    st.webview_rect = None;
+    st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
     status_bar(ui, st, ext, pages.get(active), info, actions);
-    left_rail(ui, st, ext, pages.get(active));
-    right_rail(ui, st, ext);
-
-    if let Some(panel) = st.left {
-        let p = egui::Panel::left("left").resizable(true).default_size(300.0).size_range(220.0..=560.0);
-        card_panel(ui, p, |ui| match panel {
-            LeftPanel::Files => files_panel(ui, st, pages, active, actions),
-            LeftPanel::Search => search_panel(ui, st, pages.get(active), actions),
-            LeftPanel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
-            LeftPanel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
-            LeftPanel::Changes => git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions),
-            LeftPanel::Extension => ext_panels::extension_view(ui, st, ext),
-            LeftPanel::Help => help_panel(ui, &st.keys),
-            LeftPanel::Settings => settings_panel::settings_panel(ui, st, ext, actions),
-        });
+    let entries = rail_entries(st, ext);
+    let available: Vec<(String, Side)> = entries.iter().map(|entry| (entry.panel.key(), entry.panel.home())).collect();
+    let order = st.rails.arrange(&available);
+    st.rail_order = order.clone().map(|keys| keys.iter().filter_map(|key| Panel::from_key(key)).collect());
+    if let Some(drag) = st.rail_drag.as_mut() {
+        drag.target = None;
     }
-    if let Some(panel) = st.right {
-        let p = egui::Panel::right("right").resizable(true).default_size(340.0).size_range(260.0..=600.0);
-        card_panel(ui, p, |ui| match panel {
-            RightPanel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
-            RightPanel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
-            RightPanel::Webview => ext_panels::webview_panel(ui, st, ext),
-            RightPanel::Media => ext_panels::media_panel(ui, st, actions),
-        });
+    for side in Side::BOTH {
+        rail(ui, st, ext, pages.get(active), side, &entries, &order[side.index()]);
+    }
+    finish_rail_drag(ui, st, ext, &entries);
+    if let Some((panel, side, before)) = st.rail_move.take() {
+        st.move_panel(&available, &panel, side, before.as_deref());
+        actions.push(Action::RailsChanged);
+    }
+
+    for side in Side::BOTH {
+        side_panel(ui, st, pages, active, ext, actions, side);
     }
 
     let canvas = ui.available_rect_before_wrap();
@@ -629,7 +781,7 @@ fn status_bar(
                     }
                     let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
                     if label.on_hover_text("Source control").clicked() {
-                        panel_to_show = Some(LeftPanel::Changes);
+                        panel_to_show = Some(Panel::Changes);
                     }
                     ui.add_space(10.0);
                 }
@@ -638,7 +790,7 @@ fn status_bar(
                     let version = RichText::new(format!("v{}", crate::update::current())).size(12.0).color(pal().text_faint);
                     let label = ui.add(egui::Label::new(version).sense(Sense::click()));
                     if label.on_hover_text("Code Canvas version: click for Settings, where updates are").clicked() {
-                        panel_to_show = Some(LeftPanel::Settings);
+                        panel_to_show = Some(Panel::Settings);
                     }
                     if let crate::update::State::Available(new) = &st.update {
                         let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
@@ -677,7 +829,7 @@ fn status_bar(
                         let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
                         let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
                         if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
-                            panel_to_show = Some(LeftPanel::Problems);
+                            panel_to_show = Some(Panel::Problems);
                         }
                     }
                     for (_, text) in &ext.status_items {
@@ -689,7 +841,7 @@ fn status_bar(
         },
     );
     if let Some(panel) = panel_to_show {
-        st.show_left(panel);
+        st.show(panel);
     }
     if update_now {
         actions.push(Action::InstallUpdate);
@@ -700,69 +852,239 @@ fn rail_frame() -> Frame {
     Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 5, right: 5, top: 0, bottom: GAP })
 }
 
-fn left_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, page: Option<&Page>) {
-    egui::Panel::left("rail_left").frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
-        let b = Vec2::splat(34.0);
-        for (panel, glyph, tip) in [
-            (LeftPanel::Files, icons::FOLDER, st.keys.hint("Files", Command::ToggleLeftPanel)),
-            (LeftPanel::Search, icons::TEXT_SEARCH, st.keys.hint("Search in files", Command::SearchInFiles)),
-            (
-                LeftPanel::Changes,
-                crate::codicons::glyph("source-control").unwrap_or(icons::GIT_GRAPH),
-                "Source control".to_string(),
-            ),
-            (
-                LeftPanel::Extensions,
-                crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE),
-                "Extensions".to_string(),
-            ),
-            (LeftPanel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions".to_string()),
-        ] {
-            let resp = icon_button(ui, glyph, b, st.left == Some(panel), pal().hover);
-            if panel == LeftPanel::Problems {
-                let (errors, warnings) = ext.totals();
-                if errors + warnings > 0 {
-                    let color =
-                        if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
-                    ui.painter().circle_filled(resp.rect.right_top() + Vec2::new(-9.0, 9.0), 3.5, color);
+const RAIL_ICON: Vec2 = Vec2::splat(34.0);
+const RAIL_REACH: f32 = 56.0;
+
+fn side_panel(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    pages: &mut [Page],
+    active: usize,
+    ext: &mut Extensions,
+    actions: &mut Vec<Action>,
+    side: Side,
+) {
+    let Some(panel) = st.open(side).cloned() else { return };
+    let frame = match side {
+        Side::Left => egui::Panel::left("left").resizable(true).default_size(300.0).size_range(240.0..=560.0),
+        Side::Right => egui::Panel::right("right").resizable(true).default_size(340.0).size_range(260.0..=600.0),
+    };
+    card_panel(ui, frame, |ui| match &panel {
+        Panel::Files => files_panel(ui, st, pages, active, actions),
+        Panel::Search => search_panel(ui, st, pages.get(active), actions),
+        Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
+        Panel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
+        Panel::Changes => git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions),
+        Panel::Extension => ext_panels::extension_view(ui, st, ext),
+        Panel::Help => help_panel(ui, &st.keys),
+        Panel::Settings => settings_panel::settings_panel(ui, st, ext, actions),
+        Panel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
+        Panel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
+        Panel::Webview(view) => ext_panels::webview_panel(ui, st, ext, view),
+        Panel::Media => ext_panels::media_panel(ui, st, actions),
+    });
+}
+
+fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
+    let own = |panel: Panel, glyph: &'static str, tip: String| RailEntry { panel, tip, look: RailLook::Glyph(glyph) };
+    let mut entries = vec![
+        own(Panel::Files, icons::FOLDER, st.keys.hint("Files", Command::ToggleLeftPanel)),
+        own(Panel::Search, icons::TEXT_SEARCH, st.keys.hint("Search in files", Command::SearchInFiles)),
+        own(
+            Panel::Changes,
+            crate::codicons::glyph("source-control").unwrap_or(icons::GIT_GRAPH),
+            "Source control".to_string(),
+        ),
+        own(Panel::Extensions, crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE), "Extensions".to_string()),
+        own(Panel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions".to_string()),
+        own(Panel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names".to_string()),
+        own(Panel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which".to_string()),
+    ];
+    if st.media.is_some() {
+        entries.push(own(Panel::Media, icons::IMAGE, "The image, video or PDF you last looked at".to_string()));
+    }
+    for item in ext.rail_items() {
+        entries.push(RailEntry {
+            panel: Panel::Webview(item.view),
+            tip: item.title,
+            look: RailLook::Extension { id: item.extension, codicon: item.codicon },
+        });
+    }
+    entries
+}
+
+fn paint_rail_icon(
+    ui: &egui::Ui,
+    st: &mut UiState,
+    ext: &Extensions,
+    entry: &RailEntry,
+    rect: Rect,
+    active: bool,
+    hovered: bool,
+) {
+    if active {
+        ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().raised);
+    } else if hovered {
+        ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
+    }
+    let color = if active || hovered { pal().text } else { pal().text_dim };
+    let glyph = |shape: &str| {
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, shape, FontId::proportional(17.0), color);
+    };
+    match &entry.look {
+        RailLook::Glyph(shape) => glyph(shape),
+        RailLook::Extension { id, codicon } => match codicon.as_deref().and_then(crate::codicons::glyph) {
+            Some(codicon) => glyph(codicon),
+            None => {
+                let installed = ext.installed.iter().find(|e| e.id == *id);
+                match installed.and_then(|e| ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e)) {
+                    Some(texture) => {
+                        let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
+                        egui::Image::new(&texture).corner_radius(4).paint_at(ui, at);
+                    }
+                    None => glyph(icons::PUZZLE),
                 }
             }
-            if panel == LeftPanel::Changes {
-                let changed = page.and_then(|p| p.git.as_ref()).map_or(0, |g| g.changes.len());
-                if changed > 0 {
-                    count_badge(ui, resp.rect, changed);
-                }
-            }
-            if resp.on_hover_text(tip).clicked() {
-                if st.left == Some(panel) {
-                    st.left = None;
-                } else {
-                    st.show_left(panel);
-                }
+        },
+    }
+}
+
+fn rail_badge(ui: &egui::Ui, ext: &Extensions, page: Option<&Page>, panel: &Panel, icon: Rect) {
+    match panel {
+        Panel::Problems => {
+            let (errors, warnings) = ext.totals();
+            if errors + warnings > 0 {
+                let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
+                ui.painter().circle_filled(icon.right_top() + Vec2::new(-9.0, 9.0), 3.5, color);
             }
         }
+        Panel::Changes => {
+            let changed = page.and_then(|p| p.git.as_ref()).map_or(0, |g| g.changes.len());
+            if changed > 0 {
+                count_badge(ui, icon, changed);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rail(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &Extensions,
+    page: Option<&Page>,
+    side: Side,
+    entries: &[RailEntry],
+    order: &[String],
+) {
+    let bar = match side {
+        Side::Left => egui::Panel::left("rail_left"),
+        Side::Right => egui::Panel::right("rail_right"),
+    };
+    bar.frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let zone = ui.max_rect();
+        let mut slots: Vec<(String, Rect)> = Vec::new();
+        for entry in order.iter().filter_map(|key| entries.iter().find(|entry| entry.panel.key() == *key)) {
+            let key = entry.panel.key();
+            let (rect, resp) = ui.allocate_exact_size(RAIL_ICON, Sense::click_and_drag());
+            slots.push((key.clone(), rect));
+            let lifted = st.rail_drag.as_ref().is_some_and(|drag| drag.key == key);
+            if !lifted {
+                let active = st.is_open(&entry.panel);
+                paint_rail_icon(ui, st, ext, entry, rect, active, resp.hovered());
+                rail_badge(ui, ext, page, &entry.panel, rect);
+            }
+            if resp.drag_started_by(egui::PointerButton::Primary) {
+                st.rail_drag = Some(RailDrag { key, target: None });
+            }
+            let other = side.other();
+            let offer = match other {
+                Side::Left => "Move to the left bar",
+                Side::Right => "Move to the right bar",
+            };
+            resp.context_menu(|ui| {
+                if ui.button(offer).clicked() {
+                    st.rail_move = Some((entry.panel.clone(), other, None));
+                    ui.close();
+                }
+            });
+            if resp.on_hover_text(&entry.tip).clicked() {
+                st.toggle(entry.panel.clone());
+            }
+        }
+        rail_drop_target(ui, st, side, zone, &slots);
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-            if icon_button(ui, icons::PANEL_LEFT, b, false, pal().hover)
-                .on_hover_text(st.keys.hint("Show or hide the left panel", Command::ToggleLeftPanel))
-                .clicked()
-            {
-                st.toggle_left();
+            let (glyph, tip) = match side {
+                Side::Left => {
+                    (icons::PANEL_LEFT, st.keys.hint("Show or hide the left panel", Command::ToggleLeftPanel))
+                }
+                Side::Right => (icons::PANEL_RIGHT, "Show or hide the right panel".to_string()),
+            };
+            if icon_button(ui, glyph, RAIL_ICON, false, pal().hover).on_hover_text(tip).clicked() {
+                st.toggle_side(side);
+            }
+            if side == Side::Right {
+                return;
             }
             for (panel, glyph, tip) in [
-                (LeftPanel::Settings, icons::SETTINGS, "Settings: theme, colours, shortcuts"),
-                (LeftPanel::Help, icons::CIRCLE_HELP, "Keyboard and mouse shortcuts"),
+                (Panel::Settings, icons::SETTINGS, "Settings: theme, colours, shortcuts"),
+                (Panel::Help, icons::CIRCLE_HELP, "Keyboard and mouse shortcuts"),
             ] {
-                if icon_button(ui, glyph, b, st.left == Some(panel), pal().hover).on_hover_text(tip).clicked() {
-                    if st.left == Some(panel) {
-                        st.left = None;
-                    } else {
-                        st.show_left(panel);
-                    }
+                let active = st.is_open(&panel);
+                if icon_button(ui, glyph, RAIL_ICON, active, pal().hover).on_hover_text(tip).clicked() {
+                    st.toggle(panel);
                 }
             }
         });
     });
+}
+
+fn rail_drop_target(ui: &egui::Ui, st: &mut UiState, side: Side, zone: Rect, slots: &[(String, Rect)]) {
+    let Some(drag) = st.rail_drag.as_mut() else { return };
+    let reach = match side {
+        Side::Left => Rect::from_min_max(zone.min, zone.max + Vec2::new(RAIL_REACH, 0.0)),
+        Side::Right => Rect::from_min_max(zone.min - Vec2::new(RAIL_REACH, 0.0), zone.max),
+    };
+    let pointer = ui.input(|input| input.pointer.latest_pos()).filter(|at| reach.contains(*at));
+    let Some(pointer) = pointer else { return };
+    let others: Vec<&(String, Rect)> = slots.iter().filter(|(key, _)| *key != drag.key).collect();
+    let next = others.iter().find(|(_, rect)| pointer.y < rect.center().y);
+    let line = match (next, others.last()) {
+        (Some((_, rect)), _) => rect.top() - 1.0,
+        (None, Some((_, rect))) => rect.bottom() + 1.0,
+        (None, None) => zone.top() + 2.0,
+    };
+    ui.painter().hline(zone.x_range(), line, Stroke::new(2.0, pal().accent));
+    drag.target = Some((side, next.map(|(key, _)| key.clone())));
+}
+
+fn finish_rail_drag(ui: &egui::Ui, st: &mut UiState, ext: &Extensions, entries: &[RailEntry]) {
+    let Some(drag) = st.rail_drag.clone() else { return };
+    let Some(entry) = entries.iter().find(|entry| entry.panel.key() == drag.key) else {
+        st.rail_drag = None;
+        return;
+    };
+    let (held, pointer, cancelled) = ui.input(|input| {
+        (input.pointer.primary_down(), input.pointer.latest_pos(), input.key_pressed(egui::Key::Escape))
+    });
+    if cancelled || !held {
+        st.rail_drag = None;
+        if let Some((side, before)) = drag.target.filter(|_| !cancelled) {
+            st.rail_move = Some((entry.panel.clone(), side, before));
+        }
+        return;
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    let Some(pointer) = pointer else { return };
+    egui::Area::new(egui::Id::unique("rail drag"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .fixed_pos(pointer - RAIL_ICON * 0.5)
+        .show(ui.ctx(), |ui| {
+            let (rect, _) = ui.allocate_exact_size(RAIL_ICON, Sense::hover());
+            paint_rail_icon(ui, st, ext, entry, rect, true, false);
+        });
 }
 
 fn count_badge(ui: &egui::Ui, icon: Rect, count: usize) {
@@ -772,72 +1094,6 @@ fn count_badge(ui: &egui::Ui, icon: Rect, count: usize) {
     let pill = Rect::from_min_size(Pos2::new(icon.right() - size.x, icon.bottom() - size.y - 2.0), size);
     ui.painter().rect_filled(pill, 7.0, pal().accent);
     ui.painter().galley(pill.center() - galley.size() * 0.5, galley, pal().on_accent);
-}
-
-fn right_rail(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions) {
-    egui::Panel::right("rail_right").frame(rail_frame()).exact_size(RAIL_W).resizable(false).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
-        let b = Vec2::splat(34.0);
-        for (panel, glyph, tip) in [
-            (RightPanel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names"),
-            (RightPanel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which"),
-        ] {
-            if icon_button(ui, glyph, b, st.right == Some(panel), pal().hover).on_hover_text(tip).clicked() {
-                if st.right == Some(panel) {
-                    st.right = None;
-                } else {
-                    st.show_right(panel);
-                }
-            }
-        }
-        if st.media.is_some() {
-            let active = st.right == Some(RightPanel::Media);
-            let tip = "The image, video or PDF you last looked at";
-            if icon_button(ui, icons::IMAGE, b, active, pal().hover).on_hover_text(tip).clicked() {
-                st.right = if active { None } else { Some(RightPanel::Media) };
-            }
-        }
-        for w in &ext.rail_items() {
-            let active = st.right == Some(RightPanel::Webview) && st.webview == w.view;
-            let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
-            if active {
-                ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().raised);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
-            }
-            let glyph = |ui: &egui::Ui, glyph: &str| {
-                let color = if active || resp.hovered() { pal().text } else { pal().text_dim };
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
-            };
-            let installed = ext.installed.iter().find(|e| e.id == w.extension);
-            match w.codicon.as_deref().and_then(crate::codicons::glyph) {
-                Some(codicon) => glyph(ui, codicon),
-                None => match installed.and_then(|e| ext_panels::extension_icon(ui.ctx(), &mut st.ext_icons, e)) {
-                    Some(texture) => {
-                        let at = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
-                        egui::Image::new(&texture).corner_radius(4).paint_at(ui, at);
-                    }
-                    None => glyph(ui, icons::PUZZLE),
-                },
-            }
-            if resp.on_hover_text(&w.title).clicked() {
-                if active {
-                    st.right = None;
-                } else {
-                    st.webview = w.view.clone();
-                    st.right = Some(RightPanel::Webview);
-                }
-            }
-        }
-        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-            if icon_button(ui, icons::PANEL_RIGHT, b, false, pal().hover)
-                .on_hover_text("Show or hide the right panel")
-                .clicked()
-            {
-                st.toggle_right();
-            }
-        });
-    });
 }
 
 fn panel_title(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
@@ -1571,9 +1827,14 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
         let before = st.filters;
         well(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
-            ui.spacing_mut().slider_width = 92.0;
+            let room = ui.available_width();
+            let percentages = room >= 244.0;
+            ui.spacing_mut().slider_width = (room - if percentages { 214.0 } else { 179.0 }).clamp(24.0, 92.0);
             let pct = |ui: &mut egui::Ui, v: f32| {
-                ui.label(RichText::new(format!("{:>3.0}%", v * 100.0)).monospace().size(11.0).color(pal().text_dim));
+                if percentages {
+                    let text = format!("{:>3.0}%", v * 100.0);
+                    ui.label(RichText::new(text).monospace().size(11.0).color(pal().text_dim));
+                }
             };
             for kind in RelKind::ALL {
                 let i = kind.index();
@@ -1844,16 +2105,16 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("File: Open Folder…".into(), Action::OpenFolder),
         ("File: Save".into(), Action::SaveFile),
         ("Format Document".into(), Action::FormatFile(None)),
-        ("View: Explorer".into(), Action::ShowLeft(LeftPanel::Files)),
-        ("View: Search".into(), Action::ShowLeft(LeftPanel::Search)),
-        ("View: Source Control".into(), Action::ShowLeft(LeftPanel::Changes)),
-        ("View: Extensions".into(), Action::ShowLeft(LeftPanel::Extensions)),
-        ("View: Problems".into(), Action::ShowLeft(LeftPanel::Problems)),
-        ("View: Keyboard Shortcuts".into(), Action::ShowLeft(LeftPanel::Help)),
-        ("Preferences: Settings".into(), Action::ShowLeft(LeftPanel::Settings)),
+        ("View: Explorer".into(), Action::Show(Panel::Files)),
+        ("View: Search".into(), Action::Show(Panel::Search)),
+        ("View: Source Control".into(), Action::Show(Panel::Changes)),
+        ("View: Extensions".into(), Action::Show(Panel::Extensions)),
+        ("View: Problems".into(), Action::Show(Panel::Problems)),
+        ("View: Keyboard Shortcuts".into(), Action::Show(Panel::Help)),
+        ("Preferences: Settings".into(), Action::Show(Panel::Settings)),
         ("Code Canvas: Check for Updates".into(), Action::CheckUpdates),
-        (format!("Code Canvas: About (version {})", crate::update::current()), Action::ShowLeft(LeftPanel::Settings)),
-        ("Preferences: Colour Theme".into(), Action::ShowLeft(LeftPanel::Settings)),
+        (format!("Code Canvas: About (version {})", crate::update::current()), Action::Show(Panel::Settings)),
+        ("Preferences: Colour Theme".into(), Action::Show(Panel::Settings)),
         ("View: Every Folder on the Canvas, or One at a Time".into(), Action::ToggleSideBySide),
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),

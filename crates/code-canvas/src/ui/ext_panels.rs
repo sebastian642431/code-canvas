@@ -3,7 +3,7 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 
-use super::{c, icon, pal, panel_title, search_field, section, small_icon, well, Action, LeftPanel, UiState, ROW_H};
+use super::{c, icon, pal, panel_title, search_field, section, small_icon, well, Action, Panel, UiState, ROW_H};
 use crate::ext::{Extensions, Installed, Level, NodeStatus, Severity, Status};
 use crate::icons;
 use crate::page::Page;
@@ -199,7 +199,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                 row.end(ui);
                 if open {
                     st.extension = e.id.clone();
-                    st.show_left(LeftPanel::Extension);
+                    st.show(Panel::Extension);
                 }
             }
 
@@ -465,7 +465,7 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
         ext.run_command(&id, &title);
     }
     if back {
-        st.show_left(LeftPanel::Extensions);
+        st.show(Panel::Extensions);
     }
 }
 
@@ -497,7 +497,7 @@ pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
         });
     });
     if close {
-        st.right = None;
+        st.close_panel(&Panel::Media);
         return;
     }
     let rect = ui.available_rect_before_wrap().shrink(1.0);
@@ -506,12 +506,12 @@ pub fn media_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action
         let text = "Seeing media inside the app is only available on Windows for now.";
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
     }
-    st.webview_rect = Some(rect);
+    st.page_places.push((Panel::Media, rect));
 }
 
-pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
-    ext.ensure_view(&st.webview);
-    let Some(entry) = ext.webviews.iter().find(|w| w.key == st.webview) else {
+pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, view: &str) {
+    ext.ensure_view(view);
+    let Some(entry) = ext.webviews.iter().find(|w| w.key == view) else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
             ui.label(
                 RichText::new("This view is gone: its extension is not running.").size(12.0).color(pal().text_dim),
@@ -536,7 +536,7 @@ pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) 
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
         ext.resolve_webview(&key);
     }
-    st.webview_rect = Some(rect);
+    st.page_places.push((Panel::Webview(view.to_string()), rect));
 }
 
 pub fn notices(ctx: &egui::Context, st: &mut UiState, canvas: Rect, ext: &mut Extensions) {
