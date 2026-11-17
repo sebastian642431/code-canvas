@@ -866,6 +866,12 @@ Graphics and the frame
   the commit message is written by the `claude` or `codex` the person has
   installed and signed into, and an assistant's extension uses that person's
   own sign-in on their computer.
+- **Zoom rests on whole pixels** (`Camera::rested`): when the wheel or a pinch
+  has been still for a moment (`App::zoom_rest`), and for the zoom buttons at
+  once, the camera glides the last bit to where a line of code is a whole
+  number of pixels tall and the world's origin is on a pixel, about the point
+  that was being zoomed at. Text drawn between pixels is what shimmers. Below
+  six pixels a line nothing is read, and nothing is moved.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest

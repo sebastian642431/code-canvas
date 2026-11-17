@@ -197,6 +197,7 @@ pub struct App {
     auto_rescan: Option<Instant>,
     rescan_later: HashSet<u32>,
     changed_under: HashSet<(u32, String)>,
+    zoom_rest: Option<(Instant, [f32; 2])>,
     merged_in: HashSet<(u32, String)>,
     webviews: crate::webview::WebViews,
     webview_roots: Vec<PathBuf>,
@@ -317,6 +318,7 @@ impl App {
             auto_rescan: None,
             rescan_later: HashSet::new(),
             changed_under: HashSet::new(),
+            zoom_rest: None,
             merged_in: HashSet::new(),
             webviews: {
                 let mut webviews = crate::webview::WebViews::new();
@@ -1713,6 +1715,9 @@ impl App {
         self.share_let_go();
         if let Some(page) = self.pages.get_mut(self.active) {
             page.target = None;
+            if zooming {
+                self.zoom_rest = Some((Instant::now(), at));
+            }
             match (zooming, sideways) {
                 (true, _) => page.camera.zoom_at(at, vp, 1.2f32.powf(along / notch)),
                 (false, true) => page.camera.pan_pixels(if along != 0.0 { along } else { across }, 0.0),
@@ -2473,7 +2478,7 @@ impl App {
         if let Some(p) = self.pages.get_mut(self.active) {
             let mut cam = p.target.unwrap_or(p.camera);
             cam.zoom_at(area.center(), vp, factor);
-            p.target = Some(cam);
+            p.target = Some(cam.rested(area.center(), vp, LINE_H).unwrap_or(cam));
         }
         self.request_redraw();
     }
@@ -3705,7 +3710,15 @@ impl App {
     }
 
     fn poll_background(&mut self) -> bool {
-        let mut busy = false;
+        let mut busy = self.zoom_rest.is_some();
+        if let Some((_, at)) = self.zoom_rest.filter(|(since, _)| since.elapsed() > Duration::from_millis(180)) {
+            self.zoom_rest = None;
+            let vp = self.viewport();
+            if let Some(page) = self.pages.get_mut(self.active).filter(|page| page.target.is_none()) {
+                page.target = page.camera.rested(at, vp, LINE_H);
+            }
+            self.request_redraw();
+        }
         let mut changed = false;
         if self.symbols_stale.is_some_and(|t| t.elapsed() > Duration::from_millis(700)) {
             self.symbols_stale = None;
@@ -4905,6 +4918,7 @@ impl ApplicationHandler for App {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.target = None;
                     page.camera.zoom_at(cursor, vp, (1.0 + delta as f32).max(0.1));
+                    self.zoom_rest = Some((Instant::now(), cursor));
                 }
                 self.update_hover();
                 self.request_redraw();

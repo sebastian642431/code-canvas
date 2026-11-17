@@ -341,7 +341,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Colour themes from extensions (Dracula, GitHub Theme, Tokyo Night…): the
       canvas, the panels and the code take their colours. File icon themes too.
 - [ ] Grammars from extensions (highlighting is the app's own).
-- [ ] **Soft wrapping** for lines longer than the card width (160 columns today).
+- [ ] **Soft wrapping** for lines longer than the card width (160 columns today);
+      before that, the rest of a long line shown beside its card under the pointer.
+- [x] Zoom that rests where text sits on whole pixels, so it never shimmers.
 - [x] **Language servers** give the exact uses of the selected name (references and
       incoming calls) in place of the ones guessed by name.
 - [ ] The same for outgoing calls and implementations.

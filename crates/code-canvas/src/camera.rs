@@ -61,6 +61,23 @@ impl Camera {
         ];
     }
 
+    pub fn rested(&self, screen: [f32; 2], viewport: [f32; 2], line: f32) -> Option<Camera> {
+        const READABLE: f32 = 6.0;
+        let tall = line * self.zoom;
+        if tall < READABLE {
+            return None;
+        }
+        let mut at = *self;
+        at.zoom_at(screen, viewport, tall.round() / tall);
+        let offset = at.view(viewport).offset;
+        for axis in 0..2 {
+            at.center[axis] += (offset[axis] * at.zoom).round() / at.zoom - offset[axis];
+        }
+        let moved = (at.zoom - self.zoom).abs() > self.zoom * 1.0e-4
+            || (0..2).any(|axis| ((at.center[axis] - self.center[axis]) * at.zoom).abs() > 0.05);
+        moved.then_some(at)
+    }
+
     pub fn pan_pixels(&mut self, dx: f32, dy: f32) {
         self.center[0] -= dx / self.zoom;
         self.center[1] -= dy / self.zoom;
@@ -96,6 +113,22 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_zoom_rests_where_lines_are_whole_pixels_tall() {
+        let vp = [800.0, 600.0];
+        let camera = Camera { center: [103.37, 51.9], zoom: 1.2345 };
+        let rested = camera.rested([200.0, 150.0], vp, 13.0).expect("it was between pixels");
+        let tall = 13.0 * rested.zoom;
+        assert!((tall - tall.round()).abs() < 1e-3, "{tall}");
+        let offset = rested.view(vp).offset;
+        for axis in 0..2 {
+            let at = offset[axis] * rested.zoom;
+            assert!((at - at.round()).abs() < 1e-2, "{at}");
+        }
+        assert!(rested.rested([200.0, 150.0], vp, 13.0).is_none(), "and it stays there");
+        assert!(Camera { center: [0.0, 0.0], zoom: 0.1 }.rested([0.0, 0.0], vp, 13.0).is_none(), "nothing to read");
+    }
 
     #[test]
     fn zoom_keeps_anchor() {
