@@ -27,6 +27,7 @@ mod script;
 mod session;
 mod themes;
 mod ui;
+mod update;
 mod versions;
 mod watch;
 mod webview;
@@ -107,6 +108,8 @@ fn install_extensions(args: &[String]) -> i32 {
 fn main() -> anyhow::Result<()> {
     init_logging();
     log::info!("Code Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
+    // What an update left next to the program.
+    update::clean_up();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--install-extension") {

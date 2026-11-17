@@ -41,6 +41,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   new file or folder, rename, delete (to the recycle bin), copy path, reveal in the
   file manager, open a terminal there.
 - Drop a file on the window to copy it into the selected folder.
+- **Updates**: a newer release is offered in a notice when the app starts; *Update and
+  restart* downloads it and puts it in place. Can be switched off in the settings.
+- An assistant's panel (Claude Code) stays scrolled to what it is writing until you
+  scroll up.
 - Several folders open are shown **side by side**, each in its own pane with its own
   zoom; click one to work in it. `Ctrl+E` (or the grid icon) goes back to one at a time.
 - `Ctrl+P` go to a file or folder; `Ctrl+Shift+F` search text in every file, with the

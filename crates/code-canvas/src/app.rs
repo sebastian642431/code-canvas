@@ -167,6 +167,10 @@ pub struct App {
     webviews: crate::webview::WebViews,
     /// Folders webview pages may load files from (to notice changes).
     webview_roots: Vec<PathBuf>,
+    /// Looks for newer releases of the app, and installs one when asked.
+    updater: crate::update::Updater,
+    /// The program to start once the app has closed: an update was installed.
+    restart_as: Option<PathBuf>,
     /// What is offered under the caret while a path is typed.
     completion: Option<Completion>,
     /// Latest versions of dependencies, asked for in the background.
@@ -217,8 +221,13 @@ impl App {
         }
         let mut ui = UiState::default();
         ui.theme = chosen;
-        ui.commit_ai = crate::commit_ai::load();
         ui.prefs = crate::prefs::load();
+        // Scripted and benchmark runs keep to themselves, unless a test of
+        // the updates asks otherwise.
+        let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
+        let updates = (ui.prefs.check_updates && !quiet) || std::env::var_os("CODE_CANVAS_CHECK_UPDATES").is_some();
+        let follow_chat = ui.prefs.follow_chat;
+        ui.commit_ai = crate::commit_ai::load();
         ui.key_file = crate::keys::load();
         ui.keys = Keymap::new(&ui.key_file);
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
@@ -261,8 +270,14 @@ impl App {
             hover_probe: None,
             watcher: crate::watch::Watcher::new(),
             auto_rescan: None,
-            webviews: crate::webview::WebViews::new(),
+            webviews: {
+                let mut webviews = crate::webview::WebViews::new();
+                webviews.set_follow(follow_chat);
+                webviews
+            },
             webview_roots: Vec::new(),
+            updater: crate::update::Updater::new(updates, ext::wake_ui),
+            restart_as: None,
             completion: None,
             versions: crate::versions::Checker::new(ext::wake_ui),
             manifests: HashMap::new(),
@@ -1636,6 +1651,8 @@ impl App {
             Action::SetPrefs(prefs) => {
                 crate::prefs::save(&prefs);
                 let versions = prefs.check_versions != self.ui.prefs.check_versions;
+                self.webviews.set_follow(prefs.follow_chat);
+                self.updater.set_enabled(prefs.check_updates);
                 self.ui.prefs = prefs;
                 if versions {
                     // On: read every folder's manifests. Off: take the notes away.
@@ -1786,6 +1803,11 @@ impl App {
             }
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
+            Step::Answer(choice) => {
+                if !self.ext.answer_with(&choice) {
+                    log::warn!("script: no notice offers '{choice}'");
+                }
+            }
             Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
             Step::Edit(what) => {
                 let mut parts = what.split_whitespace();
@@ -2056,6 +2078,8 @@ impl App {
         for key in self.webviews.take_keys() {
             self.page_chord(&key);
         }
+        // Updates: a newer release, and what the user decided about it.
+        self.poll_updates();
         // Dependencies: manifests to read, and answers that arrived.
         for id in std::mem::take(&mut self.versions_due) {
             self.read_dependencies(id);
@@ -2100,6 +2124,49 @@ impl App {
         }
         if changed {
             g.window.request_redraw();
+        }
+    }
+
+    /// Offer a newer release once, and install it when the user says so.
+    fn poll_updates(&mut self) {
+        use crate::update::News;
+        const UPDATE: &str = "Update and restart";
+        const PAGE: &str = "Open the download page";
+        match self.updater.poll() {
+            Some(News::Available(release)) => {
+                let text = format!("Version {} is available. This is {}.", release.version, crate::update::current());
+                let first = if release.download.is_some() { UPDATE } else { PAGE };
+                self.ext.ask("Code Canvas", text, &[first, "Later"], "update");
+                self.request_redraw();
+            }
+            Some(News::Installed(program)) => {
+                // Leave the usual way (unsaved files are asked about); the
+                // new version starts once this one has closed.
+                self.restart_as = Some(program);
+                self.exit_requested = true;
+            }
+            Some(News::Failed(why)) => {
+                self.ext.notice(ext::Level::Error, "Code Canvas", format!("the update was not installed: {why}"));
+                self.request_redraw();
+            }
+            None => {}
+        }
+        for (about, choice) in self.ext.take_answers() {
+            if about != "update" {
+                continue;
+            }
+            match choice.as_str() {
+                UPDATE if self.updater.install() => {
+                    self.ext.notice(ext::Level::Info, "Code Canvas", "downloading the new version…");
+                }
+                PAGE => {
+                    if let Some(release) = &self.updater.offer {
+                        crate::update::open_page(&release.page);
+                    }
+                }
+                _ => {}
+            }
+            self.request_redraw();
         }
     }
 
@@ -2937,9 +3004,17 @@ impl ApplicationHandler for App {
         if self.exit_requested {
             if !self.confirm_exit() {
                 self.exit_requested = false;
+                // The new version is in place all the same: it is the one
+                // that starts next time.
+                self.restart_as = None;
                 return;
             }
             self.save_session();
+            if let Some(program) = self.restart_as.take() {
+                if let Err(e) = std::process::Command::new(&program).spawn() {
+                    log::error!("the new version did not start ({}): {e}", program.display());
+                }
+            }
             event_loop.exit();
             return;
         }

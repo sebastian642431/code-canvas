@@ -198,6 +198,7 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 `changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `palette <text>`, `edit <path> <line> <column>`, `type <text>`,
 `key enter|backspace|undo|redo|save|…`, `git stage|unstage [path]`, `git commit <message>`,
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
+`answer <choice>` (press that button of a notice that asks),
 `resize <width> <height>`, `maximize`, `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.
 

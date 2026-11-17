@@ -75,6 +75,11 @@ pub(super) fn settings_panel(
                 );
                 check(ui, &mut next.complete_paths, "Offer file names while typing a path", true, false)
                     .on_hover_text("Inside quotes, after ./ or ../ or a folder name and a slash.");
+                check(ui, &mut next.follow_chat, "Follow what an assistant is writing", true, false).on_hover_text(
+                    "Its panel stays scrolled to the end while it answers. Scroll up to stop following.",
+                );
+                check(ui, &mut next.check_updates, "Look for new versions of Code Canvas", true, false)
+                    .on_hover_text("Asks GitHub for the latest release when the app starts.");
                 if next != st.prefs {
                     actions.push(Action::SetPrefs(next));
                 }

@@ -152,6 +152,50 @@ const INIT_JS: &str = r#"
     applyTheme();
   };
 
+  // Follow what is being written: while the conversation of an assistant's
+  // panel grows it stays scrolled to its end, as a terminal does. Scrolling
+  // up by hand lets go of it; coming back to the end takes hold again.
+  let follow = window.__ccFollow !== false;
+  window.__codeCanvasFollow = (on) => {
+    follow = !!on;
+  };
+  let lastGesture = 0;
+  const gesture = () => {
+    lastGesture = Date.now();
+  };
+  for (const kind of ['wheel', 'touchmove', 'pointerdown', 'keydown']) {
+    window.addEventListener(kind, gesture, { capture: true, passive: true });
+  }
+  const followed = new WeakSet();
+  function followScroll(box) {
+    if (followed.has(box)) return;
+    followed.add(box);
+    let held = true;
+    const gap = () => box.scrollHeight - box.scrollTop - box.clientHeight;
+    box.addEventListener(
+      'scroll',
+      () => {
+        // At the end: hold on. Away from it because of the user: let go.
+        // Away from it because the page moved it: not the user's doing.
+        if (gap() < 48) held = true;
+        else if (Date.now() - lastGesture < 1500) held = false;
+      },
+      { passive: true },
+    );
+    const toEnd = () => {
+      if (follow && held && gap() > 1) box.scrollTop = box.scrollHeight;
+    };
+    new MutationObserver(toEnd).observe(box, { childList: true, subtree: true, characterData: true });
+    new ResizeObserver(toEnd).observe(box);
+  }
+  function findConversations() {
+    document.querySelectorAll('[class*="messagesContainer_"]').forEach(followScroll);
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    findConversations();
+    new MutationObserver(findConversations).observe(document.documentElement, { childList: true, subtree: true });
+  });
+
   // Key chords belong to the app (Ctrl+P, Ctrl+Shift+P...), as in VS Code,
   // where a webview hands them to the workbench. The ones text editing needs
   // stay here, and so does AltGr, which arrives as Ctrl+Alt.
@@ -245,6 +289,8 @@ mod platform {
         placed: Option<Rect>,
         /// Key chords the pages handed over since [`WebViews::take_keys`].
         keys: Vec<PageKey>,
+        /// Pages keep their conversation scrolled to its end (a preference).
+        follow: bool,
     }
 
     fn mime(path: &Path) -> &'static str {
@@ -350,6 +396,7 @@ mod platform {
                 shown: None,
                 placed: None,
                 keys: Vec::new(),
+                follow: true,
             }
         }
 
@@ -438,7 +485,11 @@ mod platform {
                 .with_https_scheme(true)
                 .with_custom_protocol("ccres".into(), move |_id, request| serve(&shared, &request))
                 // The theme first: the script reads it while it sets itself up.
-                .with_initialization_script(format!("window.__ccTheme = {};\n{INIT_JS}", theme_json()))
+                .with_initialization_script(format!(
+                    "window.__ccTheme = {};\nwindow.__ccFollow = {};\n{INIT_JS}",
+                    theme_json(),
+                    self.follow
+                ))
                 // The browser's own shortcuts (print, find, reload) are not ours.
                 .with_browser_accelerator_keys(false)
                 .with_ipc_handler(move |request: Request<String>| {
@@ -452,6 +503,16 @@ mod platform {
                 })
                 .with_url(format!("{ORIGIN}/view/{handle}"))
                 .build_as_child(window)
+        }
+
+        /// Whether pages keep their conversation scrolled to its end, for the
+        /// ones that are open and the ones to come.
+        pub fn set_follow(&mut self, follow: bool) {
+            self.follow = follow;
+            let script = format!("window.__codeCanvasFollow && window.__codeCanvasFollow({follow})");
+            for view in self.views.values() {
+                let _ = view.web.evaluate_script(&script);
+            }
         }
 
         /// Give every open page the theme in use, if it changed since the
@@ -542,6 +603,7 @@ mod platform {
         }
         pub fn focus_app(&self) {}
         pub fn retheme(&mut self) {}
+        pub fn set_follow(&mut self, _follow: bool) {}
     }
 }
 

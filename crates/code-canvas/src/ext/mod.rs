@@ -293,6 +293,16 @@ pub struct Notice {
     pub actions: Vec<String>,
     /// The host's id of a message with choices.
     reply_to: Option<u64>,
+    /// A question of the app itself: what it is about (see
+    /// [`Extensions::ask`]).
+    own: Option<String>,
+}
+
+impl Notice {
+    /// It waits for an answer instead of fading away.
+    fn is_question(&self) -> bool {
+        self.reply_to.is_some() || self.own.is_some()
+    }
 }
 
 pub enum NodeStatus {
@@ -400,6 +410,8 @@ pub struct Extensions {
     pub contexts: HashMap<String, Value>,
     /// The default extensions this installation already got (`defaults.json`).
     offered: BTreeSet<String>,
+    /// Answers to the app's own questions, until they are taken.
+    answers: Vec<(String, String)>,
     /// What the app itself draws on files, in the same form as what
     /// extensions do (by [`path_key`]). It survives a restart of the host.
     own_decorations: HashMap<String, FileDecorations>,
@@ -655,6 +667,7 @@ impl Extensions {
             webviews: Vec::new(),
             contexts: HashMap::new(),
             offered: BTreeSet::new(),
+            answers: Vec::new(),
             own_decorations: HashMap::new(),
             hover: None,
             dropped_webviews: Vec::new(),
@@ -707,11 +720,48 @@ impl Extensions {
             at: Instant::now(),
             actions: Vec::new(),
             reply_to: None,
+            own: None,
         });
         // Keep the corner small; questions stay until they are answered.
-        while self.notices.iter().filter(|n| n.reply_to.is_none()).count() > 5 {
-            let oldest = self.notices.iter().position(|n| n.reply_to.is_none()).unwrap_or(0);
+        while self.notices.iter().filter(|n| !n.is_question()).count() > 5 {
+            let oldest = self.notices.iter().position(|n| !n.is_question()).unwrap_or(0);
             self.notices.remove(oldest);
+        }
+    }
+
+    /// Ask the user something of the app's own: a notice with `choices` as
+    /// buttons. The one chosen arrives through [`Extensions::take_answers`]
+    /// with `about`; asking again about the same thing replaces the notice.
+    pub fn ask(&mut self, source: &str, text: impl Into<String>, choices: &[&str], about: &str) {
+        let text = text.into();
+        self.log_line(&format!("[{source}] {text}"));
+        self.notices.retain(|n| n.own.as_deref() != Some(about));
+        self.notices.push(Notice {
+            level: Level::Info,
+            source: source.to_string(),
+            text,
+            at: Instant::now(),
+            actions: choices.iter().map(|c| c.to_string()).collect(),
+            reply_to: None,
+            own: Some(about.to_string()),
+        });
+    }
+
+    /// The answers to the app's own questions since the last call:
+    /// `(what it was about, the choice)`.
+    pub fn take_answers(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.answers)
+    }
+
+    /// Press the button `choice` of the first notice that has it. False
+    /// when none does.
+    pub fn answer_with(&mut self, choice: &str) -> bool {
+        match self.notices.iter().position(|n| n.actions.iter().any(|a| a == choice)) {
+            Some(index) => {
+                self.answer_notice(index, Some(choice));
+                true
+            }
+            None => false,
         }
     }
 
@@ -982,6 +1032,9 @@ impl Extensions {
         if let Some(id) = notice.reply_to {
             self.send(json!({ "type": "messageReply", "id": id, "action": action }));
         }
+        if let (Some(about), Some(choice)) = (notice.own, action) {
+            self.answers.push((about, choice.to_string()));
+        }
     }
 
     /// Ask the language extensions about the code at `(line, display column)`
@@ -1184,7 +1237,12 @@ impl Extensions {
             .rev()
             .filter(|&i| {
                 self.notices[i].at.elapsed().as_secs_f32()
-                    > if self.notices[i].reply_to.is_some() { 300.0 } else { 9.0 }
+                    > match (&self.notices[i].own, self.notices[i].reply_to) {
+                        // The app's own questions can wait: nobody is blocked on them.
+                        (Some(_), _) => 3600.0,
+                        (None, Some(_)) => 300.0,
+                        (None, None) => 9.0,
+                    }
             })
             .collect();
         for i in expired {

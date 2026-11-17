@@ -12,11 +12,16 @@ pub struct Prefs {
     /// Offer file and folder names while a path is typed in a string
     /// (`paths.rs`).
     pub complete_paths: bool,
+    /// Look for a newer release when the app starts (`update.rs`).
+    pub check_updates: bool,
+    /// Keep an assistant's panel scrolled to what it is writing, until the
+    /// user scrolls up (`webview.rs`).
+    pub follow_chat: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { check_versions: true, complete_paths: true }
+        Prefs { check_versions: true, complete_paths: true, check_updates: true, follow_chat: true }
     }
 }
 

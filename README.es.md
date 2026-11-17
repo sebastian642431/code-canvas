@@ -32,6 +32,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Ayudas al escribir**: al tipear una ruta entre comillas se ofrecen los archivos
   y carpetas que hay ahí; en `package.json` y `Cargo.toml` cada dependencia dice si
   existe una versión más nueva.
+- **Actualizaciones**: al abrir, si hay una versión más nueva la ofrece en un aviso y
+  la instala sola. El panel del asistente sigue lo que va escribiendo hasta que subís.
 - **Varias carpetas a la vez**: se muestran lado a lado, cada una en su panel y con
   su propio zoom; `Ctrl+E` vuelve a una sola por vez.
 - **Edición**: el código legible es un editor: clic y a escribir, con deshacer,
