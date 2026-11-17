@@ -438,6 +438,20 @@ fn in_worktree(line: u32, unstaged: &[Cut]) -> u32 {
     (line as i64 + moved).max(0) as u32
 }
 
+fn alone(piece: &Cut, back: bool) -> String {
+    let beside = |first: u32, count: u32, other: u32| match (count, other) {
+        (0, 0) => first,
+        (0, _) => first + 1,
+        (_, 0) => first.saturating_sub(1),
+        _ => first,
+    };
+    let (old, new) = match back {
+        false => (piece.old.0, beside(piece.old.0, piece.old.1, piece.new.1)),
+        true => (beside(piece.new.0, piece.new.1, piece.old.1), piece.new.0),
+    };
+    format!("@@ -{old},{} +{new},{} @@\n", piece.old.1, piece.new.1)
+}
+
 fn part(root: &Path, path: &str, line: u32, what: Part) -> Result<String, String> {
     use std::io::Write;
     let place = git(root, &["rev-parse", "--show-cdup", "--show-prefix"]).unwrap_or_default();
@@ -472,8 +486,11 @@ fn part(root: &Path, path: &str, line: u32, what: Part) -> Result<String, String
         }
         .to_string());
     };
+    let lines = &text[piece.from..piece.to];
+    let body = lines.iter().position(|b| *b == b'\n').map_or(lines.len(), |end| end + 1);
     let mut patch = text[..head].to_vec();
-    patch.extend_from_slice(&text[piece.from..piece.to]);
+    patch.extend_from_slice(alone(piece, what != Part::Stage).as_bytes());
+    patch.extend_from_slice(&lines[body..]);
     let how: &[&str] = match what {
         Part::Stage => &["--cached"],
         Part::Unstage => &["--cached", "-R"],
@@ -912,6 +929,86 @@ mod tests {
         assert!(!staged.contains("+SIX") && staged.contains("-four"), "{staged}");
         assert_eq!(op(0, Part::Discard).unwrap(), "Discarded a change of 1 line.");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\nthree\nfive\nSIX\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_alone_gets_the_header_of_a_diff_of_only_that_change() {
+        let cut = |old, new| Cut { old, new, from: 0, to: 0 };
+        assert_eq!(alone(&cut((8, 0), (13, 1)), false), "@@ -8,0 +9,1 @@\n", "added below four lines not staged");
+        assert_eq!(alone(&cut((8, 1), (11, 0)), false), "@@ -8,1 +7,0 @@\n");
+        assert_eq!(alone(&cut((10, 1), (14, 1)), false), "@@ -10,1 +10,1 @@\n");
+        assert_eq!(alone(&cut((10, 2), (14, 5)), false), "@@ -10,2 +10,5 @@\n");
+        assert_eq!(alone(&cut((1, 2), (0, 0)), false), "@@ -1,2 +0,0 @@\n");
+        assert_eq!(alone(&cut((0, 0), (1, 4)), false), "@@ -0,0 +1,4 @@\n");
+        assert_eq!(alone(&cut((8, 1), (11, 0)), true), "@@ -12,1 +11,0 @@\n", "taken back: it returns after line 11");
+        assert_eq!(alone(&cut((8, 0), (13, 1)), true), "@@ -12,0 +13,1 @@\n");
+        assert_eq!(alone(&cut((10, 1), (14, 1)), true), "@@ -14,1 +14,1 @@\n");
+        assert_eq!(alone(&cut((0, 0), (1, 4)), true), "@@ -0,0 +1,4 @@\n");
+        assert_eq!(alone(&cut((1, 2), (0, 0)), true), "@@ -1,2 +0,0 @@\n");
+    }
+
+    fn repository(name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::env::temp_dir().join(format!("code-canvas-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q"])?;
+        for (key, value) in [("core.autocrlf", "false"), ("user.name", "t"), ("user.email", "t@t")] {
+            git(&dir, &["config", key, value]).unwrap();
+        }
+        Some(dir)
+    }
+
+    fn said(dir: &Path, args: &[&str]) -> String {
+        String::from_utf8_lossy(&git(dir, args).unwrap()).into_owned()
+    }
+
+    #[test]
+    fn one_change_lands_where_it_is_whatever_is_above_it() {
+        let Some(dir) = repository("alone") else { return };
+        let top = "// one\n// two\n// three\n// four\n";
+        let lines: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+        let same: String = "abcde".chars().map(|name| format!("fn {name}() -> u32 {{\n    0\n}}\n\n")).collect();
+        let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        for name in ["insert.txt", "delete.txt", "back.txt", "lost.txt"] {
+            write(name, &lines);
+        }
+        write("same.rs", &same);
+        said(&dir, &["add", "."]);
+        said(&dir, &["commit", "-q", "-m", "first"]);
+        let inserted = lines.replace("line 8\n", "line 8\ninserted\n");
+        let deleted = lines.replace("line 8\n", "");
+        let three = same.replace("fn c() -> u32 {\n    0\n", "fn c() -> u32 {\n    3\n");
+        write("insert.txt", &format!("{top}{inserted}"));
+        write("delete.txt", &format!("{top}{deleted}"));
+        write("same.rs", &format!("{top}{three}"));
+        write("back.txt", &format!("{top}{deleted}"));
+        write("lost.txt", &format!("{top}{deleted}"));
+        let op = |path: &str, line: u32, what: Part| super::run(&dir, &GitOp::Part { path: path.into(), line, what });
+        let staged = |path: &str| said(&dir, &["show", &format!(":{path}")]);
+        let on_disk = |path: &str| std::fs::read_to_string(dir.join(path)).unwrap();
+
+        op("insert.txt", 12, Part::Stage).unwrap();
+        assert_eq!(staged("insert.txt"), inserted, "a line added under lines that are not staged");
+        op("same.rs", 13, Part::Stage).unwrap();
+        assert_eq!(staged("same.rs"), three, "a line among others with the same text");
+        op("delete.txt", 11, Part::Stage).unwrap();
+        assert_eq!(staged("delete.txt"), deleted, "a line removed under lines that are not staged");
+
+        said(&dir, &["add", "back.txt"]);
+        op("back.txt", 11, Part::Unstage).unwrap();
+        assert_eq!(staged("back.txt"), format!("{top}{lines}"), "a removal unstaged under staged lines");
+        said(&dir, &["add", "same.rs"]);
+        op("same.rs", 13, Part::Unstage).unwrap();
+        assert_eq!(staged("same.rs"), format!("{top}{same}"), "a staged line among others with the same text");
+
+        op("lost.txt", 11, Part::Discard).unwrap();
+        assert_eq!(on_disk("lost.txt"), format!("{top}{lines}"), "a removed line discarded under other changes");
+        op("insert.txt", 12, Part::Unstage).unwrap();
+        op("insert.txt", 12, Part::Discard).unwrap();
+        assert_eq!(on_disk("insert.txt"), format!("{top}{lines}"), "an added line discarded under other changes");
+        op("same.rs", 13, Part::Discard).unwrap();
+        assert_eq!(on_disk("same.rs"), format!("{top}{same}"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
