@@ -1,0 +1,17 @@
+title: One change of a file is staged and the rest stays unstaged
+folders: git-changes
+expect-log: script: Part\("stage src/steps.rs 39"\)
+
+wait 3000
+left changes
+goto src/steps.rs
+wait 1200
+part stage src/steps.rs 39
+wait 1500
+mark staged
+wait 600
+menu 800 250
+wait 500
+mark menu
+wait 600
+quit

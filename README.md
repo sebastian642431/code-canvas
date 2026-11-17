@@ -301,6 +301,9 @@ tokens produced on demand per visible chunk instead of stored; static geometry u
 once and culled by contiguous folder ranges; near views built only from visible lines;
 text shaped within a per-frame budget; frames drawn only when something changes.
 
+Scenarios that run the real app (no mouse or keyboard of yours) are in
+[qa/](qa/README.md): `powershell -File qa\run-all.ps1`.
+
 Measure it yourself: `CODE_CANVAS_BENCH=1` logs frame statistics while the camera
 sweeps the canvas; `cargo run --release -p canvas-core --example scan_bench -- <folder>`
 times each loading phase.

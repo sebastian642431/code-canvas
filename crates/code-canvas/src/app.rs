@@ -3197,6 +3197,11 @@ impl App {
             Step::Back => self.travel(true),
             Step::Forward => self.travel(false),
             Step::Menu(x, y) => self.card_menu([x, y]),
+            Step::Minimize(on) => {
+                if let Some(g) = &self.gfx {
+                    g.window.set_minimized(on);
+                }
+            }
             Step::Interface => {
                 self.ui.card_menu = None;
                 self.apply(Action::ToggleUi);

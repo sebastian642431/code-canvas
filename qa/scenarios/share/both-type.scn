@@ -1,0 +1,36 @@
+title: Host and guest type in the same file and end with the same text
+folders: rust-small
+limit: 80
+guest-expect-log: opening .*shared
+expect-log: is shared, \d+ files
+
+wait 3000
+goto src/main.rs
+share start writers
+wait 9000
+edit src/main.rs 4 1
+key end
+type  // from the host
+wait 4000
+mark host-both
+wait 600
+share stop
+wait 1200
+quit
+wait 800
+answer Close without saving
+wait 1500
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+goto src/main.rs
+wait 1200
+tool edit
+edit src/main.rs 6 1
+type // from Beto
+wait 5500
+mark both
+wait 9000
+quit
+wait 1500

@@ -1475,6 +1475,12 @@ Details:
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
+### qa
+
+Scenarios that run the real program: `qa/README.md` says how. The steps are the
+ones of `script.rs`; a behaviour that needed a new step to be tested gets the
+step. `qa/host/*.test.js` are run with node against `exthost/host.js`.
+
 ### crates/code-canvas/src/script.rs
 
 Scripted driving, for tests and demos that must not touch the real mouse or
@@ -1528,6 +1534,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `rename` | `rename <path>` | Start renaming a file in its row of the explorer. |
 | `delete` | `delete <path>` | Ask to delete a file or folder (answer with `answer Delete` or `answer Cancel`). |
 | `ignored` | `ignored <path>` | A click on a file git ignores, in the explorer: it comes onto the canvas. |
+| `minimize`, `restore` | `minimize`, `restore` | Minimise the window and bring it back. |
 | `interface` | `interface` | Hide the interface, or show it again. |
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |

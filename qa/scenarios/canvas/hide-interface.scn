@@ -1,0 +1,18 @@
+title: The interface hides and comes back, and the canvas menu opens with nothing under it
+folders: rust-small
+
+wait 3000
+left files
+interface
+wait 900
+mark hidden
+wait 500
+menu 300 300
+wait 500
+mark hidden-menu
+wait 500
+interface
+wait 900
+mark back
+wait 500
+quit
