@@ -1253,6 +1253,7 @@ impl App {
                 unstaged: false,
                 untracked: false,
                 place: None,
+                nothing_open: me.pages.is_empty(),
             });
             me.request_redraw();
         };
@@ -1280,6 +1281,7 @@ impl App {
                 unstaged: false,
                 untracked: false,
                 place: None,
+                nothing_open: false,
             });
             return self.request_redraw();
         };
@@ -1306,6 +1308,7 @@ impl App {
                 .is_some_and(|change| change.unstaged.is_some() && change.change != crate::git::Change::Untracked),
             untracked: change.is_some_and(|change| change.change == crate::git::Change::Untracked),
             place: None,
+            nothing_open: false,
         });
         self.request_redraw();
     }

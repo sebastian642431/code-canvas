@@ -3339,6 +3339,7 @@ pub struct CardMenu {
     pub unstaged: bool,
     pub untracked: bool,
     pub place: Option<Rect>,
+    pub nothing_open: bool,
 }
 
 fn menu_row_key(ui: &mut egui::Ui, glyph: &str, label: &str, key: &str) -> bool {
@@ -3385,6 +3386,7 @@ fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut 
             ui.set_width(WIDTH);
             ui.spacing_mut().item_spacing.y = 1.0;
             let on = menu.on.clone();
+            let any_folder = !menu.nothing_open;
             match &on {
                 MenuOn::File { path } => {
                     let part = |what: Part, line: u32| Action::Git(GitOp::Part { path: path.clone(), line, what });
@@ -3457,17 +3459,17 @@ fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut 
             if menu_row_key(ui, icons::PANEL_LEFT, label, &ui_key) {
                 chosen.push(Action::ToggleUi);
             }
-            if menu_row_key(ui, icons::SCAN, "Show the whole canvas", &fit_key) {
+            if any_folder && menu_row_key(ui, icons::SCAN, "Show the whole canvas", &fit_key) {
                 chosen.push(Action::Fit);
             }
             if on == MenuOn::Canvas {
-                if menu_row(ui, icons::EYE, "Put hidden files back") {
+                if any_folder && menu_row(ui, icons::EYE, "Put hidden files back") {
                     chosen.push(Action::ShowAll);
                 }
-                if menu_row(ui, icons::FOLD_VERTICAL, "Collapse every folder") {
+                if any_folder && menu_row(ui, icons::FOLD_VERTICAL, "Collapse every folder") {
                     chosen.push(Action::CollapseAll);
                 }
-                if menu_row(ui, icons::UNFOLD_VERTICAL, "Expand every folder") {
+                if any_folder && menu_row(ui, icons::UNFOLD_VERTICAL, "Expand every folder") {
                     chosen.push(Action::ExpandAll);
                 }
                 menu_gap(ui);
