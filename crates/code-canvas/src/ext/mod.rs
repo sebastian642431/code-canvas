@@ -400,6 +400,9 @@ pub struct Extensions {
     pub contexts: HashMap<String, Value>,
     /// The default extensions this installation already got (`defaults.json`).
     offered: BTreeSet<String>,
+    /// What the app itself draws on files, in the same form as what
+    /// extensions do (by [`path_key`]). It survives a restart of the host.
+    own_decorations: HashMap<String, FileDecorations>,
     /// The latest answer to [`Extensions::request_hover`].
     pub hover: Option<Hover>,
     /// Webviews that went away with their host; reported by `poll`.
@@ -652,6 +655,7 @@ impl Extensions {
             webviews: Vec::new(),
             contexts: HashMap::new(),
             offered: BTreeSet::new(),
+            own_decorations: HashMap::new(),
             hover: None,
             dropped_webviews: Vec::new(),
             host_running: false,
@@ -1457,7 +1461,28 @@ impl Extensions {
         let len = prefix.len();
         // Same length in both spellings: the key only differs in case.
         let under = move |key: &String, path: &String| key.starts_with(&prefix) && path.len() == key.len();
-        self.decorations.iter().filter(move |(key, d)| under(key, &d.path)).map(move |(_, d)| (&d.path[len..], d))
+        self.decorations
+            .iter()
+            .chain(self.own_decorations.iter())
+            .filter(move |(key, d)| under(key, &d.path))
+            .map(move |(_, d)| (&d.path[len..], d))
+    }
+
+    /// Draw `items` on the file at `path` (absolute, any separators) as the
+    /// app's own, under `key`; an empty list takes them away.
+    pub fn set_own_decorations(&mut self, path: &str, key: &str, items: Vec<Decoration>) {
+        let path = path.replace('\\', "/");
+        let at = path_key(&path);
+        let file =
+            self.own_decorations.entry(at.clone()).or_insert_with(|| FileDecorations { path, by_type: HashMap::new() });
+        if items.is_empty() {
+            file.by_type.remove(key);
+        } else {
+            file.by_type.insert(key.to_string(), items);
+        }
+        if file.by_type.is_empty() {
+            self.own_decorations.remove(&at);
+        }
     }
 
     /// `(errors, warnings)` over every file.

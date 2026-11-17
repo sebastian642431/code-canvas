@@ -192,6 +192,7 @@ pub struct UiState {
     pub naming: Option<Naming>,
     /// Show one folder at a time, instead of all of them side by side.
     pub single: bool,
+    pub prefs: crate::prefs::Prefs,
     /// Who writes commit messages when asked (`commit_ai.rs`).
     pub commit_ai: crate::commit_ai::Settings,
     /// The file icon theme in use.
@@ -224,6 +225,7 @@ impl Default for UiState {
             rebinding: None,
             naming: None,
             single: false,
+            prefs: Default::default(),
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
@@ -300,6 +302,7 @@ pub enum Action {
     WriteCommitMessage,
     /// Change who writes commit messages.
     SetCommitAi(crate::commit_ai::Settings),
+    SetPrefs(crate::prefs::Prefs),
     /// Show only the files git reports as changed.
     SetOnlyChanged(bool),
     /// Pick a `.vsix` file and install it.

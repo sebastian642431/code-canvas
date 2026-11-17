@@ -21,10 +21,12 @@ mod icons;
 mod keys;
 mod overlay;
 mod page;
+mod prefs;
 mod script;
 mod session;
 mod themes;
 mod ui;
+mod versions;
 mod watch;
 mod webview;
 

@@ -1,5 +1,6 @@
 //! Window, input and the per-frame glue between pages, the UI and the renderer.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -158,6 +159,14 @@ pub struct App {
     webviews: crate::webview::WebViews,
     /// Folders webview pages may load files from (to notice changes).
     webview_roots: Vec<PathBuf>,
+    /// Latest versions of dependencies, asked for in the background.
+    versions: crate::versions::Checker,
+    /// The dependencies of each manifest of the open folders, by its path.
+    manifests: HashMap<PathBuf, Vec<crate::versions::Dependency>>,
+    /// Pages (ids) whose manifests have to be read (again).
+    versions_due: Vec<u32>,
+    /// Folders the user was already told about, once every answer was in.
+    versions_told: HashSet<PathBuf>,
     /// The theme (`theme::revision`) the interface and the scenes were last
     /// built with.
     theme_revision: u64,
@@ -199,6 +208,7 @@ impl App {
         let mut ui = UiState::default();
         ui.theme = chosen;
         ui.commit_ai = crate::commit_ai::load();
+        ui.prefs = crate::prefs::load();
         ui.key_file = crate::keys::load();
         ui.keys = Keymap::new(&ui.key_file);
         ui.last_left = LEFT_PANELS[(saved.left_panel as usize).min(LEFT_PANELS.len() - 1)];
@@ -243,6 +253,10 @@ impl App {
             auto_rescan: None,
             webviews: crate::webview::WebViews::new(),
             webview_roots: Vec::new(),
+            versions: crate::versions::Checker::new(ext::wake_ui),
+            manifests: HashMap::new(),
+            versions_due: Vec::new(),
+            versions_told: HashSet::new(),
             theme_revision: canvas_render::theme::revision(),
             theme_dirty: false,
         }
@@ -671,6 +685,10 @@ impl App {
                 if let Some(g) = self.gfx.as_mut() {
                     g.renderer.text.drop_page(page.id);
                     page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+                }
+                // A manifest changed: its dependencies may have.
+                if rel.ends_with("package.json") || rel.ends_with("Cargo.toml") {
+                    self.versions_due.push(page.id);
                 }
                 if let (Some(caret), true) = (caret, page.editing.as_deref() == Some(rel.as_str())) {
                     if page.begin_edit(&rel) {
@@ -1533,6 +1551,20 @@ impl App {
                 }
                 self.request_redraw();
             }
+            Action::SetPrefs(prefs) => {
+                crate::prefs::save(&prefs);
+                let versions = prefs.check_versions != self.ui.prefs.check_versions;
+                self.ui.prefs = prefs;
+                if versions {
+                    // On: read every folder's manifests. Off: take the notes away.
+                    self.versions_due = self.pages.iter().map(|p| p.id).collect();
+                    for path in std::mem::take(&mut self.manifests).into_keys() {
+                        self.ext.set_own_decorations(&path.to_string_lossy(), "versions", Vec::new());
+                    }
+                    self.versions_told.clear();
+                }
+                self.request_redraw();
+            }
             Action::SetCommitAi(settings) => {
                 crate::commit_ai::save(&settings);
                 self.ui.commit_ai = settings;
@@ -1928,6 +1960,15 @@ impl App {
         for key in self.webviews.take_keys() {
             self.page_chord(&key);
         }
+        // Dependencies: manifests to read, and answers that arrived.
+        for id in std::mem::take(&mut self.versions_due) {
+            self.read_dependencies(id);
+            changed = true;
+        }
+        if self.versions.poll() {
+            self.show_versions();
+            changed = true;
+        }
         // Notices fade out by themselves: keep ticking while one is up.
         busy |= !self.ext.notices.is_empty();
         if changed {
@@ -1957,10 +1998,89 @@ impl App {
                 }));
                 page.curves_dirty = true;
                 changed = true;
+                // Its manifests can be read now.
+                self.versions_due.push(page.id);
             }
         }
         if changed {
             g.window.request_redraw();
+        }
+    }
+
+    /// Read the manifests of a page for their dependencies and ask for the
+    /// latest version of each.
+    fn read_dependencies(&mut self, page_id: u32) {
+        const MAX_MANIFESTS: usize = 40;
+        if !self.ui.prefs.check_versions {
+            return;
+        }
+        let Some(page) = self.pages.iter().find(|p| p.id == page_id) else { return };
+        let Some(r) = page.ready() else { return };
+        let root = page.root.clone();
+        for gone in self.manifests.keys().filter(|path| path.starts_with(&root)).cloned().collect::<Vec<_>>() {
+            self.manifests.remove(&gone);
+            self.ext.set_own_decorations(&gone.to_string_lossy(), "versions", Vec::new());
+        }
+        let mut all = Vec::new();
+        let manifests = r.repo.files.iter().filter(|f| matches!(f.name.as_str(), "package.json" | "Cargo.toml"));
+        for f in manifests.take(MAX_MANIFESTS) {
+            let found = crate::versions::dependencies(&f.name, &f.text);
+            if !found.is_empty() {
+                all.extend(found.iter().cloned());
+                self.manifests.insert(root.join(&f.rel_path), found);
+            }
+        }
+        self.versions.want(&all);
+        self.show_versions();
+    }
+
+    /// Write what is known about each dependency after its line, and once
+    /// every answer of a folder is in, say how many have something newer.
+    fn show_versions(&mut self) {
+        use crate::versions::Standing;
+        let t = canvas_render::theme::get();
+        // Per folder: (newer, of which outside what the manifest accepts).
+        let mut counts: HashMap<PathBuf, (usize, usize)> = HashMap::new();
+        for (path, wanted) in &self.manifests {
+            let notes = self.versions.notes(wanted);
+            if let Some(page) = self.pages.iter().find(|p| path.starts_with(&p.root)) {
+                let count = counts.entry(page.root.clone()).or_default();
+                count.0 += notes.iter().filter(|n| n.standing != Standing::Latest).count();
+                count.1 += notes.iter().filter(|n| n.standing == Standing::Major).count();
+            }
+            let items = notes
+                .into_iter()
+                .map(|n| ext::Decoration {
+                    line: n.line,
+                    col: 0,
+                    end_line: n.line,
+                    end_col: 0,
+                    whole_line: false,
+                    text: n.text,
+                    color: match n.standing {
+                        Standing::Latest => t.git_added,
+                        Standing::Newer => t.problem_info,
+                        Standing::Major => t.problem_warning,
+                    },
+                    background: 0,
+                })
+                .collect();
+            self.ext.set_own_decorations(&path.to_string_lossy(), "versions", items);
+        }
+        if self.versions.busy() {
+            return;
+        }
+        for (root, (newer, major)) in counts {
+            if newer > 0 && self.versions_told.insert(root.clone()) {
+                let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let upgrades = match major {
+                    0 => String::new(),
+                    n => format!(", {n} of them a new major version"),
+                };
+                let text =
+                    format!("{newer} dependencies have a newer version{upgrades}. They are marked in the manifests.");
+                self.ext.notice(ext::Level::Info, &name, text);
+            }
         }
     }
 

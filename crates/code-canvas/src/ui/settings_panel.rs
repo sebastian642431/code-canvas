@@ -67,6 +67,19 @@ pub(super) fn settings_panel(
                 }
             });
 
+            section(ui, icons::PACKAGE, "Help while editing");
+            well(ui, |ui| {
+                let mut next = st.prefs.clone();
+                check(ui, &mut next.check_versions, "Show newer versions of dependencies", true, false).on_hover_text(
+                    "In package.json and Cargo.toml. Asks npm and crates.io: only package names are sent.",
+                );
+                check(ui, &mut next.complete_paths, "Offer file names while typing a path", true, false)
+                    .on_hover_text("Inside quotes, after ./ or ../ or a folder name and a slash.");
+                if next != st.prefs {
+                    actions.push(Action::SetPrefs(next));
+                }
+            });
+
             section(ui, icons::SPARKLES, "Commit messages");
             well(ui, |ui| {
                 let note = "Who writes the message when you press the sparkle in source control.";
