@@ -1,8 +1,9 @@
-title: Discard every change with staged, unstaged, a staged deletion, a staged new file and untracked files: tracked files are as committed, untracked files survive (the staged new file: see the report)
+title: Discard every change with staged, unstaged, a staged deletion, a staged new file and untracked files: the question lists a.txt, b.txt and gone.txt only (picture "asked"), they are as committed, the staged new file stays as it is staged and untracked files survive
 folders: git-mixed
 expect-file: git-mixed/a.txt :: ^a1\na2\na3\n$
 expect-file: git-mixed/b.txt :: ^b1\nb2\nb3\n$
 expect-file: git-mixed/gone.txt :: ^gone\n$
+expect-file: git-mixed/added.txt :: ^added and staged\n$
 expect-file: git-mixed/untracked.txt :: nobody knows me
 expect-file: git-mixed/sub/also untracked.txt :: nor me
 forbid-log: script: ignoring

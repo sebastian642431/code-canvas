@@ -60,6 +60,39 @@ pub struct FileChange {
     pub insertions: u32,
     pub deletions: u32,
     pub unsaved: bool,
+    pub from: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Back {
+    Commit,
+    Staged,
+    Lines,
+}
+
+impl FileChange {
+    pub fn goes_back(&self) -> Option<Back> {
+        let new = matches!(self.staged, Some(Change::Added | Change::Renamed));
+        match (self.change, new) {
+            (Change::Untracked, _) => None,
+            (Change::Conflicted, _) | (_, false) => Some(Back::Commit),
+            (_, true) => (self.unstaged.is_some() || self.unsaved).then_some(Back::Staged),
+        }
+    }
+}
+
+pub fn what_is_lost(files: &[(String, Back)]) -> Option<String> {
+    let any = |back: Back| files.iter().any(|(_, goes)| *goes == back);
+    let text = match (any(Back::Lines), any(Back::Commit), any(Back::Staged)) {
+        (true, ..) => "These lines go back to how they were before the change.",
+        (_, true, false) => "The files go back to how the last commit left them.",
+        (_, true, true) => {
+            "The files go back to how the last commit left them; the ones that are not in it, to what is staged."
+        }
+        (_, false, true) => "What is not in the last commit goes back to what is staged of it.",
+        (_, false, false) => return None,
+    };
+    Some(format!("{text} This cannot be undone."))
 }
 
 pub fn head_texts(root: &Path, prefix: &str, paths: &[String]) -> Vec<Option<String>> {
@@ -577,17 +610,61 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
         GitOp::Pull => vec![s(&["pull", "--ff-only"])],
         GitOp::Fetch => vec![s(&["fetch", "--prune"])],
         GitOp::Publish(branch) => vec![s(&["push", "-u", "origin", branch])],
-        GitOp::Discard(path) => vec![s(&["checkout", "HEAD", "--", path])],
-        GitOp::DiscardAll => vec![s(&["checkout", "HEAD", "--", "."])],
+        GitOp::Discard(_) | GitOp::DiscardAll => Vec::new(),
         GitOp::Stash => vec![s(&["stash", "push", "--include-untracked"])],
         GitOp::StashPop => vec![s(&["stash", "pop"])],
         GitOp::Switch(branch) => vec![s(&["switch", branch])],
     }
 }
 
+fn checkout(root: &Path, from: Option<&str>, paths: &[&str]) -> Result<(), String> {
+    use std::io::Write;
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut c = command(root);
+    c.arg("checkout").args(from).args(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+    c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("git could not be run: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(paths.join("\0").as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| format!("git could not be run: {e}"))?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
+}
+
+fn discard(root: &Path, only: Option<&str>) -> Result<String, String> {
+    let text = |out: Vec<u8>| String::from_utf8_lossy(&out).into_owned();
+    let status = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=no", "--", only.unwrap_or(".")]);
+    let status = status.map(text).ok_or("git could not say what changed here.")?;
+    let prefix = git(root, &["rev-parse", "--show-prefix"]).map(text).unwrap_or_default();
+    let changes = parse_status(&status, prefix.trim()).changes;
+    let mut listed = vec!["ls-tree", "-r", "-z", "--name-only", "HEAD"];
+    listed.extend(only.iter().flat_map(|path| ["--", *path]));
+    let committed = git(root, &listed).map(text).unwrap_or_default();
+    let committed: std::collections::HashSet<&str> = committed.split('\0').filter(|path| !path.is_empty()).collect();
+    let (mut to_commit, mut to_staged) = (Vec::new(), Vec::new());
+    for change in &changes {
+        match (committed.contains(change.path.as_str()), change.change, change.unstaged) {
+            (true, ..) => to_commit.push(change.path.as_str()),
+            (false, Change::Conflicted, _) | (false, _, None) => {}
+            (false, _, Some(_)) => to_staged.push(change.path.as_str()),
+        }
+    }
+    checkout(root, Some("HEAD"), &to_commit)?;
+    checkout(root, None, &to_staged)?;
+    Ok(String::new())
+}
+
 pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
-    if let GitOp::Part { path, line, what } = op {
-        return part(root, path, *line, *what);
+    match op {
+        GitOp::Part { path, line, what } => return part(root, path, *line, *what),
+        GitOp::Discard(path) => return discard(root, Some(path)),
+        GitOp::DiscardAll => return discard(root, None),
+        _ => {}
     }
     let mut said = String::new();
     for args in steps(op) {
@@ -712,9 +789,8 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
         }
         let (x, y) = (entry.as_bytes()[0], entry.as_bytes()[1]);
         let path = &entry[3..];
-        if x == b'R' || x == b'C' {
-            entries.next();
-        }
+        let from = if x == b'R' || x == b'C' { entries.next() } else { None };
+        let from = from.and_then(|old| old.strip_prefix(prefix)).map(str::to_string);
         let change = match (x, y) {
             (b'?', b'?') => Change::Untracked,
             (b'U', _) | (_, b'U') | (b'A', b'A') | (b'D', b'D') => Change::Conflicted,
@@ -746,6 +822,7 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
             insertions: 0,
             deletions: 0,
             unsaved: false,
+            from,
         });
     }
     state.changes.sort_by(|a, b| Path::new(&a.path).cmp(Path::new(&b.path)));
@@ -1009,6 +1086,74 @@ mod tests {
         assert_eq!(on_disk("insert.txt"), format!("{top}{lines}"), "an added line discarded under other changes");
         op("same.rs", 13, Part::Discard).unwrap();
         assert_eq!(on_disk("same.rs"), format!("{top}{same}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discarding_brings_a_file_back_to_the_commit_or_to_what_is_staged() {
+        let Some(dir) = repository("discard") else { return };
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+        let on_disk = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        write("a.txt", "a\n");
+        assert_eq!(super::run(&dir, &GitOp::DiscardAll), Ok(String::new()), "nothing is tracked yet");
+        said(&dir, &["add", "a.txt"]);
+        write("a.txt", "a\nmore\n");
+        super::run(&dir, &GitOp::DiscardAll).unwrap();
+        assert_eq!(on_disk("a.txt"), "a\n", "with no commit a file goes back to what is staged");
+
+        for (name, text) in [("b.txt", "b\n"), ("gone.txt", "gone\n"), ("sub/old.txt", "one\ntwo\nthree\n")] {
+            write(name, text);
+        }
+        said(&dir, &["add", "."]);
+        said(&dir, &["commit", "-q", "-m", "first"]);
+        write("a.txt", "a\nstaged\n");
+        write("added.txt", "added\n");
+        write("only staged.txt", "staged\n");
+        said(&dir, &["mv", "sub/old.txt", "sub/new.txt"]);
+        said(&dir, &["rm", "-q", "gone.txt"]);
+        said(&dir, &["add", "."]);
+        write("a.txt", "a\nstaged\nnot staged\n");
+        write("b.txt", "B\n");
+        write("added.txt", "added\nand more\n");
+        write("sub/new.txt", "one\nTWO\nthree\n");
+        write("new.txt", "nobody knows me\n");
+
+        super::run(&dir, &GitOp::Discard("added.txt".into())).unwrap();
+        assert_eq!(on_disk("added.txt"), "added\n");
+        write("added.txt", "added\nagain\n");
+        super::run(&dir.join("sub"), &GitOp::Discard("new.txt".into())).unwrap();
+        assert_eq!(on_disk("sub/new.txt"), "one\ntwo\nthree\n");
+        write("sub/new.txt", "one\nTWO\nthree\n");
+        assert_eq!(said(&dir, &["status", "--porcelain"]), "MM a.txt\nAM added.txt\n M b.txt\nD  gone.txt\nA  \"only staged.txt\"\nRM sub/old.txt -> sub/new.txt\n?? new.txt\n");
+
+        let state = parse_status(&said(&dir, &["status", "--porcelain=v1", "-z"]), "");
+        let back: Vec<_> = state.changes.iter().map(|change| (change.path.as_str(), change.goes_back())).collect();
+        assert_eq!(
+            back,
+            [
+                ("a.txt", Some(Back::Commit)),
+                ("added.txt", Some(Back::Staged)),
+                ("b.txt", Some(Back::Commit)),
+                ("gone.txt", Some(Back::Commit)),
+                ("new.txt", None),
+                ("only staged.txt", None),
+                ("sub/new.txt", Some(Back::Staged)),
+            ]
+        );
+        assert_eq!(state.change("sub/new.txt").and_then(|change| change.from.as_deref()), Some("sub/old.txt"));
+
+        super::run(&dir, &GitOp::DiscardAll).unwrap();
+        assert_eq!(
+            said(&dir, &["status", "--porcelain"]),
+            "A  added.txt\nA  \"only staged.txt\"\nR  sub/old.txt -> sub/new.txt\n?? new.txt\n"
+        );
+        assert_eq!(
+            (on_disk("a.txt"), on_disk("b.txt"), on_disk("gone.txt")),
+            ("a\n".into(), "b\n".into(), "gone\n".into())
+        );
+        assert_eq!((on_disk("added.txt"), on_disk("sub/new.txt")), ("added\n".into(), "one\ntwo\nthree\n".into()));
+        assert_eq!(on_disk("new.txt"), "nobody knows me\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1998,7 +1998,7 @@ impl App {
             GitOp::DiscardAll => self.drop_edits(active, None),
             _ => {}
         }
-        if let Some(page) = self.pages.get_mut(self.active) {
+        if let Some(page) = self.pages.get_mut(active) {
             page.run_git(op);
         }
         self.request_redraw();
@@ -3033,22 +3033,24 @@ impl App {
                 self.request_redraw();
             }
             Action::Git(op) => {
-                use crate::git::{GitOp, Part};
+                use crate::git::{Back, GitOp, Part};
+                let page = self.pages.get(self.active);
+                let back = |only: Option<&str>| page.map(|page| page.discarded(only)).unwrap_or_default();
                 let lost = match &op {
-                    GitOp::Discard(path) => Some(("Discard the changes of this file?", vec![path.clone()])),
-                    GitOp::Part { path, what: Part::Discard, .. } => Some(("Discard this change?", vec![path.clone()])),
-                    GitOp::DiscardAll => {
-                        let changed = self.pages.get(self.active).and_then(|page| page.git.as_ref());
-                        let tracked = |c: &&crate::git::FileChange| c.change != crate::git::Change::Untracked;
-                        let files =
-                            changed.map(|git| git.changes.iter().filter(tracked).map(|c| c.path.clone()).collect());
-                        Some(("Discard every change?", files.unwrap_or_default()))
+                    GitOp::Discard(path) => Some(("Discard the changes of this file?", back(Some(path)))),
+                    GitOp::Part { path, what: Part::Discard, .. } => {
+                        Some(("Discard this change?", vec![(path.clone(), Back::Lines)]))
                     }
+                    GitOp::DiscardAll => Some(("Discard every change?", back(None))),
                     _ => None,
                 };
                 let Some((title, files)) = lost else { return self.run_git(self.active, op) };
+                let Some(text) = crate::git::what_is_lost(&files) else {
+                    let text = "There is nothing to discard here: what is new and all of it staged stays as it is.";
+                    return self.ext.notice(ext::Level::Info, "Source Control", text);
+                };
+                let files = files.into_iter().map(|(path, _)| path).collect();
                 let Some(folder) = self.pages.get(self.active).map(|page| page.root.clone()) else { return };
-                let text = "The files go back to how the last commit left them. This cannot be undone.".to_string();
                 let mut ask = ui::Ask::new(ui::Asked::Git { folder, op }, title, text)
                     .choice("Discard", ui::ChoiceLook::Danger, ui::Answer::Yes)
                     .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);

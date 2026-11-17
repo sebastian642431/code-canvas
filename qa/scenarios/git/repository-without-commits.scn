@@ -1,9 +1,10 @@
-title: A repository with no commit yet: the panel lists the new files, the diff and a commit view do nothing harmful, a file is staged, one change unstaged (it is untracked again), all staged and the first commit made from the app; discard before the first commit loses nothing
+title: A repository with no commit yet: the panel lists the new files, the diff and a commit view do nothing harmful, discard with nothing tracked says there is nothing to discard and asks nothing, a file is staged, one change unstaged (it is untracked again), all staged, a staged file changed again and discarded goes back to what is staged, and the first commit is made from the app
 folders: git-no-commits
 expect-file: git-no-commits/a.txt :: ^a1\na2\na3\n$
 expect-file: git-no-commits/src/b.rs :: ^pub fn b\(\) -> u32 \{\n    1\n\}\n$
 expect-file: git-no-commits/.git/logs/HEAD :: commit \(initial\): the first one
 forbid-log: script: ignoring
+forbid-log: nothing offers
 
 wait 3000
 left changes
@@ -18,23 +19,29 @@ commit off
 diff off
 wait 800
 git discard
-wait 600
-mark 2-discard-asked
-wait 500
-answer Discard
-wait 1500
-mark 3-after-discard
+wait 800
+mark 2-nothing-to-discard
 wait 500
 git stage a.txt
 wait 1200
 part unstage a.txt 2
 wait 1500
-mark 4-unstaged-part
+mark 3-unstaged-part
 wait 500
 git stage
 wait 1200
+touch a.txt a4 written after staging
+wait 2500
+git discard
+wait 600
+mark 4-discard-asked
+wait 500
+answer Discard
+wait 1500
+mark 5-back-to-staged
+wait 500
 git commit the first one
 wait 2000
-mark 5-first-commit
+mark 6-first-commit
 wait 500
 quit

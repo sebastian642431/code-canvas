@@ -447,10 +447,12 @@ impl Page {
         if paths.is_empty() {
             return;
         }
+        let committed_as = |path: &String| git.change(path).and_then(|change| change.from.clone());
+        let named: Vec<String> = paths.iter().map(|path| committed_as(path).unwrap_or_else(|| path.clone())).collect();
         let (root, prefix, round, tx) =
             (self.root.clone(), git.prefix.clone(), self.heads_round, self.heads_tx.clone());
         std::thread::spawn(move || {
-            let texts = crate::git::head_texts(&root, &prefix, &paths);
+            let texts = crate::git::head_texts(&root, &prefix, &named);
             for (rel, text) in paths.into_iter().zip(texts) {
                 let _ = tx.send((round, rel, text));
             }
@@ -655,6 +657,9 @@ impl Page {
             self.search = None;
         }
         drop(committed);
+        if changed && self.showing.is_none() {
+            log::info!("what changed is shown inside {} files", self.diffs.len());
+        }
         if let Some(showing) = self.showing.as_mut().filter(|showing| !showing.loading) {
             showing.here = here;
         }
@@ -705,6 +710,7 @@ impl Page {
                         insertions,
                         deletions,
                         unsaved: true,
+                        from: original.as_ref().and_then(|o| o.from.clone()),
                     })
                 }
             };
@@ -780,6 +786,12 @@ impl Page {
         if before != after {
             self.relayout(renderer, device, filters);
         }
+    }
+
+    pub fn discarded(&self, only: Option<&str>) -> Vec<(String, crate::git::Back)> {
+        let Some(git) = &self.git else { return Vec::new() };
+        let asked = git.changes.iter().filter(|change| only.is_none_or(|one| one == change.path));
+        asked.filter_map(|change| Some((change.path.clone(), change.goes_back()?))).collect()
     }
 
     pub fn git_busy(&self) -> bool {
@@ -883,6 +895,12 @@ impl Page {
                     self.heads_asked.clear();
                     self.heads_round += 1;
                 }
+                let moved = self.git.iter().flat_map(|git| &git.changes).filter(|change| change.from.is_some());
+                let moved: Vec<String> = moved.map(|change| change.path.clone()).collect();
+                for path in moved.iter().filter(|path| self.heads.get(*path) == Some(&None)) {
+                    self.heads_asked.remove(path);
+                }
+                self.heads.retain(|path, text| text.is_some() || !moved.contains(path));
                 let unsaved: Vec<String> = self.unsaved().map(|e| e.rel_path.clone()).collect();
                 self.want_heads(unsaved);
                 self.previewed.clear();
