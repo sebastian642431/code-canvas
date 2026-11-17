@@ -204,6 +204,20 @@ pub fn forget_old_scans() {
     });
 }
 
+static NEVER_READ: std::sync::Mutex<(Option<Vec<String>>, Option<Vec<String>>)> = std::sync::Mutex::new((None, None));
+
+pub fn never_read(dirs: Option<Vec<String>>, files: Option<Vec<String>>) {
+    *NEVER_READ.lock().unwrap() = (dirs, files);
+}
+
+pub fn scan_options() -> ScanOptions {
+    let mut options = ScanOptions::default();
+    let (dirs, files) = NEVER_READ.lock().unwrap().clone();
+    options.skip_dirs = dirs.unwrap_or(options.skip_dirs);
+    options.skip_files = files.unwrap_or(options.skip_files);
+    options
+}
+
 pub fn text_budget() -> usize {
     let megabytes = std::env::var("CODE_CANVAS_TEXT_MB").ok().and_then(|mb| mb.parse::<usize>().ok());
     megabytes.unwrap_or(768) << 20
@@ -796,7 +810,7 @@ impl Page {
             .spawn(move || {
                 let t = Instant::now();
                 let cache = scan_cache(&root).filter(|_| !only);
-                let options = ScanOptions { cache, reuse, only, extra, ..Default::default() };
+                let options = ScanOptions { cache, reuse, only, extra, ..scan_options() };
                 let mut repo = scan::scan(&root, &options, Some(p));
                 let (deps, per_file) = canvas_core::deps::analyze_keeping(&repo);
                 if let Err(why) = canvas_core::store::keep(&mut repo, &per_file, &options) {

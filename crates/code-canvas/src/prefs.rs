@@ -11,6 +11,8 @@ pub struct Prefs {
     pub edit: bool,
     pub unwanted: Vec<String>,
     pub line_numbers: bool,
+    pub skip_dirs: Option<Vec<String>>,
+    pub skip_files: Option<Vec<String>>,
 }
 
 impl Default for Prefs {
@@ -24,6 +26,8 @@ impl Default for Prefs {
             edit: false,
             unwanted: Vec::new(),
             line_numbers: true,
+            skip_dirs: None,
+            skip_files: None,
         }
     }
 }

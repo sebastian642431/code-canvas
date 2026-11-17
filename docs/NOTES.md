@@ -1337,6 +1337,7 @@ Details:
 | `edit` | The tool of the toolbar: `false` is the hand (clicks select, nothing is edited), `true` the pencil (a click in readable code puts the caret there). |
 | `unwanted` | Extensions offered for a language and answered "Do not ask again" (`App::offer_checker`). |
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
+| `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
 ### crates/code-canvas/src/script.rs
 

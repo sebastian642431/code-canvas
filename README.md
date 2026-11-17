@@ -273,7 +273,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Memory-mapped sources for 1M+ file monorepos.
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
 - [x] Line numbers (the file's own, also where a card shows a diff).
-- [ ] Configurable skip lists.
+- [x] The folders and files never read can be chosen (Settings, "Never read").
 - [ ] Linux / macOS packaging, a web build (WebGPU).
 
 ## Project layout

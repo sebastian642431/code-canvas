@@ -58,6 +58,7 @@ pub struct SettingsView {
     pub tab: Tab,
     filter: String,
     focus: bool,
+    skips: Option<[String; 2]>,
 }
 
 impl SettingsView {
@@ -308,10 +309,41 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.line_numbers, EDITING[4]);
         });
     }
+    let never = ["Folders never read", "Files never read", "skip", "ignore", "node_modules"];
+    let reading = hit(f, &never);
+    if reading {
+        section(ui, icons::EYE_OFF, "Never read");
+        let defaults = canvas_core::ScanOptions::default();
+        let listed = |own: &Option<Vec<String>>, usual: &[String]| own.as_deref().unwrap_or(usual).join("  ");
+        let typed = st.settings.skips.get_or_insert_with(|| {
+            [listed(&next.skip_dirs, &defaults.skip_dirs), listed(&next.skip_files, &defaults.skip_files)]
+        });
+        let (mut done, mut usual) = (false, false);
+        well(ui, |ui| {
+            note(ui, "Besides what git ignores. Names separated by spaces; a folder with one of these names is not entered anywhere in a folder. Leaving a box takes it.");
+            for (label, text) in ["Folders never read", "Files never read"].into_iter().zip(typed.iter_mut()) {
+                ui.add_space(4.0);
+                ui.label(RichText::new(label).size(12.5).color(pal().text));
+                let edit = egui::TextEdit::multiline(text).desired_rows(2).desired_width(f32::INFINITY);
+                done |= ui.add(edit.font(FontId::monospace(12.0))).lost_focus();
+            }
+            ui.add_space(4.0);
+            usual = super::ext_panels::pill(ui, "The usual ones", false);
+        });
+        if usual {
+            (next.skip_dirs, next.skip_files) = (None, None);
+            st.settings.skips = None;
+        } else if let (true, Some(typed)) = (done, &st.settings.skips) {
+            let names = |text: &str| text.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+            let own = |text: &str, usual: &[String]| Some(names(text)).filter(|own| own.as_slice() != usual);
+            next.skip_dirs = own(&typed[0], &defaults.skip_dirs);
+            next.skip_files = own(&typed[1], &defaults.skip_files);
+        }
+    }
     if next != st.prefs {
         actions.push(Action::SetPrefs(next));
     }
-    about || editing
+    about || editing || reading
 }
 
 fn appearance(

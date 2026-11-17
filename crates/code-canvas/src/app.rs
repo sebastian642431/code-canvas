@@ -208,6 +208,7 @@ impl App {
         ui.theme = chosen;
         ui.prefs = crate::prefs::load();
         canvas_core::layout::set_line_numbers(ui.prefs.line_numbers);
+        crate::page::never_read(ui.prefs.skip_dirs.clone(), ui.prefs.skip_files.clone());
         let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
         let updates = (ui.prefs.check_updates && !quiet) || std::env::var_os("CODE_CANVAS_CHECK_UPDATES").is_some();
         let follow_chat = ui.prefs.follow_chat;
@@ -794,7 +795,7 @@ impl App {
             batch.files.iter().take(4).collect::<Vec<_>>(),
             batch.git.len()
         );
-        let skip = canvas_core::ScanOptions::default().skip_dirs;
+        let skip = crate::page::scan_options().skip_dirs;
         for root in &batch.git {
             if let Some(page) = self.pages.iter_mut().find(|p| &p.root == root) {
                 page.refresh_git();
@@ -2340,7 +2341,18 @@ impl App {
                     self.completion = None;
                 }
                 let numbered = prefs.line_numbers != self.ui.prefs.line_numbers;
+                let skipped =
+                    (&prefs.skip_dirs, &prefs.skip_files) != (&self.ui.prefs.skip_dirs, &self.ui.prefs.skip_files);
                 self.ui.prefs = prefs;
+                if skipped {
+                    crate::page::never_read(self.ui.prefs.skip_dirs.clone(), self.ui.prefs.skip_files.clone());
+                    let (s, vp) = (self.scale(), self.viewport());
+                    for page in self.pages.iter_mut().filter(|page| page.ready().is_some() && !page.only) {
+                        page.restore_camera = page.portable_camera(s, vp);
+                        page.framed = false;
+                        page.start_scan();
+                    }
+                }
                 if let (true, Some(g)) = (numbered, self.gfx.as_mut()) {
                     canvas_core::layout::set_line_numbers(self.ui.prefs.line_numbers);
                     for page in &mut self.pages {
