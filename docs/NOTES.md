@@ -246,6 +246,13 @@ Resolution rules per language:
 
 ### crates/canvas-core/src/refs.rs
 
+- `SymbolIndex` is two sorted arrays per kind of name (`Named`): the hash of each
+  name and, beside it, the symbol. A name's symbols are the run of its hash, found
+  by bisection; no string is kept and nothing is allocated per name, which is what
+  made building it slow (0.64 s for 3.3 M symbols, 0.17 s now, on all cores). Two
+  names with the same hash are told apart when it is built and kept in
+  `clashing`, by name; a name that is asked for and *defined nowhere* could in
+  principle meet another name's hash and be given its symbols.
 - `relations` skips a file whose `idents` filter rules the name out; `search_text`
   one whose `threes` filter rules the phrase out, and once enough hits are found
   it stops reading files it would have to read from disk. Both are exact for
@@ -347,6 +354,8 @@ without reading the files that did not change.
   crate's version, the tab width and the limits of `ScanOptions`. **Change
   `FORMAT` whenever what `syntax::analyze` or the symbol scanner produce changes
   between two builds of the same version**, or an old record will be believed.
+- A file under `WHOLE` (512 MB) is read in one go, which is three times faster
+  than fetching its records one by one; a bigger one never is.
 - Layout of the file: the header, one record per file, then a table (path, stamp,
   where its record is) and, last, where the table starts. Records are written as
   they are made, `BATCH` files at a time, and read one by one with positional

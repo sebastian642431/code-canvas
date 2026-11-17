@@ -84,39 +84,90 @@ impl Relations {
 pub const MAX_PER_KIND: usize = 1500;
 
 #[derive(Default)]
+struct Named {
+    hashes: Vec<u64>,
+    refs: Vec<SymRef>,
+    clashing: HashMap<Box<str>, Vec<SymRef>>,
+}
+
+fn name_hash(name: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in name.as_bytes() {
+        hash = (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+impl Named {
+    fn build(mut found: Vec<(u64, SymRef, &str)>) -> Named {
+        found.par_sort_unstable_by_key(|(hash, at, _)| (*hash, at.file, at.index));
+        let mut named = Named {
+            hashes: Vec::with_capacity(found.len()),
+            refs: Vec::with_capacity(found.len()),
+            ..Default::default()
+        };
+        let mut first = 0;
+        while first < found.len() {
+            let (hash, _, name) = found[first];
+            let run = found[first..].iter().take_while(|entry| entry.0 == hash).count();
+            let same = &found[first..first + run];
+            if same.iter().all(|entry| entry.2 == name) {
+                named.hashes.extend(same.iter().map(|entry| entry.0));
+                named.refs.extend(same.iter().map(|entry| entry.1));
+            } else {
+                for entry in same {
+                    named.clashing.entry(entry.2.into()).or_default().push(entry.1);
+                }
+            }
+            first += run;
+        }
+        named
+    }
+
+    fn get(&self, name: &str) -> &[SymRef] {
+        if let Some(found) = self.clashing.get(name) {
+            return found;
+        }
+        let hash = name_hash(name);
+        let first = self.hashes.partition_point(|h| *h < hash);
+        let run = self.hashes[first..].partition_point(|h| *h == hash);
+        &self.refs[first..first + run]
+    }
+}
+
+#[derive(Default)]
 pub struct SymbolIndex {
-    by_name: HashMap<Box<str>, Vec<SymRef>>,
-    impls: HashMap<Box<str>, Vec<SymRef>>,
+    by_name: Named,
+    impls: Named,
     pub count: usize,
 }
 
 impl SymbolIndex {
     pub fn build(files: &[SourceFile]) -> Self {
-        let mut idx = SymbolIndex::default();
-        for (fi, f) in files.iter().enumerate() {
-            for (si, s) in f.analysis.symbols.iter().enumerate() {
-                let r = SymRef { file: fi as u32, index: si as u32 };
-                let name = f.symbol_name(si);
-                if s.kind == SymbolKind::Impl {
-                    idx.impls.entry(name.into()).or_default().push(r);
-                } else {
-                    idx.by_name.entry(name.into()).or_default().push(r);
-                }
-                idx.count += 1;
-            }
-            for (sym, name) in f.implemented() {
-                idx.impls.entry(name.into()).or_default().push(SymRef { file: fi as u32, index: sym });
-            }
-        }
-        idx
+        let of_kind = |implementations: bool| -> Vec<(u64, SymRef, &str)> {
+            files
+                .par_iter()
+                .enumerate()
+                .flat_map_iter(move |(fi, f)| {
+                    let symbols = f.analysis.symbols.iter().enumerate();
+                    let own = symbols.filter(move |(_, s)| (s.kind == SymbolKind::Impl) == implementations);
+                    let own = own.map(move |(si, _)| (SymRef { file: fi as u32, index: si as u32 }, f.symbol_name(si)));
+                    let of_traits = f.implemented().filter(move |_| implementations);
+                    let of_traits = of_traits.map(move |(sym, name)| (SymRef { file: fi as u32, index: sym }, name));
+                    own.chain(of_traits).map(|(at, name)| (name_hash(name), at, name))
+                })
+                .collect()
+        };
+        let (by_name, impls) = rayon::join(|| Named::build(of_kind(false)), || Named::build(of_kind(true)));
+        SymbolIndex { by_name, impls, count: files.iter().map(|f| f.analysis.symbols.len()).sum() }
     }
 
     pub fn defs(&self, name: &str) -> &[SymRef] {
-        self.by_name.get(name).map(Vec::as_slice).unwrap_or(&[])
+        self.by_name.get(name)
     }
 
     pub fn impls(&self, name: &str) -> &[SymRef] {
-        self.impls.get(name).map(Vec::as_slice).unwrap_or(&[])
+        self.impls.get(name)
     }
 }
 

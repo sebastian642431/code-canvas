@@ -11,6 +11,7 @@ use crate::syntax::{Analysis, Block, TokenKind};
 const MAGIC: &[u8; 4] = b"CCSC";
 const FORMAT: u32 = 3;
 const BATCH: usize = 4096;
+const WHOLE: u64 = 512 << 20;
 
 const SYMBOL_KINDS: [SymbolKind; 11] = [
     SymbolKind::Function,
@@ -339,6 +340,7 @@ struct Entry {
 
 pub struct Kept {
     file: std::fs::File,
+    whole: Option<Vec<u8>>,
     entries: Vec<Entry>,
     names: u64,
     files: usize,
@@ -374,7 +376,8 @@ impl Kept {
             }
             entries.push(Entry { path, stamp, at, len });
         }
-        Some(Kept { file, entries, names, files })
+        let whole = (size <= WHOLE).then(|| std::fs::read(path).ok()).flatten().filter(|all| all.len() as u64 == size);
+        Some(Kept { file, whole, entries, names, files })
     }
 
     pub fn same_files<'a>(&self, count: usize, paths: impl Iterator<Item = &'a str>) -> bool {
@@ -386,6 +389,9 @@ impl Kept {
         let entry = &self.entries[at];
         if entry.stamp != stamp {
             return None;
+        }
+        if let Some(whole) = &self.whole {
+            return decode(&whole[entry.at as usize..entry.at as usize + entry.len as usize], rel_path, root, stamp);
         }
         let mut record = vec![0u8; entry.len as usize];
         read_at(&self.file, &mut record, entry.at).ok()?;

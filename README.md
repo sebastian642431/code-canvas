@@ -218,9 +218,9 @@ lines, 782 MB of text), same machine:
 
 | | first time | opened again |
 |---|---|---|
-| Open | 3.7 s | **1.4 s**, no file read |
-| Memory once open | 1,360 MB | **690 MB** |
-| Relations of a name (996 of them) | 10 ms | 28 ms |
+| Open | 3.3 s | **0.8 s**, no file read |
+| Memory once open | 1,320 MB | **620 MB** |
+| Relations of a name (996 of them) | 10 ms | 30 ms |
 | A phrase searched in every file | 12 ms | 6 ms |
 
 How (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): parallel walk and load;
@@ -269,7 +269,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] What a scan finds is kept on disk: a folder opened again reads only the files
       that changed (`F5` reads everything again).
 - [ ] Cheaper single-file updates on huge folders (today they rebuild the whole layout).
-- [ ] Faster symbol indexing (parallel, lazy) and memory-mapped sources for 1M+ file monorepos.
+- [x] The symbol index is made in parallel, with no string kept per name.
+- [ ] Memory-mapped sources for 1M+ file monorepos.
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
 - [ ] Line numbers, configurable skip lists.
 - [ ] Linux / macOS packaging, a web build (WebGPU).
