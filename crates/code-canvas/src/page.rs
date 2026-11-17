@@ -10,7 +10,7 @@ use canvas_render::{Renderer, SceneData, SceneGpu};
 
 use crate::camera::Camera;
 use crate::editor::Editor;
-use crate::git::{Change, Commit, FileChange, GitState, Row};
+use crate::git::{Change, Commit, CommitFile, FileChange, GitState, Row};
 use crate::session::PageSession;
 
 pub struct Loaded {
@@ -124,6 +124,7 @@ pub struct Page {
     pub commit_message: String,
     git_op: Option<Receiver<(crate::git::GitOp, Result<String, String>)>>,
     pub git_note: Option<(bool, String)>,
+    pub git_said: Option<(bool, String)>,
     message_rx: Option<Receiver<Result<String, String>>>,
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
@@ -138,6 +139,10 @@ pub struct Page {
     pub reveal: Option<String>,
     heads_at: String,
     pub diff: DiffView,
+    pub showing: Option<Showing>,
+    showing_rx: Option<Receiver<(String, Vec<CommitFile>, usize)>>,
+    showing_changed: bool,
+    pub frame_wanted: bool,
     pub diffs: HashMap<String, Diffed>,
     diff_stale: bool,
     diff_editing: Option<String>,
@@ -160,6 +165,14 @@ impl Default for DiffView {
     fn default() -> Self {
         DiffView { on: false, split: false, fold: true, around: 3 }
     }
+}
+
+pub struct Showing {
+    pub commit: Commit,
+    pub files: Vec<CommitFile>,
+    pub total: usize,
+    pub here: usize,
+    pub loading: bool,
 }
 
 pub struct Diffed {
@@ -288,6 +301,7 @@ impl Page {
             commit_message: String::new(),
             git_op: None,
             git_note: None,
+            git_said: None,
             message_rx: None,
             timeline: Timeline::default(),
             timeline_rx: None,
@@ -302,6 +316,10 @@ impl Page {
             reveal: None,
             heads_at: String::new(),
             diff: DiffView::default(),
+            showing: None,
+            showing_rx: None,
+            showing_changed: false,
+            frame_wanted: false,
             diffs: HashMap::new(),
             diff_stale: false,
             diff_editing: None,
@@ -447,12 +465,54 @@ impl Page {
         self.diff_stale = true;
     }
 
+    pub fn show_commit(&mut self, commit: Option<Commit>) {
+        self.showing_rx = None;
+        self.showing_changed = true;
+        self.diff_stale = true;
+        self.showing = None;
+        let Some(commit) = commit else { return };
+        let (tx, rx) = mpsc::channel();
+        let (root, hash) = (self.root.clone(), commit.hash.clone());
+        let prefix = self.git.as_ref().map(|git| git.prefix.clone()).unwrap_or_default();
+        std::thread::spawn(move || {
+            let (files, total) = crate::git::commit_files(&root, &prefix, &hash, MAX_DIFFS);
+            let _ = tx.send((hash, files, total));
+            crate::ext::wake_ui();
+        });
+        self.showing = Some(Showing { commit, files: Vec::new(), total: 0, here: 0, loading: true });
+        self.showing_rx = Some(rx);
+    }
+
+    pub fn poll_commit(&mut self) -> bool {
+        let Some(rx) = &self.showing_rx else { return false };
+        let Ok((hash, files, total)) = rx.try_recv() else { return false };
+        self.showing_rx = None;
+        if let Some(showing) = self.showing.as_mut().filter(|showing| showing.commit.hash == hash) {
+            (showing.files, showing.total, showing.loading) = (files, total, false);
+            self.showing_changed = true;
+            self.diff_stale = true;
+        }
+        true
+    }
+
+    pub fn commit_shown(&self) -> Option<&Showing> {
+        self.showing.as_ref().filter(|showing| !showing.loading)
+    }
+
+    fn commit_files(&self) -> Option<HashSet<u32>> {
+        let (showing, r) = (self.commit_shown()?, self.ready()?);
+        Some(showing.files.iter().filter_map(|file| r.repo.file_index(&file.path)).map(|i| i as u32).collect())
+    }
+
     pub fn diff_due(&mut self) -> bool {
         if self.diff_editing != self.editing {
             self.diff_editing = self.editing.clone();
             self.diff_stale = true;
         }
-        if !self.diff.on && self.diffs.is_empty() {
+        if self.showing.as_ref().is_some_and(|showing| showing.loading) {
+            return false;
+        }
+        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed {
             self.diff_stale = false;
         }
         self.diff_stale && self.ready().is_some()
@@ -469,8 +529,14 @@ impl Page {
         use std::hash::{Hash, Hasher};
         self.diff_stale = false;
         let split = self.diff.split;
-        let wanted: Vec<String> = match (&self.git, self.diff.on) {
-            (Some(git), true) => git
+        let wanted: Vec<String> = match (self.commit_shown(), &self.git, self.diff.on) {
+            (Some(showing), ..) => showing
+                .files
+                .iter()
+                .filter(|file| self.editing.as_deref() != Some(file.path.as_str()))
+                .map(|file| file.path.clone())
+                .collect(),
+            (None, Some(git), true) => git
                 .changes
                 .iter()
                 .filter(|c| !matches!(c.change, Change::Untracked | Change::Added | Change::Deleted))
@@ -480,9 +546,17 @@ impl Page {
                 .collect(),
             _ => Vec::new(),
         };
-        let unknown: Vec<String> = wanted.iter().filter(|path| !self.heads.contains_key(*path)).cloned().collect();
-        self.want_heads(unknown);
+        if self.commit_shown().is_none() {
+            let unknown: Vec<String> = wanted.iter().filter(|path| !self.heads.contains_key(*path)).cloned().collect();
+            self.want_heads(unknown);
+        }
         let around = self.diff.fold.then_some(self.diff.around);
+        let laid = std::mem::take(&mut self.showing_changed);
+        let committed: Option<HashMap<&str, &CommitFile>> = self
+            .showing
+            .as_ref()
+            .filter(|showing| !showing.loading)
+            .map(|showing| showing.files.iter().map(|file| (file.path.as_str(), file)).collect());
         let PageState::Ready(r) = &mut self.state else { return false };
         let options = ScanOptions::default();
         let current = |editors: &HashMap<String, Editor>, rel: &str| match editors.get(rel) {
@@ -499,19 +573,30 @@ impl Page {
                 changed = true;
             }
         }
+        let mut here = 0;
         for rel in &wanted {
-            let Some(Some(head)) = self.heads.get(rel) else { continue };
             let Some(index) = r.repo.file_index(rel) else { continue };
+            here += 1;
             let Some(text) = current(&self.editors, rel) else { continue };
+            let (old, new): (&str, &str) = match &committed {
+                Some(files) => {
+                    let Some(file) = files.get(rel.as_str()) else { continue };
+                    (file.before.as_deref().unwrap_or(""), file.after.as_deref().unwrap_or(""))
+                }
+                None => {
+                    let Some(Some(head)) = self.heads.get(rel) else { continue };
+                    (head, &text)
+                }
+            };
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (head, &text, around, split).hash(&mut hasher);
+            (old, new, &text, around, split).hash(&mut hasher);
             let stamp = hasher.finish();
             if self.diffs.get(rel).is_some_and(|shown| shown.stamp == stamp) {
                 continue;
             }
             let made = match split {
-                true => crate::git::side_by_side(head, &text, around),
-                false => crate::git::unified(head, &text, around),
+                true => crate::git::side_by_side(old, new, around),
+                false => crate::git::unified(old, new, around),
             };
             match made {
                 Some(shown) => {
@@ -541,9 +626,16 @@ impl Page {
             }
             self.selections.clear();
             self.search = None;
+        }
+        drop(committed);
+        if let Some(showing) = self.showing.as_mut().filter(|showing| !showing.loading) {
+            showing.here = here;
+        }
+        if changed || laid {
             self.relayout(renderer, device, filters);
         }
-        changed
+        self.frame_wanted |= laid;
+        changed || laid
     }
 
     pub fn unsaved(&self) -> impl Iterator<Item = &Editor> {
@@ -709,6 +801,12 @@ impl Page {
         let Ok((op, result)) = rx.try_recv() else { return false };
         self.git_op = None;
         match (&op, result) {
+            (crate::git::GitOp::Part { .. }, result) => {
+                self.git_said = Some(match result {
+                    Ok(said) => (true, said),
+                    Err(said) => (false, said),
+                })
+            }
             (crate::git::GitOp::Commit { .. }, Ok(line)) => {
                 self.commit_message.clear();
                 self.git_note = Some((true, line));
@@ -796,6 +894,7 @@ impl Page {
     pub fn start_scan(&mut self) {
         self.diffs.clear();
         self.diff_stale = true;
+        self.showing_changed = self.showing.is_some();
         self.refresh_git();
         let progress = Arc::new(ScanProgress::default());
         let (tx, rx) = mpsc::channel();
@@ -923,7 +1022,11 @@ impl Page {
     }
 
     pub fn relayout(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
-        let changed = self.only_changed.then(|| self.changed_files()).filter(|set| !set.is_empty());
+        let changed = match self.commit_files() {
+            Some(of_commit) => Some(of_commit),
+            None => self.only_changed.then(|| self.changed_files()),
+        };
+        let changed = changed.filter(|set| !set.is_empty());
         let connected = (self.only_connected && !self.selections.is_empty()).then(|| self.connected_files(filters));
         let only = match (changed, connected) {
             (Some(a), Some(b)) => Some(a.union(&b).copied().collect()),

@@ -123,6 +123,12 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - A panel laid out like VS Code's: the repository and its branch, a message box and
   Commit, *Staged Changes* and *Changes* with stage / unstage, sync, and the latest
   commits. On the canvas a strip marks each changed file and a bar each changed line.
+- **Click a commit** (in the Graph, or in the Timeline of a file) and the canvas
+  becomes that commit: only the files it changed, each showing what it changed in
+  them. The bar at the top says which commit it is; its cross, or the same click
+  again, brings the files back as they are, where the canvas was.
+- **Right click on a changed line** stages, unstages or discards that change alone;
+  the same menu stages the file, copies its path or reveals it.
 - The Commit button's arrow: commit and push, commit and sync, amend. With nothing to
   commit it becomes *Sync Changes* or *Publish Branch*. The "…" menu has pull, push,
   fetch, discard all and stash.
@@ -263,7 +269,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Git: the diff inside each file (removed lines too), together or with what it
       was and what it is side by side, with the lines that did not change folded;
       discarding changes, switching branches, stashes.
-- [ ] Git: staging part of a file; the diff of a commit.
+- [x] Git: what a commit changed, on the canvas; staging, unstaging or discarding
+      one change of a file (right click on it).
 - [x] Text read on demand: above a budget (768 MB) the text of the files is let go
       after the scan and read again when it is looked at, searched or related.
 - [x] What a scan finds is kept on disk: a folder opened again reads only the files

@@ -175,6 +175,7 @@ pub struct App {
     pictures: crate::pictures::Pictures,
     playing: Option<PathBuf>,
     player_shown: bool,
+    commit_from: Option<Place>,
     last_move_by_itself: bool,
 }
 
@@ -286,6 +287,7 @@ impl App {
             pictures: crate::pictures::Pictures::new(),
             playing: None,
             player_shown: false,
+            commit_from: None,
             last_move_by_itself: false,
         }
     }
@@ -950,6 +952,40 @@ impl App {
         (f.note.is_none() && page.rows(&f.rel_path).is_none()).then(|| f.rel_path.clone())
     }
 
+    fn card_menu(&mut self, point: [f32; 2]) {
+        self.ui.card_menu = None;
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(r) = page.ready() else { return };
+        let world = page.camera.view(self.viewport()).to_world(point);
+        let Some(n) = r.layout.hit(world).map(|n| &r.layout.nodes[n]) else { return };
+        let NodeKind::File(fi) = n.kind else { return };
+        let f = &r.repo.files[fi];
+        let change = page.git.as_ref().and_then(|git| git.change(&f.rel_path));
+        let readable = Lod::for_zoom(page.camera.zoom) == Lod::Text;
+        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none()).map(|(row, _)| row);
+        let line = row.and_then(|row| match page.rows(&f.rel_path) {
+            Some(rows) => rows.get(row as usize).filter(|row| row.kind != crate::git::RowKind::Gap).map(|row| row.line),
+            None => Some(row),
+        });
+        let changed_here = |line: &u32| {
+            let hunks =
+                change.filter(|change| !change.unsaved).map(|change| change.hunks.as_slice()).unwrap_or_default();
+            hunks.iter().any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
+        };
+        let scale = self.scale();
+        self.ui.card_menu = Some(ui::CardMenu {
+            at: egui::Pos2::new(point[0] / scale, point[1] / scale),
+            path: f.rel_path.clone(),
+            line: line.filter(changed_here),
+            staged: change.is_some_and(|change| change.staged.is_some()),
+            unstaged: change
+                .is_some_and(|change| change.unstaged.is_some() && change.change != crate::git::Change::Untracked),
+            untracked: change.is_some_and(|change| change.change == crate::git::Change::Untracked),
+            place: None,
+        });
+        self.request_redraw();
+    }
+
     fn cell_in(&self, rel: &str, point: [f32; 2]) -> Option<(usize, usize)> {
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
@@ -1126,6 +1162,22 @@ impl App {
             if page.diff_due() && page.sync_diff(&g.renderer, &g.device, &self.ui.filters) {
                 g.renderer.text.drop_page(page.id);
                 changed = true;
+            }
+        }
+        let mut framed = Vec::new();
+        for (i, page) in self.pages.iter_mut().enumerate() {
+            if std::mem::take(&mut page.frame_wanted) {
+                framed.push(i);
+            }
+        }
+        if framed.contains(&self.active) {
+            match (self.pages[self.active].showing.is_some(), self.commit_from.take()) {
+                (false, Some(place)) => self.go_place(&place),
+                (true, from) => {
+                    self.commit_from = from;
+                    self.frame_all();
+                }
+                (false, None) => self.frame_all(),
             }
         }
         changed
@@ -1658,7 +1710,14 @@ impl App {
             self.back.push(here);
         }
         self.last_move_by_itself = false;
-        let Some(index) = self.pages.iter().position(|p| p.id == place.page) else { return self.travel(back) };
+        if !self.pages.iter().any(|p| p.id == place.page) {
+            return self.travel(back);
+        }
+        self.go_place(&place);
+    }
+
+    fn go_place(&mut self, place: &Place) {
+        let Some(index) = self.pages.iter().position(|p| p.id == place.page) else { return };
         self.switch_to(index);
         let page = &mut self.pages[index];
         let Some(r) = page.ready() else { return };
@@ -2278,6 +2337,9 @@ impl App {
             Action::Git(op) => {
                 let lost = match &op {
                     crate::git::GitOp::Discard(path) => Some(format!("the changes in {path}")),
+                    crate::git::GitOp::Part { path, what: crate::git::Part::Discard, .. } => {
+                        Some(format!("this change in {path}"))
+                    }
                     crate::git::GitOp::DiscardAll => Some("ALL the changes in tracked files".to_string()),
                     _ => None,
                 };
@@ -2384,6 +2446,16 @@ impl App {
             Action::SetDiff(view) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.set_diff(view);
+                }
+                self.request_redraw();
+            }
+            Action::ShowCommit(commit) => {
+                let Some(shown) = self.pages.get(self.active).map(|page| page.showing.is_some()) else { return };
+                if !shown {
+                    self.commit_from = self.place_now();
+                }
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.show_commit(commit);
                 }
                 self.request_redraw();
             }
@@ -2702,6 +2774,37 @@ impl App {
             Step::Page(script) => self.webviews.run(&script),
             Step::Back => self.travel(true),
             Step::Forward => self.travel(false),
+            Step::Menu(x, y) => self.card_menu([x, y]),
+            Step::Part(asked) => {
+                let mut words = asked.split_whitespace();
+                let what = match words.next() {
+                    Some("stage") => Some(crate::git::Part::Stage),
+                    Some("unstage") => Some(crate::git::Part::Unstage),
+                    _ => None,
+                };
+                let (path, line) = (words.next(), words.next().and_then(|line| line.parse::<u32>().ok()));
+                match (what, path, line) {
+                    (Some(what), Some(path), Some(line)) => {
+                        let line = line.saturating_sub(1);
+                        self.apply(Action::Git(crate::git::GitOp::Part { path: path.to_string(), line, what }))
+                    }
+                    _ => log::warn!("script: part needs stage|unstage, a path and a line"),
+                }
+            }
+            Step::Commit(which) => {
+                let graph =
+                    self.pages.get(self.active).and_then(|page| page.git.as_ref()).map(|git| git.graph.as_slice());
+                let found = match (which.trim().parse::<usize>(), graph) {
+                    (Ok(nth), Some(graph)) => graph.get(nth),
+                    (Err(_), Some(graph)) => graph.iter().find(|node| node.commit.hash.starts_with(which.trim())),
+                    _ => None,
+                };
+                let commit = found.map(|node| node.commit.clone());
+                if commit.is_none() && which.trim() != "off" {
+                    log::warn!("script: commit needs off, the place of a commit in the graph or the start of its hash");
+                }
+                self.apply(Action::ShowCommit(commit));
+            }
             Step::Diff(what) => {
                 let mut view = self.pages.get(self.active).map(|page| page.diff).unwrap_or_default();
                 match what.split_once(' ').unwrap_or((what.as_str(), "")) {
@@ -2840,7 +2943,12 @@ impl App {
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
+            if let Some((fine, said)) = page.git_said.take() {
+                let level = if fine { ext::Level::Info } else { ext::Level::Warn };
+                self.ext.notice(level, "Source Control", said);
+            }
             changed |= page.poll_message();
+            changed |= page.poll_commit();
             if page.poll_heads() {
                 page.preview_unsaved();
                 changed = true;
@@ -3906,6 +4014,8 @@ impl ApplicationHandler for App {
                             self.drag = Some(d);
                         } else if !d.moved && button == MouseButton::Left {
                             self.on_canvas_click(self.cursor);
+                        } else if !d.moved && button == MouseButton::Right {
+                            self.card_menu(self.cursor);
                         } else {
                             self.session_dirty = true;
                         }

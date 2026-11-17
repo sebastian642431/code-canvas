@@ -228,6 +228,7 @@ pub struct UiState {
     pub update: crate::update::State,
     pub completion: Option<CompletionView>,
     pub find: Option<Find>,
+    pub card_menu: Option<CardMenu>,
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
     pub commit_ai: crate::commit_ai::Settings,
@@ -269,6 +270,7 @@ impl Default for UiState {
             update: Default::default(),
             completion: None,
             find: None,
+            card_menu: None,
             can_go: (false, false),
             pictures: Vec::new(),
             commit_ai: Default::default(),
@@ -438,6 +440,7 @@ pub enum Action {
     Back,
     Forward,
     SetDiff(crate::page::DiffView),
+    ShowCommit(Option<crate::git::Commit>),
     InstallVsix,
     SetTheme(&'static str),
     SetColor(&'static str, u32),
@@ -691,6 +694,8 @@ pub fn build(
     center_message(ui, canvas, pages.get(active), &st.keys);
     toolbar(&ctx, st, canvas, info, actions);
     find_bar(&ctx, st, canvas, actions);
+    commit_bar(&ctx, st, pages.get(active), canvas, actions);
+    card_menu(&ctx, st, canvas, actions);
     completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     settings::settings_modal(&ctx, st, ext, actions);
@@ -1357,7 +1362,7 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
             });
         });
     });
-    git_panel::timeline(ui, pages.get(active));
+    git_panel::timeline(ui, pages.get(active), actions);
     explorer(ui, st, pages.get_mut(active), actions);
 }
 
@@ -2223,6 +2228,127 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
     st.floating.push(resp.response.rect);
 }
 
+pub struct CardMenu {
+    pub at: Pos2,
+    pub path: String,
+    pub line: Option<u32>,
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+    pub place: Option<Rect>,
+}
+
+fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
+    use crate::git::{GitOp, Part};
+    let Some(menu) = st.card_menu.as_mut() else { return };
+    let pressed = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
+    let outside = pressed.is_some_and(|at| menu.place.is_some_and(|place| !place.contains(at)));
+    if outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.card_menu = None;
+        return;
+    }
+    let at = Pos2::new(menu.at.x.min(canvas.right() - 250.0), menu.at.y.min(canvas.bottom() - 250.0));
+    let area = egui::Area::new(egui::Id::unique("card menu")).fixed_pos(at).order(egui::Order::Foreground);
+    let mut chosen = None;
+    let resp = area.show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, pal().border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(6));
+        frame.show(ui, |ui| {
+            ui.set_width(236.0);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let path = menu.path.clone();
+            let part = |what: Part, line: u32| Action::Git(GitOp::Part { path: path.clone(), line, what });
+            if let Some(line) = menu.line {
+                if menu.unstaged && menu_row(ui, icons::PLUS, "Stage this change") {
+                    chosen = Some(part(Part::Stage, line));
+                }
+                if menu.staged && menu_row(ui, icons::MINUS, "Unstage this change") {
+                    chosen = Some(part(Part::Unstage, line));
+                }
+                if menu.unstaged && menu_row(ui, icons::ARROW_LEFT, "Discard this change") {
+                    chosen = Some(part(Part::Discard, line));
+                }
+                menu_gap(ui);
+            }
+            if (menu.unstaged || menu.untracked) && menu_row(ui, icons::PLUS, "Stage the file") {
+                chosen = Some(Action::Git(GitOp::Stage(path.clone())));
+            }
+            if menu.staged && menu_row(ui, icons::MINUS, "Unstage the file") {
+                chosen = Some(Action::Git(GitOp::Unstage(path.clone())));
+            }
+            if menu.staged || menu.unstaged || menu.untracked {
+                menu_gap(ui);
+            }
+            if menu_row(ui, icons::COPY, "Copy path") {
+                chosen = Some(Action::File(FileOp::CopyPath { path: path.clone(), relative: false }));
+            }
+            if menu_row(ui, icons::COPY, "Copy relative path") {
+                chosen = Some(Action::File(FileOp::CopyPath { path: path.clone(), relative: true }));
+            }
+            let reveal = if cfg!(windows) { "Reveal in File Explorer" } else { "Open the containing folder" };
+            if menu_row(ui, icons::FOLDER_OPEN, reveal) {
+                chosen = Some(Action::File(FileOp::Reveal(path.clone())));
+            }
+        });
+    });
+    menu.place = Some(resp.response.rect);
+    st.floating.push(resp.response.rect);
+    if let Some(action) = chosen {
+        actions.push(action);
+        st.card_menu = None;
+    }
+}
+
+fn commit_bar(ctx: &egui::Context, st: &mut UiState, page: Option<&Page>, canvas: Rect, actions: &mut Vec<Action>) {
+    let Some(showing) = page.and_then(|page| page.showing.as_ref()) else { return };
+    let area = egui::Area::new(egui::Id::unique("commit shown"))
+        .pivot(Align2::CENTER_TOP)
+        .fixed_pos(canvas.center_top() + Vec2::new(0.0, 10.0))
+        .order(egui::Order::Foreground);
+    let resp = area.show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, pal().border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(10, 6));
+        frame.show(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
+            ui.horizontal(|ui| {
+                let commit = &showing.commit;
+                ui.label(icon(icons::GIT_COMMIT_HORIZONTAL, 14.0, pal().accent));
+                let short = &commit.hash[..commit.hash.len().min(7)];
+                ui.label(RichText::new(short).font(FontId::monospace(12.0)).color(pal().text_dim));
+                let room = (canvas.width() - 330.0).clamp(80.0, 460.0);
+                let subject = RichText::new(&commit.subject).size(12.5).color(pal().text);
+                ui.scope(|ui| {
+                    ui.set_max_width(room);
+                    ui.add(egui::Label::new(subject).truncate());
+                });
+                let files = match (showing.loading, showing.here, showing.total) {
+                    (true, ..) => "reading …".to_string(),
+                    (false, _, 0) => "no files of this folder".to_string(),
+                    (false, 0, total) => format!("none of its {total} files is here now"),
+                    (false, here, total) if here == total => {
+                        format!("{total} {}", if total == 1 { "file" } else { "files" })
+                    }
+                    (false, here, total) => format!("{here} of {total} files are here now"),
+                };
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                let when = crate::git::ago(now.map(|d| d.as_secs() as i64).unwrap_or(0) - commit.time);
+                let about = format!("{} · {when} · {files}", commit.author);
+                ui.label(RichText::new(about).size(11.5).color(pal().text_faint));
+                if small_icon(ui, icons::X, "Back to the files as they are") {
+                    actions.push(Action::ShowCommit(None));
+                }
+            });
+        });
+    });
+    st.floating.push(resp.response.rect);
+}
+
 fn find_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
     let can_replace = st.prefs.edit;
     let Some(find) = st.find.as_mut() else { return };
@@ -2365,6 +2491,7 @@ fn palette_commands(ext: &Extensions) -> Vec<(String, Action)> {
         ("Source Control: Refresh".into(), Action::RefreshGit),
         ("Source Control: Show Only Changed Files".into(), Action::SetOnlyChanged(true)),
         ("Source Control: Show All Files".into(), Action::SetOnlyChanged(false)),
+        ("Source Control: Stop Showing the Commit".into(), Action::ShowCommit(None)),
         (
             "Source Control: Show What Changed Inside the Files".into(),
             Action::SetDiff(crate::page::DiffView { on: true, ..Default::default() }),

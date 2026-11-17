@@ -16,7 +16,7 @@ pub(super) fn change_color(change: Change) -> Color32 {
     })
 }
 
-pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
+pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>, actions: &mut Vec<Action>) {
     let Some(page) = page else { return };
     let Some(path) = &page.timeline.path else { return };
     let panel = egui::Panel::bottom("timeline").resizable(true).default_size(190.0).size_range(90.0..=520.0);
@@ -35,10 +35,10 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let row = |ui: &mut egui::Ui, color: Color32, title: &str, right: &str, tip: String| {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+            let row = |ui: &mut egui::Ui, color: Color32, title: &str, right: &str, tip: String, on: bool| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
                 let painter = ui.painter();
-                if resp.hovered() {
+                if resp.hovered() || on {
                     painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
                 }
                 let mid = rect.center().y;
@@ -48,8 +48,9 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
                 painter.galley(Pos2::new(rx, mid - rg.size().y * 0.5), rg, pal().text_faint);
                 let from = rect.left() + 30.0;
                 text_fit(painter, Pos2::new(from, mid), title, FontId::proportional(12.0), pal().text, rx - 8.0 - from);
-                resp.on_hover_text(tip);
+                resp.on_hover_text(tip).clicked()
             };
+            let shown = page.showing.as_ref().map(|showing| showing.commit.hash.as_str());
             if let Some(ch) = pending {
                 let detail = format!("+{} −{}", ch.insertions, ch.deletions);
                 row(
@@ -58,12 +59,21 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>) {
                     "Uncommitted changes",
                     &detail,
                     format!("{} · {}", ch.path, ch.change.label()),
+                    false,
                 );
             }
             for commit in &page.timeline.commits {
-                let tip =
-                    format!("{}\n{} · {}", commit.subject, commit.author, &commit.hash[..commit.hash.len().min(10)]);
-                row(ui, pal().text_faint, &commit.subject, &crate::git::ago(now - commit.time), tip);
+                let tip = format!(
+                    "{}\n{} · {}\nClick to see on the canvas what it changed",
+                    commit.subject,
+                    commit.author,
+                    &commit.hash[..commit.hash.len().min(10)]
+                );
+                let on = shown == Some(commit.hash.as_str());
+                let color = if on { pal().accent } else { pal().text_faint };
+                if row(ui, color, &commit.subject, &crate::git::ago(now - commit.time), tip, on) {
+                    actions.push(Action::ShowCommit((!on).then(|| commit.clone())));
+                }
             }
             if page.timeline.loading {
                 ui.horizontal(|ui| {
@@ -311,7 +321,7 @@ pub fn changes_panel(
         return;
     }
     let writing = page.writing_message();
-    let Page { git, commit_message, only_changed, git_note, title, diff, .. } = page;
+    let Page { git, commit_message, only_changed, git_note, title, diff, showing, .. } = page;
     let Some(g) = git.as_ref() else {
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(pal().text_dim));
         return;
@@ -617,13 +627,18 @@ pub fn changes_panel(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
+            let shown = showing.as_ref().map(|showing| showing.commit.hash.as_str());
             for (i, node) in g.graph.iter().enumerate() {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
+                let on = shown == Some(node.commit.hash.as_str());
+                if resp.clicked() {
+                    actions.push(Action::ShowCommit((!on).then(|| node.commit.clone())));
+                }
                 let painter = ui.painter();
-                if resp.hovered() {
+                if resp.hovered() || on {
                     painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
                 }
                 let mid = rect.center().y;
@@ -653,7 +668,7 @@ pub fn changes_panel(
                 text_fit(painter, Pos2::new(x + 12.0, mid), subject, FontId::proportional(12.0), pal().text, right - x - 12.0);
                 let hash = &node.commit.hash[..node.commit.hash.len().min(10)];
                 resp.on_hover_text(format!(
-                    "{}\n{} · {} · {hash}",
+                    "{}\n{} · {} · {hash}\nClick to see on the canvas what it changed",
                     node.commit.subject,
                     node.commit.author,
                     crate::git::ago(now - node.commit.time)

@@ -47,6 +47,9 @@ pub enum Step {
     Back,
     Forward,
     Diff(String),
+    Commit(String),
+    Menu(f32, f32),
+    Part(String),
     Find(String),
     Quit,
 }
@@ -108,6 +111,12 @@ fn parse_step(text: &str) -> Option<Step> {
         "back" => Step::Back,
         "forward" => Step::Forward,
         "diff" => Step::Diff(arg.into()),
+        "commit" => Step::Commit(arg.into()),
+        "part" => Step::Part(arg.into()),
+        "menu" => {
+            let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
+            Step::Menu(parts.next()?.ok()?, parts.next()?.ok()?)
+        }
         "find" => Step::Find(arg.into()),
         "drag" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());

@@ -63,12 +63,66 @@ pub struct FileChange {
 }
 
 pub fn head_texts(root: &Path, prefix: &str, paths: &[String]) -> Vec<Option<String>> {
+    let named: Vec<String> = paths.iter().map(|path| format!("HEAD:{prefix}{path}")).collect();
+    texts(root, &named)
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitFile {
+    pub path: String,
+    pub change: Change,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+fn parse_names(listed: &str, prefix: &str) -> Vec<(String, Change)> {
+    let mut parts = listed.split('\0');
+    let mut found = Vec::new();
+    while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
+        let change = match status.chars().next() {
+            Some('A') => Change::Added,
+            Some('D') => Change::Deleted,
+            Some(_) => Change::Modified,
+            None => continue,
+        };
+        if let Some(rel) = path.strip_prefix(prefix) {
+            found.push((rel.to_string(), change));
+        }
+    }
+    found
+}
+
+pub fn commit_files(root: &Path, prefix: &str, hash: &str, max: usize) -> (Vec<CommitFile>, usize) {
+    let args =
+        ["diff-tree", "--no-commit-id", "--name-status", "-r", "-z", "--root", "--diff-merges=first-parent", hash];
+    let listed = git(root, &args).map(|out| String::from_utf8_lossy(&out).into_owned()).unwrap_or_default();
+    let mut names = parse_names(&listed, prefix);
+    let total = names.len();
+    names.truncate(max);
+    let named: Vec<String> = names
+        .iter()
+        .flat_map(|(path, _)| [format!("{hash}^:{prefix}{path}"), format!("{hash}:{prefix}{path}")])
+        .collect();
+    let mut found = texts(root, &named).into_iter();
+    let files = names
+        .into_iter()
+        .map(|(path, change)| CommitFile {
+            path,
+            change,
+            before: found.next().flatten(),
+            after: found.next().flatten(),
+        })
+        .collect();
+    (files, total)
+}
+
+pub fn texts(root: &Path, named: &[String]) -> Vec<Option<String>> {
     use std::io::{Read, Write};
-    let mut texts = vec![None; paths.len()];
+    let mut texts = vec![None; named.len()];
     let mut c = command(root);
     c.args(["cat-file", "--batch"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     let Ok(mut child) = c.spawn() else { return texts };
-    let asked: String = paths.iter().map(|path| format!("HEAD:{prefix}{path}\n")).collect();
+    let asked: String = named.iter().map(|name| format!("{name}\n")).collect();
     let stdin = child.stdin.take();
     let writer = std::thread::spawn(move || {
         if let Some(mut stdin) = stdin {
@@ -326,8 +380,127 @@ pub enum After {
     Sync,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+struct Cut {
+    old: (u32, u32),
+    new: (u32, u32),
+    from: usize,
+    to: usize,
+}
+
+fn pieces_of(diff: &[u8]) -> (usize, Vec<Cut>) {
+    let mut found: Vec<Cut> = Vec::new();
+    let (mut head, mut at) = (diff.len(), 0);
+    while at < diff.len() {
+        let end = diff[at..].iter().position(|b| *b == b'\n').map_or(diff.len(), |n| at + n + 1);
+        if diff[at..end].starts_with(b"@@ ") {
+            match found.last_mut() {
+                Some(last) => last.to = at,
+                None => head = at,
+            }
+            let text = String::from_utf8_lossy(&diff[at..end]).into_owned();
+            let mut ranges = text.split(' ').skip(1).take(2).map(|range| {
+                let mut numbers = range.get(1..).unwrap_or("").split(',').map(|n| n.parse::<u32>().unwrap_or(0));
+                (numbers.next().unwrap_or(0), numbers.next().unwrap_or(1))
+            });
+            let (old, new) = (ranges.next().unwrap_or((0, 0)), ranges.next().unwrap_or((0, 0)));
+            found.push(Cut { old, new, from: at, to: diff.len() });
+        }
+        at = end;
+    }
+    (head, found)
+}
+
+pub fn holds(first: u32, count: u32, line: u32) -> bool {
+    match count {
+        0 => line == first || line + 1 == first,
+        _ => line >= first && line < first + count,
+    }
+}
+
+fn in_worktree(line: u32, unstaged: &[Cut]) -> u32 {
+    let mut moved = 0i64;
+    for piece in unstaged {
+        let (first, count) = piece.old;
+        let last = if count == 0 { first } else { first + count - 1 };
+        if last < line {
+            moved += piece.new.1 as i64 - count as i64;
+        } else if count > 0 && first <= line {
+            return piece.new.0;
+        }
+    }
+    (line as i64 + moved).max(0) as u32
+}
+
+fn part(root: &Path, path: &str, line: u32, what: Part) -> Result<String, String> {
+    use std::io::Write;
+    let place = git(root, &["rev-parse", "--show-cdup", "--show-prefix"]).unwrap_or_default();
+    let place = String::from_utf8_lossy(&place).into_owned();
+    let mut place = place.lines();
+    let top = root.join(place.next().unwrap_or_default().trim());
+    let path = format!("{}{path}", place.next().unwrap_or_default().trim());
+    let diff = |staged: bool| {
+        let mut args = vec!["diff", "-U0", "--no-color", "--no-ext-diff"];
+        args.extend(staged.then_some("--cached"));
+        args.extend(["--", path.as_str()]);
+        git(&top, &args).unwrap_or_default()
+    };
+    let unstaged = diff(false);
+    let (head, pieces) = pieces_of(&unstaged);
+    let staged = if what == Part::Unstage { diff(true) } else { Vec::new() };
+    let (staged_head, staged_pieces) = pieces_of(&staged);
+    let at = |first: u32, count: u32| holds(if count == 0 { first } else { first - 1 }, count, line);
+    let (text, head, found) = match what {
+        Part::Unstage => {
+            let here = |piece: &&Cut| at(in_worktree(piece.new.0, &pieces), piece.new.1);
+            (&staged, staged_head, staged_pieces.iter().find(here))
+        }
+        _ => (&unstaged, head, pieces.iter().find(|piece| at(piece.new.0, piece.new.1))),
+    };
+    let Some(piece) = found else {
+        return Err(match what {
+            Part::Stage => "Nothing left to stage at this line.",
+            Part::Unstage => "Nothing is staged at this line.",
+            Part::Discard => "Nothing to discard at this line: what changed here is staged.",
+        }
+        .to_string());
+    };
+    let mut patch = text[..head].to_vec();
+    patch.extend_from_slice(&text[piece.from..piece.to]);
+    let how: &[&str] = match what {
+        Part::Stage => &["--cached"],
+        Part::Unstage => &["--cached", "-R"],
+        Part::Discard => &["-R"],
+    };
+    let mut c = command(&top);
+    c.args(["apply", "--unidiff-zero", "--whitespace=nowarn"]).args(how).arg("-");
+    c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("git could not be run: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&patch);
+    }
+    let out = child.wait_with_output().map_err(|e| format!("git could not be run: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let lines = piece.old.1.max(piece.new.1);
+    let done = match what {
+        Part::Stage => "Staged",
+        Part::Unstage => "Unstaged",
+        Part::Discard => "Discarded",
+    };
+    Ok(format!("{done} a change of {lines} {}.", if lines == 1 { "line" } else { "lines" }))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitOp {
+    Part { path: String, line: u32, what: Part },
     Stage(String),
     Unstage(String),
     StageAll,
@@ -354,6 +527,7 @@ impl GitOp {
 fn steps(op: &GitOp) -> Vec<Vec<String>> {
     let s = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<String>>();
     match op {
+        GitOp::Part { .. } => Vec::new(),
         GitOp::Stage(path) => vec![s(&["add", "--", path])],
         GitOp::Unstage(path) => vec![s(&["reset", "-q", "--", path])],
         GitOp::StageAll => vec![s(&["add", "-A", "--", "."])],
@@ -394,6 +568,9 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
 }
 
 pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
+    if let GitOp::Part { path, line, what } = op {
+        return part(root, path, *line, *what);
+    }
     let mut said = String::new();
     for args in steps(op) {
         let mut c = command(root);
@@ -677,6 +854,65 @@ pub fn ago(seconds: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_files_of_a_commit_are_the_ones_under_the_folder() {
+        let listed = "M\0app/src/a.rs\0A\0app/new file.rs\0D\0docs/old.md\0";
+        assert_eq!(
+            parse_names(listed, "app/"),
+            [("src/a.rs".to_string(), Change::Modified), ("new file.rs".to_string(), Change::Added)]
+        );
+        assert_eq!(parse_names(listed, "").len(), 3);
+        assert!(parse_names("", "").is_empty());
+    }
+
+    #[test]
+    fn a_diff_is_cut_in_its_changes() {
+        let diff = b"diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n@@ -2 +2 @@ fn a()\n-two\n+TWO\n@@ -4 +3,0 @@\n-four\n@@ -6,0 +6,2 @@\n+x\n+y\n";
+        let (head, pieces) = pieces_of(diff);
+        assert!(diff[..head].ends_with(b"+++ b/f\n"));
+        let ranges: Vec<_> = pieces.iter().map(|piece| (piece.old, piece.new)).collect();
+        assert_eq!(ranges, [((2, 1), (2, 1)), ((4, 1), (3, 0)), ((6, 0), (6, 2))]);
+        assert_eq!(&diff[pieces[1].from..pieces[1].to], b"@@ -4 +3,0 @@\n-four\n");
+        assert!(holds(1, 1, 1) && !holds(1, 1, 2));
+        assert!(holds(3, 0, 3) && holds(3, 0, 2) && !holds(3, 0, 4));
+        assert_eq!(in_worktree(1, &pieces), 1);
+        assert_eq!(in_worktree(2, &pieces), 2);
+        assert_eq!(in_worktree(5, &pieces), 4);
+        assert_eq!(in_worktree(7, &pieces), 8);
+    }
+
+    #[test]
+    fn one_change_of_a_file_is_staged_unstaged_and_discarded() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-part-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let run = |args: &[&str]| git(&dir, args).map(|out| String::from_utf8_lossy(&out).into_owned());
+        if run(&["init", "-q"]).is_none() {
+            return;
+        }
+        run(&["config", "core.autocrlf", "false"]).unwrap();
+        let file = dir.join("sub").join("f.txt");
+        std::fs::write(&file, "one\ntwo\nthree\nfour\nfive\nsix\n").unwrap();
+        run(&["add", "."]).unwrap();
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "first"]).unwrap();
+        std::fs::write(&file, "zero\none\ntwo\nthree\nfive\nSIX\n").unwrap();
+        let root = dir.join("sub");
+        let op = |line: u32, what: Part| super::run(&root, &GitOp::Part { path: "f.txt".into(), line, what });
+        assert_eq!(op(5, Part::Stage).unwrap(), "Staged a change of 1 line.");
+        let staged = run(&["diff", "--cached", "-U0"]).unwrap();
+        assert!(staged.contains("+SIX") && !staged.contains("+zero") && !staged.contains("-four"), "{staged}");
+        assert!(op(5, Part::Stage).is_err());
+        assert!(op(2, Part::Unstage).is_err());
+        op(4, Part::Stage).unwrap();
+        assert!(run(&["diff", "--cached", "-U0"]).unwrap().contains("-four"));
+        op(5, Part::Unstage).unwrap();
+        let staged = run(&["diff", "--cached", "-U0"]).unwrap();
+        assert!(!staged.contains("+SIX") && staged.contains("-four"), "{staged}");
+        assert_eq!(op(0, Part::Discard).unwrap(), "Discarded a change of 1 line.");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\nthree\nfive\nSIX\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ignored_paths_keep_the_mark_of_a_folder() {

@@ -1268,6 +1268,33 @@ Details:
   outside in file lines (problems, decorations, where a definition is, a line to
   travel to) goes through `row_of`, and what goes out (hover, go to definition,
   the caret of a click) through `line_of`.
+- **A commit on the canvas is the same swap with other texts.** `Page::show_commit`
+  reads, off the thread, the files a commit changed and what each was before and
+  after it (`git::commit_files`: one `diff-tree` for the names, one `cat-file
+  --batch` for both texts of all of them; `MAX_DIFFS` files at most, a merge
+  against its first parent). While `Page::showing` is there `sync_diff` diffs
+  those two texts instead of `HEAD` against the file, `relayout` keeps only those
+  files, and the overlay marks them instead of the working changes. A file of
+  the commit that is not in the folder now has no card: `Showing::here` counts
+  the ones that have. `frame_wanted` tells the app the layout became another one:
+  it frames the commit, or goes back to `App::commit_from`, the place the canvas
+  was at before the first commit was shown.
+- Rows of a commit are lines of the file *as the commit left it*. Nothing that
+  works in lines of the file on disk is right on such a card, so the card menu
+  offers no change there, and editing a file takes its diff away as always.
+- **One change of a file** (`GitOp::Part`): `git::part` takes the `-U0` diff of the
+  file (index to worktree, or `--cached` to unstage), cuts it in its hunks
+  (`cuts_of`), and gives the one at the line to `git apply --unidiff-zero`
+  (`--cached` to stage, `--cached -R` to unstage, `-R` to discard). The line asked
+  is one of the file on disk, as the canvas has it, so the hunks of the staged
+  diff, which are in lines of the index, go through `in_worktree` first. It all
+  runs at the top of the repository: `git apply` in a folder under it reads the
+  paths of a patch its own way. `holds` is the one rule for "this line is in that
+  change", shared with the menu: a change that only removes lines belongs to the
+  line after it and the one before.
+- The card menu (`ui::CardMenu`, right click without moving) offers a change only
+  where `FileChange::hunks` has one and the file has nothing unsaved: the hunks
+  of an unsaved buffer are not what git would cut.
 - The file being edited is never shown as a diff: its caret is in file lines.
   `diff_due` notices that the edited file changed and asks for a new pass.
 - `Diffed::plain` is the file's real text as the canvas would show it, kept to
@@ -1384,6 +1411,9 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
+| `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
+| `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |

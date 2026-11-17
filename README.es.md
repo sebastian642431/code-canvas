@@ -73,6 +73,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   configuración del proyecto. Las *webviews* (la interfaz propia de una extensión) se
   abren en el panel derecho: ahí se ve el panel oficial de Claude Code (por ahora solo
   en Windows). Las vistas de árbol todavía no se muestran.
+- **Ver un commit en el lienzo**: un clic en un commit (en el *Graph* o en el *timeline*
+  de un archivo) deja en el lienzo solo los archivos que tocó, cada uno mostrando qué
+  le cambió. La cruz de la barra de arriba, o el mismo clic otra vez, vuelve a los
+  archivos como están.
+- **Clic derecho sobre una línea cambiada**: prepara (*stage*), saca del *stage* o
+  descarta solo ese cambio; el mismo menú prepara el archivo entero o copia su ruta.
 - **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
   preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas
   marcadas en el lienzo, "mostrar solo lo que cambió" y el historial (*timeline*) del

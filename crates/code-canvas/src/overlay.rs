@@ -493,16 +493,24 @@ pub fn build(
         }
     }
 
-    if let Some(git) = &page.git {
-        for change in git.changes.iter().take(MAX_MARKERS) {
-            let Some(fi) = repo.file_index(&change.path) else { continue };
+    {
+        let marked: Vec<(&str, Change, &[crate::git::Hunk])> = match (page.commit_shown(), &page.git) {
+            (Some(showing), _) => showing.files.iter().map(|file| (file.path.as_str(), file.change, &[][..])).collect(),
+            (None, Some(git)) => {
+                let some = git.changes.iter().take(MAX_MARKERS);
+                some.map(|change| (change.path.as_str(), change.change, change.hunks.as_slice())).collect()
+            }
+            _ => Vec::new(),
+        };
+        for (path, kind_of_change, hunks) in marked {
+            let Some(fi) = repo.file_index(path) else { continue };
             let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
                 continue;
             };
             if !n.rect.intersects(&world) {
                 continue;
             }
-            let color = match change.change {
+            let color = match kind_of_change {
                 Change::Added | Change::Untracked => theme::get().git_added,
                 Change::Deleted | Change::Conflicted => theme::get().git_removed,
                 Change::Modified | Change::Renamed => theme::get().git_modified,
@@ -524,7 +532,7 @@ pub fn build(
             let bar = (2.5 * s / z).min(CARD_PAD * 0.6);
             let wash = if readable { 0.16 } else { 0.55 };
             let seen = world.expand(CARD_PAD);
-            if let Some(rows) = page.rows(&change.path) {
+            if let Some(rows) = page.rows(path) {
                 let mut first = 0usize;
                 while first < rows.len() && out.under.len() < MAX_MARKERS {
                     let kind = rows[first].kind;
@@ -552,7 +560,7 @@ pub fn build(
                 }
                 continue;
             }
-            for h in &change.hunks {
+            for h in hunks {
                 if h.line > lines || out.under.len() >= MAX_MARKERS {
                     continue;
                 }
