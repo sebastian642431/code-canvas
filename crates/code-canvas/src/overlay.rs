@@ -434,10 +434,11 @@ pub fn build(
     }
 
     if let Some(search) = &page.search {
-        for hit in search.hits.iter().take(MAX_MARKERS) {
+        for (i, hit) in search.hits.iter().enumerate().take(MAX_MARKERS) {
             if let Some(rect) = site_rect(layout, hit) {
                 if rect.intersects(&world) {
-                    out.over.push(RectInstance::new(rect.expand(1.0), 0xffd84d30, 0xffd84dff, 2.0, 1.0));
+                    let fill = if search.current == Some(i) { 0xffd84d80 } else { 0xffd84d30 };
+                    out.over.push(RectInstance::new(rect.expand(1.0), fill, 0xffd84dff, 2.0, 1.0));
                 }
             }
         }

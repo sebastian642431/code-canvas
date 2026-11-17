@@ -56,6 +56,7 @@ pub struct SearchResults {
     pub hits: Vec<Site>,
     pub truncated: bool,
     pub ms: f32,
+    pub current: Option<usize>,
 }
 
 pub struct Selection {
@@ -180,7 +181,7 @@ impl Touch {
 
 impl SearchResults {
     pub fn single(site: Site) -> Self {
-        SearchResults { query: String::new(), hits: vec![site], truncated: false, ms: 0.0 }
+        SearchResults { query: String::new(), hits: vec![site], truncated: false, ms: 0.0, current: None }
     }
 }
 
@@ -770,7 +771,7 @@ impl Page {
         let (hits, truncated) = r.repo.search_text(&query, 5000);
         let ms = t.elapsed().as_secs_f32() * 1000.0;
         log::info!("search '{query}': {} hits in {ms:.1} ms", hits.len());
-        self.search = Some(SearchResults { query, hits, truncated, ms });
+        self.search = Some(SearchResults { query, hits, truncated, ms, current: None });
     }
 
     pub fn poll(&mut self) -> Option<Loaded> {

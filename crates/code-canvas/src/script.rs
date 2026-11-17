@@ -45,6 +45,7 @@ pub enum Step {
     Touch(String),
     Page(String),
     Diff(String),
+    Find(String),
     Quit,
 }
 
@@ -103,6 +104,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "touch" => Step::Touch(arg.into()),
         "page" => Step::Page(arg.into()),
         "diff" => Step::Diff(arg.into()),
+        "find" => Step::Find(arg.into()),
         "drag" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             let mut next = || parts.next()?.ok();

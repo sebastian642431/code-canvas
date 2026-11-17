@@ -78,6 +78,8 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   files* the canvas becomes the change itself.
 - With the pencil, dragging over code selects it; the hand, or the right button,
   moves the canvas.
+- `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
+  and Shift+Enter walk them, and with the pencil one or all can be replaced.
 - Saving formats the file (with Prettier where it is installed; turn it off with
   `editor.formatOnSave`), and problems update while you type. Rust is checked by
   rust-analyzer and TypeScript by VS Code's own extension: the app offers to
@@ -214,9 +216,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] **Editing**: click into a file and type, with undo and save; format on save;
       reload when files change on disk; command palette.
 - [x] A hand to look and a pencil to edit; what is typed shown before it is saved;
-      drag to select.
+      drag to select; find and replace in a file.
 - [x] The canvas travels to what an assistant or another program changes.
-- [ ] Editing: multiple cursors, find and replace, completions.
+- [ ] Editing: multiple cursors, completions from language servers.
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).

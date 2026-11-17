@@ -865,6 +865,116 @@ impl App {
         self.request_redraw();
     }
 
+    fn find(&mut self, op: ui::FindOp) {
+        use ui::FindOp;
+        match op {
+            FindOp::Open => {
+                let page = self.pages.get(self.active);
+                let editing = page.and_then(|p| p.editing.clone());
+                let pointed = self.current_file().and_then(|file| self.locate_file(&file)).map(|(_, rel)| rel);
+                let Some(file) = editing.or(pointed) else {
+                    let text = "Select a file first: click its card, or its name in the explorer.";
+                    return self.ext.notice(ext::Level::Info, "Find", text.to_string());
+                };
+                let chosen = page.and_then(|p| p.editor()).map(|e| e.selected_text()).unwrap_or_default();
+                let before = self.ui.find.take().unwrap_or_default();
+                let query = if chosen.is_empty() || chosen.contains('\n') { before.query } else { chosen };
+                self.ui.find = Some(ui::Find { query, with: before.with, focus: true, file, ..Default::default() });
+                self.find_refresh(true);
+            }
+            FindOp::Changed => {
+                if let Some(find) = self.ui.find.as_mut() {
+                    find.at = 0;
+                }
+                self.find_refresh(true);
+            }
+            FindOp::Next | FindOp::Previous => {
+                if let Some(find) = self.ui.find.as_mut().filter(|find| find.count > 0) {
+                    let step = if op == FindOp::Next { 1 } else { find.count - 1 };
+                    find.at = (find.at + step) % find.count;
+                }
+                self.find_refresh(true);
+            }
+            FindOp::Replace | FindOp::ReplaceAll => self.find_replace(op == FindOp::ReplaceAll),
+            FindOp::Close => {
+                self.ui.find = None;
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.search = None;
+                }
+                self.request_redraw();
+            }
+        }
+    }
+
+    fn find_refresh(&mut self, travel: bool) {
+        let Some(find) = self.ui.find.as_mut() else { return };
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let mut hits: Vec<Site> = Vec::new();
+        let file = page.ready().and_then(|r| Some(&r.repo.files[r.repo.file_index(&find.file)?]));
+        if let (Some(f), false) = (file, find.query.is_empty()) {
+            let index = page.ready().and_then(|r| r.repo.file_index(&find.file)).unwrap_or_default() as u32;
+            let exact = find.query.chars().any(char::is_uppercase);
+            let wanted = if exact { find.query.clone() } else { find.query.to_lowercase() };
+            let len = find.query.chars().count().min(400) as u16;
+            'lines: for line in 0..f.line_count() {
+                let text = if exact { f.line(line).to_string() } else { f.line(line).to_lowercase() };
+                let mut from = 0;
+                while let Some(at) = text.get(from..).and_then(|rest| rest.find(&wanted)) {
+                    let col = text[..from + at].chars().count().min(u16::MAX as usize) as u16;
+                    hits.push(Site { file: index, line: line as u32, col, len });
+                    from += at + wanted.len().max(1);
+                    if hits.len() >= 5000 {
+                        break 'lines;
+                    }
+                }
+            }
+        }
+        find.count = hits.len();
+        find.at = find.at.min(hits.len().saturating_sub(1));
+        let current = hits.get(find.at).copied();
+        page.search = (!hits.is_empty()).then(|| crate::page::SearchResults {
+            query: find.query.clone(),
+            hits,
+            truncated: false,
+            ms: 0.0,
+            current: Some(find.at),
+        });
+        if let (true, Some(site)) = (travel, current) {
+            self.frame_site(site);
+        }
+        self.request_redraw();
+    }
+
+    fn find_replace(&mut self, all: bool) {
+        let Some(file) = self.ui.find.as_ref().map(|find| find.file.clone()) else { return };
+        if !self.ui.prefs.edit {
+            let text = "Replacing changes the file: switch to the pencil first.";
+            return self.ext.notice(ext::Level::Info, "Find", text.to_string());
+        }
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        if !page.begin_edit(&file) {
+            return;
+        }
+        self.sync_diffs();
+        self.find_refresh(false);
+        let Some((with, at)) = self.ui.find.as_ref().map(|find| (find.with.clone(), find.at)) else { return };
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let hits: Vec<Site> = page.search.as_ref().map(|found| found.hits.clone()).unwrap_or_default();
+        let chosen: Vec<Site> =
+            if all { hits.into_iter().rev().collect() } else { hits.get(at).copied().into_iter().collect() };
+        let Some(editor) = page.editor_mut().filter(|_| !chosen.is_empty()) else { return };
+        for hit in &chosen {
+            let (line, col) = (hit.line as usize, hit.col as usize);
+            let from = editor.pos_at_display(line, col);
+            let to = editor.pos_at_display(line, col + hit.len as usize);
+            editor.move_to(from, false);
+            editor.move_to(to, true);
+            editor.insert(&with);
+        }
+        self.after_edit();
+        self.find_refresh(!all);
+    }
+
     fn follow_now(&mut self) -> bool {
         let Some((index, rel, line, since)) = self.following.take() else { return false };
         let Some(page) = self.pages.get(index) else { return false };
@@ -903,6 +1013,7 @@ impl App {
         self.symbols_stale = Some(Instant::now());
         self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
         self.offer_checker(&rel);
+        self.find_refresh(false);
         self.keep_caret_visible();
         self.request_redraw();
     }
@@ -1653,6 +1764,7 @@ impl App {
                 self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true })
             }
             Command::SearchInFiles => self.ui.show(Panel::Search),
+            Command::Find => self.find(ui::FindOp::Open),
             Command::Settings => self.ui.settings.show(None),
             Command::ToggleLeftPanel => self.ui.toggle_side(Side::Left),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
@@ -1994,6 +2106,7 @@ impl App {
                     page.refresh_git();
                 }
             }
+            Action::Find(op) => self.find(op),
             Action::SetDiff(view) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.set_diff(view);
@@ -2370,6 +2483,28 @@ impl App {
                     _ => log::warn!("script: move needs <panel> left|right [panel to sit before]"),
                 }
             }
+            Step::Find(what) => {
+                let (verb, text) = what.split_once(' ').unwrap_or((what.as_str(), ""));
+                match verb {
+                    "next" => self.find(ui::FindOp::Next),
+                    "previous" => self.find(ui::FindOp::Previous),
+                    "replace" | "replace-all" => {
+                        if let Some(find) = self.ui.find.as_mut() {
+                            find.with = text.to_string();
+                        }
+                        self.find(if verb == "replace" { ui::FindOp::Replace } else { ui::FindOp::ReplaceAll });
+                    }
+                    "close" => self.find(ui::FindOp::Close),
+                    _ => {
+                        self.find(ui::FindOp::Open);
+                        if let Some(find) = self.ui.find.as_mut() {
+                            find.query = what.clone();
+                            find.focus = false;
+                        }
+                        self.find(ui::FindOp::Changed);
+                    }
+                }
+            }
             Step::Drag(from, to) => {
                 self.cursor = from;
                 let select = self.code_under(from).filter(|_| self.ui.prefs.edit);
@@ -2561,7 +2696,10 @@ impl App {
             self.show_versions();
             changed = true;
         }
-        changed |= self.sync_diffs();
+        if self.sync_diffs() {
+            self.find_refresh(false);
+            changed = true;
+        }
         busy |= self.follow_now();
         busy |= !self.ext.notices.is_empty();
         if changed {

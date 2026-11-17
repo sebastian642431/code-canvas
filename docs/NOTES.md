@@ -1096,6 +1096,11 @@ Details:
   to put it back when the file is saved, discarded or undone to no changes. A
   file whose text equals `HEAD` leaves the list even if the disk still differs.
 - `changed_dirs`: every folder above a changed file, for the explorer's colours.
+- `SearchResults::current`: the match the find bar is on, drawn stronger.
+  `App::find_refresh` searches the text the card shows (smart case: exact when
+  the text typed has a capital), so its columns are the canvas's; replacing goes
+  through `Editor::pos_at_display` and starts from the last match so the earlier
+  ones keep their place.
 - **The diff view swaps the text of the card.** `Page::sync_diff` gives every
   changed file (`MAX_DIFFS` at most) the text `git::unified` makes of it, with
   `Repo::replace_source`, and keeps the rows in `diffs`: the layout, the symbols
@@ -1216,6 +1221,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
+| `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
 | `git` | `git stage [path]`, `git unstage [path]`, `git commit <message>` | Source control. |
