@@ -593,6 +593,10 @@ impl Page {
         for rel in &wanted {
             let Some(index) = r.repo.file_index(rel) else { continue };
             here += 1;
+            let placeholder = r.repo.files[index].note.as_ref().is_some_and(|note| !note.starts_with("truncated"));
+            if placeholder && !self.diffs.contains_key(rel) {
+                continue;
+            }
             let Some(text) = current(&self.editors, rel) else { continue };
             let (old, new): (&str, &str) = match &committed {
                 Some(files) => {
@@ -641,6 +645,7 @@ impl Page {
                 r.repo.reindex_symbols();
             }
             self.selections.clear();
+            self.want_exact.clear();
             self.search = None;
         }
         drop(committed);
@@ -750,6 +755,9 @@ impl Page {
     }
 
     pub fn show_edit(&mut self, rel_path: &str, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
+        if self.diffs.remove(rel_path).is_some() {
+            self.diff_stale = true;
+        }
         let Some(source) = self.editors.get(rel_path).map(|e| e.display_source()) else { return };
         let PageState::Ready(r) = &mut self.state else { return };
         let Some(index) = r.repo.file_index(rel_path) else { return };
@@ -759,6 +767,7 @@ impl Page {
         let after = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
         if !self.selections.is_empty() {
             self.selections.clear();
+            self.want_exact.clear();
             self.curves_dirty = true;
         }
         self.search = None;
@@ -818,7 +827,16 @@ impl Page {
 
     pub fn poll_git_op(&mut self) -> bool {
         let Some(rx) = &self.git_op else { return false };
-        let Ok((op, result)) = rx.try_recv() else { return false };
+        let (op, result) = match rx.try_recv() {
+            Ok(done) => done,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => {
+                self.git_op = None;
+                self.git_note = Some((false, "git stopped before it was done".to_string()));
+                self.refresh_git();
+                return true;
+            }
+        };
         self.git_op = None;
         match (&op, result) {
             (crate::git::GitOp::Part { .. }, result) => {
@@ -970,6 +988,7 @@ impl Page {
         self.hover_cell = None;
         self.selected = None;
         self.selections.clear();
+        self.want_exact.clear();
         self.only_connected = false;
         self.curves_dirty = true;
         self.search = None;
@@ -1109,10 +1128,11 @@ impl Page {
     }
 
     pub fn use_site(&self, sym: SymRef) -> Option<(PathBuf, u32, u32)> {
-        let r = self.ready()?;
+        let r = self.ready().filter(|_| self.showing.is_none())?;
+        let file = r.repo.files.get(sym.file as usize)?;
+        file.analysis.symbols.get(sym.index as usize)?;
         let site = r.repo.sym_site(sym);
-        let rel = &r.repo.files.get(sym.file as usize)?.rel_path;
-        Some((self.root.join(rel), self.line_of(rel, site.line)?, site.col as u32))
+        Some((self.root.join(&file.rel_path), self.line_of(&file.rel_path, site.line)?, site.col as u32))
     }
 
     fn selected_names(&self) -> Vec<(String, String, u32)> {
@@ -1126,6 +1146,7 @@ impl Page {
 
     fn select_again(&mut self, names: Vec<(String, String, u32)>) {
         self.selections.clear();
+        self.want_exact.clear();
         self.want_exact.clear();
         for (rel, name, line) in names {
             let found = self.ready().and_then(|r| {

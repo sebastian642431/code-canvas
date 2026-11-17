@@ -2448,7 +2448,7 @@ impl App {
             if let NodeKind::File(fi) = n.kind {
                 let f = &r.repo.files[fi];
                 if let Some((line, col)) = n.cell_at(world, f.line_count()) {
-                    if readable && !ctrl && can_edit && f.note.is_none() {
+                    if readable && !ctrl && can_edit && f.note.is_none() && page.showing.is_none() {
                         caret_at = Some((f.rel_path.clone(), line as usize, col as usize));
                     } else if zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
                         let fi = fi as u32;
@@ -3628,7 +3628,7 @@ impl App {
             (Some(c), Some((at, since, asked))) if *at == c => {
                 if !*asked && since.elapsed() > Duration::from_millis(350) {
                     *asked = true;
-                    let place = self.pages.get(self.active).and_then(|p| {
+                    let place = self.pages.get(self.active).filter(|p| p.showing.is_none()).and_then(|p| {
                         let rel = &p.ready()?.repo.files.get(c.0 as usize)?.rel_path;
                         Some((p.root.join(rel), p.line_of(rel, c.1)?))
                     });

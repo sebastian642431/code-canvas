@@ -446,7 +446,8 @@ fn part(root: &Path, path: &str, line: u32, what: Part) -> Result<String, String
     let top = root.join(place.next().unwrap_or_default().trim());
     let path = format!("{}{path}", place.next().unwrap_or_default().trim());
     let diff = |staged: bool| {
-        let mut args = vec!["diff", "-U0", "--no-color", "--no-ext-diff"];
+        let mut args =
+            vec!["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
         args.extend(staged.then_some("--cached"));
         args.extend(["--", path.as_str()]);
         git(&top, &args).unwrap_or_default()
@@ -455,7 +456,7 @@ fn part(root: &Path, path: &str, line: u32, what: Part) -> Result<String, String
     let (head, pieces) = pieces_of(&unstaged);
     let staged = if what == Part::Unstage { diff(true) } else { Vec::new() };
     let (staged_head, staged_pieces) = pieces_of(&staged);
-    let at = |first: u32, count: u32| holds(if count == 0 { first } else { first - 1 }, count, line);
+    let at = |first: u32, count: u32| holds(if count == 0 { first } else { first.saturating_sub(1) }, count, line);
     let (text, head, found) = match what {
         Part::Unstage => {
             let here = |piece: &&Cut| at(in_worktree(piece.new.0, &pieces), piece.new.1);
@@ -611,7 +612,7 @@ const MAX_CHANGES: usize = 5000;
 
 fn command(root: &Path) -> Command {
     let mut c = Command::new("git");
-    c.env("GIT_OPTIONAL_LOCKS", "0").arg("-C").arg(root).args(["-c", "core.quotepath=off"]);
+    c.env("GIT_OPTIONAL_LOCKS", "0").arg("-C").arg(root).args(["-c", "core.quotepath=off", "--literal-pathspecs"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

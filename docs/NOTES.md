@@ -796,6 +796,9 @@ Graphics and the frame
   has unsaved changes says so once (`changed_under`).
 - Going to a file the canvas has but is not showing (only changed files, only
   connected ones, a commit) shows everything again; it does not scan.
+- git is run with `--literal-pathspecs` (a path like `app/[slug]/page.tsx` is
+  that path, not a pattern) and the diff a change is cut from does not follow
+  the user's `diff.noprefix` or text conversions.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
