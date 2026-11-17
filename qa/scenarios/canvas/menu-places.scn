@@ -1,4 +1,4 @@
-title: The right-click menu over a file, a folder, the root folder, empty canvas, and at the edges of the window stays inside it
+title: The right-click menu over a file, a folder, the root folder, empty canvas, and at the edges of the window stays inside it; a zoom, a drag, Escape and a key that moves the canvas close it
 folders: rust-small
 forbid-log: WARN.*script
 
@@ -51,8 +51,20 @@ mark after-drag
 wait 500
 menu 640 400
 wait 400
-key escape
+press escape
 wait 500
 mark after-key-escape
+wait 500
+menu 640 400
+wait 400
+press +
+wait 700
+mark after-zoom-by-key
+wait 500
+menu 640 400
+wait 400
+press left
+wait 700
+mark after-move-by-key
 wait 500
 quit

@@ -2739,6 +2739,7 @@ impl App {
     }
 
     fn run_command(&mut self, command: Command) {
+        self.ui.card_menu = None;
         match command {
             Command::Palette => {
                 self.ui.settings.open = false;
@@ -3371,6 +3372,24 @@ impl App {
                     self.save_edit();
                 } else {
                     self.after_edit();
+                }
+            }
+            Step::Press(keys) => {
+                let chord = Chord::parse(&keys);
+                let plain = chord.as_ref().and_then(|chord| egui::Key::from_name(&chord.label()));
+                match (chord.as_ref().and_then(|chord| self.ui.keys.command(chord)), plain) {
+                    (Some(command), _) => self.run_command(command),
+                    (None, Some(key)) => {
+                        let press = |pressed| egui::Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        };
+                        self.ui_events.extend([vec![press(true)], vec![press(false)]]);
+                    }
+                    (None, None) => log::warn!("script: no command is on the keys '{keys}'"),
                 }
             }
             Step::Git(what) => {
