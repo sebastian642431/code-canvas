@@ -3096,8 +3096,9 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Asked {
-    Delete(String),
-    Git(crate::git::GitOp),
+    Delete { folder: std::path::PathBuf, path: String },
+    Git { folder: std::path::PathBuf, op: crate::git::GitOp },
+    Close { folder: std::path::PathBuf, forget: bool },
     Exit,
 }
 

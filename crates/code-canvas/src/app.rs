@@ -412,7 +412,7 @@ impl App {
     }
 
     fn focus_folder_at(&mut self, p: [f32; 2]) {
-        if !self.shares_canvas() || !self.canvas_full.contains(p) {
+        if !self.shares_canvas() || !self.canvas_full.contains(p) || self.over_ui(p) {
             return;
         }
         self.follow_active_camera();
@@ -638,7 +638,8 @@ impl App {
                 let what = if p.is_dir() { "the folder and everything in it" } else { "the file" };
                 let bin = if cfg!(windows) { "the Recycle Bin" } else { "the trash" };
                 let text = format!("It moves {what} to {bin}, where it can be brought back from.");
-                let mut ask = ui::Ask::new(ui::Asked::Delete(path.clone()), &format!("Delete {name}?"), text)
+                let about = ui::Asked::Delete { folder: root.clone(), path: path.clone() };
+                let mut ask = ui::Ask::new(about, &format!("Delete {name}?"), text)
                     .choice("Delete", ui::ChoiceLook::Danger, ui::Answer::Yes)
                     .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
                 ask.items = vec![path];
@@ -715,15 +716,13 @@ impl App {
             WorkspaceOp::TakeOff(path) => {
                 if let Some(page) = on(self, &path) {
                     self.know_folders();
-                    self.close_page(page);
+                    self.close_folder(page, false);
                 }
             }
-            WorkspaceOp::Forget(path) => {
-                if let Some(page) = on(self, &path) {
-                    self.close_page(page);
-                }
-                self.workspace.retain(|known| known.path != path);
-            }
+            WorkspaceOp::Forget(path) => match on(self, &path) {
+                Some(page) => self.close_folder(page, true),
+                None => self.workspace.retain(|known| known.path != path),
+            },
             WorkspaceOp::PutAll => {
                 let off: Vec<PathBuf> = self.workspace.iter().map(|known| known.path.clone()).collect();
                 self.ui.single = false;
@@ -766,6 +765,35 @@ impl App {
             self.update_title();
             self.request_redraw();
         }
+    }
+
+    fn close_folder(&mut self, i: usize, forget: bool) {
+        let Some(page) = self.pages.get(i) else { return };
+        let folder = page.root.clone();
+        let unsaved: Vec<String> = match page.shared {
+            Some(_) => Vec::new(),
+            None => page.editors.values().filter(|e| e.dirty).map(|e| e.rel_path.clone()).collect(),
+        };
+        if unsaved.is_empty() {
+            self.close_page(i);
+            if forget {
+                self.workspace.retain(|known| known.path != folder);
+            }
+            return;
+        }
+        let title = format!("Save the changes in {} before closing it?", page.title);
+        let text = match unsaved.len() {
+            1 => "One file has changes that are not saved. Without saving they are lost.".to_string(),
+            n => format!("{n} files have changes that are not saved. Without saving they are lost."),
+        };
+        let mut ask = ui::Ask::new(ui::Asked::Close { folder, forget }, &title, text)
+            .choice("Save and close", ui::ChoiceLook::Main, ui::Answer::Yes)
+            .choice("Close without saving", ui::ChoiceLook::Plain, ui::Answer::Other)
+            .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+        ask.items = unsaved;
+        ask.danger = false;
+        self.ui.ask = Some(ask);
+        self.request_redraw();
     }
 
     fn close_page(&mut self, i: usize) {
@@ -1087,7 +1115,8 @@ impl App {
     fn follow_change(&mut self, index: usize, rel: &str, line: u32) {
         let idle = self.drag.is_none() && self.last_input.elapsed() > Duration::from_millis(1500);
         let editing = self.pages.get(self.active).is_some_and(|p| p.editing.is_some());
-        if !self.ui.prefs.follow_changes || !idle || editing {
+        let asking = self.ui.ask.is_some() || self.ui.card_menu.is_some();
+        if !self.ui.prefs.follow_changes || !idle || editing || asking {
             return;
         }
         if index != self.active {
@@ -1636,8 +1665,11 @@ impl App {
 
     fn drop_edits(&mut self, index: usize, only: Option<&str>) {
         let Some(page) = self.pages.get_mut(index) else { return };
-        let dropped: Vec<String> =
-            page.unsaved().map(|e| e.rel_path.clone()).filter(|rel| only.is_none_or(|one| one == rel)).collect();
+        let reverted = |rel: &String| {
+            let change = page.git.as_ref().and_then(|git| git.change(rel));
+            only.is_none_or(|one| one == rel) && change.is_none_or(|c| c.change != crate::git::Change::Untracked)
+        };
+        let dropped: Vec<String> = page.unsaved().map(|e| e.rel_path.clone()).filter(reverted).collect();
         for rel in &dropped {
             page.editors.remove(rel);
             if page.editing.as_deref() == Some(rel.as_str()) {
@@ -1689,14 +1721,34 @@ impl App {
 
     fn answered(&mut self, about: ui::Asked, answer: ui::Answer) {
         match (about, answer) {
-            (ui::Asked::Delete(path), ui::Answer::Yes) => {
-                let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
+            (ui::Asked::Delete { folder: root, path }, ui::Answer::Yes) => {
                 let done = crate::files::inside(&root, &path).and_then(|p| crate::files::recycle(&p));
                 if let Err(why) = done {
                     self.ext.notice(ext::Level::Error, "files", why);
                 }
             }
-            (ui::Asked::Git(op), ui::Answer::Yes) => self.run_git(op),
+            (ui::Asked::Git { folder, op }, ui::Answer::Yes) => {
+                match self.pages.iter().position(|page| page.root == folder) {
+                    Some(index) => self.run_git(index, op),
+                    None => self.ext.notice(ext::Level::Warn, "Source Control", "That folder is not open any more."),
+                }
+            }
+            (ui::Asked::Close { folder, forget }, ui::Answer::Yes | ui::Answer::Other) => {
+                let Some(i) = self.pages.iter().position(|page| page.root == folder) else { return };
+                if answer == ui::Answer::Yes {
+                    let files: Vec<(usize, String)> =
+                        self.pages[i].editors.values().filter(|e| e.dirty).map(|e| (i, e.rel_path.clone())).collect();
+                    self.save_these(files, false);
+                    if self.pages[i].editors.values().any(|e| e.dirty) {
+                        return;
+                    }
+                }
+                self.close_page(i);
+                if forget {
+                    self.workspace.retain(|known| known.path != folder);
+                }
+                self.save_session();
+            }
             (ui::Asked::Exit, ui::Answer::Yes) => {
                 for (i, rel) in self.unsaved() {
                     let Some(page) = self.pages.get_mut(i) else { continue };
@@ -1724,9 +1776,12 @@ impl App {
         self.request_redraw();
     }
 
-    fn run_git(&mut self, op: crate::git::GitOp) {
+    fn run_git(&mut self, active: usize, op: crate::git::GitOp) {
         use crate::git::GitOp;
-        let active = self.active;
+        if self.pages.get(active).is_none_or(|page| page.git_busy()) {
+            let text = "Git is still at something else in this folder: try again when it is done.";
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        }
         let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
         match &op {
             GitOp::Stage(path) => self.save_these(unsaved.into_iter().filter(|(_, rel)| rel == path).collect(), false),
@@ -2400,6 +2455,9 @@ impl App {
         if event.state != ElementState::Pressed {
             return;
         }
+        if self.ui.ask.is_some() {
+            return self.request_redraw();
+        }
         let cmd = self.mods.control_key() || self.mods.super_key();
         let (shift, alt) = (self.mods.shift_key(), self.mods.alt_key());
         let typing = self.gfx.as_ref().is_some_and(|g| g.egui.egui_wants_keyboard_input());
@@ -2489,7 +2547,7 @@ impl App {
             }
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
-            Command::CloseFolder => self.close_page(self.active),
+            Command::CloseFolder => self.close_folder(self.active, false),
             Command::NextFolder => self.cycle(1),
             Command::PreviousFolder => self.cycle(-1),
             Command::Rescan => self.rescan(),
@@ -2543,7 +2601,7 @@ impl App {
         }
         match action {
             Action::SwitchTab(i) => self.show_folder(i),
-            Action::CloseTab(i) => self.close_page(i),
+            Action::CloseTab(i) => self.close_folder(i, false),
             Action::OpenFolder => self.pick_folder(),
             Action::Rescan => self.rescan(),
             Action::Fit => self.frame_every_folder(),
@@ -2772,9 +2830,10 @@ impl App {
                     }
                     _ => None,
                 };
-                let Some((title, files)) = lost else { return self.run_git(op) };
+                let Some((title, files)) = lost else { return self.run_git(self.active, op) };
+                let Some(folder) = self.pages.get(self.active).map(|page| page.root.clone()) else { return };
                 let text = "The files go back to how the last commit left them. This cannot be undone.".to_string();
-                let mut ask = ui::Ask::new(ui::Asked::Git(op), title, text)
+                let mut ask = ui::Ask::new(ui::Asked::Git { folder, op }, title, text)
                     .choice("Discard", ui::ChoiceLook::Danger, ui::Answer::Yes)
                     .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
                 ask.items = files;

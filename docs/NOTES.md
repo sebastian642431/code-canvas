@@ -780,6 +780,16 @@ Graphics and the frame
   its row if it is out of sight (`explorer_seen` is what the list showed a frame
   ago). Only then: a list that scrolled back on every frame could not be
   scrolled by hand. `explorer_reveal` asks the same for a path by name.
+- **A question remembers what it was about.** `Asked::Delete`, `Asked::Git` and
+  `Asked::Close` carry the folder, and the answer acts on that folder, not on
+  the one that is active when the button is pressed. A press on a button of the
+  app's own (a question, a menu) does not choose the folder under it
+  (`focus_folder_at` leaves what `over_ui` covers alone), and while a question is
+  up no key reaches the editor behind it (`on_key`).
+- Closing a folder with files not saved asks (`close_folder`): the cross of the
+  workspace, taking it off the canvas, forgetting it, the shortcut.
+- Discarding drops the unsaved edits of the files git will put back, not of new
+  files git does not know (`drop_edits`), and not before knowing git is free.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
