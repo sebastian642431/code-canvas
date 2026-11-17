@@ -1,0 +1,45 @@
+title: With the hand tool find walks the matches and wraps, replace is refused, an empty query finds nothing, and the file is untouched
+folders: edit-odd
+limit: 40
+forbid-log: saved
+forbid-log: nothing offers
+expect-file: edit-odd/words.txt :: (?-i)\AAlpha beta alpha BETA\na\.b a\*b a\+b \(x\) \[y\] a\.b\nfoo foofoo food\npath\\to\\file \$1 \^start end\$\nalpha\n\z
+
+wait 3000
+goto words.txt
+wait 800
+find alpha
+wait 300
+mark hand-found
+wait 400
+find replace-all Z
+wait 400
+mark hand-refused
+wait 400
+find next
+find next
+find next
+wait 300
+mark wrapped-to-first
+wait 400
+find previous
+wait 300
+mark wrapped-to-last
+wait 400
+find close
+find
+wait 300
+mark empty-query
+wait 400
+find replace-all X
+find next
+find previous
+find zzzz-not-there
+wait 300
+mark no-match
+wait 400
+find next
+find replace X
+find close
+wait 300
+quit

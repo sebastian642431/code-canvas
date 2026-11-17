@@ -1,0 +1,42 @@
+title: Eighteen assistants at once (two more than there are faces) all show, none crashes the app
+folders: rust-small
+limit: 45
+expect-log: Nova \(Bot 1\) is on the canvas
+expect-log: Ember \(Bot 16\) is on the canvas
+expect-log: \(Bot 17\) is on the canvas
+expect-log: \(Bot 18\) is on the canvas
+forbid-log: script: agent needs
+
+wait 3000
+fit
+wait 1000
+agent {"agent":"bot-1","name":"Bot 1","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":1,"lines":2}
+agent {"agent":"bot-2","name":"Bot 2","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":1,"lines":2}
+agent {"agent":"bot-3","name":"Bot 3","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":1,"lines":2}
+agent {"agent":"bot-4","name":"Bot 4","action":"read","path":"{WORK}/fix/rust-small/Cargo.toml","line":1,"lines":2}
+agent {"agent":"bot-5","name":"Bot 5","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":3,"lines":2}
+agent {"agent":"bot-6","name":"Bot 6","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":3,"lines":2}
+agent {"agent":"bot-7","name":"Bot 7","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":3,"lines":2}
+agent {"agent":"bot-8","name":"Bot 8","action":"read","path":"{WORK}/fix/rust-small/Cargo.toml","line":3,"lines":2}
+agent {"agent":"bot-9","name":"Bot 9","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":5,"lines":2}
+agent {"agent":"bot-10","name":"Bot 10","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":5,"lines":2}
+agent {"agent":"bot-11","name":"Bot 11","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":5,"lines":2}
+agent {"agent":"bot-12","name":"Bot 12","action":"read","path":"{WORK}/fix/rust-small/Cargo.toml","line":5,"lines":2}
+agent {"agent":"bot-13","name":"Bot 13","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":7,"lines":2}
+agent {"agent":"bot-14","name":"Bot 14","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":7,"lines":2}
+agent {"agent":"bot-15","name":"Bot 15","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":7,"lines":2}
+agent {"agent":"bot-16","name":"Bot 16","action":"read","path":"{WORK}/fix/rust-small/Cargo.toml","line":7,"lines":2}
+agent {"agent":"bot-17","name":"Bot 17","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":9,"lines":2}
+agent {"agent":"bot-18","name":"Bot 18","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":9,"lines":2}
+wait 1500
+mark eighteen
+wait 500
+goto src/steps.rs
+wait 1500
+mark eighteen-close
+wait 500
+agent Ember
+wait 2500
+mark following-ember
+wait 500
+quit

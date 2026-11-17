@@ -1,0 +1,41 @@
+title: A guest has text not saved in a file, another program appends to that file on the host's disk, then the guest saves: the appended line must not be lost
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^line 01\nline 02typed-by-beto\.\nline 03\n
+expect-file: share-text\notes.txt :: written by another program
+
+wait 3000
+share start writers
+wait 11500
+touch notes.txt written by another program
+wait 3500
+goto notes.txt
+wait 1500
+mark host-after-the-other-program
+wait 5500
+mark host-after-the-guest-saved
+wait 6000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+goto notes.txt
+wait 1000
+edit notes.txt 2 1
+key end
+type typed-by-beto.
+wait 7000
+mark after-the-other-program
+wait 1000
+key save
+wait 2500
+mark after-saving
+wait 2500
+quit
+wait 1500

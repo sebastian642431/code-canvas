@@ -1,0 +1,51 @@
+title: Menu: "Show it in the files", "Hide the interface", "Show the whole canvas", "Show the interface" and "Take ... off the canvas"
+folders: rust-small
+forbid-log: WARN.*script
+expect-file: {WORK}\data\session.json :: "pages": \[\]
+
+wait 3000
+left none
+right none
+fit
+wait 1000
+menu 640 400
+wait 500
+mark on-steps
+wait 400
+ui click 740 591
+wait 1200
+mark shown-in-files
+wait 500
+left none
+wait 600
+fit
+wait 900
+menu 200 500
+wait 500
+ui click 300 521
+wait 1000
+mark interface-hidden
+wait 500
+zoom 0.3
+wait 800
+menu 200 500
+wait 500
+mark hidden-menu
+wait 400
+ui click 300 548
+wait 1200
+mark whole-canvas
+wait 500
+menu 200 500
+wait 500
+ui click 300 521
+wait 1000
+mark interface-back
+wait 500
+menu 200 500
+wait 500
+ui click 300 726
+wait 1200
+mark taken-off
+wait 500
+quit

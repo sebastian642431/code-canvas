@@ -1,0 +1,22 @@
+title: Replace all replaces every match of a file that has 12000 of them
+folders: odd-files
+limit: 60
+forbid-log: cannot edit
+expect-file: odd-files/big.rs :: (?s)(?-i)\A(?!.*usize)
+expect-file: odd-files/big.rs :: (?-i)\Apub fn f0\(\) -> u64 \{ 0 \}\n
+
+wait 4000
+goto big.rs
+wait 1200
+tool edit
+find usize
+wait 500
+mark found
+wait 400
+find replace-all u64
+wait 800
+mark replaced
+wait 400
+key save
+wait 1200
+quit

@@ -1,0 +1,55 @@
+title: The host stops sharing: the guest's folder closes with a notice, and the host goes on editing and saving
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^after-stop\.line 01\nline 02\nline 03typed-by-beto\.\nline 04\n
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share join nothing Ana
+share start writers
+wait 10000
+share stop
+wait 1500
+edit notes.txt 1 1
+type after-stop.
+wait 400
+key save
+wait 1500
+share stop
+wait 300
+share follow Beto
+wait 300
+share writer Beto
+wait 300
+share panel
+wait 1200
+mark host-after-stop
+wait 4000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+edit notes.txt 3 1
+key end
+type typed-by-beto.
+wait 6000
+mark after-the-host-stopped
+wait 800
+share stop
+wait 300
+share follow Ana
+wait 300
+share unfollow
+wait 300
+share panel
+wait 1200
+mark panel-after
+wait 2000
+quit
+wait 1500

@@ -1,0 +1,116 @@
+title: Host and guest type bursts at the end of the same line at the same time and end with the same text
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: (?s)line 04\nline 05[Ab0-9.]{160}\nline 06
+expect-file: share-text\notes.txt :: A01\..*A02\..*A03\..*A04\..*A05\..*A06\..*A07\..*A08\..*A09\..*A10\..*A11\..*A12\..*A13\..*A14\..*A15\..*A16\..*A17\..*A18\..*A19\..*A20\.
+expect-file: share-text\notes.txt :: b01\..*b02\..*b03\..*b04\..*b05\..*b06\..*b07\..*b08\..*b09\..*b10\..*b11\..*b12\..*b13\..*b14\..*b15\..*b16\..*b17\..*b18\..*b19\..*b20\.
+
+wait 3000
+share start writers
+wait 9000
+edit notes.txt 5 1
+key end
+wait 1500
+type A01.
+wait 150
+type A02.
+wait 150
+type A03.
+wait 150
+type A04.
+wait 150
+type A05.
+wait 150
+type A06.
+wait 150
+type A07.
+wait 150
+type A08.
+wait 150
+type A09.
+wait 150
+type A10.
+wait 150
+type A11.
+wait 150
+type A12.
+wait 150
+type A13.
+wait 150
+type A14.
+wait 150
+type A15.
+wait 150
+type A16.
+wait 150
+type A17.
+wait 150
+type A18.
+wait 150
+type A19.
+wait 150
+type A20.
+wait 150
+wait 3000
+mark host-after-bursts
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit notes.txt 5 1
+key end
+wait 2200
+type b01.
+wait 150
+type b02.
+wait 150
+type b03.
+wait 150
+type b04.
+wait 150
+type b05.
+wait 150
+type b06.
+wait 150
+type b07.
+wait 150
+type b08.
+wait 150
+type b09.
+wait 150
+type b10.
+wait 150
+type b11.
+wait 150
+type b12.
+wait 150
+type b13.
+wait 150
+type b14.
+wait 150
+type b15.
+wait 150
+type b16.
+wait 150
+type b17.
+wait 150
+type b18.
+wait 150
+type b19.
+wait 150
+type b20.
+wait 150
+wait 3000
+mark after-bursts
+wait 3000
+key save
+wait 3000
+quit
+wait 1500

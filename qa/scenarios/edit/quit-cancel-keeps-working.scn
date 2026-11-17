@@ -1,0 +1,26 @@
+title: Cancel on the closing question keeps the app open and usable: more typing, a save, and then it closes without asking
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+forbid-log: nothing offers
+expect-log: saved .*a\.txt
+expect-file: edit-odd/a.txt :: (?-i)\AONETWOfirst of a\nsecond of a\n\z
+
+wait 3000
+goto a.txt
+wait 800
+edit a.txt 1 1
+type ONE
+quit
+wait 1000
+answer Cancel
+wait 600
+mark after-cancel
+wait 400
+type TWO
+wait 300
+mark typed-after-cancel
+wait 400
+key save
+wait 600
+quit

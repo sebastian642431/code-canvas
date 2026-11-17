@@ -1,0 +1,45 @@
+title: Settings at 1000x640 and at the smallest window: nothing outside the settings window, nothing cut without a scroll
+folders: rust-small
+
+wait 3000
+resize 1000 640
+wait 900
+left settings
+wait 700
+mark s1000-general
+wait 500
+left settings:appearance
+wait 600
+mark s1000-appearance
+wait 500
+left settings:colours
+wait 600
+mark s1000-colours
+wait 500
+left settings:keyboard
+wait 600
+mark s1000-keyboard
+wait 500
+left settings:commits
+wait 600
+mark s1000-commits
+wait 500
+resize 720 420
+wait 900
+mark s720-commits
+wait 500
+left settings:general
+wait 600
+mark s720-general
+wait 500
+left settings:keyboard
+wait 600
+mark s720-keyboard
+wait 500
+left settings:colours
+wait 600
+mark s720-colours
+wait 500
+left settings:close
+wait 400
+quit

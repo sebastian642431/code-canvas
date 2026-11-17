@@ -1,0 +1,42 @@
+title: Settings: every category at 1706x920, a search with results and one with none, closed again
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+left settings
+wait 700
+mark general
+wait 500
+left settings:appearance
+wait 600
+mark appearance
+wait 500
+left settings:colours
+wait 600
+mark colours
+wait 500
+left settings:keyboard
+wait 600
+mark keyboard
+wait 500
+left settings:commits
+wait 600
+mark commits
+wait 500
+left settings:line
+wait 600
+mark search-line
+wait 500
+left settings:zzzqqq
+wait 600
+mark search-nothing
+wait 500
+left settings:general
+wait 500
+mark general-again
+wait 500
+left settings:close
+wait 500
+mark closed
+wait 500
+quit

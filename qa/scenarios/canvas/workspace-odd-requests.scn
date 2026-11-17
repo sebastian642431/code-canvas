@@ -1,0 +1,41 @@
+title: Workspace: a folder that is not there, one already on the canvas, the active one taken off, the last one taken off, everything forgotten
+folders: rust-small, plain
+fixtures: git-history
+
+wait 3500
+left files
+workspace put {FIX}\no-such-folder
+wait 1200
+mark missing-folder
+wait 500
+workspace put {FIX}\plain
+wait 1200
+mark already-on
+wait 500
+workspace off {FIX}\plain
+wait 1500
+mark active-off
+wait 500
+workspace off {FIX}\rust-small
+wait 1500
+mark last-off
+wait 500
+menu 900 400
+wait 600
+mark last-off-menu
+wait 500
+workspace put {FIX}\git-history
+wait 2000
+mark one-put-again
+wait 500
+workspace forget {FIX}\git-history
+workspace forget {FIX}\plain
+workspace forget {FIX}\rust-small
+wait 1500
+mark all-forgotten
+wait 500
+workspace all
+wait 1000
+mark all-of-nothing
+wait 500
+quit

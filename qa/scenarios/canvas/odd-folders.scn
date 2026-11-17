@@ -1,0 +1,77 @@
+title: An empty folder, and odd files (12000 lines, a 5000 column line, binary, not UTF-8) from very far to very near
+folders: empty, odd-files
+allow-log: WARN
+
+wait 4000
+left files
+tab 1
+wait 900
+mark empty-folder
+wait 500
+menu 900 400
+wait 600
+mark empty-folder-menu
+wait 500
+ui click 200 700
+wait 300
+tab 2
+wait 900
+fit
+wait 1200
+mark odd-whole
+wait 500
+goto big.rs
+wait 1500
+mark big
+wait 500
+goto long_line.txt
+wait 1500
+mark long-line
+wait 500
+goto binary.bin
+wait 1500
+mark binary
+wait 500
+goto latin1.txt
+wait 1500
+mark latin1
+wait 500
+goto unicode ñ €.md
+wait 1500
+mark unicode
+wait 500
+goto empty.txt
+wait 1500
+mark empty-file
+wait 500
+goto pixel.png
+wait 1500
+mark pixel
+wait 500
+goto with space/a file.js
+wait 1500
+mark spaced
+wait 500
+fit
+wait 900
+zoom 0.02
+wait 900
+mark zoom-far
+wait 500
+zoom 0.02
+wait 900
+mark zoom-farther
+wait 500
+fit
+wait 900
+goto crlf.txt
+wait 1300
+zoom 8
+wait 900
+mark zoom-near
+wait 500
+zoom 8
+wait 900
+mark zoom-nearest
+wait 500
+quit

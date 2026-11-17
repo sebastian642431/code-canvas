@@ -1,0 +1,30 @@
+title: Undoing past a save leaves the file unsaved (quit asks), and redo back to the saved text makes it clean again
+folders: plain
+limit: 40
+forbid-log: cannot edit
+forbid-log: nothing offers
+expect-file: plain/src/util.rs :: (?-i)\Aonetwo\npub fn double
+
+wait 3000
+edit src/util.rs 1 1
+key enter
+key up
+type one
+type two
+key save
+wait 600
+key undo
+wait 300
+mark undone-past-save
+wait 400
+quit
+wait 800
+mark asked
+wait 400
+answer Cancel
+wait 400
+key redo
+wait 300
+mark redone-to-saved
+wait 400
+quit

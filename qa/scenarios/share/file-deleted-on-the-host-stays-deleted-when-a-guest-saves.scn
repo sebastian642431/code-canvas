@@ -1,0 +1,45 @@
+title: The host deletes a file in which a guest has text not saved, then the guest types on and saves: the file stays deleted and the guest's card goes away
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+absent-file: share-text\other.txt
+
+wait 3000
+share start writers
+wait 9500
+delete other.txt
+wait 600
+answer Delete
+wait 4000
+fit
+wait 1200
+mark host-after-deleting
+wait 6000
+fit
+wait 1200
+mark host-after-the-guest-saved
+wait 3000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+goto other.txt
+wait 1000
+edit other.txt 2 1
+key end
+type by-beto.
+wait 5500
+mark after-the-host-deleted-it
+wait 500
+type more.
+wait 400
+key save
+wait 2500
+mark after-saving
+wait 2500
+quit
+wait 1500

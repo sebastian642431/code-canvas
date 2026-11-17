@@ -1,0 +1,28 @@
+title: A drag with the pencil selects text, typing replaces it, undo brings the selection back, and a click puts the caret on the letter clicked
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/a.txt :: (?-i)\AOne of a\nsecond @of a\n\z
+
+wait 3000
+goto a.txt
+wait 1200
+tool edit
+drag 650 245 845 245
+wait 300
+mark selected
+wait 400
+type FIRST
+key undo
+wait 300
+mark selection-back
+wait 400
+type One
+click 930 325
+type @
+wait 300
+mark clicked
+wait 400
+key save
+wait 600
+quit

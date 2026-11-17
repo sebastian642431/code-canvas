@@ -1,0 +1,78 @@
+title: New lines on one side while the other joins the line right after them and deletes elsewhere: both end with the same text
+folders: share-text
+limit: 75
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^line 01\ne\nline 03line 04\nlin\nline 06\nline 07\nline 08\nHn1\.\nHn2\.\nHn3\.\nHn4\.\nHn5\.\nHn6\.line 09\nline 10\nline 11\nline 12\n$
+
+wait 3000
+share start writers
+wait 9000
+edit notes.txt 8 1
+key end
+wait 1200
+key enter
+type Hn1.
+wait 250
+key enter
+type Hn2.
+wait 250
+key enter
+type Hn3.
+wait 250
+key enter
+type Hn4.
+wait 250
+key enter
+type Hn5.
+wait 250
+key enter
+type Hn6.
+wait 1200
+edit notes.txt 2 1
+key end
+key backspace
+wait 200
+key backspace
+wait 200
+key backspace
+wait 3000
+mark host-after
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit notes.txt 9 1
+wait 3200
+key backspace
+wait 300
+edit notes.txt 5 1
+key end
+key backspace
+wait 150
+key backspace
+wait 150
+key backspace
+wait 150
+key backspace
+wait 300
+edit notes.txt 4 1
+key backspace
+wait 600
+edit notes.txt 2 1
+key delete
+wait 200
+key delete
+wait 200
+key delete
+wait 3500
+mark after
+wait 2500
+key save
+wait 3000
+quit
+wait 1500

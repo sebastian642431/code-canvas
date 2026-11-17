@@ -1,0 +1,53 @@
+title: With the interface hidden: go to file, the command palette, find, search and settings still work, and it comes back as it was
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+left files
+goto src/util.rs
+wait 1200
+mark before
+wait 500
+interface
+wait 900
+mark hidden
+wait 500
+quick util
+wait 700
+mark hidden-quick
+wait 500
+ui click 300 760
+wait 400
+palette fold
+wait 700
+mark hidden-palette
+wait 500
+ui click 300 760
+wait 400
+find double
+wait 700
+mark hidden-find
+wait 500
+find close
+wait 300
+left settings
+wait 700
+mark hidden-settings
+wait 500
+left settings:close
+wait 300
+search double
+wait 1000
+mark hidden-search
+wait 500
+interface
+wait 900
+mark back
+wait 500
+interface
+wait 600
+interface
+wait 900
+mark back-again
+wait 500
+quit

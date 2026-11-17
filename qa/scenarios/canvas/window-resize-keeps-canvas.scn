@@ -1,0 +1,56 @@
+title: Making the window smaller and larger again leaves the canvas where it was on screen
+folders: rust-small
+
+wait 3000
+left none
+right none
+fit
+wait 1200
+mark a-1706
+wait 500
+resize 1100 700
+wait 1200
+mark b-1100
+wait 500
+resize 1706 920
+wait 1200
+mark c-1706
+wait 500
+resize 720 420
+wait 1200
+mark d-720
+wait 500
+left files
+wait 800
+mark e-720-files
+wait 500
+left search
+wait 500
+mark f-720-search
+wait 500
+right symbols
+wait 500
+mark g-720-symbols
+wait 500
+right deps
+wait 500
+mark h-720-deps
+wait 500
+left changes
+wait 700
+mark i-720-changes
+wait 500
+left extensions
+wait 1200
+mark j-720-extensions
+wait 500
+left help
+wait 500
+mark k-720-help
+wait 500
+left none
+resize 1706 920
+wait 1200
+mark l-1706
+wait 500
+quit

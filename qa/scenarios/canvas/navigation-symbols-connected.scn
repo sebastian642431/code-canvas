@@ -1,0 +1,50 @@
+title: A selected symbol in the Symbols panel, only connected files, collapse-all and expand-all
+folders: git-history
+allow-log: no symbol named
+
+wait 3000
+right symbols
+select double
+wait 900
+locate
+wait 1200
+mark symbol-selected
+wait 500
+connected on
+wait 1200
+mark connected-on
+wait 500
+fit
+wait 1000
+mark connected-fit
+wait 500
+connected off
+wait 1000
+fit
+wait 900
+right deps
+goto src/main.rs
+wait 1200
+mark deps-of-main
+wait 500
+collapse-all
+wait 1000
+fit
+wait 900
+mark collapsed-all
+wait 500
+select double
+wait 600
+locate
+wait 1000
+mark symbol-in-collapsed
+wait 500
+expand-all
+wait 1000
+fit
+wait 900
+mark expanded-all
+wait 500
+select no_such_symbol
+wait 500
+quit

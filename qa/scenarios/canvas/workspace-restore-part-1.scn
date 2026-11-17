@@ -1,0 +1,19 @@
+title: Workspace before a restart: three folders known, one taken off the canvas, a widened panel (part 2 starts again on this data)
+folders: rust-small, plain
+fixtures: git-history
+forbid-log: WARN.*script
+expect-file: {WORK}\data\session.json :: (?s)"workspace": \[.*rust-small.*plain.*git-history
+
+wait 3500
+left files
+workspace put {FIX}\git-history
+wait 2500
+workspace off {FIX}\plain
+wait 1500
+ui drag 344 500 470 500
+wait 700
+goto src/util.rs
+wait 1500
+mark before-quit
+wait 600
+quit

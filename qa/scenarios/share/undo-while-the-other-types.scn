@@ -1,0 +1,75 @@
+title: One undoes its own typing while the other keeps typing in the same file: the other's text stays and both end the same
+folders: share-text
+limit: 75
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: \nline 10H1\.H2\.H3\.H4\.H5\.H6\.H7\.H8\.H9\.H10\.H11\.H12\.H13\.H14\.H15\.H16\.\nline 11\n
+expect-file: share-text\notes.txt :: ^line 01\nline 02(g1\.(g2\.)?)?\nline 03\n
+
+wait 3000
+share start writers
+wait 9000
+edit notes.txt 10 1
+key end
+wait 1500
+type H1.
+wait 250
+type H2.
+wait 250
+type H3.
+wait 250
+type H4.
+wait 250
+type H5.
+wait 250
+type H6.
+wait 250
+type H7.
+wait 250
+type H8.
+wait 250
+type H9.
+wait 250
+type H10.
+wait 250
+type H11.
+wait 250
+type H12.
+wait 250
+type H13.
+wait 250
+type H14.
+wait 250
+type H15.
+wait 250
+type H16.
+wait 250
+wait 2500
+mark host-after
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit notes.txt 2 1
+key end
+wait 1500
+type g1.
+wait 900
+type g2.
+wait 900
+type g3.
+wait 900
+key undo
+wait 900
+key undo
+wait 4500
+mark after
+wait 2500
+key save
+wait 3000
+quit
+wait 1500

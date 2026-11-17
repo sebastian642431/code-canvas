@@ -1,0 +1,54 @@
+title: The buttons that open and close each side, clicks on the rail icons, and an icon moved to the top of its bar
+expect-file: {WORK}\data\session.json :: "left": \[\s*"deps",\s*"files"
+folders: git-changes
+forbid-log: WARN.*script
+
+wait 3000
+left none
+right none
+wait 500
+mark a-closed
+wait 500
+ui click 1684 872
+wait 700
+mark b-right-button-nothing-on-the-right
+wait 500
+ui click 22 872
+wait 700
+mark c-left-button
+wait 500
+ui click 22 872
+wait 600
+right symbols
+wait 500
+ui click 22 872
+wait 500
+ui click 22 872
+wait 700
+mark d-left-button-reopens-symbols
+wait 500
+ui click 22 129
+wait 800
+mark e-click-changes-icon
+wait 500
+ui click 22 129
+wait 600
+mark f-click-it-again-closes
+wait 500
+move deps left files
+wait 800
+mark g-deps-first-on-the-bar
+wait 500
+right deps
+wait 700
+mark h-deps-open-its-icon-is-the-tab
+wait 500
+move deps right
+wait 800
+mark i-deps-on-the-right-bar
+wait 500
+left files
+wait 600
+mark j-files
+wait 500
+quit

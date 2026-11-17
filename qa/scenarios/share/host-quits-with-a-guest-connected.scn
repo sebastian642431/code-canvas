@@ -1,0 +1,32 @@
+title: The host closes the app with a guest connected and text of the guest not saved: the host is asked, the guest is told, and joining again fails cleanly
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-file: share-text\notes.txt :: ^line 01\nline 02\nline 03\nline 04\n
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share start writers
+wait 10000
+quit
+wait 1200
+mark host-asked
+wait 800
+answer Close without saving
+wait 1500
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+edit notes.txt 3 1
+key end
+type typed-by-beto.
+wait 8000
+mark after-the-host-quit
+wait 800
+share join {INVITE} Beto
+wait 4500
+mark joining-a-closed-session
+wait 1500
+quit
+wait 1500

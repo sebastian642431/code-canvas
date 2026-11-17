@@ -1,0 +1,22 @@
+title: Close without saving ends the app and leaves the files on disk as they were
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+forbid-log: nothing offers
+forbid-log: saved
+expect-file: edit-odd/a.txt :: (?-i)\Afirst of a\nsecond of a\n\z
+expect-file: edit-odd/b.txt :: (?-i)\Afirst of b\nsecond of b\n\z
+
+wait 3000
+edit a.txt 1 1
+type A1
+key enter
+edit b.txt 1 1
+key delete
+key delete
+quit
+wait 1000
+mark asked
+wait 500
+answer Close without saving
+wait 1000

@@ -1,0 +1,40 @@
+title: Find is case-blind for a lowercase query, exact with a capital, and takes . * $ ^ ( ) \ literally in query and replacement
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/words.txt :: (?-i)\AZ beta Z Q\n<DOT> a\*b a\+b \$1 \[y\] <DOT>\nfoo foofoo food\npath\\to\\file \$1 \\1 \[END\]\nZ\n\z
+
+wait 3000
+goto words.txt
+wait 800
+tool edit
+edit words.txt 1 1
+find alpha
+wait 300
+mark count-lower
+wait 400
+find Alpha
+wait 300
+mark count-capital
+wait 400
+find a.b
+wait 300
+mark count-dot
+wait 400
+find replace-all <DOT>
+find (x)
+find replace-all $1
+find end$
+find replace-all [END]
+find ^start
+find replace-all \1
+find BETA
+find replace-all Q
+find alpha
+find replace-all Z
+wait 300
+mark replaced
+wait 400
+key save
+wait 600
+quit

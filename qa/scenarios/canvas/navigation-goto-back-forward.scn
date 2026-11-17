@@ -1,0 +1,85 @@
+title: goto, fit, locate, zoom, then back and forward more times than there is history
+folders: git-history
+forbid-log: WARN.*script
+
+wait 3000
+left files
+goto src/main.rs
+wait 1200
+mark goto-main
+wait 500
+goto src/util.rs
+wait 1200
+goto Cargo.toml
+wait 1200
+goto src
+wait 1200
+mark goto-folder
+wait 500
+fit
+wait 1000
+mark fit
+wait 500
+zoom 2
+wait 600
+zoom 2
+wait 600
+mark zoomed
+wait 500
+select triple
+wait 600
+locate
+wait 1200
+mark locate-symbol
+wait 500
+back
+wait 900
+mark back-1
+wait 500
+back
+wait 700
+back
+wait 700
+back
+wait 700
+back
+wait 700
+back
+wait 700
+back
+wait 700
+back
+wait 700
+back
+wait 900
+mark back-many
+wait 500
+forward
+wait 900
+mark forward-1
+wait 500
+forward
+wait 700
+forward
+wait 700
+forward
+wait 700
+forward
+wait 700
+forward
+wait 700
+forward
+wait 700
+forward
+wait 700
+forward
+wait 700
+forward
+wait 900
+mark forward-many
+wait 500
+goto no/such/file.rs
+wait 800
+mark goto-missing
+wait 500
+quit

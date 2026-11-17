@@ -1,0 +1,27 @@
+title: An assistant that reads lines of a file (plain event and Claude Code hook) shows beside those lines, which are washed
+folders: rust-small
+limit: 40
+expect-log: Nova \(Codex\) is on the canvas
+expect-log: Rusty \(Claude Code\) is on the canvas
+forbid-log: script: agent needs
+
+wait 3000
+agent {"agent":"codex-1","name":"Codex","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":9,"lines":8,"note":"looking for step 3"}
+wait 600
+goto src/steps.rs
+wait 1500
+mark plain-read
+wait 600
+agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"{WORK}/fix/rust-small/src/util.rs","offset":5,"limit":3}}}
+wait 600
+goto src/util.rs
+wait 1500
+mark hook-read
+wait 600
+agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"src/main.rs"}}}
+wait 600
+fit
+wait 1500
+mark relative-path-whole-file
+wait 600
+quit

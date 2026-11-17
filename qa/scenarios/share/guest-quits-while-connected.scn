@@ -1,0 +1,42 @@
+title: A guest closes its app with text not saved: the host is told, keeps the text and can save it and go on
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^line 01\nline 02left-by-beto\.\nline 03\nline 04\nline 05host-alone\.\nline 06\n
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share join nothing Ana
+share start writers
+wait 13000
+share panel
+wait 1200
+mark host-after-the-guest-quit
+wait 800
+share panel close
+wait 300
+key save
+wait 1200
+edit notes.txt 5 1
+key end
+type host-alone.
+wait 300
+key save
+wait 1500
+mark host-alone
+wait 1500
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+edit notes.txt 2 1
+key end
+type left-by-beto.
+wait 2000
+quit
+wait 1500

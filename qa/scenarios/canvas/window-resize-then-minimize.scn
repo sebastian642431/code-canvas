@@ -1,0 +1,27 @@
+title: A file in view, the window made smaller, minimized and restored: the same file stays selected and in view
+folders: git-changes
+forbid-log: WARN.*script
+
+wait 3000
+left search
+goto src/steps.rs
+wait 1300
+mark a-file-in-view
+wait 500
+resize 1000 640
+wait 900
+mark b-smaller
+wait 500
+minimize
+wait 800
+restore
+wait 900
+mark c-restored
+wait 500
+minimize
+wait 800
+restore
+wait 900
+mark d-restored-again
+wait 500
+quit

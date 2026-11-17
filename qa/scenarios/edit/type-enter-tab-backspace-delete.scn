@@ -1,0 +1,30 @@
+title: Typing, enter, tab, backspace at a line start and delete at a line end write exactly that
+folders: plain
+limit: 40
+forbid-log: cannot edit
+expect-log: saved .*util\.rs
+expect-file: plain/src/util.rs :: (?-i)\A// top\npub fn double\(n: u32\) -> u32 \{\n    n \* 2\n    x\n        y\n\}\npub fn triple\(n: u32\) -> u32 \{\n    n \* 3\}\n\z
+
+wait 3000
+edit src/util.rs 1 1
+type // top
+key enter
+edit src/util.rs 3 1
+key end
+key enter
+type x
+key enter
+key tab
+type y
+edit src/util.rs 8 1
+key backspace
+edit src/util.rs 8 100
+key delete
+wait 400
+mark typed
+wait 500
+key save
+wait 600
+mark saved
+wait 500
+quit

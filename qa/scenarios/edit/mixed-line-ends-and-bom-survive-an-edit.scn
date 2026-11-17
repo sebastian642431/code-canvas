@@ -1,0 +1,25 @@
+title: Typing on one line of a file with mixed line ends changes only that line, and typing at the very start of a file with a BOM goes after the BOM
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/mixed_eol.txt :: (?-i)\Aone\r\ntwo\nthree\r\nXfour\n\z
+expect-file: edit-odd/bom.txt :: (?-i)\AXfirst\nsecond\n\z
+expect-file: edit-odd/trailing_ws.txt :: (?-i)\Aa  \nb\t\nX\n\n\z
+
+wait 3000
+edit mixed_eol.txt 4 1
+type X
+key save
+wait 300
+edit bom.txt 1 1
+type X
+wait 300
+mark bom
+wait 400
+key save
+wait 300
+edit trailing_ws.txt 3 1
+type X
+key save
+wait 400
+quit

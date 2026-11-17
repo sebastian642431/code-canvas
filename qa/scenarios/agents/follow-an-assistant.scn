@@ -1,0 +1,30 @@
+title: Following an assistant takes the canvas to where it is, and again each time it moves
+folders: odd-files
+limit: 50
+expect-log: Nova \(Codex\) is on the canvas
+forbid-log: script: agent needs
+
+wait 3500
+fit
+wait 1000
+agent {"agent":"c1","name":"Codex","action":"read","path":"{WORK}/fix/odd-files/big.rs","line":9000,"lines":20}
+wait 800
+mark before-following
+wait 400
+agent Nova
+wait 3000
+mark at-big-9000
+wait 500
+agent {"agent":"c1","name":"Codex","action":"edit","path":"{WORK}/fix/odd-files/tabs.go","line":5,"lines":1,"note":"changing the text"}
+wait 3000
+mark at-tabs-5
+wait 500
+agent {"agent":"c1","name":"Codex","action":"read","path":"{WORK}/fix/odd-files/big.rs","line":999999,"lines":5}
+wait 3000
+mark at-big-past-the-end
+wait 500
+agent {"agent":"c1","name":"Codex","action":"read","path":"{WORK}/fix/odd-files/crlf.txt","line":2}
+wait 3000
+mark at-crlf-2
+wait 500
+quit

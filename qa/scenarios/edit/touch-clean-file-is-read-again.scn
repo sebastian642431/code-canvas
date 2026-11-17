@@ -1,0 +1,18 @@
+title: A file changed from outside while its caret is in it (nothing unsaved) is read again, and typing then goes on top of the new text
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/a.txt :: (?-i)\AXfirst of a\nsecond of a\nappended outside\n\z
+
+wait 3000
+goto a.txt
+wait 800
+edit a.txt 1 1
+touch a.txt appended outside
+wait 2500
+mark read-again
+wait 400
+type X
+key save
+wait 600
+quit

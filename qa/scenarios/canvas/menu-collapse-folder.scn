@@ -1,0 +1,38 @@
+title: Menu: "Collapse this folder" on a folder, its menu when collapsed, "Collapse every folder" and "Expand every folder"
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+left none
+right none
+fit
+wait 1000
+menu 860 500
+wait 500
+ui click 960 521
+wait 1200
+mark folder-collapsed
+wait 500
+fit
+wait 900
+mark folder-collapsed-fit
+wait 500
+menu 200 500
+wait 500
+ui click 300 629
+wait 1200
+mark expanded-every
+wait 500
+fit
+wait 900
+menu 200 500
+wait 500
+ui click 300 602
+wait 1200
+mark collapsed-every
+wait 500
+fit
+wait 900
+mark collapsed-every-fit
+wait 500
+quit

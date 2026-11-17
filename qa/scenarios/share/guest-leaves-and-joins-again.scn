@@ -1,0 +1,45 @@
+title: A guest leaves the session and joins again with the same invitation: it gets the text as it is now and can write
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: (?s)^while-away\.line 01\nline 02\n.*\nline 12back\.\n$
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share join nothing Ana
+share start writers
+wait 10500
+edit notes.txt 1 1
+type while-away.
+wait 9000
+share panel
+wait 1200
+mark host-after-rejoin
+wait 6000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+share stop
+wait 1500
+mark after-leaving
+wait 3500
+share join {INVITE} Beto
+wait 4000
+goto notes.txt
+wait 1500
+mark joined-again
+wait 600
+edit notes.txt 12 1
+key end
+type back.
+wait 500
+key save
+wait 3000
+quit
+wait 1500

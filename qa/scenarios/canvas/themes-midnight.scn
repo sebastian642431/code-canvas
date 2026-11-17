@@ -1,0 +1,61 @@
+title: The Midnight theme: canvas, every panel, settings and a menu stay readable; back to Dark
+folders: git-changes
+allow-log: no theme named
+
+wait 3000
+theme midnight
+wait 900
+left files
+wait 600
+mark files
+wait 500
+left changes
+wait 800
+mark changes
+wait 500
+left search
+wait 400
+search step_1
+wait 1000
+mark search
+wait 500
+right symbols
+select step_2
+wait 800
+mark symbols
+wait 500
+right deps
+wait 600
+mark deps
+wait 500
+left help
+wait 600
+mark help
+wait 500
+left extensions
+wait 1200
+mark extensions
+wait 500
+left settings:colours
+wait 700
+mark settings-colours
+wait 500
+left settings:appearance
+wait 700
+mark settings-appearance
+wait 500
+left settings:close
+left files
+goto src/steps.rs
+wait 1200
+menu 900 400
+wait 600
+mark card-and-menu
+wait 500
+theme no-such-theme
+wait 400
+theme dark
+wait 900
+mark dark-again
+wait 500
+quit

@@ -1,0 +1,38 @@
+title: A Latin-1 file, a binary and a picture refuse the caret and are left byte for byte as they were
+folders: odd-files
+limit: 40
+expect-log: cannot edit 'latin1.txt'
+expect-log: cannot edit 'binary.bin'
+expect-log: cannot edit 'pixel.png'
+forbid-log: saved .*(latin1|binary|pixel)
+expect-file: odd-files/latin1.txt :: (?-i)\Acaf� no es utf8\n\z
+expect-file: odd-files/pixel.png :: (?-i)\A.PNG\r\n
+expect-file: odd-files/binary.bin :: (?-i)\A\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n
+
+wait 3000
+edit latin1.txt 1 1
+type HACK
+key save
+wait 300
+edit binary.bin 1 1
+type HACK
+key save
+wait 300
+edit pixel.png 1 1
+type HACK
+key save
+wait 300
+goto latin1.txt
+wait 800
+tool edit
+find caf
+wait 300
+mark latin1-found
+wait 400
+find replace-all XXX
+wait 400
+key save
+wait 400
+mark latin1-after
+wait 400
+quit

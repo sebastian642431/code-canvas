@@ -1,0 +1,17 @@
+title: Text typed at column 3000 of a 5000 column line can be seen where the caret is (pictures only: the file is right either way)
+folders: odd-files
+limit: 40
+forbid-log: cannot edit
+expect-file: odd-files/long_line.txt :: (?-i)\Ax{2999}HELLOx{2001}\nshort\n\z
+
+wait 4000
+goto long_line.txt
+wait 1200
+edit long_line.txt 1 3000
+type HELLO
+wait 600
+mark typed-at-3000
+wait 500
+key save
+wait 600
+quit

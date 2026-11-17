@@ -1,0 +1,26 @@
+title: One undo takes back a whole replace-all, and the file is clean again
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+forbid-log: nothing offers
+expect-file: edit-odd/words.txt :: (?-i)\nfoo foofoo food\n
+
+wait 3000
+goto words.txt
+wait 800
+tool edit
+edit words.txt 1 1
+find foo
+find replace-all bar
+wait 300
+mark replaced
+wait 400
+key undo
+wait 300
+mark undone
+wait 400
+find close
+quit
+wait 1200
+answer Save and close
+wait 800

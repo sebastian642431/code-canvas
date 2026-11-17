@@ -1,0 +1,34 @@
+title: A file is made in the host's folder while a guest has text not saved: it shows on the host's canvas and reaches the guest
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: scanned 'share-text': 5 files
+guest-expect-log: scanned 'share-text': 5 files
+
+wait 3000
+share start writers
+wait 10000
+touch fresh.txt made while a guest types
+wait 6000
+fit
+wait 1200
+mark host-after-the-new-file
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+edit notes.txt 2 1
+key end
+type not-saved-by-beto.
+wait 9000
+fit
+wait 1200
+mark after-the-new-file
+wait 4000
+quit
+wait 1500

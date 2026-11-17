@@ -1,0 +1,21 @@
+title: Find marks and replace all hits the match on a line with a letter whose lowercase is two characters (İ)
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/turkish.txt :: (?-i)\Aİstanbul X bar\nX İİ X\nplain X\n\z
+
+wait 3000
+goto turkish.txt
+wait 800
+tool edit
+find foo
+wait 300
+mark found
+wait 400
+find replace-all X
+wait 300
+mark replaced
+wait 400
+key save
+wait 600
+quit

@@ -1,0 +1,30 @@
+title: Going to a file four folders deep opens its folders in the explorer and marks its row (look at the pictures)
+folders: edit-deep
+limit: 40
+
+wait 3000
+left files
+wait 500
+mark before
+wait 400
+goto one/two/three/four/leaf.rs
+wait 1800
+mark leaf
+wait 400
+goto zeta/last.rs
+wait 1800
+mark last
+wait 400
+left none
+wait 400
+goto one/other/near.rs
+wait 1500
+left files
+wait 600
+mark near-after-reopening
+wait 400
+edit one/two/side.rs 1 1
+wait 800
+mark caret-in-side
+wait 400
+quit

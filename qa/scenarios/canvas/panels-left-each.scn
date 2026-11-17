@@ -1,0 +1,51 @@
+title: Every panel of the left bar opens, one icon marked as its tab at a time
+folders: git-changes
+expect-log: script: Right\("deps"\)
+forbid-log: WARN.*script
+
+wait 3000
+left files
+wait 500
+mark files
+wait 500
+left search
+wait 500
+mark search
+wait 500
+left changes
+wait 900
+mark changes
+wait 500
+left extensions
+wait 1500
+mark extensions
+wait 500
+left problems
+wait 500
+mark problems
+wait 500
+right symbols
+wait 600
+mark symbols
+wait 500
+right deps
+wait 600
+mark deps
+wait 500
+left help
+wait 600
+mark help
+wait 500
+left symbols
+wait 500
+mark left-symbols
+wait 500
+right none
+wait 500
+mark right-none
+wait 500
+left none
+wait 500
+mark none
+wait 500
+quit

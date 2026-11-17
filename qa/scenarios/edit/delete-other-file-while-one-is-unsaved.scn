@@ -1,0 +1,25 @@
+title: Deleting a file while another one has unsaved text takes its card and its row away all the same (look at the pictures: b.txt must be gone)
+folders: edit-odd
+limit: 50
+absent-file: edit-odd/b.txt
+forbid-log: nothing offers
+expect-log: files were added or removed, scanning again
+expect-file: edit-odd/a.txt :: (?-i)\AMINEfirst of a\n
+
+wait 3000
+left files
+goto a.txt
+wait 800
+edit a.txt 1 1
+type MINE
+delete b.txt
+wait 600
+answer Delete
+wait 3500
+mark b-deleted-a-unsaved
+wait 400
+key save
+wait 3500
+mark after-save
+wait 400
+quit

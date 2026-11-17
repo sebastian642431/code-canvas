@@ -1,0 +1,27 @@
+title: After a script is taken into an import (extension dropped) the list is done: the next enter is a new line, not the same entry again
+folders: edit-paths
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-paths/web/app.js :: (?-i)\nimport y from "\./lib/util\n\nZ\nconst data = "";\n
+
+wait 3000
+goto web/app.js
+wait 1000
+edit web/app.js 2 1
+type import y from "./lib/u
+wait 400
+mark offered
+wait 400
+key enter
+wait 400
+mark taken
+wait 400
+key enter
+key enter
+type Z
+wait 300
+mark after-enters
+wait 400
+key save
+wait 600
+quit

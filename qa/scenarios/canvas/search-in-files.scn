@@ -1,0 +1,62 @@
+title: Search in every file: with results, with none, with odd characters, an empty one; go to file and the command palette
+folders: git-history
+forbid-log: WARN.*script
+
+wait 3000
+search step_1
+wait 1200
+mark results
+wait 500
+ui click 200 204
+wait 1200
+mark result-clicked
+wait 500
+search zzz_nothing_has_this
+wait 1000
+mark none
+wait 500
+search {} {}", steps::
+wait 1000
+mark odd-characters
+wait 500
+search (
+wait 1000
+mark paren
+wait 500
+search \
+wait 800
+mark backslash
+wait 500
+search n
+wait 1200
+mark many
+wait 500
+search
+wait 800
+mark empty-query
+wait 500
+quick stps
+wait 800
+mark quick
+wait 500
+ui click 900 700
+wait 400
+quick zzzz
+wait 700
+mark quick-none
+wait 500
+ui click 900 700
+wait 400
+palette theme
+wait 800
+mark palette
+wait 500
+ui click 900 700
+wait 400
+palette zzzz
+wait 700
+mark palette-none
+wait 500
+ui click 900 700
+wait 400
+quit

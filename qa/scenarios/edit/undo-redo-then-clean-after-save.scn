@@ -1,0 +1,39 @@
+title: Undo and redo across several edits; after save, an edit and its undo the file is clean and quitting asks nothing
+folders: plain
+limit: 40
+forbid-log: cannot edit
+expect-log: saved .*util\.rs
+expect-file: plain/src/util.rs :: (?-i)\A//ABD\npub fn double\(n: u32\) -> u32 \{\n    n \* 2\n\}\n\npub fn triple
+expect-file: plain/src/util.rs :: (?-i)n \* 3\n\}\n\z
+
+wait 3000
+edit src/util.rs 1 1
+key enter
+key up
+type //
+type A
+type B
+type C
+key undo
+key undo
+key redo
+type D
+key redo
+wait 300
+mark before-save
+wait 400
+key save
+wait 600
+type  after the save
+key enter
+type more
+wait 300
+mark edited-after-save
+wait 400
+key undo
+key undo
+key undo
+wait 400
+mark clean-again
+wait 500
+quit

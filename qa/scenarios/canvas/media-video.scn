@@ -1,0 +1,53 @@
+title: A video as a card: goto, open, the menu on it, an ignored one, and its folder taken off the canvas while it is there
+folders: media, plain
+
+wait 3500
+left files
+tab 1
+wait 800
+goto video/clip.mp4
+wait 2500
+mark video-card
+wait 500
+menu 1000 450
+wait 600
+mark video-menu
+wait 500
+ui click 500 860
+wait 300
+open video/clip.mp4
+wait 2000
+mark video-open
+wait 500
+zoom 0.5
+wait 900
+mark video-zoomed-out
+wait 500
+zoom 4
+wait 900
+mark video-zoomed-in
+wait 500
+ignored ignored/kept out.mp4
+wait 2500
+mark video-ignored
+wait 500
+left changes
+wait 800
+mark video-other-panel
+wait 500
+left settings
+wait 800
+mark video-under-settings
+wait 500
+left settings:close
+goto video/clip.mp4
+wait 2000
+workspace off {FIX}\media
+wait 1500
+mark folder-off
+wait 500
+workspace put {FIX}\media
+wait 2500
+mark folder-back
+wait 500
+quit

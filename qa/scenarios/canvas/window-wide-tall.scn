@@ -1,0 +1,32 @@
+title: The window very wide and very tall, then maximized and back
+folders: git-changes
+
+wait 3000
+left files
+resize 2600 420
+wait 1000
+mark wide
+wait 500
+right deps
+wait 500
+mark wide-deps
+wait 500
+resize 520 1500
+wait 1000
+mark tall
+wait 500
+left changes
+wait 700
+mark tall-changes
+wait 500
+resize 1706 920
+wait 800
+maximize
+wait 1200
+mark maximized
+wait 500
+maximize
+wait 1200
+mark unmaximized
+wait 500
+quit

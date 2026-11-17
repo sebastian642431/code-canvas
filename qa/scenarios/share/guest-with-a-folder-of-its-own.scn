@@ -1,0 +1,53 @@
+title: A guest that has a folder of its own open joins and leaves: its folder stays, is not shared, and its unsaved text is still asked about on closing
+folders: share-text
+fixtures: share-second
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-file: share-second\second.txt :: ^own-text\.second one\nsecond two\n$
+expect-file: share-text\notes.txt :: ^line 01\nline 02\n
+guest-expect-log: opening .*fix.share-second
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share start writers
+wait 14000
+fit
+wait 1500
+mark host-with-guest
+wait 12000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 1000
+workspace put {FIX}\share-second
+wait 2500
+share join {INVITE} Beto
+wait 4000
+tab 1
+wait 800
+edit second.txt 1 1
+type own-text.
+wait 800
+fit
+wait 1500
+mark both-folders
+wait 500
+tab 2
+wait 800
+edit notes.txt 2 1
+type shared-not-saved.
+wait 1500
+share stop
+wait 2000
+fit
+wait 1500
+mark after-leaving
+wait 500
+quit
+wait 1200
+mark asked-about-own-file
+wait 600
+answer Save and close
+wait 1500

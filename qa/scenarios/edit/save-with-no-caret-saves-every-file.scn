@@ -1,0 +1,23 @@
+title: After escape leaves the caret, save writes every unsaved file and quitting asks nothing
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/a.txt :: (?-i)\AAfirst of a\nsecond of a\n\z
+expect-file: edit-odd/b.txt :: (?-i)\ABfirst of b\nsecond of b\n\z
+expect-file: edit-odd/c.txt :: (?-i)\Afirst of c\nsecond of c\n\z
+
+wait 3000
+left files
+edit a.txt 1 1
+type A
+edit b.txt 1 1
+type B
+key escape
+wait 400
+mark two-unsaved
+wait 400
+key save
+wait 800
+mark none-unsaved
+wait 400
+quit

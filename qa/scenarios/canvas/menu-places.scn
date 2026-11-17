@@ -1,0 +1,58 @@
+title: The right-click menu over a file, a folder, the root folder, empty canvas, and at the edges of the window stays inside it
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+left none
+right none
+fit
+wait 1000
+menu 640 400
+wait 500
+mark on-file
+wait 500
+menu 860 500
+wait 500
+mark on-folder
+wait 500
+menu 1080 500
+wait 500
+mark on-root-folder
+wait 500
+menu 300 500
+wait 500
+mark on-empty
+wait 500
+menu 1690 880
+wait 500
+mark bottom-right
+wait 500
+menu 1100 890
+wait 500
+mark bottom
+wait 500
+menu 1700 60
+wait 500
+mark top-right
+wait 500
+menu 60 890
+wait 500
+mark bottom-left
+wait 500
+zoom 1.5
+wait 600
+mark after-zoom
+wait 500
+menu 640 400
+wait 400
+drag 300 300 420 380
+wait 600
+mark after-drag
+wait 500
+menu 640 400
+wait 400
+key escape
+wait 500
+mark after-key-escape
+wait 500
+quit

@@ -1,0 +1,60 @@
+title: A reader cannot edit; made a writer it edits and its save writes the host's file; made a reader again it cannot
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^line 01\nline 02W1\.\nline 03\n
+expect-file: share-text\notes.txt :: (?s)^(?!.*(R0|R1|R2)).*$
+guest-expect-log: script: cannot edit 'notes.txt'
+
+wait 3000
+share join nothing Ana
+share start
+wait 13000
+share writer Beto
+wait 7000
+share reader Beto
+wait 2500
+share panel
+wait 1500
+mark host-beto-reads-again
+wait 6000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+goto notes.txt
+wait 1200
+tool edit
+edit notes.txt 2 1
+type R0.
+wait 1500
+share panel
+wait 1200
+mark as-reader
+wait 800
+share panel close
+wait 3000
+edit notes.txt 2 1
+key end
+type W1.
+wait 800
+key save
+wait 1500
+mark as-writer
+wait 3500
+type R1.
+wait 300
+edit notes.txt 2 1
+type R2.
+wait 300
+key save
+wait 1500
+mark reader-again
+wait 3000
+quit
+wait 1500

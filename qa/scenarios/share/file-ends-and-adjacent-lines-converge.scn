@@ -1,0 +1,97 @@
+title: One types at the very start of a file and the other at the end of its last line, then on adjacent lines, at the same time
+folders: share-text
+limit: 75
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^Ht1\.Ht2\.Ht3\.Ht4\.Ht5\.Ht6\.line 01\n
+expect-file: share-text\notes.txt :: \nline 11\nline 12Ge1\.Ge2\.Ge3\.Ge4\.Ge5\.Ge6\.\n$
+expect-file: share-text\notes.txt :: \nline 05\nline 06Hm1\.Hm2\.Hm3\.Hm4\.Hm5\.Hm6\.Hm7\.Hm8\.\nGm1\.Gm2\.Gm3\.Gm4\.Gm5\.Gm6\.Gm7\.Gm8\.line 07\nline 08\n
+
+wait 3000
+share start writers
+wait 9000
+edit notes.txt 1 1
+wait 1200
+type Ht1.
+wait 150
+type Ht2.
+wait 150
+type Ht3.
+wait 150
+type Ht4.
+wait 150
+type Ht5.
+wait 150
+type Ht6.
+wait 150
+wait 800
+edit notes.txt 6 1
+key end
+wait 600
+type Hm1.
+wait 150
+type Hm2.
+wait 150
+type Hm3.
+wait 150
+type Hm4.
+wait 150
+type Hm5.
+wait 150
+type Hm6.
+wait 150
+type Hm7.
+wait 150
+type Hm8.
+wait 150
+wait 2500
+mark host-after
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit notes.txt 12 1
+key end
+wait 1700
+type Ge1.
+wait 150
+type Ge2.
+wait 150
+type Ge3.
+wait 150
+type Ge4.
+wait 150
+type Ge5.
+wait 150
+type Ge6.
+wait 150
+wait 800
+edit notes.txt 7 1
+wait 700
+type Gm1.
+wait 150
+type Gm2.
+wait 150
+type Gm3.
+wait 150
+type Gm4.
+wait 150
+type Gm5.
+wait 150
+type Gm6.
+wait 150
+type Gm7.
+wait 150
+type Gm8.
+wait 150
+wait 2500
+mark after
+wait 2500
+key save
+wait 3000
+quit
+wait 1500

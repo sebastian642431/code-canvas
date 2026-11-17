@@ -1,0 +1,58 @@
+title: Typing ./ inside quotes offers the folder's entries; enter and tab take one, an import drops the extension, escape closes the list
+folders: edit-paths
+limit: 50
+forbid-log: cannot edit
+expect-file: edit-paths/web/app.js :: (?-i)\Aimport \{ util \} from "\./lib/util\.js";\n\nconst data = "\./assets/logo\.svg";\nimport x from "\./lib/util"\nconst y = "\./\nz"\nconsole\.log\(util, data\);\n\z
+expect-file: edit-paths/src/main.rs :: (?-i)\n    let text = "\./other\.rs";\n
+
+wait 3000
+goto web/app.js
+wait 1000
+edit web/app.js 3 15
+type ./
+wait 400
+mark offered
+wait 400
+key enter
+wait 400
+mark folder-taken
+wait 400
+key tab
+wait 300
+key end
+key enter
+type import x from "./l
+wait 300
+key enter
+wait 300
+mark lib-entries
+wait 400
+key down
+key tab
+type "
+key enter
+type const y = "./
+wait 300
+key escape
+wait 300
+mark escaped
+wait 400
+key enter
+type z"
+key save
+wait 600
+goto src/main.rs
+wait 1000
+edit src/main.rs 4 17
+type ./
+wait 400
+mark rust-offered
+wait 400
+key down
+key enter
+wait 300
+mark rust-taken
+wait 400
+key save
+wait 600
+quit

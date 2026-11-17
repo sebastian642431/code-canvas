@@ -1,0 +1,20 @@
+title: Two files made by another program two seconds apart both get a card
+folders: edit-odd
+limit: 50
+expect-log: files were added or removed, scanning again
+expect-log: scanned 'edit-odd': 14 files
+
+wait 3000
+touch made_first.txt one
+wait 2000
+touch made_second.txt two
+wait 6000
+left files
+wait 500
+mark both-made
+wait 400
+goto made_second.txt
+wait 1500
+mark second-selected
+wait 400
+quit

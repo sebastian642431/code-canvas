@@ -1,0 +1,26 @@
+title: An assistant's edit is placed on the line that has the text it wrote, also when the file changes a moment after the hook says so
+folders: rust-small
+limit: 45
+expect-log: Nova \(Claude Code\) is on the canvas
+forbid-log: script: agent needs
+
+wait 3000
+goto src/util.rs
+wait 1200
+agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Edit","tool_input":{"file_path":"{WORK}/fix/rust-small/src/util.rs","old_string":"    n * 3","new_string":"    n + n + n"}}}
+wait 1500
+mark before-the-edit-on-old-text
+wait 500
+agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PostToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Edit","tool_input":{"file_path":"{WORK}/fix/rust-small/src/util.rs","old_string":"    n * 3","new_string":"// written a moment later"}}}
+wait 1200
+touch src/util.rs // written a moment later
+wait 2500
+mark after-the-edit-on-new-line
+wait 500
+agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PostToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Write","tool_input":{"file_path":"{WORK}/fix/rust-small/src/main.rs","content":"this text is nowhere in the file"}}}
+wait 600
+goto src/main.rs
+wait 1500
+mark text-not-found-stays-on-the-card
+wait 500
+quit

@@ -1,0 +1,46 @@
+title: Minimized and restored several times, a widened panel keeps its width and the canvas its place
+folders: git-changes
+
+wait 3000
+left files
+ui drag 344 400 470 400
+wait 600
+goto src/steps.rs
+wait 1200
+mark before
+wait 500
+minimize
+wait 900
+restore
+wait 900
+mark after-1
+wait 500
+minimize
+wait 600
+restore
+wait 600
+minimize
+wait 600
+restore
+wait 900
+mark after-3
+wait 500
+left changes
+wait 600
+minimize
+wait 900
+left search
+wait 300
+restore
+wait 900
+mark changed-while-minimized
+wait 500
+resize 1000 640
+wait 800
+minimize
+wait 800
+restore
+wait 900
+mark small-after
+wait 500
+quit

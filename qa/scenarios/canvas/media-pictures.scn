@@ -1,0 +1,54 @@
+title: Pictures as cards: png of several shapes, an svg, one that is not a picture and an empty one; the menu on a picture
+folders: media
+
+wait 3500
+left files
+fit
+wait 1500
+mark whole
+wait 500
+goto img/checks.png
+wait 1500
+mark checks
+wait 500
+menu 1000 450
+wait 600
+mark checks-menu
+wait 500
+ui click 500 800
+wait 300
+goto img/wide.png
+wait 1300
+mark wide
+wait 500
+goto img/tall.png
+wait 1300
+mark tall
+wait 500
+goto img/tiny.png
+wait 1300
+mark tiny
+wait 500
+goto img/broken.png
+wait 1300
+mark broken
+wait 500
+goto img/empty.png
+wait 1300
+mark empty
+wait 500
+goto img/drawing.svg
+wait 1300
+mark svg
+wait 500
+ignored ignored/hidden.png
+wait 1500
+mark ignored-picture
+wait 500
+goto img
+wait 1300
+zoom 0.05
+wait 800
+mark far-away
+wait 500
+quit

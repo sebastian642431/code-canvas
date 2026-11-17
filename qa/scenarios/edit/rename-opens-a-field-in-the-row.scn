@@ -1,0 +1,19 @@
+title: Rename opens a field in the file's row with the name in it (pictures only: no step can type into that field), and nothing is renamed by leaving
+folders: edit-odd
+limit: 40
+expect-file: edit-odd/b.txt :: (?-i)\Afirst of b\nsecond of b\n\z
+absent-file: edit-odd/NEWNAME
+absent-file: edit-odd/NEWNAME.txt
+
+wait 3000
+left files
+rename b.txt
+wait 700
+mark field
+wait 500
+type NEWNAME
+key enter
+wait 500
+mark after-typing
+wait 500
+quit

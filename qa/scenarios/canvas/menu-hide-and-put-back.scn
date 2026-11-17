@@ -1,0 +1,32 @@
+title: Menu: "Hide from the canvas" on a file card, then "Put hidden files back" from the canvas menu
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+left none
+right none
+fit
+wait 1000
+menu 640 400
+wait 500
+ui click 740 421
+wait 1200
+mark file-hidden
+wait 500
+left files
+wait 700
+mark file-hidden-explorer
+wait 500
+left none
+wait 600
+fit
+wait 900
+menu 200 500
+wait 500
+mark canvas-menu
+wait 400
+ui click 300 575
+wait 1200
+mark put-back
+wait 500
+quit

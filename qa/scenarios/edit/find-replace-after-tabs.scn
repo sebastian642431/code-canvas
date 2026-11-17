@@ -1,0 +1,21 @@
+title: Replace all puts the new text where the match is on lines that start with tabs
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/tabs_find.go :: (?-i)\Apackage main\n\nfunc main\(\) \{\n\tv := 1\n\t\tv = v \+ 1\n\tprintln\(v\)\n\}\n\z
+
+wait 3000
+goto tabs_find.go
+wait 800
+tool edit
+find value
+wait 300
+mark found
+wait 400
+find replace-all v
+wait 300
+mark replaced
+wait 400
+key save
+wait 600
+quit

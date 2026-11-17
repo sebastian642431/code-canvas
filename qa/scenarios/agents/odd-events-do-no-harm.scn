@@ -1,0 +1,62 @@
+title: Events for files outside the folder, missing files, folders, lines past the end, empty and wrong fields: nothing crashes and no face lands on a wrong file
+folders: rust-small
+fixtures: plain
+limit: 50
+forbid-log: script: agent needs
+expect-log: \(outside\) is on the canvas
+expect-log: \(past-the-end\) is on the canvas
+expect-log: \(huger\) is on the canvas
+
+wait 3000
+fit
+wait 1000
+agent {"agent":"o1","name":"outside","action":"read","path":"{WORK}/fix/plain/src/main.rs","line":2}
+agent {"agent":"o2","name":"missing","action":"edit","path":"{WORK}/fix/rust-small/src/not_there.rs","line":3}
+agent {"agent":"o3","name":"folder","action":"search","path":"{WORK}/fix/rust-small/src","note":"a folder"}
+agent {"agent":"o4","name":"past-the-end","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":999999,"lines":50}
+agent {"agent":"o5","name":"huge","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":3,"lines":4294967295}
+agent {"agent":"o6","name":"huger","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":18446744073709551615,"lines":18446744073709551615}
+agent {"agent":"o7","name":"zero","action":"read","path":"{WORK}/fix/rust-small/Cargo.toml","line":0,"lines":0}
+agent {"agent":"o8","name":"negative","action":"read","path":"{WORK}/fix/rust-small/Cargo.toml","line":-5,"lines":-1}
+agent {"agent":"o9","name":"relative","action":"read","path":"src/main.rs","line":1}
+agent {"agent":"o10","name":"dots","action":"read","path":"{WORK}/fix/rust-small/src/../src/main.rs","line":1}
+agent {"agent":"o11","name":"","action":"","path":"","note":""}
+agent {"agent":"o12","name":5,"action":7,"path":9,"line":"3","lines":"2","note":[1,2]}
+agent {"agent":"o13","action":"dance","path":"{WORK}/fix/rust-small","line":1.5}
+agent {"agent":"o14","name":"sibling","path":"{WORK}/fix/rust-small-2/src/main.rs","line":1}
+agent {"agent":"","name":"empty id"}
+agent {"agent":7}
+agent {"name":"no id","path":"{WORK}/fix/rust-small/src/main.rs"}
+agent {}
+agent []
+agent null
+agent 12
+agent "just text"
+agent {"hook":null}
+agent {"hook":{}}
+agent {"hook":"text"}
+agent {"source":5,"hook":{"session_id":"h1"}}
+agent {"source":"claude","hook":{"session_id":"h2","hook_event_name":"PreToolUse"}}
+agent {"source":"claude","hook":{"session_id":"h3","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":"not an object"}}
+agent {"source":"claude","hook":{"session_id":"h4","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"src/main.rs","offset":"4","limit":null}}}
+agent {"source":"claude","hook":{"session_id":"h5","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"{WORK}/fix/rust-small/src/steps.rs","offset":18446744073709551615,"limit":18446744073709551615}}}
+agent {"source":"claude","hook":{"session_id":"h6","hook_event_name":"PostToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Edit","tool_input":{"file_path":"{WORK}/fix/rust-small/src/steps.rs","new_string":""}}}
+agent {"source":"claude","hook":{"session_id":"h7","hook_event_name":"PostToolUse","cwd":"","tool_name":"Write","tool_input":{"file_path":"","content":"\n\n\n"}}}
+agent {"source":"claude","hook":{"session_id":"h8","hook_event_name":"NoSuchEvent","tool_name":"Read"}}
+agent {"source":"claude","hook":{"session_id":"h9","agent_id":"","agent_type":"","hook_event_name":"SubagentStop"}}
+agent {"source":"claude","hook":{"session_id":"h10","hook_event_name":"SessionEnd"}}
+agent {"source":"claude","hook":{"session_id":"","hook_event_name":"PreToolUse"}}
+agent {"source":"claude","hook":{"session_id":12,"hook_event_name":"PreToolUse"}}
+agent {"source":"claude","hook":{"session_id":"h11","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Grep","tool_input":{"pattern":"","path":"{WORK}/fix/rust-small/src/main.rs"}}}
+wait 1500
+mark after-odd-events
+wait 500
+goto src/util.rs
+wait 1500
+mark util-close
+wait 500
+goto src/main.rs
+wait 1500
+mark main-close
+wait 500
+quit

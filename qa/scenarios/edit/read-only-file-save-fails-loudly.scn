@@ -1,0 +1,34 @@
+title: A read-only file says it could not be saved and stays unsaved; Save and close writes the others and keeps the app open instead of losing the text
+folders: edit-readonly
+limit: 50
+allow-log: cannot save
+forbid-log: cannot edit
+forbid-log: nothing offers
+expect-log: cannot save .*locked\.txt
+expect-log: script: Answer\("Close without saving"\)
+expect-file: edit-readonly/locked.txt :: (?-i)\Alocked one\nlocked two\n\z
+expect-file: edit-readonly/free.txt :: (?-i)\AFfree one\nfree two\n\z
+
+wait 3000
+goto locked.txt
+wait 800
+edit locked.txt 1 1
+type L
+key save
+wait 800
+mark save-failed
+wait 400
+edit free.txt 1 1
+type F
+quit
+wait 1000
+answer Save and close
+wait 1200
+mark still-open
+wait 400
+quit
+wait 1000
+mark asked-again
+wait 400
+answer Close without saving
+wait 800

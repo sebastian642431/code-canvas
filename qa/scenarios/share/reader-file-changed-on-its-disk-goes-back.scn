@@ -1,0 +1,29 @@
+title: A program changes a file of the shared folder on a reader's disk: nothing reaches the host, and the reader's card shows the host's text again once the host changes that file (until then it shows the local change: look at the pictures)
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-file: share-text\other.txt :: ^alpha\nbeta\ngamma\nhost-line\n$
+
+wait 3000
+share start
+wait 16000
+touch other.txt host-line
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+goto other.txt
+wait 1200
+touch other.txt changed-on-the-readers-disk
+wait 4000
+mark after-local-change
+wait 7000
+mark after-the-host-changed-it
+wait 3000
+quit
+wait 1500

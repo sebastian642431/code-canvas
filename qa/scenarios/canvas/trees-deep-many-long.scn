@@ -1,0 +1,60 @@
+title: Fourteen folders deep, four hundred files, and names longer than a panel is wide
+folders: deep-tree, many-files, long-names
+
+wait 4500
+left files
+tab 1
+wait 900
+fit
+wait 1200
+mark all-three
+wait 500
+goto d00/d01/d02/d03/d04/d05/d06/d07/d08/d09/d10/d11/d12/d13/file_13.rs
+wait 1800
+mark deepest
+wait 500
+tab 2
+wait 1200
+goto mod_07
+wait 1500
+mark many-folder
+wait 500
+collapse-all
+wait 1200
+mark many-collapsed
+wait 500
+expand-all
+wait 1200
+tab 3
+wait 1200
+goto short.rs
+wait 1500
+mark long-names
+wait 500
+right symbols
+select s
+wait 900
+mark long-names-symbols
+wait 500
+left search
+search fn
+wait 1200
+mark long-names-search
+wait 500
+quick a_very
+wait 800
+mark long-names-quick
+wait 500
+ui click 900 800
+wait 300
+left changes
+wait 800
+mark long-names-changes
+wait 500
+resize 720 420
+wait 900
+left files
+wait 700
+mark long-names-small
+wait 500
+quit

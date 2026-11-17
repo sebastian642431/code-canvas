@@ -1,0 +1,40 @@
+title: A caret in an empty file, at column 5001 of a long line, on line 12000 and past the end of a file types where it should
+folders: odd-files
+limit: 60
+forbid-log: cannot edit
+expect-file: odd-files/empty.txt :: (?-i)\Ahello\z
+expect-file: odd-files/long_line.txt :: (?-i)\ASTARTx{5000}END\nshort\n\z
+expect-file: odd-files/big.rs :: (?-i)\{ 11998 \}\n// last\npub fn f11999\(\) -> usize \{ 11999 \}// past the end\n\z
+expect-file: odd-files/big.rs :: (?-i)\Apub fn f0\(\) -> usize \{ 0 \}\npub fn f1\(\)
+
+wait 4000
+edit empty.txt 5 5
+type hello
+wait 300
+mark empty
+wait 400
+key save
+wait 500
+edit long_line.txt 1 5001
+type END
+wait 500
+mark long-end
+wait 400
+edit long_line.txt 1 1
+type START
+key save
+wait 500
+edit big.rs 12000 1
+type // last
+key enter
+wait 500
+mark big-last
+wait 400
+edit big.rs 99999 99
+type // past the end
+wait 500
+mark big-past-end
+wait 400
+key save
+wait 1000
+quit

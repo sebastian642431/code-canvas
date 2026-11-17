@@ -1,0 +1,49 @@
+title: A guest joins: both see the same files, each other's caret and view, the people in the panel, and one follows the other
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+guest-expect-log: opening .*shared.*share-text
+guest-expect-log: scanned 'share-text': 4 files
+
+wait 3000
+share join nothing Ana
+share start writers
+wait 9000
+edit notes.txt 3 4
+wait 500
+fit
+wait 3500
+share panel
+wait 1200
+mark host-people-and-marks
+wait 1500
+share panel close
+wait 500
+share follow Beto
+wait 4500
+mark host-follows-beto
+wait 1500
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit other.txt 2 3
+wait 500
+fit
+wait 4000
+share panel
+wait 1200
+mark people-and-marks
+wait 1500
+share panel close
+wait 500
+goto docs/deep/inner.txt
+wait 3500
+mark at-inner
+wait 7000
+quit
+wait 1500

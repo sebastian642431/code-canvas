@@ -1,0 +1,65 @@
+title: Both type accents, symbols and emoji in the same line at the same time and end with the same text
+folders: share-text
+limit: 75
+expect-log: saved .*other\.txt
+expect-file: share-text\other.txt :: ^alpha\nbeta(ñandú€|🙂日本語|é|ß){16}\ngamma\n$
+expect-file: share-text\other.txt :: (ñandú€.*){4}
+expect-file: share-text\other.txt :: (🙂日本語.*){4}
+
+wait 3000
+share start writers
+wait 9000
+edit other.txt 2 1
+key end
+wait 1500
+type ñandú€
+wait 150
+type é
+wait 150
+type ñandú€
+wait 150
+type é
+wait 150
+type ñandú€
+wait 150
+type é
+wait 150
+type ñandú€
+wait 150
+type é
+wait 3000
+mark host-after
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit other.txt 2 1
+key end
+wait 2200
+type 🙂日本語
+wait 150
+type ß
+wait 150
+type 🙂日本語
+wait 150
+type ß
+wait 150
+type 🙂日本語
+wait 150
+type ß
+wait 150
+type 🙂日本語
+wait 150
+type ß
+wait 3000
+mark after
+wait 2500
+key save
+wait 3000
+quit
+wait 1500

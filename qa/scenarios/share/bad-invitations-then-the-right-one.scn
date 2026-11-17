@@ -1,0 +1,54 @@
+title: Joining with garbage, a dead port and a wrong secret fails with a notice each time, the host is not disturbed, and the right invitation still works
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+guest-expect-log: opening .*shared.*share-text
+guest-expect-log: script: cannot edit 'notes.txt'
+
+wait 3000
+share stop
+share join nothing Ana
+share start
+wait 300
+share start
+wait 300
+share join cc1:127.0.0.1:1:00000000000000000000000000000000 Zoe
+wait 23000
+share panel
+wait 1200
+mark host-people
+wait 4500
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 1500
+share join hello
+wait 1200
+mark garbage
+wait 500
+share join cc1:127.0.0.1:47800:zz000000000000000000000000000000 Eve
+wait 600
+share join cc1:127.0.0.1:99999:00000000000000000000000000000000 Eve
+wait 600
+share join cc1::47800:00000000000000000000000000000000 Eve
+wait 600
+share join cc1:127.0.0.1:1:00000000000000000000000000000000 Eve
+wait 4000
+mark nobody-listens
+wait 500
+share join cc1:127.0.0.1:47800:00000000000000000000000000000000 Eve
+wait 3500
+mark wrong-secret
+wait 500
+share join {INVITE} Beto
+wait 4000
+edit notes.txt 1 1
+wait 500
+share panel
+wait 1200
+mark joined-at-last
+wait 4000
+quit
+wait 1500

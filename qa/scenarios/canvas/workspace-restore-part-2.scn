@@ -1,0 +1,13 @@
+title: Workspace after a restart, on the data of part 1 (FAILS under the stock runner: it wipes the work folder; needs a runner that keeps it)
+expect-log: scanned 'git-history'
+expect-log: scanned 'rust-small'
+forbid-log: scanned 'plain'
+
+wait 4000
+mark after-restart
+wait 600
+left files
+wait 700
+mark after-restart-files
+wait 600
+quit

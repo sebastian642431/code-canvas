@@ -1,0 +1,23 @@
+title: Delete asks first; Cancel keeps the file, Delete takes it off the disk and off the canvas
+folders: edit-odd
+limit: 50
+forbid-log: nothing offers
+expect-file: edit-odd/c.txt :: (?-i)\Afirst of c\nsecond of c\n\z
+expect-file: edit-odd/a.txt :: (?-i)\Afirst of a
+absent-file: edit-odd/b.txt
+
+wait 3000
+left files
+delete c.txt
+wait 600
+mark asked
+wait 400
+answer Cancel
+wait 600
+delete b.txt
+wait 600
+answer Delete
+wait 3500
+mark b-gone
+wait 400
+quit

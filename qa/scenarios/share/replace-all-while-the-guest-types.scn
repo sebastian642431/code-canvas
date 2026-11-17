@@ -1,0 +1,62 @@
+title: The host replaces a word in every line of a file while the guest types in one of them: both end with the same text
+folders: share-text
+limit: 75
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^row 01\nrow 02\nrow 03\nrow 04\nrow 05\nrow 06g1\.g2\.g3\.g4\.g5\.g6\.g7\.g8\.g9\.g10\.g11\.g12\.\nrow 07\nrow 08\nrow 09\nrow 10\nrow 11\nrow 12\n$
+
+wait 3000
+share start writers
+wait 9000
+tool edit
+edit notes.txt 1 1
+wait 1700
+find line
+wait 300
+find replace-all row
+wait 600
+find close
+wait 4500
+mark host-after
+wait 9000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+edit notes.txt 6 1
+key end
+wait 1200
+type g1.
+wait 200
+type g2.
+wait 200
+type g3.
+wait 200
+type g4.
+wait 200
+type g5.
+wait 200
+type g6.
+wait 200
+type g7.
+wait 200
+type g8.
+wait 200
+type g9.
+wait 200
+type g10.
+wait 200
+type g11.
+wait 200
+type g12.
+wait 200
+wait 2500
+mark after
+wait 1500
+key save
+wait 3000
+quit
+wait 1500

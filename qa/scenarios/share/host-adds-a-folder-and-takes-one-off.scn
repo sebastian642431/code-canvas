@@ -1,0 +1,38 @@
+title: The host puts a second folder on the canvas and takes the first one off: the guest gets one and loses the other
+folders: share-text
+fixtures: share-second
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: share: share-second is shared, 2 files
+guest-expect-log: opening .*shared.*share-text
+guest-expect-log: opening .*shared.*share-second
+
+wait 3000
+share start
+wait 9000
+workspace put {FIX}\share-second
+wait 8000
+mark host-two-folders
+wait 600
+workspace off {FIX}\share-text
+wait 6000
+mark host-one-folder
+wait 5000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 9500
+fit
+wait 2000
+mark two-folders
+wait 6500
+fit
+wait 1500
+mark one-folder
+wait 3000
+quit
+wait 1500

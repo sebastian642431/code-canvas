@@ -1,0 +1,27 @@
+title: Quitting with unsaved text in three files of two folders asks once, and Save and close writes them all
+folders: edit-odd, plain
+limit: 50
+forbid-log: cannot edit
+forbid-log: nothing offers
+expect-file: edit-odd/a.txt :: (?-i)\AA1first of a\nsecond of a\n\z
+expect-file: edit-odd/b.txt :: (?-i)\Afirst of b\nsecond of bB1\n\z
+expect-file: plain/src/util.rs :: (?-i)\A//U1pub fn double
+
+wait 4000
+tab 1
+wait 800
+edit a.txt 1 1
+type A1
+edit b.txt 2 99
+type B1
+tab 2
+wait 800
+edit src/util.rs 1 1
+type //U1
+wait 300
+quit
+wait 1000
+mark asked
+wait 500
+answer Save and close
+wait 1000

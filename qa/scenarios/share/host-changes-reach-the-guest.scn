@@ -1,0 +1,49 @@
+title: Another program appends to a file of the host, makes a new one, the host saves an edit and deletes a file: the guest's folder follows each
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*other\.txt
+expect-file: share-text\brand-new.txt :: ^a file that was not there\n$
+expect-file: share-text\other.txt :: ^saved-by-host\.alpha\n
+absent-file: share-text\docs\deep\inner.txt
+guest-expect-log: opening .*shared.*share-text
+
+wait 3000
+share start
+wait 9000
+touch notes.txt appended by another program
+wait 2500
+touch brand-new.txt a file that was not there
+wait 4500
+edit other.txt 1 1
+type saved-by-host.
+wait 500
+key save
+wait 2000
+key escape
+delete docs/deep/inner.txt
+wait 600
+answer Delete
+wait 5000
+fit
+wait 1500
+mark host-after-changes
+wait 7000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+fit
+wait 5500
+mark after-touch-and-new-file
+wait 14000
+fit
+wait 1500
+mark after-all-changes
+wait 2500
+quit
+wait 1500

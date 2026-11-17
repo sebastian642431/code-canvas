@@ -1,0 +1,51 @@
+title: The window made small (1100x700, 800x500, the minimum) keeps title bar, rails, toolbar and status bar whole
+folders: git-changes
+
+wait 3000
+left files
+resize 1100 700
+wait 900
+mark w1100-files
+wait 500
+left changes
+wait 800
+mark w1100-changes
+wait 500
+resize 800 500
+wait 900
+mark w800-changes
+wait 500
+left files
+wait 500
+mark w800-files
+wait 500
+right symbols
+wait 500
+mark w800-symbols
+wait 500
+left help
+wait 500
+mark w800-help
+wait 500
+left none
+wait 500
+mark w800-none
+wait 500
+resize 200 150
+wait 900
+mark minimum-none
+wait 500
+left files
+wait 600
+mark minimum-files
+wait 500
+left settings
+wait 700
+mark minimum-settings
+wait 500
+left settings:close
+resize 1706 920
+wait 900
+mark back-to-normal
+wait 500
+quit

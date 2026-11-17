@@ -1,0 +1,38 @@
+title: A video card in view must not cover the toolbar, go to file, the command palette, a notice, the canvas menu or Settings
+folders: media
+fixtures: plain
+
+wait 3500
+left none
+right none
+goto video/clip.mp4
+wait 2500
+mark toolbar
+wait 500
+quick lib
+wait 800
+mark go-to-file
+wait 500
+ui click 20 600
+wait 400
+palette canvas
+wait 800
+mark palette
+wait 500
+ui click 20 600
+wait 400
+workspace put {FIX}\not-there
+wait 900
+mark notice
+wait 500
+menu 900 500
+wait 700
+mark menu
+wait 500
+left settings
+wait 900
+mark settings
+wait 500
+left settings:close
+wait 300
+quit

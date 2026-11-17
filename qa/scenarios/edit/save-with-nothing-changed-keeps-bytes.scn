@@ -1,0 +1,29 @@
+title: Saving a file nothing was typed in leaves mixed line ends, lone CRs, trailing spaces and a single newline as they were
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/mixed_eol.txt :: (?-i)\Aone\r\ntwo\nthree\r\nfour\n\z
+expect-file: edit-odd/cr_only.txt :: (?-i)\Aone\rtwo\rthree\r\z
+expect-file: edit-odd/trailing_ws.txt :: (?-i)\Aa  \nb\t\n\n\n\z
+expect-file: edit-odd/only_newline.txt :: (?-i)\A\n\z
+expect-file: edit-odd/bom.txt :: (?-i)\Afirst\nsecond\n\z
+
+wait 3000
+edit mixed_eol.txt 1 1
+key save
+wait 300
+edit cr_only.txt 1 1
+key save
+wait 300
+edit trailing_ws.txt 1 1
+key save
+wait 300
+edit only_newline.txt 1 1
+key save
+wait 300
+edit bom.txt 1 1
+key save
+wait 300
+mark saved
+wait 400
+quit

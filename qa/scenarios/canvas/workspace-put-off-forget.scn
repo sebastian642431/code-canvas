@@ -1,0 +1,32 @@
+title: Workspace: a third folder is put on the canvas, one taken off, one forgotten, all put back
+folders: rust-small, plain
+fixtures: git-history
+expect-log: script: Workspace\("all"\)
+forbid-log: WARN.*script
+
+wait 3500
+left files
+wait 600
+mark two-folders
+wait 500
+workspace put {FIX}\git-history
+wait 2500
+mark three-folders
+wait 500
+workspace off {FIX}\plain
+wait 1500
+mark plain-off
+wait 500
+workspace forget {FIX}\rust-small
+wait 1500
+mark rust-small-forgotten
+wait 500
+workspace all
+wait 2500
+mark all-back
+wait 500
+folders
+wait 700
+mark switcher
+wait 500
+quit

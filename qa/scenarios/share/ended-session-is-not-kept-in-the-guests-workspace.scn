@@ -1,0 +1,26 @@
+title: After a session ends the guest's workspace does not remember the shared folder (its copy is deleted, there is nothing to put back on the canvas)
+folders: share-text
+limit: 60
+expect-log: share: share-text is shared, 4 files
+guest-expect-log: opening .*shared.*share-text
+expect-file: {WORK}\data-guest\session.json :: (?s)^(?!.*data-guest\\\\shared).*"workspace"
+
+wait 3000
+share start
+wait 9000
+share stop
+wait 6000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 9000
+left files
+wait 1200
+mark after-the-session
+wait 1500
+quit
+wait 1500

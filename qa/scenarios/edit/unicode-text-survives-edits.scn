@@ -1,0 +1,21 @@
+title: Accents, an emoji and CJK are typed, deleted and saved without corrupting the UTF-8 file
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/unicode.md :: (?-i)\A## Título con ñ y €\n\nLínea con emoji 🙂ñ y 日本語終。\n\z
+
+wait 3000
+edit unicode.md 3 18
+type ñ
+key end
+key backspace
+type 終。
+edit unicode.md 1 1
+key delete
+type ##
+wait 300
+mark unicode
+wait 400
+key save
+wait 600
+quit

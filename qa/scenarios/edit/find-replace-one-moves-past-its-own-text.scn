@@ -1,0 +1,26 @@
+title: Replacing one match with text that contains the query moves on to the next match, not into the text just written
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-file: edit-odd/words.txt :: (?-i)\nfoofoo foofoofoo food\n
+
+wait 3000
+goto words.txt
+wait 800
+tool edit
+edit words.txt 1 1
+find foo
+wait 300
+mark found
+wait 400
+find replace foofoo
+wait 300
+mark after-first
+wait 400
+find replace foofoo
+wait 300
+mark after-second
+wait 400
+key save
+wait 600
+quit

@@ -1,0 +1,69 @@
+title: A folder with CRLF, tabs, no final newline, an empty file, a 5000 column line, 12000 lines, binary and non UTF-8 files is shared, and a guest's saves keep each file's line ends
+folders: odd-files
+limit: 80
+expect-log: share: odd-files is shared, \d+ files
+expect-file: odd-files\crlf.txt :: ^first line\r\nSECOND lineby-beto\r\nthird line\r\nfourth line\r\n$
+expect-file: odd-files\no_final_newline.txt :: ^one\ntwoX$
+expect-file: odd-files\empty.txt :: ^Z\n?$
+expect-file: odd-files\long_line.txt :: ^x{2499}MIDx{2501}\nshort\n$
+expect-file: odd-files\big.rs :: \npub fn f11988\(\) -> usize \{ 11988 \}\n// end-by-betopub fn f11989\(\) -> usize \{ 11989 \}\n
+expect-file: odd-files\tabs.go :: \n\t\tprintln\("tabs changed"\)// t\n\t\}\n\}\n$
+expect-file: odd-files\latin1.txt :: ^caf. no es utf8\n$
+guest-expect-log: opening .*shared.*odd-files
+
+wait 3000
+share start writers
+wait 36000
+fit
+wait 1500
+mark host-end
+wait 5000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 6000
+fit
+wait 2000
+mark all-files
+wait 500
+edit crlf.txt 2 1
+key end
+type by-beto
+wait 400
+key save
+wait 1500
+edit no_final_newline.txt 2 1
+key end
+type X
+wait 400
+key save
+wait 1500
+edit empty.txt 1 1
+type Z
+wait 400
+key save
+wait 1500
+edit long_line.txt 1 2500
+type MID
+wait 400
+key save
+wait 1500
+edit big.rs 11990 1
+type // end-by-beto
+wait 600
+key save
+wait 2500
+mark big-file
+wait 500
+edit tabs.go 5 1
+key end
+type // t
+wait 400
+key save
+wait 3000
+quit
+wait 1500

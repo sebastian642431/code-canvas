@@ -1,0 +1,33 @@
+title: An edit keeps CRLF line ends, tabs and a missing final newline exactly as the file had them
+folders: odd-files
+limit: 40
+forbid-log: cannot edit
+expect-file: odd-files/crlf.txt :: (?-i)\Afirst line\r\nXSECOND line\r\nnew\r\nthird line\r\nfourth line\r\n\z
+expect-file: odd-files/no_final_newline.txt :: (?-i)\Aone\ntwo!\z
+expect-file: odd-files/tabs.go :: (?-i)\Apackage main\n\nfunc main\(\) \{\n\tif true \{\n\t\tprintln\("tabs changed"\)\n\t\tx\(\)\n\t\t\ty\(\)\n\t\}\n\}\n\z
+
+wait 3000
+edit crlf.txt 2 1
+type X
+key end
+key enter
+type new
+key save
+wait 500
+edit no_final_newline.txt 2 4
+type !
+key save
+wait 500
+edit tabs.go 5 1
+key end
+key enter
+type x()
+key enter
+key tab
+type y()
+wait 300
+mark tabs
+wait 400
+key save
+wait 600
+quit
