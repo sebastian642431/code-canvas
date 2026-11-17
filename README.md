@@ -98,6 +98,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   are reloaded by themselves, and the canvas **travels to the lines that changed**
   and lights them, so what an assistant is touching is seen as it happens. Moving
   the canvas yourself holds it; it can be switched off in the settings.
+- **Code is offered while it is typed** when the language has its extension
+  installed (rust-analyzer, TypeScript and the like): the members after a dot, the
+  names that fit what is typed, each with its kind and its type. Enter or Tab takes
+  one, arrows choose, Esc closes; what it needs imported is imported.
 - While a path is typed inside quotes (`"./`, `"../`, `"src/`), the files and folders
   that are there are offered under the caret: arrows, then Enter or Tab.
 - In `package.json` and `Cargo.toml`, each dependency says whether a newer version
@@ -248,7 +252,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       drag to select; find and replace in a file.
 - [x] The canvas travels to what an assistant or another program changes; any path
       opens on the canvas, also outside the open folders; back and forward.
-- [ ] Editing: multiple cursors, completions from language servers.
+- [x] Completions from language servers while typing, with the imports they need.
+- [ ] Editing: multiple cursors.
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).

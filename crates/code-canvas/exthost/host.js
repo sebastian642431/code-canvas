@@ -2150,7 +2150,145 @@ function plainHover(h) {
   return parts.map((c) => (typeof c === 'string' ? c : c && c.language ? '```' + c.language + '\n' + c.value + '\n```' : (c && c.value) || '')).join('\n\n');
 }
 
+const COMPLETION_KINDS = ['Text', 'Method', 'Function', 'Constructor', 'Field', 'Variable', 'Class', 'Interface', 'Module', 'Property', 'Unit', 'Value', 'Enum', 'Keyword', 'Snippet', 'Color', 'File', 'Reference', 'Folder', 'EnumMember', 'Constant', 'Struct', 'Event', 'Operator', 'TypeParameter', 'User', 'Issue'];
+const MAX_COMPLETIONS = 200;
+let offered = { serial: 0, doc: null, list: [] };
+
+function plainSnippet(value) {
+  let out = '';
+  let i = 0;
+  const stops = new Map();
+  const number = /^\d+$/;
+  const parse = (until) => {
+    while (i < value.length) {
+      const c = value[i];
+      if (c === '\\' && i + 1 < value.length) {
+        out += value[i + 1];
+        i += 2;
+        continue;
+      }
+      if (until && c === until) {
+        i += 1;
+        return;
+      }
+      if (c !== '$') {
+        out += c;
+        i += 1;
+        continue;
+      }
+      const rest = value.slice(i, i + 80);
+      const bare = /^\$(\d+|[A-Za-z_]\w*)/.exec(rest);
+      if (bare) {
+        if (number.test(bare[1]) && !stops.has(bare[1])) stops.set(bare[1], [out.length, out.length]);
+        i += bare[0].length;
+        continue;
+      }
+      const open = /^\$\{(\d+|[A-Za-z_]\w*)/.exec(rest);
+      if (!open) {
+        out += c;
+        i += 1;
+        continue;
+      }
+      const from = out.length;
+      i += open[0].length;
+      if (value[i] === ':') {
+        i += 1;
+        parse('}');
+      } else if (value[i] === '|') {
+        const end = value.indexOf('|}', i);
+        out += value.slice(i + 1, end < 0 ? value.length : end).split(',')[0];
+        i = end < 0 ? value.length : end + 2;
+      } else {
+        const end = value.indexOf('}', i);
+        i = end < 0 ? value.length : end + 1;
+      }
+      if (number.test(open[1]) && !stops.has(open[1])) stops.set(open[1], [from, out.length]);
+    }
+  };
+  parse('');
+  const stop = stops.get('1') || stops.get('0');
+  const chars = (to) => [...out.slice(0, to)].length;
+  return { text: out, caret: stop ? chars(stop[0]) : null, select: stop ? chars(stop[1]) - chars(stop[0]) : 0 };
+}
+
+function inOrder(typed, text) {
+  let at = 0;
+  for (const c of typed) {
+    at = text.indexOf(c, at);
+    if (at < 0) return false;
+    at += 1;
+  }
+  return true;
+}
+
+function plainCompletion(doc, position, word, item) {
+  const label = typeof item.label === 'string' ? item.label : (item.label && item.label.label) || '';
+  if (!label) return null;
+  const given = item.range && (item.range.inserting || item.range);
+  const range = given || (item.textEdit && item.textEdit.range) || new Range(word ? word.start : position, position);
+  if (range.start.line !== position.line || range.start.character > position.character) return null;
+  const lineText = doc.lineAt(position.line).text;
+  const typed = lineText.slice(range.start.character, position.character).toLowerCase();
+  const filter = String(item.filterText || label).toLowerCase();
+  const starts = filter.startsWith(typed);
+  if (!starts && !inOrder(typed, filter)) return null;
+  let text = item.insertText !== undefined && item.insertText !== null ? item.insertText : item.textEdit ? item.textEdit.newText : label;
+  let caret = null;
+  let select = 0;
+  if (text && typeof text === 'object') ({ text, caret, select } = plainSnippet(String(text.value)));
+  const about = typeof item.label === 'object' ? [item.label.detail, item.label.description].filter(Boolean).join(' ') : '';
+  const detail = String(item.detail || about || '').split('\n')[0].slice(0, 120);
+  const col = displayColumn(lineText, range.start.character, state.tabWidth);
+  return {
+    rank: (item.preselect ? 0 : 1) + (starts ? 0 : 2),
+    order: String(item.sortText || label),
+    plain: { label, detail, kind: COMPLETION_KINDS[item.kind] || '', text: String(text), caret, select, col },
+  };
+}
+
 const requests = {
+  async complete({ path: file, line, col, trigger }) {
+    const doc = openDocument(file, false);
+    if (!doc) return { items: [] };
+    const position = positionAt(doc, line, col);
+    const context = { triggerKind: trigger ? 1 : 0, triggerCharacter: trigger || undefined };
+    const word = doc.getWordRangeAtPosition(position);
+    const found = [];
+    for (const p of providersFor('CompletionItem', doc)) {
+      if (trigger && !p.rest.flat().includes(trigger)) continue;
+      let result;
+      try {
+        result = await scope.run(p.extension, () => p.provider.provideCompletionItems(doc, position, noToken, context));
+      } catch (e) {
+        log('warn', p.extension, `completion failed: ${(e && e.message) || e}`);
+        continue;
+      }
+      for (const item of Array.isArray(result) ? result : (result && result.items) || []) {
+        const made = plainCompletion(doc, position, word, item);
+        if (made) found.push({ item, p, ...made });
+      }
+    }
+    found.sort((a, b) => a.rank - b.rank || (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+    offered = { serial: offered.serial + 1, doc, list: found.slice(0, MAX_COMPLETIONS) };
+    return { serial: offered.serial, items: offered.list.map((f) => f.plain) };
+  },
+  async completionExtra({ serial, index }) {
+    const chosen = serial === offered.serial ? offered.list[index] : undefined;
+    if (!chosen) return { edits: [] };
+    let item = chosen.item;
+    const has = (it) => it && it.additionalTextEdits && it.additionalTextEdits.length;
+    if (!has(item) && typeof chosen.p.provider.resolveCompletionItem === 'function') {
+      try {
+        item = (await scope.run(chosen.p.extension, () => chosen.p.provider.resolveCompletionItem(item, noToken))) || item;
+      } catch (e) {
+        log('warn', chosen.p.extension, `completion could not be resolved: ${(e && e.message) || e}`);
+      }
+    }
+    const doc = offered.doc;
+    const col = (p) => (p.line < doc.lineCount ? displayColumn(doc.lineAt(p.line).text, p.character, state.tabWidth) : p.character);
+    const edits = (has(item) ? item.additionalTextEdits : []).map((e) => ({ ...plainRange(e.range), col: col(e.range.start), endCol: col(e.range.end), text: e.newText }));
+    return { edits };
+  },
   async format({ path: file, onSave }) {
     const doc = openDocument(file, true);
     if (!doc) throw new Error('cannot read the file');

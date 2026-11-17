@@ -97,10 +97,33 @@ struct Place {
 
 const PLACES_KEPT: usize = 200;
 
+enum Offered {
+    Paths(Vec<crate::paths::Candidate>),
+    Code { serial: u64, line: usize, items: Vec<(usize, ext::Suggestion)> },
+}
+
+impl Offered {
+    fn len(&self) -> usize {
+        match self {
+            Offered::Paths(items) => items.len(),
+            Offered::Code { items, .. } => items.len(),
+        }
+    }
+}
+
 struct Completion {
     start: usize,
-    items: Vec<crate::paths::Candidate>,
+    items: Offered,
     selected: usize,
+}
+
+fn word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn typed_in_order(typed: &str, label: &str) -> bool {
+    let mut rest = label.chars().flat_map(char::to_lowercase);
+    typed.chars().flat_map(char::to_lowercase).all(|c| rest.any(|l| l == c))
 }
 
 struct Drag {
@@ -1212,31 +1235,141 @@ impl App {
     }
 
     fn update_completion(&mut self) {
-        self.completion = None;
-        if !self.ui.prefs.complete_paths {
+        let before = self.completion.take();
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
+        let caret = editor.caret;
+        self.completion = self.paths_offered().or_else(|| {
+            let Completion { start, items: Offered::Code { serial, line, items }, selected } = before? else {
+                return None;
+            };
+            let typed: String =
+                editor.line(caret.line).chars().skip(start).take(caret.col.saturating_sub(start)).collect();
+            if line != caret.line || caret.col < start || !typed.chars().all(word_char) {
+                return None;
+            }
+            let chosen = items.get(selected).map(|(index, _)| *index);
+            let items: Vec<_> = items.into_iter().filter(|(_, item)| typed_in_order(&typed, &item.label)).collect();
+            let selected = items.iter().position(|(index, _)| Some(*index) == chosen).unwrap_or(0);
+            (!items.is_empty()).then_some(Completion { start, items: Offered::Code { serial, line, items }, selected })
+        });
+    }
+
+    fn paths_offered(&self) -> Option<Completion> {
+        let page = self.pages.get(self.active).filter(|_| self.ui.prefs.complete_paths)?;
+        let editor = page.editor()?;
+        let caret = editor.caret;
+        let typed = crate::paths::partial(editor.line(caret.line), caret.col)?;
+        let folder = crate::paths::folder(&page.root, &editor.rel_path, &typed.dir)?;
+        let mut items = crate::paths::candidates(&folder, &typed.prefix);
+        let own = page.root.join(&editor.rel_path);
+        items.retain(|c| folder.join(&c.name) != own);
+        (!items.is_empty()).then_some(Completion { start: typed.start, items: Offered::Paths(items), selected: 0 })
+    }
+
+    fn ask_completion(&mut self) {
+        if !self.ui.prefs.complete_code || matches!(self.completion, Some(Completion { items: Offered::Paths(_), .. }))
+        {
             return;
         }
         let Some(page) = self.pages.get(self.active) else { return };
         let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
         let caret = editor.caret;
-        let Some(typed) = crate::paths::partial(editor.line(caret.line), caret.col) else { return };
-        let Some(folder) = crate::paths::folder(&page.root, &editor.rel_path, &typed.dir) else { return };
-        let mut items = crate::paths::candidates(&folder, &typed.prefix);
-        let own = page.root.join(&editor.rel_path);
-        items.retain(|c| folder.join(&c.name) != own);
-        if !items.is_empty() {
-            self.completion = Some(Completion { start: typed.start, items, selected: 0 });
+        let Some(last) = editor.line(caret.line).chars().take(caret.col).last() else { return };
+        if !word_char(last) && (last.is_whitespace() || ")]};,".contains(last)) {
+            return;
+        }
+        let trigger = (!word_char(last)).then_some(last);
+        let path = page.root.join(&editor.rel_path);
+        let (text, col) = (editor.text(), editor.display_col(caret) as u32);
+        self.ext.file_edited(&path, &text);
+        self.ext.request_completion(&path, caret.line as u32, col, trigger);
+    }
+
+    fn offer_code(&mut self, found: ext::Suggestions) {
+        if matches!(self.completion, Some(Completion { items: Offered::Paths(_), .. })) {
+            return;
+        }
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
+        let caret = editor.caret;
+        let here = page.root.join(&editor.rel_path) == found.path
+            && caret.line as u32 == found.line
+            && editor.display_col(caret) as u32 == found.col;
+        if !here {
+            return;
+        }
+        let before: Vec<char> = editor.line(caret.line).chars().take(caret.col).collect();
+        let start = caret.col - before.iter().rev().take_while(|c| word_char(**c)).count();
+        let chosen = match &self.completion {
+            Some(Completion { items: Offered::Code { items, .. }, selected, .. }) => {
+                items.get(*selected).map(|(_, item)| item.label.clone())
+            }
+            _ => None,
+        };
+        let items: Vec<(usize, ext::Suggestion)> = found.items.into_iter().enumerate().collect();
+        let selected = items.iter().position(|(_, item)| Some(&item.label) == chosen.as_ref()).unwrap_or(0);
+        let offered = Offered::Code { serial: found.serial, line: caret.line, items };
+        self.completion = (offered.len() > 0).then_some(Completion { start, items: offered, selected });
+        self.request_redraw();
+    }
+
+    fn extra_edits(&mut self, path: &Path, edits: Vec<ext::ExtraEdit>) {
+        let Some((i, rel)) = self.locate_file(path) else { return };
+        let Some(editor) = self.pages[i].editors.get_mut(&rel) else { return };
+        let mut edits = edits;
+        edits.sort_by_key(|edit| std::cmp::Reverse((edit.line, edit.col)));
+        let mut changed = false;
+        for edit in edits {
+            let from = editor.pos_at_display(edit.line as usize, edit.col as usize);
+            let to = editor.pos_at_display(edit.end_line as usize, edit.end_col as usize);
+            changed |= editor.edit_before(from, to, &edit.text);
+        }
+        if changed && i == self.active && self.pages[i].editing.as_deref() == Some(rel.as_str()) {
+            self.after_edit();
         }
     }
 
     fn accept_completion(&mut self, index: usize) {
         let Some(offer) = self.completion.take() else { return };
-        let Some(candidate) = offer.items.get(index) else { return };
-        let Some(editor) = self.pages.get_mut(self.active).and_then(|p| p.editor_mut()) else { return };
-        let text = crate::paths::completion(candidate, &editor.rel_path, editor.line(editor.caret.line));
-        editor.complete(offer.start, &text);
-        self.after_edit();
-        self.update_completion();
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let root = page.root.clone();
+        let Some(editor) = page.editor_mut() else { return };
+        match &offer.items {
+            Offered::Paths(items) => {
+                let Some(candidate) = items.get(index) else { return };
+                let text = crate::paths::completion(candidate, &editor.rel_path, editor.line(editor.caret.line));
+                editor.complete(offer.start, &text);
+                self.after_edit();
+                self.update_completion();
+            }
+            Offered::Code { serial, items, .. } => {
+                let Some((at, item)) = items.get(index) else { return };
+                let line = editor.caret.line;
+                let from = editor.pos_at_display(line, item.col as usize);
+                let indent: String = editor.line(line).chars().take_while(|c| c.is_whitespace()).collect();
+                editor.complete(from.col, &item.text.replace('\n', &format!("\n{indent}")));
+                if let Some(caret) = item.caret {
+                    let place = |chars: usize| {
+                        let before: String = item.text.chars().take(chars).collect();
+                        match before.rsplit_once('\n') {
+                            Some((above, last)) => crate::editor::Pos::new(
+                                line + above.matches('\n').count() + 1,
+                                indent.chars().count() + last.chars().count(),
+                            ),
+                            None => crate::editor::Pos::new(line, from.col + chars),
+                        }
+                    };
+                    editor.move_to(place(caret), false);
+                    if item.select > 0 {
+                        editor.move_to(place(caret + item.select), true);
+                    }
+                }
+                let path = root.join(&editor.rel_path);
+                self.ext.request_completion_extra(&path, *serial, *at);
+                self.after_edit();
+            }
+        }
     }
 
     fn keep_caret_visible(&mut self) {
@@ -1373,6 +1506,7 @@ impl App {
         let shift = self.mods.shift_key();
         if let Some(offer) = self.completion.as_mut() {
             let count = offer.items.len();
+            let code = matches!(offer.items, Offered::Code { .. });
             let taken = match &event.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
                     offer.selected = (offer.selected + 1) % count;
@@ -1390,6 +1524,10 @@ impl App {
                 Key::Named(NamedKey::Escape) => {
                     self.completion = None;
                     true
+                }
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Home | NamedKey::End) if code => {
+                    self.completion = None;
+                    false
                 }
                 _ => false,
             };
@@ -1480,6 +1618,9 @@ impl App {
             self.request_redraw();
         }
         self.update_completion();
+        if changed {
+            self.ask_completion();
+        }
         true
     }
 
@@ -2620,6 +2761,7 @@ impl App {
                 }
                 self.after_edit();
                 self.update_completion();
+                self.ask_completion();
             }
             Step::Key(name)
                 if self.completion.is_some() && matches!(name.as_str(), "up" | "down" | "enter" | "tab" | "escape") =>
@@ -3016,6 +3158,8 @@ impl App {
                 ext::Event::Write { path, text } => self.write_file(&path, &text),
                 ext::Event::Reveal(path) => self.reveal_file(&path),
                 ext::Event::GoTo { path, line, col, len } => self.show_path(&path, Some((line, col, len))),
+                ext::Event::Suggestions(found) => self.offer_code(found),
+                ext::Event::ExtraEdits { path, edits } => self.extra_edits(&path, edits),
                 ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),
                 ext::Event::WebviewClosed(handle) => {
@@ -3392,7 +3536,24 @@ impl App {
             let (tl, br) = self.caret_cell()?;
             Some(ui::CompletionView {
                 at: egui::pos2(tl[0] / s, br[1] / s),
-                items: offer.items.iter().map(|c| (c.name.clone(), c.is_dir)).collect(),
+                items: match &offer.items {
+                    Offered::Paths(items) => items
+                        .iter()
+                        .map(|c| ui::CompletionRow {
+                            label: c.name.clone(),
+                            detail: String::new(),
+                            icon: ui::CompletionIcon::Path { is_dir: c.is_dir },
+                        })
+                        .collect(),
+                    Offered::Code { items, .. } => items
+                        .iter()
+                        .map(|(_, item)| ui::CompletionRow {
+                            label: item.label.clone(),
+                            detail: item.detail.clone(),
+                            icon: ui::CompletionIcon::Kind(item.kind.clone()),
+                        })
+                        .collect(),
+                },
                 selected: offer.selected,
             })
         });
@@ -4102,5 +4263,21 @@ impl ApplicationHandler for App {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_is_typed_keeps_the_names_that_have_its_letters_in_order() {
+        assert!(typed_in_order("", "title"));
+        assert!(typed_in_order("ti", "title"));
+        assert!(typed_in_order("TL", "title"));
+        assert!(typed_in_order("hm", "HashMap"));
+        assert!(!typed_in_order("tx", "title"));
+        assert!(!typed_in_order("titles", "title"));
+        assert!(word_char('_') && word_char('ñ') && !word_char('.'));
     }
 }

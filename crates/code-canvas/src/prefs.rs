@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct Prefs {
     pub check_versions: bool,
     pub complete_paths: bool,
+    pub complete_code: bool,
     pub check_updates: bool,
     pub follow_chat: bool,
     pub follow_changes: bool,
@@ -20,6 +21,7 @@ impl Default for Prefs {
         Prefs {
             check_versions: true,
             complete_paths: true,
+            complete_code: true,
             check_updates: true,
             follow_chat: true,
             follow_changes: true,

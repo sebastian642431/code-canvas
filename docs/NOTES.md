@@ -1295,6 +1295,29 @@ Details:
 - The card menu (`ui::CardMenu`, right click without moving) offers a change only
   where `FileChange::hunks` has one and the file has nothing unsaved: the hunks
   of an unsaved buffer are not what git would cut.
+- **Completions** are asked after every edit that leaves a word or a mark other
+  than a blank or a closing one before the caret (`App::ask_completion`): the text
+  goes to the host first, without the pause other edits wait, then `complete` with
+  the cell of the caret and, when what was typed is not part of a word, that
+  character as the trigger. The host asks the providers that declared it (all of
+  them for a word), keeps the items whose filter text has the typed letters in
+  order, sorts them (the preselected, the ones that start with what was typed, then
+  `sortText`) and sends `MAX_COMPLETIONS` of them as plain rows: label, detail,
+  kind, the text to put, where it starts (a cell of the caret's line) and, for a
+  snippet, where the caret goes and how much to select (`plainSnippet` drops the
+  stops and keeps the first one's place). An item that replaces text of another
+  line is left out.
+- A reply is taken only if it is for the last request (`Extensions::completing`)
+  and the caret is still where it was asked from (`App::offer_code`). Until the
+  next reply comes the list shown is the old one without the names that stopped
+  fitting (`update_completion`), so it does not blink while typing.
+- Taking one puts its text from its own start to the caret, each further line
+  indented as the caret's, and then asks `completionExtra` for that item: the
+  host resolves it (`resolveCompletionItem`) and sends its `additionalTextEdits`,
+  which is how an import arrives. They are applied only above the caret's line
+  (`Editor::edit_before`), where they cannot move what was just typed sideways.
+  The host keeps the items of the last `complete` only (`offered`), by a serial
+  the app gives back: an older list answers with nothing.
 - The file being edited is never shown as a diff: its caret is in file lines.
   `diff_due` notices that the edited file changed and asks for a new pass.
 - `Diffed::plain` is the file's real text as the canvas would show it, kept to
@@ -1358,6 +1381,7 @@ Details:
 |---|---|
 | `check_versions` | Ask npm and crates.io for the latest version of each dependency and show it next to its line (`versions.rs`). Only package names are sent. |
 | `complete_paths` | Offer file and folder names while a path is typed in a string (`paths.rs`). |
+| `complete_code` | Offer what the language's extension proposes while code is typed (`App::ask_completion`). |
 | `check_updates` | Look for a newer release when the app starts (`update.rs`). |
 | `follow_chat` | Keep an assistant's panel scrolled to what it is writing, until the user scrolls up (`webview.rs`). |
 | `follow_changes` | Travel to the lines a file changed from outside (an assistant, another editor) has new, and light them (`App::follow_change`). |

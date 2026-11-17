@@ -73,6 +73,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   configuración del proyecto. Las *webviews* (la interfaz propia de una extensión) se
   abren en el panel derecho: ahí se ve el panel oficial de Claude Code (por ahora solo
   en Windows). Las vistas de árbol todavía no se muestran.
+- **Autocompletado**: con la extensión del lenguaje instalada (rust-analyzer,
+  TypeScript y similares), mientras se escribe aparecen los miembros después de un
+  punto y los nombres que encajan, con su tipo. Enter o Tab lo toma y agrega el
+  `import` / `use` que haga falta.
 - **Ver un commit en el lienzo**: un clic en un commit (en el *Graph* o en el *timeline*
   de un archivo) deja en el lienzo solo los archivos que tocó, cada uno mostrando qué
   le cambió. La cruz de la barra de arriba, o el mismo clic otra vez, vuelve a los

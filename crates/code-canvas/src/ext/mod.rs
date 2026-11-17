@@ -273,6 +273,72 @@ pub enum Event {
     WebviewClosed(String),
     ShowWebview(String),
     GoTo { path: PathBuf, line: u32, col: u32, len: u32 },
+    Suggestions(Suggestions),
+    ExtraEdits { path: PathBuf, edits: Vec<ExtraEdit> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggestion {
+    pub label: String,
+    pub detail: String,
+    pub kind: String,
+    pub text: String,
+    pub caret: Option<usize>,
+    pub select: usize,
+    pub col: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggestions {
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+    pub serial: u64,
+    pub items: Vec<Suggestion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtraEdit {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+    pub text: String,
+}
+
+fn suggestions_of(result: Option<&Value>, path: PathBuf, line: u32, col: u32) -> Suggestions {
+    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    let number = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64);
+    let items = result.and_then(|r| r.get("items")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let items = items
+        .iter()
+        .map(|v| Suggestion {
+            label: text(v, "label"),
+            detail: text(v, "detail"),
+            kind: text(v, "kind"),
+            text: text(v, "text"),
+            caret: number(v, "caret").map(|n| n as usize),
+            select: number(v, "select").unwrap_or(0) as usize,
+            col: number(v, "col").unwrap_or(0) as u32,
+        })
+        .collect();
+    let serial = result.and_then(|r| number(r, "serial")).unwrap_or(0);
+    Suggestions { path, line, col, serial, items }
+}
+
+fn extra_edits_of(result: Option<&Value>) -> Vec<ExtraEdit> {
+    let number = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
+    let edits = result.and_then(|r| r.get("edits")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    edits
+        .iter()
+        .map(|v| ExtraEdit {
+            line: number(v, "line"),
+            col: number(v, "col"),
+            end_line: number(v, "endLine"),
+            end_col: number(v, "endCol"),
+            text: v.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+        })
+        .collect()
 }
 
 pub struct Hover {
@@ -306,6 +372,8 @@ enum Pending {
     Webview(String),
     Hover(PathBuf, u32, u32),
     Definition(PathBuf),
+    Complete(PathBuf, u32, u32),
+    CompletionExtra(PathBuf),
 }
 
 const MAX_OPEN: usize = 48;
@@ -332,6 +400,7 @@ pub struct Extensions {
     answers: Vec<(String, String)>,
     own_decorations: HashMap<String, FileDecorations>,
     pub hover: Option<Hover>,
+    completing: u64,
     dropped_webviews: Vec<String>,
     pub host_running: bool,
 
@@ -593,6 +662,7 @@ impl Extensions {
             answers: Vec::new(),
             own_decorations: HashMap::new(),
             hover: None,
+            completing: 0,
             dropped_webviews: Vec::new(),
             host_running: false,
             dir,
@@ -936,6 +1006,29 @@ impl Extensions {
         self.next_request += 1;
         self.pending.insert(id, Pending::Hover(path.to_path_buf(), line, col));
         self.send(json!({ "type": "request", "id": id, "method": "hover", "params": { "path": path, "line": line, "col": col } }));
+    }
+
+    pub fn request_completion(&mut self, path: &Path, line: u32, col: u32, trigger: Option<char>) {
+        if self.host.is_none() {
+            return;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.completing = id;
+        self.pending.insert(id, Pending::Complete(path.to_path_buf(), line, col));
+        let params = json!({ "path": path, "line": line, "col": col, "trigger": trigger.map(String::from) });
+        self.send(json!({ "type": "request", "id": id, "method": "complete", "params": params }));
+    }
+
+    pub fn request_completion_extra(&mut self, path: &Path, serial: u64, index: usize) {
+        if self.host.is_none() {
+            return;
+        }
+        let id = self.next_request;
+        self.next_request += 1;
+        self.pending.insert(id, Pending::CompletionExtra(path.to_path_buf()));
+        let params = json!({ "serial": serial, "index": index });
+        self.send(json!({ "type": "request", "id": id, "method": "completionExtra", "params": params }));
     }
 
     pub fn request_definition(&mut self, path: &Path, line: u32, col: u32) -> bool {
@@ -1339,6 +1432,19 @@ impl Extensions {
                         self.hover = Some(Hover { path, line, col, text });
                         return;
                     }
+                    Some(Pending::Complete(path, line, col)) => {
+                        if id == self.completing {
+                            events.push(Event::Suggestions(suggestions_of(m.get("result"), path, line, col)));
+                        }
+                        return;
+                    }
+                    Some(Pending::CompletionExtra(path)) => {
+                        let edits = extra_edits_of(m.get("result"));
+                        if !edits.is_empty() {
+                            events.push(Event::ExtraEdits { path, edits });
+                        }
+                        return;
+                    }
                     Some(Pending::Definition(from)) => {
                         let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
                         match m.pointer("/result/items/0") {
@@ -1701,6 +1807,27 @@ mod tests {
                 println!("   (no icon, only trees) {}: {trees:?}", e.id);
             }
         }
+    }
+
+    #[test]
+    fn what_a_language_server_offers_is_read() {
+        let reply = json!({ "serial": 7, "items": [
+            { "label": "title()", "detail": "fn(&self) -> String", "kind": "Method", "text": "title()", "caret": null, "select": 0, "col": 6 },
+            { "label": "new(…)", "detail": "", "kind": "Function", "text": "new(cap)", "caret": 4, "select": 3, "col": 12 },
+        ] });
+        let found = suggestions_of(Some(&reply), PathBuf::from("a.rs"), 3, 8);
+        assert_eq!((found.serial, found.line, found.col, found.items.len()), (7, 3, 8, 2));
+        assert_eq!((found.items[0].label.as_str(), found.items[0].caret, found.items[0].col), ("title()", None, 6));
+        assert_eq!(
+            (found.items[1].caret, found.items[1].select, found.items[1].kind.as_str()),
+            (Some(4), 3, "Function")
+        );
+        assert!(suggestions_of(None, PathBuf::new(), 0, 0).items.is_empty());
+
+        let extra = json!({ "edits": [{ "line": 0, "endLine": 0, "col": 0, "endCol": 0, "text": "use a::B;\n" }] });
+        let edits = extra_edits_of(Some(&extra));
+        assert_eq!(edits, [ExtraEdit { line: 0, col: 0, end_line: 0, end_col: 0, text: "use a::B;\n".into() }]);
+        assert!(extra_edits_of(None).is_empty());
     }
 
     #[test]

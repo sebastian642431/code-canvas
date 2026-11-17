@@ -203,6 +203,19 @@ impl Editor {
         self.replace(Pos::new(end.line, from.min(end.col)), end, text);
     }
 
+    pub fn edit_before(&mut self, from: Pos, to: Pos, text: &str) -> bool {
+        let (caret, anchor) = (self.caret, self.anchor);
+        if to.line >= caret.line || from > to {
+            return false;
+        }
+        let lines = self.lines.len();
+        self.replace(from, to, text);
+        let added = self.lines.len() as isize - lines as isize;
+        let moved = |p: Pos| Pos::new((p.line as isize + added).max(0) as usize, p.col);
+        (self.caret, self.anchor) = (moved(caret), anchor.map(moved));
+        true
+    }
+
     pub fn insert(&mut self, text: &str) {
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
         self.replace(start, end, text);
@@ -383,6 +396,21 @@ mod tests {
         let no_newline = Editor::open("b.txt".into(), "x\ny");
         assert_eq!(no_newline.text(), "x\ny");
         assert_eq!(Editor::open("c.txt".into(), "").text(), "");
+    }
+
+    #[test]
+    fn an_edit_above_the_caret_leaves_it_on_its_text() {
+        let mut e = Editor::open("a.rs".into(), "mod util;\n\nfn main() {\n    let m = HashMap\n}\n");
+        at(&mut e, 3, 19);
+        assert!(e.edit_before(Pos::new(0, 0), Pos::new(0, 0), "use std::collections::HashMap;\n\n"));
+        assert_eq!(e.caret, Pos::new(5, 19));
+        assert_eq!(e.line(0), "use std::collections::HashMap;");
+        assert_eq!(e.line(5), "    let m = HashMap");
+        assert!(!e.edit_before(Pos::new(5, 0), Pos::new(5, 4), ""), "not on the caret's own line");
+        assert!(e.edit_before(Pos::new(0, 0), Pos::new(2, 0), ""));
+        assert_eq!(e.caret, Pos::new(3, 19));
+        assert!(e.undo() && e.undo());
+        assert_eq!(e.text(), "mod util;\n\nfn main() {\n    let m = HashMap\n}\n");
     }
 
     #[test]

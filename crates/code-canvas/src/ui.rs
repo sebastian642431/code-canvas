@@ -162,10 +162,38 @@ pub struct Naming {
     pub focus: bool,
 }
 
+pub enum CompletionIcon {
+    Path { is_dir: bool },
+    Kind(String),
+}
+
+pub struct CompletionRow {
+    pub label: String,
+    pub detail: String,
+    pub icon: CompletionIcon,
+}
+
 pub struct CompletionView {
     pub at: Pos2,
-    pub items: Vec<(String, bool)>,
+    pub items: Vec<CompletionRow>,
     pub selected: usize,
+}
+
+fn kind_glyph(kind: &str) -> (&'static str, Color32) {
+    let (name, color) = match kind {
+        "Method" | "Function" | "Constructor" => ("symbol-method", theme::get().rel_impl),
+        "Field" | "Property" => ("symbol-field", theme::get().accent),
+        "Variable" | "Value" | "Reference" => ("symbol-variable", theme::get().accent),
+        "Class" | "Struct" => ("symbol-class", theme::get().rel_ref),
+        "Interface" | "TypeParameter" => ("symbol-interface", theme::get().rel_ref),
+        "Module" | "Folder" | "File" => ("symbol-namespace", theme::get().ui_text_dim),
+        "Enum" | "EnumMember" => ("symbol-enum", theme::get().rel_ref),
+        "Constant" | "Unit" => ("symbol-constant", theme::get().accent),
+        "Keyword" | "Operator" => ("symbol-keyword", theme::get().ui_text_dim),
+        "Snippet" => ("symbol-snippet", theme::get().ui_text_dim),
+        _ => ("symbol-misc", theme::get().ui_text_dim),
+    };
+    (crate::codicons::glyph(name).unwrap_or(icons::CODE), c(color))
 }
 
 pub struct QuickOpen {
@@ -1565,6 +1593,8 @@ fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Acti
     let first = view.selected.saturating_sub(ROWS - 1).min(view.items.len().saturating_sub(ROWS));
     let shown = &view.items[first..view.items.len().min(first + ROWS)];
     let file_icons = &mut st.file_icons;
+    let wide = shown.iter().any(|row| matches!(row.icon, CompletionIcon::Kind(_)));
+    let width = if wide { 440.0 } else { 260.0 };
     let area = egui::Area::new(egui::Id::unique("path completion"))
         .order(egui::Order::Foreground)
         .fixed_pos(view.at + Vec2::new(-28.0, 4.0))
@@ -1576,9 +1606,9 @@ fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Acti
                 .inner_margin(Margin::same(4))
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
-                    for (i, (name, is_dir)) in shown.iter().enumerate() {
+                    for (i, row) in shown.iter().enumerate() {
                         let index = first + i;
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(260.0, 24.0), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
                         if index == view.selected {
                             ui.painter().rect_filled(rect, 6.0, pal().raised);
                         } else if resp.hovered() {
@@ -1586,21 +1616,41 @@ fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Acti
                         }
                         let mid = rect.center().y;
                         let icon_at = Rect::from_center_size(Pos2::new(rect.left() + 14.0, mid), Vec2::splat(16.0));
-                        if !file_icons.paint(ui, name, *is_dir, false, icon_at, false) {
-                            let glyph = if *is_dir { icons::FOLDER } else { file_glyph(name) };
-                            let font = FontId::proportional(13.0);
-                            ui.painter().text(icon_at.center(), Align2::CENTER_CENTER, glyph, font, pal().text_dim);
+                        let (name, from) = (&row.label, rect.left() + 30.0);
+                        let label = match &row.icon {
+                            CompletionIcon::Path { is_dir } => {
+                                if !file_icons.paint(ui, name, *is_dir, false, icon_at, false) {
+                                    let glyph = if *is_dir { icons::FOLDER } else { file_glyph(name) };
+                                    let font = FontId::proportional(13.0);
+                                    ui.painter().text(
+                                        icon_at.center(),
+                                        Align2::CENTER_CENTER,
+                                        glyph,
+                                        font,
+                                        pal().text_dim,
+                                    );
+                                }
+                                if *is_dir {
+                                    format!("{name}/")
+                                } else {
+                                    name.clone()
+                                }
+                            }
+                            CompletionIcon::Kind(kind) => {
+                                let (glyph, color) = kind_glyph(kind);
+                                let font = FontId::proportional(14.0);
+                                ui.painter().text(icon_at.center(), Align2::CENTER_CENTER, glyph, font, color);
+                                name.clone()
+                            }
+                        };
+                        let font = if wide { FontId::monospace(12.5) } else { FontId::proportional(13.0) };
+                        let room = rect.right() - 8.0 - from;
+                        let used = text_fit(ui.painter(), Pos2::new(from, mid), &label, font, pal().text, room);
+                        if !row.detail.is_empty() && room - used > 60.0 {
+                            let font = FontId::proportional(11.5);
+                            let at = Pos2::new(from + used + 12.0, mid);
+                            text_fit(ui.painter(), at, &row.detail, font, pal().text_faint, room - used - 12.0);
                         }
-                        let label = if *is_dir { format!("{name}/") } else { name.clone() };
-                        let (from, font) = (rect.left() + 30.0, FontId::proportional(13.0));
-                        text_fit(
-                            ui.painter(),
-                            Pos2::new(from, mid),
-                            &label,
-                            font,
-                            pal().text,
-                            rect.right() - 8.0 - from,
-                        );
                         if resp.clicked() {
                             actions.push(Action::AcceptCompletion(index));
                         }

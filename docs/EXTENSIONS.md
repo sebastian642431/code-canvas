@@ -97,8 +97,8 @@ is what starts the extension (`onView:<id>`). `when` clauses are evaluated in
 that only has tree views gets no icon yet: there would be nothing to show.
 
 Implemented: file icon themes, webview views and panels, documents and their events, configuration, diagnostics, every
-`languages.register…Provider` (kept by kind; the app uses formatting today, and
-definitions, references and hovers can be requested), commands, workspace edits,
+`languages.register…Provider` (kept by kind; the app uses formatting, hovers,
+definitions and completions, and references can be requested), commands, workspace edits,
 `workspace.fs`, output channels, status bar items, messages, decorations, extension
 storage, activation events, and the classes and enums extensions construct.
 
@@ -107,8 +107,8 @@ Not yet — these are the next pieces, in order:
 1. **Tree views**: the lists extensions add to the side bar (their containers are
    read already, and get an icon once they have something that can be shown).
 2. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
-3. Completions and other features that react to keystrokes (editing itself exists:
-   extensions see what is typed after a short pause); showing proposed diffs.
+3. Signature help, snippets with more than one stop, and the commands a completion
+   asks to run after it is taken; showing proposed diffs.
 4. Webviews on Linux and macOS; `when` clauses for menus and commands (views have
    them); the containers' own icons when they are image files; webview state kept
    across restarts.
@@ -118,8 +118,8 @@ Not yet — these are the next pieces, in order:
 
 | Extension | State |
 |---|---|
-| TypeScript (`vscode.typescript-language-features`, VS Code's own) | works: compiler errors, hover, go to definition (`F12`) |
-| rust-analyzer (`rust-lang.rust-analyzer`) | works: syntax errors while typing, `cargo check` problems on save, hover, go to definition. Its tree view, inlay hints and code lenses are not drawn |
+| TypeScript (`vscode.typescript-language-features`, VS Code's own) | works: compiler errors, hover, go to definition (`F12`), completions |
+| rust-analyzer (`rust-lang.rust-analyzer`) | works: syntax errors while typing, `cargo check` problems on save, hover, go to definition, completions with their imports. Its tree view, inlay hints and code lenses are not drawn |
 | ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
 | Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
