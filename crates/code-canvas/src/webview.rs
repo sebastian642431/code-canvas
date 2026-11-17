@@ -213,7 +213,7 @@ mod platform {
     use serde_json::Value;
     use wry::dpi::{PhysicalPosition, PhysicalSize};
     use wry::http::{header::CONTENT_TYPE, Request, Response};
-    use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows};
+    use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
     use super::{theme_json, PageKey, PageMessage, PageWheel, INIT_JS};
 
@@ -231,6 +231,63 @@ mod platform {
         ready: bool,
         queued: Vec<String>,
         theme: u64,
+        holes: Vec<[i32; 4]>,
+    }
+
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> *mut std::ffi::c_void;
+        fn CombineRgn(
+            into: *mut std::ffi::c_void,
+            one: *mut std::ffi::c_void,
+            other: *mut std::ffi::c_void,
+            mode: i32,
+        ) -> i32;
+        fn DeleteObject(object: *mut std::ffi::c_void) -> i32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowRgn(window: *mut std::ffi::c_void, region: *mut std::ffi::c_void, redraw: i32) -> i32;
+    }
+
+    fn cut_out(web: &WebView, holes: &[[i32; 4]]) {
+        const DIFFERENCE: i32 = 4;
+        const FAR: i32 = 1 << 20;
+        let window = web.hwnd().0;
+        unsafe {
+            if holes.is_empty() {
+                SetWindowRgn(window, std::ptr::null_mut(), 1);
+                return;
+            }
+            let seen = CreateRectRgn(0, 0, FAR, FAR);
+            for [left, top, right, bottom] in holes {
+                let hole = CreateRectRgn(*left, *top, *right, *bottom);
+                CombineRgn(seen, seen, hole, DIFFERENCE);
+                DeleteObject(hole);
+            }
+            if SetWindowRgn(window, seen, 1) == 0 {
+                DeleteObject(seen);
+            }
+        }
+    }
+
+    fn holes_in(area: Rect, covers: &[Rect]) -> Option<Vec<[i32; 4]>> {
+        let mut holes = Vec::new();
+        for cover in covers.iter().filter(|cover| cover.intersects(&area)) {
+            let left = (cover.x - area.x).floor().max(0.0);
+            let top = (cover.y - area.y).floor().max(0.0);
+            let right = (cover.right() - area.x).ceil().min(area.w);
+            let bottom = (cover.bottom() - area.y).ceil().min(area.h);
+            if left <= 0.0 && top <= 0.0 && right >= area.w && bottom >= area.h {
+                return None;
+            }
+            let hole = [left as i32, top as i32, right as i32, bottom as i32];
+            if right > left && bottom > top && !holes.contains(&hole) {
+                holes.push(hole);
+            }
+        }
+        Some(holes)
     }
 
     pub struct WebViews {
@@ -460,16 +517,18 @@ mod platform {
             self.shown.retain(|(shown, _)| shown != handle);
         }
 
-        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect)]) {
+        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect)], covers: &[Rect]) {
+            let targets: Vec<(&str, Rect, Vec<[i32; 4]>)> =
+                targets.iter().filter_map(|(handle, area)| Some((*handle, *area, holes_in(*area, covers)?))).collect();
             let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.shown)
                 .into_iter()
-                .partition(|(shown, _)| targets.iter().any(|(wanted, _)| wanted == shown));
+                .partition(|(shown, _)| targets.iter().any(|(wanted, ..)| wanted == shown));
             for (handle, _) in gone {
                 if let Some(view) = self.views.get(&handle) {
                     let _ = view.web.set_visible(false);
                 }
             }
-            for (handle, area) in targets.iter().copied() {
+            for (handle, area, holes) in targets {
                 if !self.views.contains_key(handle) {
                     if !self.has_html(handle) {
                         continue;
@@ -477,8 +536,8 @@ mod platform {
                     match self.create(window, handle, area) {
                         Ok(web) => {
                             let theme = canvas_render::theme::revision();
-                            self.views
-                                .insert(handle.to_string(), View { web, ready: false, queued: Vec::new(), theme });
+                            let view = View { web, ready: false, queued: Vec::new(), theme, holes: Vec::new() };
+                            self.views.insert(handle.to_string(), view);
                         }
                         Err(e) => {
                             log::error!("webview {handle} could not be created: {e}");
@@ -487,9 +546,13 @@ mod platform {
                     }
                 }
                 let placed = kept.iter().find(|(shown, _)| shown == handle).map(|(_, at)| *at);
-                if let Some(view) = self.views.get(handle) {
+                if let Some(view) = self.views.get_mut(handle) {
                     if placed != Some(area) {
                         let _ = view.web.set_bounds(bounds(area));
+                    }
+                    if view.holes != holes {
+                        cut_out(&view.web, &holes);
+                        view.holes = holes;
                     }
                     if placed.is_none() {
                         let _ = view.web.set_visible(true);
@@ -625,6 +688,23 @@ mod platform {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn what_floats_over_a_page_is_cut_out_of_it() {
+            let page = Rect::new(100.0, 50.0, 800.0, 600.0);
+            let toolbar = Rect::new(60.0, 600.0, 340.0, 40.0);
+            let elsewhere = Rect::new(0.0, 0.0, 90.0, 40.0);
+            assert_eq!(holes_in(page, &[]), Some(Vec::new()));
+            assert_eq!(holes_in(page, &[elsewhere]), Some(Vec::new()));
+            assert_eq!(holes_in(page, &[toolbar, elsewhere, toolbar]), Some(vec![[0, 550, 300, 590]]));
+            let whole_window = Rect::new(0.0, 0.0, 1706.0, 920.0);
+            assert_eq!(holes_in(page, &[toolbar, whole_window]), None, "nothing of it is left to see");
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -649,7 +729,7 @@ mod platform {
         pub fn close(&mut self, _handle: &str) {}
         pub fn run(&mut self, _script: &str) {}
         pub fn run_in(&mut self, _handle: &str, _script: &str) {}
-        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect)]) {}
+        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect)], _covers: &[Rect]) {}
         pub fn poll(&mut self) -> Vec<PageMessage> {
             Vec::new()
         }

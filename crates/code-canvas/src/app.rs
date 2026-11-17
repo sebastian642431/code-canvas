@@ -4301,6 +4301,7 @@ impl App {
             let (ui_state, pages, active, ext) = (&mut self.ui, &mut self.pages, self.active, &mut self.ext);
             let full = g.egui.run_ui(raw, |ui| {
                 canvas = ui::build(ui, ui_state, pages, active, ext, &info, &mut actions);
+                ui::note_covers(ui.ctx(), ui_state);
             });
             (full, canvas)
         };
@@ -4352,9 +4353,15 @@ impl App {
             }
             places.extend(player.map(|at| (crate::media::PLAYER.to_string(), at)));
             let targets: Vec<(&str, Rect)> = places.iter().map(|(handle, at)| (handle.as_str(), *at)).collect();
+            let covers: Vec<Rect> = self
+                .ui
+                .covers
+                .iter()
+                .map(|r| Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s))
+                .collect();
             let g = self.gfx.as_ref().unwrap();
             let t = Instant::now();
-            self.webviews.show(&g.window, &targets);
+            self.webviews.show(&g.window, &targets, &covers);
             let ms = t.elapsed().as_secs_f32() * 1000.0;
             if ms > 8.0 {
                 log::debug!("placing the webview took {ms:.1} ms");

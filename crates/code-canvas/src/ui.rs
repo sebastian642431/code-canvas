@@ -232,6 +232,7 @@ pub struct UiState {
     pub quick: Option<QuickOpen>,
     pub filters: RelFilters,
     pub floating: Vec<Rect>,
+    pub covers: Vec<Rect>,
     pub maximized: bool,
     logo: Option<egui::TextureHandle>,
     pub deps: crate::page::DepFilters,
@@ -287,6 +288,7 @@ impl Default for UiState {
             quick: None,
             filters: RelFilters::default(),
             floating: Vec::new(),
+            covers: Vec::new(),
             maximized: false,
             logo: None,
             extension: String::new(),
@@ -3931,6 +3933,17 @@ pub fn hover_text(markdown: &str) -> (String, String) {
     let title = lines.next().unwrap_or_default();
     let rest: Vec<String> = lines.take(12).collect();
     (title, rest.join("\n"))
+}
+
+pub fn note_covers(ctx: &egui::Context, st: &mut UiState) {
+    let shown: Vec<(egui::LayerId, Rect)> = ctx.memory(|memory| {
+        let layers = memory.areas().visible_layer_ids().into_iter();
+        let above = layers.filter(|layer| layer.order != egui::Order::Background);
+        above.filter_map(|layer| Some((layer, memory.area_rect(layer.id)?))).collect()
+    });
+    let drawn = |layer: egui::LayerId| ctx.graphics(|all| all.get(layer).is_some_and(|shapes| !shapes.is_empty()));
+    st.covers = st.floating.clone();
+    st.covers.extend(shown.into_iter().filter(|(layer, _)| drawn(*layer)).map(|(_, rect)| rect));
 }
 
 fn tooltip(ctx: &egui::Context, canvas: Rect, info: &FrameInfo) {
