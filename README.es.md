@@ -87,6 +87,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   archivos como están.
 - **Clic derecho sobre una línea cambiada**: prepara (*stage*), saca del *stage* o
   descarta solo ese cambio; el mismo menú prepara el archivo entero o copia su ruta.
+- **Workspace**: cada carpeta que abrís queda en la lista *Workspace* del panel de
+  archivos. Arrastrás una al lienzo (o le hacés clic) y aparece junto a las demás;
+  la cruz, o el clic derecho en el lienzo, la saca sin olvidarla.
 - **Compartir la sesión** (el ícono de arriba a la derecha): la app te da una
   invitación para copiar; quien la pega en su Code Canvas ve tus carpetas abiertas
   en su propio lienzo, y lo que cualquiera escribe aparece para todos mientras se

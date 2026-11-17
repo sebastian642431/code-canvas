@@ -259,6 +259,10 @@ pub struct UiState {
     pub card_menu: Option<CardMenu>,
     pub ask: Option<Ask>,
     pub share: ShareView,
+    pub workspace: Vec<WorkspaceRow>,
+    pub workspace_shut: bool,
+    workspace_drag: Option<(std::path::PathBuf, String)>,
+    canvas_was: Rect,
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
     pub commit_ai: crate::commit_ai::Settings,
@@ -303,6 +307,10 @@ impl Default for UiState {
             card_menu: None,
             ask: None,
             share: ShareView::default(),
+            workspace: Vec::new(),
+            workspace_shut: false,
+            workspace_drag: None,
+            canvas_was: Rect::NOTHING,
             can_go: (false, false),
             pictures: Vec::new(),
             commit_ai: Default::default(),
@@ -475,6 +483,7 @@ pub enum Action {
     ShowCommit(Option<crate::git::Commit>),
     Answered(Asked, Answer),
     Share(ShareOp),
+    Workspace(WorkspaceOp),
     InstallVsix,
     SetTheme(String),
     SetColor(&'static str, u32),
@@ -730,6 +739,7 @@ pub fn build(
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     peer_marks(&on_canvas, st, canvas);
+    workspace_drop(&ctx, st, canvas);
     following_bar(&ctx, st, canvas, actions);
     share_panel(&ctx, st, actions);
     card_menu(&ctx, st, canvas, actions);
@@ -1401,8 +1411,201 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
             });
         });
     });
+    workspace_list(ui, st, actions);
     git_panel::timeline(ui, pages.get(active), actions);
     explorer(ui, st, pages.get_mut(active), actions);
+}
+
+pub struct WorkspaceRow {
+    pub path: std::path::PathBuf,
+    pub title: String,
+    pub files: Option<u32>,
+    pub page: Option<usize>,
+    pub active: bool,
+    pub loading: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkspaceOp {
+    Put(std::path::PathBuf),
+    TakeOff(std::path::PathBuf),
+    Forget(std::path::PathBuf),
+    PutAll,
+}
+
+fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
+    if st.workspace.len() < 2 {
+        return;
+    }
+    let off = st.workspace.iter().filter(|row| row.page.is_none()).count();
+    Frame::NONE.inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 2 }).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        ui.horizontal(|ui| {
+            let glyph = if st.workspace_shut { icons::CHEVRON_RIGHT } else { icons::CHEVRON_DOWN };
+            let (head, resp) = ui.allocate_exact_size(Vec2::new(110.0, 22.0), Sense::click());
+            let mid = head.center().y;
+            ui.painter().text(
+                Pos2::new(head.left() + 2.0, mid),
+                Align2::LEFT_CENTER,
+                glyph,
+                FontId::proportional(12.0),
+                pal().text_faint,
+            );
+            let label = FontId::proportional(11.5);
+            ui.painter().text(
+                Pos2::new(head.left() + 20.0, mid),
+                Align2::LEFT_CENTER,
+                "WORKSPACE",
+                label,
+                pal().text_faint,
+            );
+            if resp.clicked() {
+                st.workspace_shut = !st.workspace_shut;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if off > 0 && ext_panels::pill(ui, &format!("Put all {} on the canvas", st.workspace.len()), false) {
+                    actions.push(Action::Workspace(WorkspaceOp::PutAll));
+                }
+            });
+        });
+        if st.workspace_shut {
+            return;
+        }
+        let pointer = ui.ctx().pointer_latest_pos();
+        for row in &st.workspace {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click_and_drag());
+            let on = row.page.is_some();
+            let hot = ui.rect_contains_pointer(rect);
+            if row.active {
+                ui.painter().rect_filled(rect, 6.0, pal().raised);
+            } else if hot {
+                ui.painter().rect_filled(rect, 6.0, pal().hover);
+            }
+            let mid = rect.center().y;
+            let font = FontId::proportional(13.0);
+            let tint = if on { pal().text } else { pal().text_faint };
+            if on {
+                ui.painter().circle_filled(Pos2::new(rect.left() + 6.0, mid), 2.5, pal().accent);
+            }
+            let folder = if on { icons::FOLDER_OPEN } else { icons::FOLDER };
+            ui.painter().text(Pos2::new(rect.left() + 22.0, mid), Align2::CENTER_CENTER, folder, font.clone(), tint);
+            let button = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(22.0));
+            let pressed = ui.interact(button, ui.scope_id().with(("workspace", &row.path)), Sense::click());
+            let count = match (row.loading, row.files) {
+                (true, _) => "reading…".to_string(),
+                (false, Some(files)) => files.to_string(),
+                (false, None) => String::new(),
+            };
+            let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
+            let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), pal().text_faint);
+            let name_end = right - counted.size().x - 8.0;
+            ui.painter().galley(
+                Pos2::new(right - counted.size().x, mid - counted.size().y * 0.5),
+                counted,
+                pal().text_faint,
+            );
+            text_fit(
+                ui.painter(),
+                Pos2::new(rect.left() + 36.0, mid),
+                &row.title,
+                font,
+                tint,
+                name_end - rect.left() - 36.0,
+            );
+            if hot {
+                if pressed.hovered() {
+                    ui.painter().rect_filled(button, 5.0, pal().border_strong);
+                }
+                let glyph = if on { icons::X } else { icons::PLUS };
+                ui.painter().text(
+                    button.center(),
+                    Align2::CENTER_CENTER,
+                    glyph,
+                    FontId::proportional(13.0),
+                    pal().text_dim,
+                );
+            }
+            let tip = match on {
+                true => format!("{}\nOn the canvas. Click to go to it; the cross takes it off.", row.path.display()),
+                false => format!(
+                    "{}\nNot on the canvas. Click, or drag it onto the canvas, to put it there.",
+                    row.path.display()
+                ),
+            };
+            if pressed.on_hover_text(if on { "Take it off the canvas" } else { "Put it on the canvas" }).clicked() {
+                let op = if on { WorkspaceOp::TakeOff(row.path.clone()) } else { WorkspaceOp::Put(row.path.clone()) };
+                actions.push(Action::Workspace(op));
+            } else if resp.clicked() {
+                actions.push(match row.page {
+                    Some(page) => Action::SwitchTab(page),
+                    None => Action::Workspace(WorkspaceOp::Put(row.path.clone())),
+                });
+            }
+            if resp.drag_started() {
+                st.workspace_drag = Some((row.path.clone(), row.title.clone()));
+            }
+            if resp.drag_stopped() {
+                let dropped = pointer.is_some_and(|at| st.canvas_was.contains(at));
+                if let (true, Some((path, _))) = (dropped, st.workspace_drag.take()) {
+                    actions.push(Action::Workspace(WorkspaceOp::Put(path)));
+                }
+                st.workspace_drag = None;
+            }
+            resp.on_hover_text(tip).context_menu(|ui| {
+                ui.set_width(236.0);
+                ui.spacing_mut().item_spacing.y = 1.0;
+                let mut op = None;
+                if on && menu_row(ui, icons::X, "Take off the canvas") {
+                    op = Some(WorkspaceOp::TakeOff(row.path.clone()));
+                }
+                if !on && menu_row(ui, icons::PLUS, "Put on the canvas") {
+                    op = Some(WorkspaceOp::Put(row.path.clone()));
+                }
+                if menu_row(ui, icons::TRASH_2, "Forget this folder") {
+                    op = Some(WorkspaceOp::Forget(row.path.clone()));
+                }
+                if let Some(op) = op {
+                    actions.push(Action::Workspace(op));
+                    ui.close();
+                }
+            });
+        }
+        ui.add_space(4.0);
+        let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+        ui.painter().rect_filled(line, 0.0, pal().border);
+    });
+}
+
+fn workspace_drop(ctx: &egui::Context, st: &mut UiState, canvas: Rect) {
+    st.canvas_was = canvas;
+    if !ctx.input(|i| i.pointer.any_down()) {
+        st.workspace_drag = None;
+    }
+    let Some((_, title)) = &st.workspace_drag else { return };
+    let Some(at) = ctx.pointer_latest_pos() else { return };
+    let over = canvas.contains(at);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("workspace drag")));
+    if over {
+        let edge = canvas.shrink(6.0);
+        painter.rect_filled(edge, 10.0, pal().accent.gamma_multiply(0.06));
+        painter.rect_stroke(edge, 10.0, Stroke::new(2.0, pal().accent.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+    }
+    let text = if over {
+        format!("{}  Drop to put {title} on the canvas", icons::PLUS)
+    } else {
+        format!("{}  {title}", icons::FOLDER)
+    };
+    let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), pal().text);
+    let tag = Rect::from_min_size(at + Vec2::new(14.0, 10.0), galley.size() + Vec2::new(20.0, 12.0));
+    painter.rect_filled(tag, 8.0, pal().card);
+    painter.rect_stroke(
+        tag,
+        8.0,
+        Stroke::new(1.0, if over { pal().accent } else { pal().border_strong }),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(tag.min + Vec2::new(10.0, 6.0), galley, pal().text);
+    ctx.request_repaint();
 }
 
 fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, actions: &mut Vec<Action>) {
@@ -2790,6 +2993,7 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
 
 pub struct CardMenu {
     pub at: Pos2,
+    pub folder: (std::path::PathBuf, String),
     pub path: String,
     pub line: Option<u32>,
     pub staged: bool,
@@ -2851,6 +3055,10 @@ fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut 
             let reveal = if cfg!(windows) { "Reveal in File Explorer" } else { "Open the containing folder" };
             if menu_row(ui, icons::FOLDER_OPEN, reveal) {
                 chosen = Some(Action::File(FileOp::Reveal(path.clone())));
+            }
+            menu_gap(ui);
+            if menu_row(ui, icons::X, &format!("Take {} off the canvas", menu.folder.1)) {
+                chosen = Some(Action::Workspace(WorkspaceOp::TakeOff(menu.folder.0.clone())));
             }
         });
     });

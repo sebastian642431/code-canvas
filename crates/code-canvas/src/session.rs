@@ -16,6 +16,14 @@ pub struct Session {
     pub window_pos: Option<[i32; 2]>,
     pub maximized: bool,
     pub single: bool,
+    pub workspace: Vec<Known>,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Known {
+    pub path: PathBuf,
+    pub files: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]

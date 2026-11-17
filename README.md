@@ -129,6 +129,15 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Checked so far with ESLint, Prettier, Error Lens, Claude Code and TypeScript. Tree views are
   not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
+**Workspace**
+- Every folder you open is remembered in the **Workspace** list at the top of the
+  files panel, with how many files it has. A folder on the canvas has a dot; one
+  that is not is dimmed.
+- **Drag a folder from the list onto the canvas**, or click it, and it is there
+  next to the others. Its cross, or *Take … off the canvas* in the menu of a right
+  click on the canvas, takes it off without forgetting it. *Put all on the canvas*
+  brings every one.
+
 **Working together**
 - **Share the session** (the icon at the top right): the app gives an invitation to
   copy; whoever pastes it in their Code Canvas gets your open folders on their own

@@ -220,6 +220,8 @@ pub struct App {
     player_shown: bool,
     commit_from: Option<Place>,
     sharing: sharing::Sharing,
+    workspace: Vec<session::Known>,
+    frame_all_when_read: bool,
     last_move_by_itself: bool,
 }
 
@@ -335,9 +337,12 @@ impl App {
             player_shown: false,
             commit_from: None,
             sharing: Default::default(),
+            workspace: saved.workspace.iter().filter(|known| known.path.is_dir()).cloned().collect(),
+            frame_all_when_read: false,
             last_move_by_itself: false,
         };
         app.share_setup();
+        app.know_folders();
         app
     }
 
@@ -488,6 +493,7 @@ impl App {
             left_last: self.ui.last_left.key(),
             right_last: self.ui.last_right.key(),
             rails: self.ui.rails.clone(),
+            workspace: self.workspace.clone(),
             window,
             window_pos,
             maximized,
@@ -647,6 +653,75 @@ impl App {
         self.next_id += 1;
         self.pages.push(page);
         self.switch_to(self.pages.len() - 1);
+        self.know_folders();
+    }
+
+    fn know_folders(&mut self) {
+        for page in self.pages.iter().filter(|page| !page.only && page.shared.is_none()) {
+            let files = page.ready().map(|r| r.repo.files.len() as u32);
+            match self.workspace.iter_mut().find(|known| known.path == page.root) {
+                Some(known) => known.files = files.or(known.files),
+                None => self.workspace.push(session::Known { path: page.root.clone(), files }),
+            }
+        }
+    }
+
+    fn workspace_rows(&self) -> Vec<ui::WorkspaceRow> {
+        let row = |known: &session::Known| {
+            let page = self.pages.iter().position(|page| page.root == known.path);
+            let name = known.path.file_name().map(|name| name.to_string_lossy().into_owned());
+            ui::WorkspaceRow {
+                path: known.path.clone(),
+                title: name.unwrap_or_else(|| known.path.display().to_string()),
+                files: known.files,
+                page,
+                active: page == Some(self.active),
+                loading: page.is_some_and(|page| self.pages[page].is_loading()),
+            }
+        };
+        self.workspace.iter().map(row).collect()
+    }
+
+    fn workspace_op(&mut self, op: ui::WorkspaceOp) {
+        use ui::WorkspaceOp;
+        let on = |me: &App, path: &Path| me.pages.iter().position(|page| page.root == path);
+        match op {
+            WorkspaceOp::Put(path) => match on(self, &path) {
+                Some(page) => self.show_folder(page),
+                None if path.is_dir() => {
+                    self.ui.single = false;
+                    self.open_folder(path, None);
+                }
+                None => {
+                    let text = format!("{} is not there any more.", path.display());
+                    self.ext.notice(ext::Level::Warn, "Workspace", text);
+                }
+            },
+            WorkspaceOp::TakeOff(path) => {
+                if let Some(page) = on(self, &path) {
+                    self.know_folders();
+                    self.close_page(page);
+                }
+            }
+            WorkspaceOp::Forget(path) => {
+                if let Some(page) = on(self, &path) {
+                    self.close_page(page);
+                }
+                self.workspace.retain(|known| known.path != path);
+            }
+            WorkspaceOp::PutAll => {
+                let off: Vec<PathBuf> = self.workspace.iter().map(|known| known.path.clone()).collect();
+                self.ui.single = false;
+                for path in off.into_iter().filter(|path| path.is_dir()) {
+                    if on(self, &path).is_none() {
+                        self.open_folder(path, None);
+                    }
+                }
+                self.frame_all_when_read = true;
+            }
+        }
+        self.save_session();
+        self.request_redraw();
     }
 
     fn pick_folder(&mut self) {
@@ -1026,7 +1101,21 @@ impl App {
         let Some(r) = page.ready() else { return };
         let world = page.camera.view(self.viewport()).to_world(point);
         let Some(n) = r.layout.hit(world).map(|n| &r.layout.nodes[n]) else { return };
-        let NodeKind::File(fi) = n.kind else { return };
+        let scale = self.scale();
+        let folder = (page.root.clone(), page.title.clone());
+        let NodeKind::File(fi) = n.kind else {
+            self.ui.card_menu = Some(ui::CardMenu {
+                at: egui::Pos2::new(point[0] / scale, point[1] / scale),
+                folder,
+                path: n.rel_path.clone(),
+                line: None,
+                staged: false,
+                unstaged: false,
+                untracked: false,
+                place: None,
+            });
+            return self.request_redraw();
+        };
         let f = &r.repo.files[fi];
         let change = page.git.as_ref().and_then(|git| git.change(&f.rel_path));
         let readable = Lod::for_zoom(page.camera.zoom) == Lod::Text;
@@ -1040,9 +1129,9 @@ impl App {
                 change.filter(|change| !change.unsaved).map(|change| change.hunks.as_slice()).unwrap_or_default();
             hunks.iter().any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
         };
-        let scale = self.scale();
         self.ui.card_menu = Some(ui::CardMenu {
             at: egui::Pos2::new(point[0] / scale, point[1] / scale),
+            folder,
             path: f.rel_path.clone(),
             line: line.filter(changed_here),
             staged: change.is_some_and(|change| change.staged.is_some()),
@@ -2608,6 +2697,7 @@ impl App {
             }
             Action::Answered(about, answer) => self.answered(about, answer),
             Action::Share(op) => self.share_op(op),
+            Action::Workspace(op) => self.workspace_op(op),
             Action::Git(op) => {
                 use crate::git::{GitOp, Part};
                 let lost = match &op {
@@ -3104,6 +3194,21 @@ impl App {
                     None => log::warn!("script: share needs start [writers], stop, join <invitation> [name], follow|writer|reader <name>, unfollow or panel"),
                 }
             }
+            Step::Workspace(asked) => {
+                let (verb, rest) = asked.split_once(' ').unwrap_or((asked.as_str(), ""));
+                let path = PathBuf::from(rest.trim());
+                let op = match verb {
+                    "put" => Some(ui::WorkspaceOp::Put(path)),
+                    "off" => Some(ui::WorkspaceOp::TakeOff(path)),
+                    "forget" => Some(ui::WorkspaceOp::Forget(path)),
+                    "all" => Some(ui::WorkspaceOp::PutAll),
+                    _ => None,
+                };
+                match op {
+                    Some(op) => self.workspace_op(op),
+                    None => log::warn!("script: workspace needs put|off|forget <folder>, or all"),
+                }
+            }
             Step::Theme(named) => {
                 let own =
                     canvas_render::theme::PRESETS.iter().map(|(key, name, _)| (key.to_string(), name.to_string()));
@@ -3469,6 +3574,10 @@ impl App {
         if changed {
             g.window.request_redraw();
         }
+        if self.frame_all_when_read && self.pages.iter().all(|page| page.ready().is_some() && page.framed) {
+            self.frame_all_when_read = false;
+            self.frame_every_folder();
+        }
         let read = self
             .show_when_read
             .as_ref()
@@ -3758,6 +3867,8 @@ impl App {
             })
         });
         self.share_view();
+        self.know_folders();
+        self.ui.workspace = self.workspace_rows();
         let mut travelling = false;
         for page in &mut self.pages {
             if let Some(t) = page.target {

@@ -741,6 +741,17 @@ Graphics and the frame
 - Over a video playing in its card the wheel belongs to the page of the player,
   not to the window: the page sends it on (`media::WHEEL`, `PageWheel`) and
   `App::wheel` does with it what it does with the window's own.
+- **The workspace** (`App::workspace`, kept in the session as `Known`) is every
+  folder that was opened and not forgotten; the pages are the ones of them on
+  the canvas. Closing a page takes its folder off the canvas and leaves it in
+  the list with the number of files it had. Putting one on turns the shared
+  canvas on (`single` off): the point is to have it next to the others. A row
+  dragged out of the list is dropped on the canvas if the pointer is over where
+  the canvas was a frame ago (`UiState::canvas_was`): the list is drawn before
+  the canvas has its place.
+- A folder just put on the canvas is framed by its own first frame; all of
+  them at once (`PutAll`) are framed together when the last one is read
+  (`frame_all_when_read`), not before, when there is nothing to frame yet.
 - **A minimised window draws nothing.** Windows reports it as 160 by 28 pixels,
   not as nothing, and it stays that size for a few frames after it is restored.
   One frame of the interface that small left the side panels at their narrowest
@@ -1481,6 +1492,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
+| `workspace` | `workspace put\|off\|forget <folder>`, `workspace all` | Put a folder of the workspace on the canvas, take it off, forget it, or put them all. |
 | `share` | `share start [writers]`, `share stop`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
