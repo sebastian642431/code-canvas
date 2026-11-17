@@ -1273,7 +1273,7 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                if small_icon(ui, icons::PLUS, &st.keys.hint("Open a folder in a new canvas", Command::OpenFolder)) {
+                if small_icon(ui, icons::PLUS, &st.keys.hint("Open another folder", Command::OpenFolder)) {
                     actions.push(Action::OpenFolder);
                 }
                 let split =
@@ -1770,13 +1770,13 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
         (
             "Folders and panels",
             vec![
-                ("Open a folder in a new canvas", format!("{}, or drop it", key(Command::OpenFolder))),
+                ("Open another folder", format!("{}, or drop it", key(Command::OpenFolder))),
                 (
-                    "Next / previous canvas",
+                    "Next / previous folder",
                     format!("{} / {}", keys.label(Command::NextFolder), keys.label(Command::PreviousFolder)),
                 ),
-                ("Go to canvas N", fixed("Ctrl+1 … Ctrl+9")),
-                ("Close the canvas", key(Command::CloseFolder)),
+                ("Go to folder N", fixed("Ctrl+1 … Ctrl+9")),
+                ("Close the folder", key(Command::CloseFolder)),
                 ("Reload from disk", key(Command::Rescan)),
                 ("Toggle the left panel", key(Command::ToggleLeftPanel)),
                 ("Every folder on the canvas, or one at a time", key(Command::ToggleSideBySide)),
@@ -1794,10 +1794,22 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                 section(ui, icons::CHEVRON_DOWN, title);
                 well(ui, |ui| {
                     for (what, keys) in rows {
+                        let width = |text: &str, size: f32| {
+                            let font = FontId::proportional(size);
+                            ui.painter().layout_no_wrap(text.to_string(), font, pal().text).size().x
+                        };
+                        let side_by_side = width(what, 12.5) + width(keys, 12.0) + 16.0 <= ui.available_width();
+                        let what = RichText::new(*what).size(12.5).color(pal().text);
+                        let keys = RichText::new(keys).size(12.0).color(pal().text_dim);
+                        if !side_by_side {
+                            ui.add(egui::Label::new(what.clone()).wrap());
+                        }
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(*what).size(12.5).color(pal().text));
+                            if side_by_side {
+                                ui.label(what);
+                            }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(keys).size(12.0).color(pal().text_dim));
+                                ui.add(egui::Label::new(keys).truncate());
                             });
                         });
                     }

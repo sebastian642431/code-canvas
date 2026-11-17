@@ -394,7 +394,7 @@ pub fn build(
                         if crate::markdown::is_markdown(std::path::Path::new(&n.name)) {
                             let word = "Preview";
                             let word_w = text.measure(word, size, false);
-                            let after = left + text.measure(&shown, size, false) + 10.0 * s;
+                            let after = left + text.measure(&shown, size, false).max(tw) + 10.0 * s;
                             let button = Rect::new(after - 3.0 * s, top, word_w + 6.0 * s, size * 1.3);
                             if button.right() <= tl[0] + w_px && free(button, &mut placed) {
                                 out.labels.push(OwnedLabel {

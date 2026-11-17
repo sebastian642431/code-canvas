@@ -524,7 +524,7 @@ impl App {
     }
 
     fn pick_folder(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().set_title("Open a folder in a new canvas").pick_folder() {
+        if let Some(path) = rfd::FileDialog::new().set_title("Open another folder").pick_folder() {
             self.open_folder(path, None);
             self.save_session();
         }
@@ -2059,6 +2059,17 @@ impl App {
                 self.ui_events.extend(frames);
             }
             Step::Preview(path) => self.apply(Action::Preview(path)),
+            Step::Drop(path) => self.drop_file(PathBuf::from(path)),
+            Step::Mark(name) => {
+                let name: String =
+                    name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')).collect();
+                let folder = session::data_dir().join("marks");
+                if name.is_empty()
+                    || std::fs::create_dir_all(&folder).and_then(|_| std::fs::write(folder.join(&name), "")).is_err()
+                {
+                    log::warn!("script: the mark '{name}' could not be left");
+                }
+            }
             Step::Move(what) => {
                 let mut parts = what.split_whitespace();
                 let panel = parts.next().and_then(|name| {

@@ -204,8 +204,13 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 `ui click|right|move|down|up <x> <y>` and `ui drag <x> <y> <x> <y>` (the pointer on the interface, in
 points: what a button, a menu or a drag of an icon gets),
 `move <panel> left|right [panel to sit before]` (an icon to the other bar),
-`preview <path>` (a Markdown file rendered), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
+`preview <path>` (a Markdown file rendered), `drop <path>` (a file dropped on the window),
+`mark <name>` (leaves an empty file `marks/<name>` in the data directory: a sign for whoever watches the
+instance, see below), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
 the real ones. Logs go to `code-canvas.log` in the data directory.
 
 To see the result, `scripts/screenshot.ps1` (Windows) starts such an instance and
 saves a picture of its window: enough to check a panel or a theme without clicking.
+With `-Marks` it saves one picture per `mark <name>` step instead (`<name>.png`, next
+to `-Out`), a third of a second after each: a whole walk through the interface in one
+run. Follow each `mark` with a `wait` of half a second or more.

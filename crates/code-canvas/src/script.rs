@@ -36,6 +36,8 @@ pub enum Step {
     Maximize,
     Click(f32, f32),
     Move(String),
+    Mark(String),
+    Drop(String),
     Preview(String),
     Ui(String),
     Quit,
@@ -88,6 +90,8 @@ fn parse_step(text: &str) -> Option<Step> {
         "quick" => Step::Quick(arg.into()),
         "maximize" => Step::Maximize,
         "move" => Step::Move(arg.into()),
+        "mark" => Step::Mark(arg.into()),
+        "drop" => Step::Drop(arg.into()),
         "preview" => Step::Preview(arg.into()),
         "ui" => Step::Ui(arg.into()),
         "click" => {

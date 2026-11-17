@@ -1080,6 +1080,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `left` | `left files\|search\|extensions\|problems\|changes\|settings\|help` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
 | `right` | `right symbols\|deps` or `right <view id or extension id>`; `right none` | Open that panel, or that extension's webview, on the side its icon is on. `none` closes the right side. |
 | `preview` | `preview <path>` | Show a Markdown file of the folder rendered, or close it if it is the one shown. `open <path>` shows one from anywhere. |
+| `drop` | `drop <path>` | What dropping that file on the window does: a copy in the selected folder. |
+| `mark` | `mark <name>` | Leave an empty file `marks/<name>` in the data directory. `scripts/screenshot.ps1 -Marks` takes a picture at each. |
 | `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
 | `click` | `click <x> <y>` | A click on the canvas, in physical pixels of the window. |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
