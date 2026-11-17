@@ -10,7 +10,13 @@ pub(super) const CLAUDE_OFFER: &str = "claude on the canvas";
 
 impl App {
     fn agent_file(&self, agent: &Agent) -> Option<(usize, String)> {
-        let (index, rel) = self.locate_file(agent.path.as_deref()?)?;
+        let path = agent.path.as_deref()?;
+        let key = |path: &Path| ext::path_key(path.to_string_lossy().trim_end_matches(['/', '\\']));
+        let wanted = key(path);
+        if let Some(index) = self.pages.iter().position(|page| page.ready().is_some() && key(&page.root) == wanted) {
+            return Some((index, String::new()));
+        }
+        let (index, rel) = self.locate_file(path)?;
         let rel = rel.trim_end_matches('/').to_string();
         let r = self.pages[index].ready()?;
         (rel.is_empty() || r.layout.node_for_path(&r.repo, &rel).is_some()).then_some((index, rel))
@@ -31,16 +37,32 @@ impl App {
 
     pub(super) fn offer_claude(&mut self) {
         let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
-        if quiet || self.ui.prefs.asked_claude || crate::agents::claude_connected() || !crate::agents::claude_there() {
+        if quiet || !crate::agents::claude_there() {
             return;
         }
-        let text = "Claude Code can show on the canvas while it works: each session and each of its agents with a face of its own, where it reads and what it changes.";
-        self.ext.ask("Assistants", text, &[CONNECT, "Not now"], CLAUDE_OFFER);
+        let own = crate::agents::own_program();
+        let built_here = own.as_deref().is_some_and(|own| own.replace('\\', "/").contains("/target/"));
+        match crate::agents::claude_hook_program() {
+            Some(theirs) => {
+                let moved = own.as_deref().is_some_and(|own| ext::path_key(own) != ext::path_key(&theirs));
+                if moved && !built_here {
+                    match crate::agents::connect_claude(true) {
+                        Ok(()) => log::info!("the hooks of Claude Code pointed at {theirs}: they now run this program"),
+                        Err(why) => log::warn!("the hooks of Claude Code still point at {theirs}: {why}"),
+                    }
+                }
+            }
+            None if self.ui.prefs.asked_claude || built_here => {}
+            None => {
+                self.ui.prefs.asked_claude = true;
+                crate::prefs::save(&self.ui.prefs);
+                let text = "Claude Code can show on the canvas while it works: each session and each of its agents with a face of its own, where it reads and what it changes.";
+                self.ext.ask("Assistants", text, &[CONNECT, "Not now"], CLAUDE_OFFER);
+            }
+        }
     }
 
     pub(super) fn claude_answered(&mut self, choice: &str) {
-        self.ui.prefs.asked_claude = true;
-        crate::prefs::save(&self.ui.prefs);
         if choice == CONNECT {
             self.agent_op(AgentOp::ConnectClaude(true));
         }
@@ -60,9 +82,11 @@ impl App {
             }
         }
         let followed = self.agents.following.as_ref().and_then(|key| self.agents.find(key)).cloned();
-        if let Some(agent) = followed {
+        let busy = self.drag.is_some() || self.pages.get(self.active).is_some_and(|page| page.editing.is_some());
+        if let Some(agent) = followed.filter(|_| !busy) {
             let now = (agent.moved, agent.lines.map(|lines| lines.0));
-            if self.agent_followed != Some(now) {
+            let looking = agent.find.is_some() && agent.lines.is_none() && agent.at.elapsed() < LOOKED_FOR;
+            if self.agent_followed != Some(now) && !looking {
                 if let Some((index, rel)) = self.agent_file(&agent).filter(|(_, rel)| !rel.is_empty()) {
                     let is_file = self.pages[index].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
                     if is_file {

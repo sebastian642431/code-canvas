@@ -4330,6 +4330,7 @@ impl ApplicationHandler for App {
             g.window.set_visible(false);
         }
         self.share_stop(None);
+        self.agents.close();
         self.ext.shutdown();
     }
 

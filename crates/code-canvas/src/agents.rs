@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-const PORT_FILE: &str = "agents.port";
+const PORTS: &str = "agents";
 const LARGEST: usize = 60_000;
 const KEPT_OF_A_TEXT: usize = 600;
 const QUIET_AFTER: Duration = Duration::from_secs(45);
@@ -37,8 +37,13 @@ fn shortened(value: &Value, depth: u8) -> Value {
     }
 }
 
-fn port_file() -> PathBuf {
-    crate::session::data_dir().join(PORT_FILE)
+fn ports_dir() -> PathBuf {
+    crate::session::data_dir().join(PORTS)
+}
+
+fn listening() -> Vec<u16> {
+    let Ok(files) = std::fs::read_dir(ports_dir()) else { return Vec::new() };
+    files.flatten().filter_map(|file| file.file_name().to_str()?.parse::<u16>().ok()).take(16).collect()
 }
 
 pub fn hook(source: &str) -> i32 {
@@ -47,9 +52,10 @@ pub fn hook(source: &str) -> i32 {
         return 0;
     }
     let Ok(event) = serde_json::from_str::<Value>(&said) else { return 0 };
-    let Some(port) = std::fs::read_to_string(port_file()).ok().and_then(|port| port.trim().parse::<u16>().ok()) else {
+    let ports = listening();
+    if ports.is_empty() {
         return 0;
-    };
+    }
     let mut packed = json!({ "source": source, "hook": shortened(&event, 0) }).to_string();
     if packed.len() > LARGEST {
         let mut small = event.clone();
@@ -60,7 +66,9 @@ pub fn hook(source: &str) -> i32 {
     }
     if packed.len() <= LARGEST {
         if let Ok(socket) = UdpSocket::bind(("127.0.0.1", 0)) {
-            let _ = socket.send_to(packed.as_bytes(), ("127.0.0.1", port));
+            for port in ports {
+                let _ = socket.send_to(packed.as_bytes(), ("127.0.0.1", port));
+            }
         }
     }
     0
@@ -156,86 +164,131 @@ const HOOKED: [(&str, bool); 8] = [
 const HOOK_FLAG: &str = "--agent-hook";
 
 fn claude_settings() -> Option<PathBuf> {
-    let dir =
-        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| Some(dirs::home_dir()?.join(".claude")))?;
-    Some(dir.join("settings.json"))
+    let named = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    Some(named.or_else(|| Some(dirs::home_dir()?.join(".claude")))?.join("settings.json"))
 }
 
-fn ours(entry: &Value) -> bool {
-    let hooks = entry.get("hooks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    hooks.iter().any(|hook| {
-        let args = hook.get("args").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-        args.iter().any(|arg| arg.as_str() == Some(HOOK_FLAG))
-    })
+fn is_ours(hook: &Value) -> bool {
+    let args = hook.get("args").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    args.iter().any(|arg| arg.as_str() == Some(HOOK_FLAG))
 }
 
-pub fn with_hooks(mut settings: Value, program: Option<&Path>) -> Value {
-    if !settings.is_object() {
-        settings = json!({});
+fn without_ours(entries: &mut Vec<Value>) -> bool {
+    let mut removed = false;
+    entries.retain_mut(|entry| {
+        let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) else { return true };
+        let before = hooks.len();
+        hooks.retain(|hook| !is_ours(hook));
+        removed |= hooks.len() != before;
+        hooks.len() == before || !hooks.is_empty()
+    });
+    removed
+}
+
+pub fn with_hooks(settings: &Value, program: Option<&str>) -> Result<Value, String> {
+    let mut settings = settings.clone();
+    let Some(all) = settings.as_object_mut() else { return Err("it is not a JSON object".to_string()) };
+    if program.is_none() && !all.contains_key("hooks") {
+        return Ok(settings);
     }
-    let hooks = settings.as_object_mut().unwrap().entry("hooks").or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        *hooks = json!({});
-    }
-    let hooks = hooks.as_object_mut().unwrap();
+    let hooks = all.entry("hooks").or_insert_with(|| json!({}));
+    let Some(hooks) = hooks.as_object_mut() else { return Err("its \"hooks\" is not an object".to_string()) };
+    let mut took = false;
     for (event, of_tools) in HOOKED {
-        let mut entries: Vec<Value> = hooks.get(event).and_then(Value::as_array).cloned().unwrap_or_default();
-        entries.retain(|entry| !ours(entry));
-        if let Some(program) = program {
-            let run = json!({ "type": "command", "command": program, "args": [HOOK_FLAG, "claude"], "async": true, "timeout": 5 });
-            entries.push(match of_tools {
-                true => json!({ "matcher": "*", "hooks": [run] }),
-                false => json!({ "hooks": [run] }),
-            });
-        }
-        match entries.is_empty() {
-            true => hooks.remove(event),
-            false => hooks.insert(event.to_string(), Value::Array(entries)),
+        let removed = match hooks.get_mut(event) {
+            Some(Value::Array(entries)) => without_ours(entries),
+            Some(_) => return Err(format!("its hooks for {event} are not a list")),
+            None => false,
         };
+        took |= removed;
+        match program {
+            Some(program) => {
+                let run = json!({ "type": "command", "command": program, "args": [HOOK_FLAG, "claude"], "async": true, "timeout": 5 });
+                let entry = match of_tools {
+                    true => json!({ "matcher": "*", "hooks": [run] }),
+                    false => json!({ "hooks": [run] }),
+                };
+                if let Some(entries) = hooks.entry(event).or_insert_with(|| json!([])).as_array_mut() {
+                    entries.push(entry);
+                }
+            }
+            None => {
+                if removed && hooks.get(event).and_then(Value::as_array).is_some_and(Vec::is_empty) {
+                    hooks.shift_remove(event);
+                }
+            }
+        }
     }
-    if hooks.is_empty() {
-        settings.as_object_mut().unwrap().remove("hooks");
+    if program.is_none() && took && hooks.is_empty() {
+        all.shift_remove("hooks");
     }
-    settings
+    Ok(settings)
+}
+
+fn read_settings(file: &Path) -> Result<Value, String> {
+    let untouched = |why: String| format!("{} {why}: it was left as it is", file.display());
+    let bytes = match std::fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
+        Err(e) => return Err(untouched(format!("could not be read ({e})"))),
+    };
+    let text = String::from_utf8(bytes).map_err(|_| untouched("is not UTF-8".to_string()))?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    if text.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(text).map_err(|e| untouched(format!("is not readable as JSON ({e})")))
 }
 
 pub fn claude_there() -> bool {
     claude_settings().and_then(|file| Some(file.parent()?.is_dir())).unwrap_or(false)
 }
 
+pub fn claude_hook_program() -> Option<String> {
+    let settings = read_settings(&claude_settings()?).ok()?;
+    let entries = settings.pointer("/hooks/PreToolUse")?.as_array()?;
+    let ours =
+        entries.iter().filter_map(|entry| entry.get("hooks")?.as_array()).flatten().find(|hook| is_ours(hook))?;
+    Some(ours.get("command")?.as_str()?.to_string())
+}
+
 pub fn claude_connected() -> bool {
-    let read = claude_settings().and_then(|file| std::fs::read_to_string(file).ok());
-    let settings: Value = read.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Value::Null);
-    let entries =
-        settings.pointer("/hooks/PreToolUse").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    entries.iter().any(ours)
+    claude_hook_program().is_some()
+}
+
+pub fn own_program() -> Option<String> {
+    Some(std::env::current_exe().ok()?.to_string_lossy().into_owned())
 }
 
 pub fn connect_claude(on: bool) -> Result<(), String> {
     let file = claude_settings().ok_or("the folder of Claude Code's settings was not found")?;
-    let settings = match std::fs::read_to_string(&file) {
-        Ok(text) if text.trim().is_empty() => json!({}),
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("{} is not readable as JSON ({e}): it was left as it is", file.display()))?,
-        Err(_) => json!({}),
-    };
-    let program = std::env::current_exe().map_err(|e| e.to_string())?;
-    let changed = with_hooks(settings.clone(), on.then_some(program.as_path()));
+    let settings = read_settings(&file)?;
+    let program = own_program().ok_or("the path of this program is not known")?;
+    let changed = with_hooks(&settings, on.then_some(program.as_str()))
+        .map_err(|why| format!("{}: {why}. It was left as it is", file.display()))?;
     if changed == settings {
         return Ok(());
     }
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    if file.is_file() {
-        let _ = std::fs::copy(&file, file.with_extension("json.before-code-canvas"));
+    let kept = file.with_extension("json.before-code-canvas");
+    if file.is_file() && !kept.exists() {
+        std::fs::copy(&file, &kept)
+            .map_err(|e| format!("a copy of {} could not be kept ({e}): nothing was changed", file.display()))?;
     }
     let text = serde_json::to_string_pretty(&changed).map_err(|e| e.to_string())?;
-    std::fs::write(&file, text + "\n").map_err(|e| format!("{} could not be written: {e}", file.display()))
+    let fresh = file.with_extension("json.code-canvas-new");
+    let written = std::fs::write(&fresh, text + "\n").and_then(|_| std::fs::rename(&fresh, &file));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&fresh);
+        format!("{} could not be written ({e}): it was left as it is", file.display())
+    })
 }
 
 pub struct Agents {
     heard: Option<Receiver<Value>>,
+    port: Option<u16>,
     pub list: Vec<Agent>,
     pub following: Option<String>,
     moves: u64,
@@ -260,11 +313,18 @@ fn brief(text: &str, most: usize) -> String {
 
 impl Agents {
     pub fn listen() -> Agents {
+        let _ = std::fs::remove_file(crate::session::data_dir().join("agents.port"));
+        for port in listening() {
+            if UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+                let _ = std::fs::remove_file(ports_dir().join(port.to_string()));
+            }
+        }
         let socket = UdpSocket::bind(("127.0.0.1", 0)).ok();
-        let heard = match socket.as_ref().and_then(|socket| socket.local_addr().ok()) {
-            Some(address) => {
-                let _ = std::fs::create_dir_all(crate::session::data_dir());
-                let _ = std::fs::write(port_file(), address.port().to_string());
+        let port = socket.as_ref().and_then(|socket| socket.local_addr().ok()).map(|address| address.port());
+        let heard = match port {
+            Some(port) => {
+                let _ = std::fs::create_dir_all(ports_dir());
+                let _ = std::fs::write(ports_dir().join(port.to_string()), "");
                 let (tx, heard) = mpsc::channel();
                 std::thread::spawn(move || {
                     let (Some(socket), mut bytes) = (socket, vec![0u8; 65_536]) else { return };
@@ -283,7 +343,13 @@ impl Agents {
                 None
             }
         };
-        Agents { heard, list: Vec::new(), following: None, moves: 0 }
+        Agents { heard, port, list: Vec::new(), following: None, moves: 0 }
+    }
+
+    pub fn close(&mut self) {
+        if let Some(port) = self.port.take() {
+            let _ = std::fs::remove_file(ports_dir().join(port.to_string()));
+        }
     }
 
     pub fn find(&self, key: &str) -> Option<&Agent> {
@@ -361,9 +427,9 @@ impl Agents {
         };
         if let Some(path) = text(event, &["path"]) {
             let line = event.get("line").and_then(Value::as_u64).map(|line| line.saturating_sub(1) as u32);
-            let lines = event.get("lines").and_then(Value::as_u64).unwrap_or(1).max(1) as u32;
+            let lines = event.get("lines").and_then(Value::as_u64).unwrap_or(1).clamp(1, 400) as u32;
             agent.path = Some(PathBuf::from(path));
-            agent.lines = line.map(|line| (line, lines));
+            agent.lines = line.map(|line| (line.min(u32::MAX / 2), lines));
             agent.find = None;
             agent.moved = moves;
         }
@@ -389,6 +455,11 @@ impl Agents {
             for agent in self.list.iter_mut().filter(|agent| agent.session == session) {
                 (agent.doing, agent.at) = (Doing::Leaving, Instant::now());
             }
+            return;
+        }
+        let of_tool = matches!(event, "PreToolUse" | "PostToolUse");
+        let left = self.find(&key).is_some_and(|agent| agent.doing == Doing::Leaving);
+        if (of_tool && left) || (event == "SubagentStop" && inner.is_none()) {
             return;
         }
         let cwd = text(hook, &["cwd"]).map(PathBuf::from);
@@ -421,7 +492,7 @@ impl Agents {
                         agent.note = String::new();
                         agent.find = None;
                         agent.lines = Some((
-                            number("offset").unwrap_or(1).saturating_sub(1) as u32,
+                            number("offset").unwrap_or(1).saturating_sub(1).min(u32::MAX as u64 / 2) as u32,
                             number("limit").unwrap_or(60).clamp(1, 400) as u32,
                         ));
                         (agent.path, agent.moved) = (file, moves);
@@ -469,7 +540,7 @@ mod tests {
     use super::*;
 
     fn heard(events: &[Value]) -> Agents {
-        let mut agents = Agents { heard: None, list: Vec::new(), following: None, moves: 0 };
+        let mut agents = Agents { heard: None, port: None, list: Vec::new(), following: None, moves: 0 };
         for event in events {
             agents.hear(event);
         }
@@ -552,19 +623,92 @@ mod tests {
 
     #[test]
     fn the_hooks_of_claude_code_are_added_and_taken_out_without_touching_the_rest() {
-        let before = json!({ "model": "opus", "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "mine.sh" }] }] } });
-        let program = Path::new("C:/Program Files/Code Canvas/code-canvas.exe");
-        let on = with_hooks(before.clone(), Some(program));
-        assert_eq!(on["model"], "opus");
+        let before: Value = serde_json::from_str(
+            r#"{ "model": "opus", "zeta": 1, "alpha": 2,
+                 "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "mine.sh" }] }] } }"#,
+        )
+        .unwrap();
+        let program = "C:\\Program Files\\Code Canvas\\code-canvas.exe";
+        let on = with_hooks(&before, Some(program)).unwrap();
+        let keys: Vec<&String> = on.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["model", "zeta", "alpha", "hooks"], "the keys keep the order the user gave them");
         let tools = on["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(tools.len(), 2, "theirs stays, ours is added");
         assert_eq!(tools[1]["matcher"], "*");
+        assert_eq!(tools[1]["hooks"][0]["command"], program);
         assert_eq!(tools[1]["hooks"][0]["args"], json!(["--agent-hook", "claude"]));
         assert_eq!(tools[1]["hooks"][0]["async"], true);
         assert!(on["hooks"]["SessionEnd"][0].get("matcher").is_none());
-        assert_eq!(with_hooks(on.clone(), Some(program)), on, "adding twice adds once");
-        assert_eq!(with_hooks(on, None), before, "and taking out leaves what was there");
-        assert_eq!(with_hooks(json!({}), None), json!({}));
+        assert_eq!(with_hooks(&on, Some(program)).unwrap(), on, "adding twice adds once");
+        let off = with_hooks(&on, None).unwrap();
+        assert_eq!(off, before, "and taking out leaves what was there");
+        assert_eq!(serde_json::to_string(&off).unwrap(), serde_json::to_string(&before).unwrap());
+        assert_eq!(with_hooks(&json!({}), None).unwrap(), json!({}));
+        assert_eq!(with_hooks(&json!({ "hooks": {} }), None).unwrap(), json!({ "hooks": {} }));
+    }
+
+    #[test]
+    fn a_hook_of_ours_among_theirs_is_the_only_one_taken() {
+        let mixed = json!({ "hooks": { "Stop": [{ "hooks": [
+            { "type": "command", "command": "theirs" },
+            { "type": "command", "command": "old path", "args": ["--agent-hook", "claude"] } ] }] } });
+        let off = with_hooks(&mixed, None).unwrap();
+        assert_eq!(off, json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "theirs" }] }] } }));
+        let again = with_hooks(&mixed, Some("new path")).unwrap();
+        let stop = again["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(
+            (stop.len(), stop[0]["hooks"].as_array().unwrap().len()),
+            (2, 1),
+            "the old one is replaced, not doubled"
+        );
+        assert_eq!(stop[1]["hooks"][0]["command"], "new path");
+    }
+
+    #[test]
+    fn settings_of_a_shape_not_understood_are_refused_not_rewritten() {
+        assert!(with_hooks(&json!([1, 2]), Some("p")).is_err());
+        assert!(with_hooks(&json!({ "hooks": "none" }), Some("p")).is_err());
+        assert!(with_hooks(&json!({ "hooks": { "Stop": { "odd": true } } }), Some("p")).is_err());
+        assert!(with_hooks(&json!({ "hooks": { "Stop": { "odd": true } } }), None).is_err());
+    }
+
+    #[test]
+    fn a_settings_file_that_cannot_be_understood_is_never_taken_for_an_empty_one() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        assert_eq!(read_settings(&file).unwrap(), json!({}), "no file yet is an empty one");
+        std::fs::write(&file, b"{ \"name\": \"caf\xe9\" }").unwrap();
+        assert!(read_settings(&file).unwrap_err().contains("not UTF-8"));
+        std::fs::write(&file, "{ // a comment\n \"a\": 1 }").unwrap();
+        assert!(read_settings(&file).is_err());
+        std::fs::write(&file, "\u{feff}{ \"a\": 1 }").unwrap();
+        assert_eq!(read_settings(&file).unwrap(), json!({ "a": 1 }), "a mark at the start is not a mistake");
+        std::fs::write(&file, "  \n").unwrap();
+        assert_eq!(read_settings(&file).unwrap(), json!({}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_arrives_late_does_not_bring_back_who_left() {
+        let hook = |event: &str, inner: Option<&str>| {
+            let mut hook = json!({ "session_id": "s1", "hook_event_name": event, "tool_name": "Read",
+                                   "tool_input": { "file_path": "C:/a.rs", "offset": 9_000_000_000u64, "limit": 5 } });
+            if let Some(inner) = inner {
+                hook["agent_id"] = json!(inner);
+            }
+            json!({ "source": "claude", "hook": hook })
+        };
+        let mut agents =
+            heard(&[hook("PreToolUse", Some("a1")), hook("SubagentStop", Some("a1")), hook("PostToolUse", Some("a1"))]);
+        assert_eq!(agents.list[0].doing, Doing::Leaving);
+        assert!(agents.list[0].lines.is_some_and(|(first, count)| first.checked_add(count).is_some()));
+        agents.hear(&hook("PreToolUse", None));
+        agents.hear(&hook("SubagentStop", None));
+        assert_eq!(agents.list[1].doing, Doing::Reading, "a stop that names no agent is nobody's");
+        agents.hear(&json!({ "agent": "x", "path": "C:/a.rs", "line": 10, "lines": 4_294_967_295u64 }));
+        assert_eq!(agents.list[2].lines, Some((9, 400)));
     }
 
     #[test]

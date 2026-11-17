@@ -1599,6 +1599,23 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   line worth looking for is kept in `Agent::find` and `poll_agents` looks for it
   in the file the canvas has, for `LOOKED_FOR`: the file on the canvas changes a
   moment after the hook says so.
+- **Claude Code's settings are someone else's file.** `read_settings` gives an
+  empty object only for a file that is not there; one that cannot be read, is
+  not UTF-8 or is not JSON is an error and nothing is written. `with_hooks`
+  refuses a shape it does not understand instead of replacing it, takes out only
+  the hooks that are ours (also from an entry shared with the user's own), and
+  keeps the order of the keys (`serde_json` with `preserve_order`, for the whole
+  app). The copy beside the file is made once, of what was there before the
+  first change, and the write is a new file renamed over the old one.
+- The hook runs the program that connected it. A copy of the app started from
+  another place repairs the path at startup (`offer_claude`), unless it is a
+  build in a `target` folder: a developer's build never takes the hooks.
+- **More than one app can listen**: each writes its port as a file name in
+  `<data dir>/agents/`, the hook sends to all of them, a port nobody is bound
+  to is cleaned at the next start and the own one on exit.
+- Hooks are separate processes and arrive out of order: a tool event for someone
+  who has left is not theirs to come back with, and a `SubagentStop` that names
+  no agent is nobody's.
 - Faces: sixteen pictures drawn for the app (`assets/agents`), names and colours
   in the same order. An assistant takes the first face nobody has.
 - Following one sets `App::following`, the same travel a change on disk causes,
