@@ -201,10 +201,6 @@ impl Chord {
             }
         }
         let key = match self.key.as_str() {
-            "left" => "←".to_string(),
-            "right" => "→".to_string(),
-            "up" => "↑".to_string(),
-            "down" => "↓".to_string(),
             "-" => "−".to_string(),
             "pageup" => "Page Up".to_string(),
             "pagedown" => "Page Down".to_string(),
@@ -351,7 +347,7 @@ mod tests {
         assert_eq!(chord("ctrl++").key, "+");
         assert_eq!(chord("shift+alt+f").label(), "Shift+Alt+F");
         assert_eq!(chord("ctrl+tab").label(), "Ctrl+Tab");
-        assert_eq!(chord("left").label(), "←");
+        assert_eq!(chord("alt+left").label(), "Alt+Left");
         for text in ["ctrl+shift+p", "f1", "ctrl++", "shift+alt+f", "ctrl+,", "-"] {
             assert_eq!(chord(text).to_text(), text);
         }

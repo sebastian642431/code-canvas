@@ -49,6 +49,7 @@ pub const MOUSE_POINTER_2: &str = "\u{e1c2}";
 pub const HAND: &str = "\u{e1d6}";
 pub const TRASH_2: &str = "\u{e18d}";
 pub const ARROW_UP: &str = "\u{e04e}";
+pub const ARROW_DOWN: &str = "\u{e046}";
 pub const CORNER_DOWN_LEFT: &str = "\u{e0a5}";
 pub const FOLDER_TREE: &str = "\u{e33f}";
 pub const NETWORK: &str = "\u{e128}";

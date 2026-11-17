@@ -362,10 +362,10 @@ pub fn changes_panel(
             let mut branch =
                 format!("{}  {}{}", icons::GIT_BRANCH, g.branch, if g.changes.is_empty() { "" } else { "*" });
             if g.ahead > 0 {
-                branch.push_str(&format!("  ↑{}", g.ahead));
+                branch.push_str(&format!("  {}{}", icons::ARROW_UP, g.ahead));
             }
             if g.behind > 0 {
-                branch.push_str(&format!("  ↓{}", g.behind));
+                branch.push_str(&format!("  {}{}", icons::ARROW_DOWN, g.behind));
             }
             let galley = ui.painter().layout_no_wrap(branch.clone(), FontId::proportional(12.0), pal().text_dim);
             let at = Rect::from_min_size(
@@ -465,7 +465,8 @@ pub fn changes_panel(
                     (Primary::Commit | Primary::Idle, _) => format!("{}  Commit", icons::CHECK),
                     (Primary::Publish, _) => format!("{}  Publish Branch", icons::ARROW_UP),
                     (Primary::Sync, _) => {
-                        format!("{}  Sync Changes  {}↓ {}↑", icons::REPEAT_2, g.behind, g.ahead)
+                        let (down, up) = (icons::ARROW_DOWN, icons::ARROW_UP);
+                        format!("{}  Sync Changes  {}{down} {}{up}", icons::REPEAT_2, g.behind, g.ahead)
                     }
                 };
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
