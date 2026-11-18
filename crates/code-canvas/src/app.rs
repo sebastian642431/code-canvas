@@ -1692,8 +1692,9 @@ impl App {
         if let Some(r) = page.ready_mut() {
             if let Some(index) = r.repo.file_index(&rel) {
                 let serial = self.grammars.ask(id, index, &r.repo.files[index], true);
-                if let Some(painted) = serial.and_then(|serial| self.grammars.wait(id, index, serial)) {
-                    r.tokens.paint(index, painted);
+                let painted = serial.and_then(|serial| self.grammars.wait(id, index, serial));
+                if let (Some(painted), Some(g)) = (painted, self.gfx.as_ref()) {
+                    r.paint(index, painted, &g.gpu());
                 }
             }
         }
@@ -3797,6 +3798,12 @@ impl App {
                 }
                 self.request_redraw();
             }
+            Action::Arrange(on) => {
+                if let (Some(g), Some(page)) = (self.gfx.as_ref(), self.pages.get_mut(self.active)) {
+                    page.set_arranged(on, &g.renderer, &g.device, &self.ui.filters);
+                }
+                self.request_redraw();
+            }
             Action::FiltersChanged => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.curves_dirty = true;
@@ -4047,6 +4054,23 @@ impl App {
                 match what {
                     "all" => self.ui.deps.all = on == "on",
                     "selected" => self.ui.deps.selected = on == "on",
+                    "arrange" => self.apply(Action::Arrange(on == "on")),
+                    "order" => {
+                        let folder = if on == "on" { "" } else { on };
+                        let page = self.pages.get(self.active);
+                        if let Some((r, order)) = page.and_then(|p| Some((p.ready()?, p.filter.order.as_deref()?))) {
+                            let said: Vec<String> = order
+                                .arranged(&r.repo, folder)
+                                .into_iter()
+                                .map(|(name, layer)| format!("{name} {layer}"))
+                                .collect();
+                            log::info!("script: deps order of '{folder}': {}", said.join(", "));
+                            let against = r.deps.edges.iter().filter(|e| order.against(e)).count();
+                            log::info!("script: deps {against} edges go against the order");
+                        } else {
+                            log::warn!("script: deps order needs the folder arranged");
+                        }
+                    }
                     "report" => {
                         if let Some(page) = self.pages.get(self.active) {
                             let ((drawn, total), marks) = (page.dep_edges, page.dep_marks.len());
@@ -4445,6 +4469,7 @@ impl App {
                 }
             }
             Step::Colours(arg) => self.script_colours(&arg),
+            Step::Bars(rel) => self.script_bars(&rel),
             Step::Count => match self.pages.get(self.active).and_then(|page| Some((page, page.ready()?))) {
                 Some((page, r)) => {
                     let cards = r.layout.file_node.iter().filter(|&&n| n != canvas_core::layout::NONE).count();
@@ -4458,6 +4483,10 @@ impl App {
                     (mine.ms, built.ms) = (0, 0);
                     if mine != built {
                         wrong.push("the dependencies".into());
+                    }
+                    let arranged = page.arranged.then(|| canvas_core::Order::build(&r.repo, &built));
+                    if page.filter.order.as_deref() != arranged.as_ref() || r.layout.order != page.filter.order {
+                        wrong.push("the order of the folders".into());
                     }
                     match wrong.is_empty() {
                         true => log::info!("script: the layout, the symbol index and the dependencies are what building them again gives"),
@@ -4508,8 +4537,10 @@ impl App {
                             page.editors.contains_key(rel) && !page.diffs.contains_key(rel)
                         });
                         let typed: std::collections::BTreeSet<u32> = typed.map(|index| index as u32).collect();
-                        if !typed.is_empty() {
-                            r.deps.update_files(&r.repo, &typed);
+                        if !typed.is_empty() && r.deps.update_files(&r.repo, &typed) && page.arranged {
+                            if let Some(g) = &self.gfx {
+                                page.imports_typed(&typed, &g.gpu(), &self.ui.filters);
+                            }
                         }
                     }
                 }
@@ -4751,6 +4782,10 @@ impl App {
                     tree: Vec::new(),
                     tree_dirty: true,
                 }));
+                page.filter.order = loaded.order;
+                if page.arranged != page.filter.order.is_some() {
+                    page.set_arranged(page.arranged, &g.renderer, &g.device, &self.ui.filters);
+                }
                 let kept: Vec<String> = page.editors.keys().cloned().collect();
                 for rel in &kept {
                     page.show_edit(rel, "kept", &g.gpu(), &self.ui.filters);
@@ -5025,6 +5060,9 @@ impl App {
             if changed || (painter.is_some() && !r.tokens.has_painter()) {
                 r.tokens.set_painter(painter.clone());
                 g.renderer.text.drop_page(id);
+                if r.unpaint() {
+                    page.rebuild_scene(&g.renderer, &g.device);
+                }
             }
         }
         for done in done {
@@ -5033,9 +5071,21 @@ impl App {
             if r.repo.files.get(done.file as usize).is_none_or(|file| file.serial() != done.serial) {
                 continue;
             }
-            let fresh = r.tokens.paint(done.file as usize, done.painted);
+            let fresh = r.paint(done.file as usize, done.painted, &g.gpu());
             g.renderer.text.drop_chunks(done.page, done.file, &fresh);
         }
+    }
+
+    fn script_bars(&mut self, rel: &str) {
+        let Some(r) = self.pages.get(self.active).and_then(|page| page.ready()) else { return };
+        let Some(index) = r.repo.file_index(rel) else { return log::warn!("script: no file {rel}") };
+        let f = &r.repo.files[index];
+        let (from, blocks) = match &f.analysis.painted {
+            Some(painted) => ("its grammar", &painted[..]),
+            None => ("the app", &f.analysis.blocks[..]),
+        };
+        let kinds: Vec<String> = blocks.iter().take(8).map(|b| format!("{:?}", b.kind).to_lowercase()).collect();
+        log::info!("script: bars of {rel} from {from}: {} blocks, {}", blocks.len(), kinds.join(" · "));
     }
 
     fn script_colours(&mut self, arg: &str) {

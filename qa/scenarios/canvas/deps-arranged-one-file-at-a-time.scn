@@ -1,0 +1,45 @@
+title: Arranged by imports, a file whose imports change, a file made and one deleted reorder only the folders above them, without laying out the rest again
+folders: deps-folders
+limit: 150
+expect-log: script: deps order of 'src/util': util0 0, util1 0, util2 0, util3 0$
+expect-log: updated 'src/util/util1/util0\.ts' \(written\) alone in .*\(edges changed\), 1 folders in another order
+expect-log: script: deps order of 'src/util': util0 0, util2 0, util3 0, util1 1$
+expect-log: updated 'src/util/util3/made\.ts' \(made\) alone in .*, [12] folders in another order
+expect-log: script: deps order of 'src/util': util0 0, util2 0, util1 1, util3 1$
+expect-log: updated 'src/util/util1/util0\.ts' \(deleted\) alone in .* folders in another order
+expect-log: updated 'src/util/util2/util0\.ts' \(imports typed\) alone in .*, [12] folders in another order
+expect-log: script: deps order of 'src/util': util0 0, util1 0, util3 1, util2 2$
+expect-log: script: the layout, the symbol index and the dependencies are what building them again gives
+forbid-log: with everything laid out again
+forbid-log: script: not what building again gives
+forbid-log: WARN.*script
+
+wait 3000
+deps arrange on
+wait 1500
+deps order src/util
+goto src/util
+wait 1500
+mark util-by-layer
+wait 400
+touch src/util/util1/util0.ts import { run as far } from "../util2/util0"
+wait 2500
+deps order src/util
+touch src/util/util3/made.ts import { run } from "../util0/util5"\nexport const made = run
+wait 2500
+deps order src/util
+remove src/util/util1/util0.ts
+wait 2500
+edit src/util/util2/util0.ts 1 1
+type import { run as up } from "../util3/made"
+key enter
+wait 2500
+key save
+wait 1500
+deps order src/util
+count
+goto src/util
+wait 1500
+mark util-reordered
+wait 400
+quit

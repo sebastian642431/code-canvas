@@ -1,0 +1,54 @@
+title: Arranged by its imports, every folder puts what is imported first and what imports it after, keeps cycles together, dashes what goes against the order, and remembers it
+folders: deps-folders
+limit: 150
+expect-log: arranged 'deps-folders' by its imports: \d+ layers at most, [1-9]\d* cycles kept together
+expect-log: script: deps order of 'src': util 0, core 1, data 1, api 1, ui 1, app 2$
+expect-log: script: deps order of 'src/ui': widgets 0, pages 1$
+expect-log: script: deps order of 'src/util/util0': util0\.ts 0,
+expect-log: script: deps [1-9]\d* edges go against the order
+expect-log: script: the layout, the symbol index and the dependencies are what building them again gives
+expect-log: script: deps \d+ of \d+ edges drawn, bundled, [1-9]\d* counts
+again-expect-log: arranged 'deps-folders' by its imports
+again-expect-log: script: deps order of 'src': util 0, core 1, data 1, api 1, ui 1, app 2$
+forbid-log: script: not what building again gives
+forbid-log: WARN.*script
+
+wait 3000
+right deps
+fit
+wait 1200
+mark by-name
+wait 400
+deps arrange on
+wait 1500
+fit
+wait 1200
+mark arranged
+wait 400
+deps order src
+deps order src/ui
+deps order src/util/util0
+count
+goto src/data
+wait 1500
+fit
+wait 1200
+deps report
+mark folder-edges-arranged
+wait 400
+goto src/util/util0/util2.ts
+wait 1500
+zoom 0.6
+wait 1200
+mark cycle-arranged
+wait 400
+quit
+
+=== again
+wait 3000
+deps order src
+fit
+wait 1200
+mark arranged-again
+wait 400
+quit

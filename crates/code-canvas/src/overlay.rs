@@ -199,6 +199,8 @@ impl DepPen<'_> {
     fn draw(&mut self, r: &Ready, edges: &[&Edge], color: u32, room: usize) -> DepsDrawn {
         let site = |file: u32, line: u32| Site { file, line, col: 0, len: 0 };
         let anchor = |file: u32, line: u32| r.layout.anchor(&site(file, line)).map(|(p, _)| p);
+        let order = r.layout.order.as_deref();
+        let dashed = |e: &Edge| r.deps.in_cycle(e) || order.is_some_and(|o| o.against(e));
         let arrow = ARROW_WORLD;
         let mut done = DepsDrawn::default();
         let Some(groups) = self.groups else {
@@ -207,7 +209,7 @@ impl DepPen<'_> {
                     break;
                 }
                 let (Some(a), Some(b)) = (anchor(e.from, e.line), anchor(e.to, 0)) else { continue };
-                let stroke = Stroke { dashed: r.deps.in_cycle(e), arrow };
+                let stroke = Stroke { dashed: dashed(e), arrow };
                 push_edge(self.out, a, b, color, edge_width(1, self.scale), stroke);
                 done.edges += 1;
                 done.curves += 1;
@@ -216,10 +218,8 @@ impl DepPen<'_> {
         };
         done.bundled = true;
         let group = |f: u32| r.layout.file_anchor.get(f as usize).filter(|a| **a != NONE).map(|&a| groups[a as usize]);
-        let pairs = edges
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| Some((group(e.from)?, group(e.to)?, r.deps.in_cycle(e), i as u32)));
+        let pairs =
+            edges.iter().enumerate().filter_map(|(i, e)| Some((group(e.from)?, group(e.to)?, dashed(e), i as u32)));
         let bundles = canvas_core::deps::bundle(pairs);
         for b in bundles.iter().take(room) {
             let e = edges[b.first as usize];

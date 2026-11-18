@@ -73,6 +73,7 @@ pub enum Step {
     Find(String),
     Where,
     Colours(String),
+    Bars(String),
     Count,
     Quit,
 }
@@ -164,6 +165,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "find" => Step::Find(arg.into()),
         "where" => Step::Where,
         "colours" => Step::Colours(arg.into()),
+        "bars" => Step::Bars(arg.into()),
         "count" => Step::Count,
         "account" => Step::Account(arg.into()),
         "drag" => {

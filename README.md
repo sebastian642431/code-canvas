@@ -42,6 +42,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   When there are many, the edges between two folders become one thicker edge with
   their count; zooming in, or selecting a file, opens them up again.
   On Chromium: 1.35 million edges found in half a second.
+- **Arrange the folder by its imports** (in the Dependencies panel, remembered per
+  folder): in every folder, what is imported comes first, from the top left, and
+  what imports it after it, layer by layer; files and folders that import each other
+  stay together. A dashed edge then goes against that order. Changing an import
+  moves only the folders above that file.
 
 **Finding things**
 - Files panel: tree with checkboxes, filter, click to fly to a file. Right click for
@@ -59,8 +64,9 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   changed on top.
 - **Grammars of VS Code**: a language the app does not colour itself (Elm,
   Terraform, Ink, your company's own…) is coloured by the TextMate grammar its
-  extension brings, on a thread of its own, also while you type in it. A setting
-  lets grammars colour the languages the app knows too.
+  extension brings, on a thread of its own, also while you type in it, and from far
+  away too, once a file has been coloured. A setting lets grammars colour the
+  languages the app knows too.
 - **Settings** (the gear, or `Ctrl+,`) open over the app: version and updates, theme,
   file icons, every colour, every shortcut and who writes commit messages, with a
   search box across all of it. The window opens where and as big as it was left,
@@ -410,7 +416,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       canvas, the panels and the code take their colours. File icon themes too.
 - [x] Grammars from extensions: languages the app does not know are coloured by
       their extension's TextMate grammar (all of them, if asked).
-- [ ] Grammars: the far-away view of a file (its blocks) in the grammar's colours.
+- [x] Grammars: the far-away view of a file (its blocks) in the grammar's colours.
 - [x] The rest of a line longer than its card (160 columns) shown beside the card,
       under the pointer or the caret.
 - [x] **Soft wrapping** for lines longer than the card width, as an option: the
@@ -422,7 +428,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Dependency edges between files (imports), for the selected file or folder.
 - [x] Dependencies: edges bundled per folder so that all of them can be drawn on a
       huge repository, arrowheads, the edges of import cycles dashed.
-- [ ] Dependencies: arranging the canvas by namespace or by layer.
+- [x] Dependencies: arranging every folder by layer (what is imported first).
+- [ ] Dependencies: arranging the canvas by namespace.
 - [x] Git: changed files and lines on the canvas, file timeline.
 - [x] Git: staging, committing and syncing from the source control panel.
 - [x] Git: the diff inside each file (removed lines too), together or with what it

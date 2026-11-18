@@ -128,10 +128,32 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
                 1 => format!("part of an import cycle · 1 cycle, {} edges", thousands(deps.cyclic_edges)),
                 n => format!("part of an import cycle · {n} cycles, {} edges", thousands(deps.cyclic_edges)),
             };
-            legend(ui, Sample::Cycle, &cycles);
+            match page.arranged {
+                true => legend(ui, Sample::Cycle, &format!("against the order of the folder, or {cycles}")),
+                false => legend(ui, Sample::Cycle, &cycles),
+            }
             if page.dep_zoom.is_some() {
                 legend(ui, Sample::Bundle, "imports between two folders, together: zoom in or select a file inside");
             }
+
+            section(ui, icons::LAYOUT_GRID, "Arrange");
+            well(ui, |ui| {
+                let mut on = page.arranged;
+                if check(ui, &mut on, "Arrange the folder by its imports", true, false).clicked() {
+                    actions.push(Action::Arrange(on));
+                }
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "In every folder, what is imported comes first, from the top left, and what imports \
+                             it after it. Files and folders that import each other stay together.",
+                        )
+                        .size(11.0)
+                        .color(pal().text_faint),
+                    )
+                    .wrap(),
+                );
+            });
 
             section(ui, icons::SHARE_2, "Relationships");
             well(ui, |ui| {

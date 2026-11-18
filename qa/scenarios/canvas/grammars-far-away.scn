@@ -1,0 +1,37 @@
+title: From far away, a file coloured by an extension's grammar shows its bars in the grammar's colours once it has been painted, and Rust keeps the app's own
+folders: grammars
+extensions: grammar-extension
+expect-log: script: bars of src/hello\.quill from the app: 3 blocks, text · text · text$
+expect-log: the grammar of quill coloured src/hello\.quill: 21 of its 21 lines tokenized
+expect-log: the grammar of quill coloured big/long\.quill: 6000 of its 6000 lines tokenized
+expect-log: script: bars of src/hello\.quill from its grammar: 3 blocks, (?!text · text · text)
+expect-log: script: bars of big/long\.quill from its grammar: 750 blocks,
+expect-log: script: bars of src/main\.rs from the app: 1 blocks,
+forbid-log: script: bars of big/long\.quill from the app
+forbid-log: WARN.*script
+
+resize 1600 1000
+wait 2500
+bars src/hello.quill
+fit
+wait 1200
+mark far-before
+wait 400
+goto src/hello.quill
+wait 2500
+goto big/long.quill
+wait 4000
+bars src/hello.quill
+bars big/long.quill
+bars src/main.rs
+fit
+wait 1500
+mark far-painted
+wait 400
+goto src/hello.quill
+wait 1500
+zoom 0.02
+wait 1200
+mark hello-blocks
+wait 400
+quit
