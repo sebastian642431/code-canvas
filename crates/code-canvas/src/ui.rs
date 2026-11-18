@@ -2561,9 +2561,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click_and_drag());
             st.tree.folders.push((rect, row.path.clone()));
             let on = row.page.is_some();
-            let new_id = ui.scope_id().with(("workspace new", &row.path));
-            let new_open = egui::Popup::is_id_open(ui.ctx(), new_id.with("popup"));
-            let hot = ui.rect_contains_pointer(rect) || new_open;
+            let hot = ui.rect_contains_pointer(rect);
             if row.active {
                 ui.painter().rect_filled(rect, 6.0, pal().raised);
             } else if hot {
@@ -2585,43 +2583,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 (false, None, Some(files)) => files.to_string(),
                 (false, None, None) => String::new(),
             };
-            let plus_at = Rect::from_center_size(Pos2::new(button.left() - 13.0, mid), Vec2::splat(22.0));
-            if hot && st.tree.drag.is_none() {
-                let plus = ui.interact(plus_at, new_id, Sense::click());
-                if plus.hovered() || new_open {
-                    ui.painter().rect_filled(plus_at, 5.0, pal().border_strong);
-                }
-                ui.painter().text(
-                    plus_at.center(),
-                    Align2::CENTER_CENTER,
-                    icons::PLUS,
-                    FontId::proportional(13.0),
-                    pal().text_dim,
-                );
-                egui::Popup::menu(&plus).show(|ui| {
-                    ui.set_width(170.0);
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    let mut kind = None;
-                    if menu_row(ui, icons::FILE, "New file") {
-                        kind = Some(NamingKind::NewFile);
-                    }
-                    if menu_row(ui, icons::FOLDER, "New folder") {
-                        kind = Some(NamingKind::NewFolder);
-                    }
-                    if let Some(kind) = kind {
-                        st.naming = Some(Naming { kind, path: String::new(), text: String::new(), focus: true });
-                        if !row.active {
-                            actions.push(match row.page {
-                                Some(page) => Action::SwitchTab(page),
-                                None => Action::Workspace(WorkspaceOp::Put(row.path.clone())),
-                            });
-                        }
-                        ui.close();
-                    }
-                });
-                plus.on_hover_text("New file or folder in it");
-            }
-            let right = if hot { plus_at.left() - 4.0 } else { rect.right() - 8.0 };
+            let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
             let shade = if row.branch.is_some() && on { pal().text_dim } else { pal().text_faint };
             let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), shade);
             let name_end = right - counted.size().x - 8.0;

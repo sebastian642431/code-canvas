@@ -106,22 +106,58 @@ pub fn in_tail(tail: &[u8], from_the_start: bool) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 pub fn last_in(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    for look in LOOKS {
-        let from = length.saturating_sub(look);
-        file.seek(SeekFrom::Start(from)).ok()?;
-        let mut tail = Vec::new();
-        (&mut file).take(look).read_to_end(&mut tail).ok()?;
-        if let Some(model) = in_tail(&tail, from == 0) {
-            return Some(model);
+    read_back(path).0
+}
+
+/// The title of a session in a tail of its transcript: the one it was given by hand, else the last one Claude
+/// Code made up for it.
+pub fn title_in(tail: &[u8], from_the_start: bool) -> Option<String> {
+    let lines: Vec<&[u8]> = tail.split(|byte| *byte == b'\n').collect();
+    let whole = if from_the_start { &lines[..] } else { &lines[1.min(lines.len())..] };
+    let has = |line: &[u8], word: &[u8]| line.windows(word.len()).any(|part| part == word);
+    let mut made_up = None;
+    for line in whole.iter().rev() {
+        let (by_hand, made) = (has(line, b"\"custom-title\""), has(line, b"\"ai-title\""));
+        if !by_hand && (!made || made_up.is_some()) {
+            continue;
         }
-        if from == 0 {
-            return None;
+        let Ok(entry) = serde_json::from_slice::<Value>(line) else { continue };
+        let key = match entry.get("type").and_then(Value::as_str) {
+            Some("custom-title") => "customTitle",
+            Some("ai-title") => "aiTitle",
+            _ => continue,
+        };
+        let title = entry.get(key).and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty());
+        match (key, title) {
+            ("customTitle", Some(title)) => return Some(title.to_string()),
+            (_, Some(title)) => made_up = Some(title.to_string()),
+            _ => {}
         }
     }
-    None
+    made_up
+}
+
+/// The model of the last answer in a transcript and the title of its session, read from its end and further
+/// back while either is missing.
+pub fn read_back(path: &Path) -> (Option<String>, Option<String>) {
+    let (mut model, mut title) = (None, None);
+    let Ok(mut file) = File::open(path) else { return (model, title) };
+    let length = file.metadata().map(|meta| meta.len()).unwrap_or_default();
+    for look in LOOKS {
+        let from = length.saturating_sub(look);
+        let mut tail = Vec::new();
+        if file.seek(SeekFrom::Start(from)).is_err() || (&mut file).take(look).read_to_end(&mut tail).is_err() {
+            break;
+        }
+        model = model.or_else(|| in_tail(&tail, from == 0));
+        title = title.or_else(|| title_in(&tail, from == 0));
+        if from == 0 || (model.is_some() && title.is_some()) {
+            break;
+        }
+    }
+    (model, title)
 }
 
 pub fn of_helper(main: &Path, helper: &str) -> PathBuf {
@@ -148,8 +184,11 @@ impl Reader {
                 let latest: Vec<(String, PathBuf)> =
                     all.into_iter().rev().filter(|(key, _)| seen.insert(key.clone())).collect();
                 for (key, path) in latest {
-                    let Some(model) = last_in(&path) else { continue };
-                    if tell.send(json!({ "model_of": key, "model": model })).is_err() {
+                    let (model, title) = read_back(&path);
+                    if model.is_none() && title.is_none() {
+                        continue;
+                    }
+                    if tell.send(json!({ "model_of": key, "model": model, "title": title })).is_err() {
                         return;
                     }
                     crate::ext::wake_ui();
@@ -220,6 +259,19 @@ mod tests {
         assert_eq!(in_tail(line("user", None).as_bytes(), true), None);
         let cut = &text.as_bytes()[20..];
         assert_eq!(in_tail(cut, false).as_deref(), Some("claude-opus-5-5"), "the first piece of a tail is not a line");
+    }
+
+    #[test]
+    fn a_session_is_named_by_its_title_and_a_title_given_by_hand_wins() {
+        let made = |title: &str| format!("{}\n", json!({ "type": "ai-title", "aiTitle": title, "sessionId": "s1" }));
+        let named = format!("{}\n", json!({ "type": "custom-title", "customTitle": "Mine", "sessionId": "s1" }));
+        let text = line("user", None) + &made("Old one") + &line("assistant", Some("x")) + &made("Tab drag");
+        assert_eq!(title_in(text.as_bytes(), true).as_deref(), Some("Tab drag"), "the last made-up title");
+        let text = named.clone() + &text;
+        assert_eq!(title_in(text.as_bytes(), true).as_deref(), Some("Mine"), "a name given by hand comes first");
+        assert_eq!(title_in(line("user", None).as_bytes(), true), None);
+        let quoted = line("user", None).replace("\"content\":[]", "\"content\":\"ai-title\"");
+        assert_eq!(title_in(quoted.as_bytes(), true), None, "the words in a message are not a title");
     }
 
     #[test]

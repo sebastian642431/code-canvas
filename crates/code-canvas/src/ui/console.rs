@@ -32,6 +32,8 @@ pub enum ConsoleOp {
     Unsplit(Option<u64>),
     ToCard(Option<u64>),
     Front(u64),
+    /// A console tab dragged to a place among the tabs of its card (0 is before the first).
+    Move(u64, usize),
     Cycle(i32),
     Renaming(Option<u64>),
     Rename(u64, Option<String>),
@@ -696,18 +698,31 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
     let quiet = ui.memory(|memory| memory.focused().is_none());
     let (f2, delete) = ui.input(|input| (input.key_pressed(egui::Key::F2), input.key_pressed(egui::Key::Delete)));
     let mut x = strip.left();
+    let mut rects: Vec<Rect> = Vec::new();
+    let (mut dragging, mut dropped) = (None, None);
     for (i, (tab, want)) in all.iter().zip(&wants).enumerate() {
         let width = (want * scale).max(NARROWEST);
         if x + width > strip.right() - buttons {
             break;
         }
         let rect = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(width, HIGH));
+        rects.push(rect);
+        st.console.tab_rects.insert(tab.id, rect);
         let mate = all.get(i + 1).is_some_and(|next| next.group == tab.group);
         x += width + if mate { 1.0 } else { GAP };
-        let resp = ui.interact(rect, egui::Id::unique(("console tab", tab.id)), Sense::click());
+        let sense = if renaming == Some(tab.id) { Sense::click() } else { Sense::click_and_drag() };
+        let resp = ui.interact(rect, egui::Id::unique(("console tab", tab.id)), sense);
+        if resp.dragged() {
+            dragging = Some(tab.id);
+        }
+        if resp.drag_stopped() {
+            dropped = Some(tab.id);
+        }
         let front = shown.contains(&tab.id);
-        let hovered = resp.hovered();
-        let fill = if front {
+        let hovered = resp.hovered() && dragging != Some(tab.id);
+        let fill = if dragging == Some(tab.id) {
+            pal().hover
+        } else if front {
             pal().raised
         } else if hovered {
             pal().hover
@@ -791,6 +806,21 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
         }
         if hovered && quiet && delete {
             actions.push(Action::Console(ConsoleOp::Kill(Some(tab.id))));
+        }
+    }
+    // A tab dragged along the row goes where the pointer is let go, shown meanwhile by a line between the tabs.
+    if let (Some(id), Some(at)) = (dragging.or(dropped), ui.input(|input| input.pointer.latest_pos())) {
+        let slot = st.console.snap(id, rects.iter().filter(|rect| rect.center().x < at.x).count());
+        if dragging.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            let line = match slot.checked_sub(1).and_then(|before| rects.get(before)) {
+                Some(before) => before.right() + 1.5,
+                None => strip.left() - 2.5,
+            };
+            let span = egui::Rangef::new(strip.top() + 3.0, strip.bottom() - 3.0);
+            ui.painter().vline(line, span, Stroke::new(2.0, pal().accent));
+        } else {
+            actions.push(Action::Console(ConsoleOp::Move(id, slot)));
         }
     }
     let keys = st.keys.label(Command::NewConsole);

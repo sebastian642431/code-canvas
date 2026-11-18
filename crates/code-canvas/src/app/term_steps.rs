@@ -57,11 +57,12 @@ impl App {
                 }
                 return self.request_redraw();
             }
+            ("movetab", [n, to]) => return self.term_move_tab(tab_at(self, Some(n)), to),
             ("drag" | "click" | "right", _) => None,
             _ => {
                 return log::warn!(
                     "script: term needs drag, click, right, copy, report, new, split, next, prev, front, kill, rename, \
-                     tocard, unsplit, colour, icon, clear, fill, up, down, default, has, menu or page"
+                     tocard, unsplit, colour, icon, clear, fill, up, down, default, has, menu, page or movetab"
                 )
             }
         };
@@ -129,6 +130,42 @@ impl App {
                 Vec::new()
             }
         };
+        self.ui_events.extend(frames);
+    }
+
+    /// Drags the tab of a console with the pointer, as a hand would, and lets it go just before the tab of console
+    /// `to` (counted in the whole list, like the other steps), or after the last tab of its card for `end`.
+    fn term_move_tab(&mut self, id: Option<u64>, to: &str) {
+        let rects = &self.ui.console.tab_rects;
+        let Some((id, from)) = id.and_then(|id| rects.get(&id).map(|rect| (id, *rect))) else {
+            return log::warn!("script: term movetab needs the number of a console whose tab is on screen");
+        };
+        let card = self.ui.console.tab(id).map(|tab| tab.card);
+        let target = match to {
+            "end" => {
+                let last =
+                    self.ui.console.of_card(card.unwrap_or_default()).filter_map(|tab| rects.get(&tab.id)).last();
+                last.map(|rect| egui::pos2(rect.right() + 3.0, rect.center().y))
+            }
+            n => {
+                let n = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
+                let tab = n.and_then(|n| self.ui.console.tabs.get(n)).filter(|tab| Some(tab.card) == card);
+                tab.and_then(|tab| rects.get(&tab.id)).map(|rect| egui::pos2(rect.left() + 3.0, rect.center().y))
+            }
+        };
+        let Some(target) = target else {
+            return log::warn!("script: term movetab needs where: the number of a console of the same card, or end");
+        };
+        let start = from.center();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut frames = vec![vec![egui::Event::PointerMoved(start)], vec![press(start, true)]];
+        frames.extend((1..=8).map(|i| vec![egui::Event::PointerMoved(start.lerp(target, i as f32 / 8.0))]));
+        frames.push(vec![press(target, false)]);
         self.ui_events.extend(frames);
     }
 

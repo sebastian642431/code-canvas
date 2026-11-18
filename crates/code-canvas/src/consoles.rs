@@ -417,6 +417,8 @@ pub struct Consoles {
     pub rename_focused: bool,
     /// Where the header of each card was drawn, for a menu to open under it.
     pub heads: BTreeMap<u64, egui::Rect>,
+    /// Where the tab of each console was drawn last, for a script to drag it.
+    pub tab_rects: BTreeMap<u64, egui::Rect>,
     /// Cards that were left with no console, to be closed.
     pub emptied: Vec<u64>,
     pub changed: bool,
@@ -495,6 +497,7 @@ impl Consoles {
         let at = self.tabs.iter().position(|tab| tab.id == id)?;
         let tab = self.tabs.remove(at);
         let card = tab.card;
+        self.tab_rects.remove(&id);
         let near = |within: &dyn Fn(&Tab) -> bool| {
             let after = self.tabs[at..].iter().find(|other| within(other));
             after.or_else(|| self.tabs[..at].iter().rev().find(|other| within(other))).map(|other| other.id)
@@ -537,6 +540,53 @@ impl Consoles {
         let Some(at) = self.current.and_then(|id| ids.iter().position(|other| *other == id)) else { return };
         let to = (at as i64 + i64::from(step)).rem_euclid(ids.len() as i64) as usize;
         self.bring(ids[to]);
+    }
+
+    /// Where a console dragged to `slot` among the consoles of its card lands (0 is before the first, their count
+    /// after the last): inside its own group of consoles side by side it moves alone, anywhere else its whole
+    /// group moves with it and stops at the nearer edge of another group instead of in its middle.
+    pub fn snap(&self, id: u64, slot: usize) -> usize {
+        let Some(tab) = self.tab(id) else { return slot };
+        let tabs: Vec<&Tab> = self.of_card(tab.card).collect();
+        let slot = slot.min(tabs.len());
+        let edges = |group: u64| {
+            let first = tabs.iter().position(|other| other.group == group).unwrap_or(0);
+            (first, tabs.iter().rposition(|other| other.group == group).map_or(first, |last| last + 1))
+        };
+        let (first, end) = edges(tab.group);
+        if end - first > 1 && (first..=end).contains(&slot) {
+            return slot;
+        }
+        if slot > 0 && slot < tabs.len() && tabs[slot - 1].group == tabs[slot].group {
+            let (start, end) = edges(tabs[slot].group);
+            return if slot - start <= end - slot { start } else { end };
+        }
+        slot
+    }
+
+    /// Moves a console dragged to `slot` among the consoles of its card, as [`Consoles::snap`] says.
+    pub fn reorder(&mut self, id: u64, slot: usize) {
+        let Some(tab) = self.tab(id) else { return };
+        let (card, group) = (tab.card, tab.group);
+        let slot = self.snap(id, slot);
+        let ids: Vec<u64> = self.of_card(card).map(|tab| tab.id).collect();
+        let mates: Vec<u64> = self.of_card(card).filter(|tab| tab.group == group).map(|tab| tab.id).collect();
+        let first = ids.iter().position(|other| mates.contains(other)).unwrap_or(0);
+        let alone = mates.len() > 1 && (first..=first + mates.len()).contains(&slot);
+        let moving = if alone { vec![id] } else { mates };
+        let stays = |other: &&u64| !moving.contains(other);
+        let order: Vec<u64> =
+            ids[..slot].iter().filter(stays).chain(&moving).chain(ids[slot..].iter().filter(stays)).copied().collect();
+        if order == ids {
+            return;
+        }
+        let places: Vec<usize> = (0..self.tabs.len()).filter(|at| self.tabs[*at].card == card).collect();
+        for (i, want) in order.iter().enumerate() {
+            if let Some(j) = (i..places.len()).find(|j| self.tabs[places[*j]].id == *want) {
+                self.tabs.swap(places[i], places[j]);
+            }
+        }
+        self.changed = true;
     }
 
     /// Takes a console out of its group, to be shown alone.
@@ -837,6 +887,33 @@ mod tests {
 
     fn names(consoles: &Consoles, card: u64) -> Vec<u64> {
         consoles.of_card(card).map(|tab| tab.id).collect()
+    }
+
+    #[test]
+    fn a_dragged_tab_moves_alone_or_with_its_group() {
+        let mut c = console();
+        let a = c.open(MAIN, "bash".into(), "a".into());
+        let b = c.open(MAIN, "bash".into(), "b".into());
+        let d = c.open(MAIN, "bash".into(), "d".into());
+        let other = c.open(7, "bash".into(), "o".into());
+        c.reorder(d, 0);
+        assert_eq!(names(&c, MAIN), vec![d, a, b], "to the front");
+        c.reorder(d, 3);
+        assert_eq!(names(&c, MAIN), vec![a, b, d], "to the end");
+        c.reorder(a, 2);
+        assert_eq!(names(&c, MAIN), vec![b, a, d], "one step on");
+        c.reorder(a, 1);
+        assert_eq!(names(&c, MAIN), vec![b, a, d], "dropped where it is, nothing moves");
+        assert_eq!(names(&c, 7), vec![other], "the other card keeps its own");
+        let s = c.split(b, "bash".into(), "s".into()).unwrap();
+        assert_eq!(names(&c, MAIN), vec![b, s, a, d]);
+        c.reorder(b, 4);
+        assert_eq!(names(&c, MAIN), vec![a, d, b, s], "a group moves together");
+        c.reorder(s, 2);
+        assert_eq!(names(&c, MAIN), vec![a, d, s, b], "inside its group a tab moves alone");
+        c.reorder(a, 3);
+        assert_eq!(names(&c, MAIN), vec![d, a, s, b], "never into the middle of a group");
+        assert_eq!(c.tab(s).map(|tab| tab.group), c.tab(b).map(|tab| tab.group));
     }
 
     #[test]

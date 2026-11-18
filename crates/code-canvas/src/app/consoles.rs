@@ -148,6 +148,7 @@ impl App {
                 }
             }
             ConsoleOp::Front(id) => self.ui.console.bring(id),
+            ConsoleOp::Move(id, slot) => self.ui.console.reorder(id, slot),
             ConsoleOp::Cycle(step) => {
                 if self.ui.console.current.is_none() {
                     self.console_at_hand();

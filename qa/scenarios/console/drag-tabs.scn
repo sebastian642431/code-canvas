@@ -1,0 +1,45 @@
+title: A console's tab is dragged along the row to another place: the drop line shows where it goes, letting go moves it there, the order is the one the keys go round and the one that comes back on the next start
+folders: rust-small
+limit: 90
+expect-log: script: console tab 1 .*"uno" card 0
+expect-log: script: console tab 1 .*"tres" card 0
+expect-log: script: console tab 2 .*"uno" card 0
+expect-log: script: console tab 3 .*"dos" card 0
+expect-log: script: console tab 1 .*"tres" card 0
+expect-log: script: console tab 3 .*"uno" card 0
+again-expect-log: script: console tab 1 .*"tres" card 0
+again-expect-log: script: console tab 2 .*"dos" card 0
+again-expect-log: script: console tab 3 .*"uno" card 0
+forbid-log: WARN.*script
+forbid-log: console: .* did not start
+
+wait 3000
+term new bash
+wait 2500
+term rename uno
+term new bash
+wait 2500
+term rename dos
+term new bash
+wait 2500
+term rename tres
+wait 800
+term report
+mark a-three-tabs
+term movetab 3 1
+wait 1500
+term report
+mark b-the-last-dragged-to-the-front
+term movetab 2 end
+wait 1500
+term report
+mark c-the-second-dragged-to-the-end
+wait 500
+quit
+
+=== again
+wait 4000
+term report
+mark d-the-order-came-back
+wait 500
+quit

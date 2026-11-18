@@ -123,6 +123,9 @@ pub struct Agent {
     pub avatar: usize,
     pub role: String,
     pub task: String,
+    /// The title the program gave the session (Claude Code makes one up from what it was asked), shown in place
+    /// of the words of the prompt.
+    pub title: String,
     pub doing: Doing,
     pub note: String,
     pub path: Option<PathBuf>,
@@ -155,10 +158,7 @@ impl Step {
 
 impl Agent {
     pub fn name(&self) -> String {
-        match self.task.is_empty() {
-            true => self.role.clone(),
-            false => self.task.clone(),
-        }
+        [&self.title, &self.task].into_iter().find(|said| !said.is_empty()).unwrap_or(&self.role).clone()
     }
 
     pub fn color(&self) -> u32 {
@@ -582,6 +582,7 @@ impl Agents {
             avatar,
             role: role.to_string(),
             task,
+            title: String::new(),
             doing: Doing::Thinking,
             note: String::new(),
             path: None,
@@ -637,8 +638,13 @@ impl Agents {
     pub fn hear(&mut self, event: &Value) {
         if let Some(key) = text(event, &["model_of"]) {
             let own = self.list.iter_mut().find(|agent| agent.key == key && agent.from.is_none());
-            if let (Some(agent), Some(model)) = (own, text(event, &["model"])) {
-                agent.set_model(model);
+            if let Some(agent) = own {
+                if let Some(model) = text(event, &["model"]) {
+                    agent.set_model(model);
+                }
+                if let Some(title) = text(event, &["title"]).filter(|_| !key.contains('/')) {
+                    agent.title = brief(&spoken(title), 48);
+                }
             }
             return;
         }
@@ -735,7 +741,8 @@ impl Agents {
         if transcript.is_some() {
             agent.transcript = transcript;
         }
-        let again = if agent.model.is_empty() { MODEL_UNKNOWN_AGAIN } else { MODEL_AGAIN };
+        let unknown = agent.model.is_empty() || (inner.is_none() && agent.title.is_empty());
+        let again = if unknown { MODEL_UNKNOWN_AGAIN } else { MODEL_AGAIN };
         let ended = matches!(event, "Stop" | "SubagentStop");
         let ask_model =
             agent.transcript.clone().filter(|_| ended || agent.model_asked.is_none_or(|at| at.elapsed() >= again));
@@ -921,6 +928,10 @@ mod tests {
                 named("Explore", "Explore", 2)
             ]
         );
+        agents.hear(&json!({ "model_of": "s1", "model": "claude-opus-5-5", "title": "Faster parser" }));
+        agents.hear(&json!({ "model_of": "s1/a1", "title": "Not a helper's" }));
+        assert_eq!(agents.list[0].name(), "Faster parser", "the session's title, not the words it was asked");
+        assert_eq!(agents.list[1].name(), "Find where tokens are read", "a helper is named by what it was handed");
         let again = agents.face_of("s1/a1");
         assert_eq!((again, agents.face_of("s9")), (1, 3), "a face is kept, and a new one is one never given");
         agents.hear(&hook("SubagentStop", Some("a1")));
