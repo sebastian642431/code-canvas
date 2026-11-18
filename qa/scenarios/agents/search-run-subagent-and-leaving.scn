@@ -1,8 +1,8 @@
 title: Grep on a folder, Glob on the project, Bash, a subagent with a face of its own, then SubagentStop, Stop and SessionEnd
 folders: rust-small
 limit: 50
-expect-log: Nova \(Claude Code\) is on the canvas
-expect-log: Rusty \(Explore\) is on the canvas
+expect-log: an assistant \(Claude Code\) is on the canvas
+expect-log: an assistant \(Explore\) is on the canvas
 forbid-log: script: agent needs
 
 wait 3000

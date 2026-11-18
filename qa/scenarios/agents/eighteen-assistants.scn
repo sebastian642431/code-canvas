@@ -1,8 +1,8 @@
 title: Eighteen assistants at once (two more than there are faces) all show, none crashes the app
 folders: rust-small
 limit: 45
-expect-log: Nova \(Bot 1\) is on the canvas
-expect-log: Ember \(Bot 16\) is on the canvas
+expect-log: an assistant \(Bot 1\) is on the canvas
+expect-log: an assistant \(Bot 16\) is on the canvas
 expect-log: \(Bot 17\) is on the canvas
 expect-log: \(Bot 18\) is on the canvas
 forbid-log: script: agent needs
@@ -35,7 +35,7 @@ goto src/steps.rs
 wait 1500
 mark eighteen-close
 wait 500
-agent Ember
+agent Bot 16
 wait 2500
 mark following-ember
 wait 500

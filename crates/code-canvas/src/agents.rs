@@ -13,13 +13,15 @@ const QUIET_AFTER: Duration = Duration::from_secs(45);
 const GONE_AFTER: Duration = Duration::from_secs(15 * 60);
 const LEAVING: Duration = Duration::from_secs(6);
 
-pub const NAMES: [&str; 16] = [
-    "Nova", "Rusty", "Juno", "Kiro", "Saffi", "Mint", "Bolt", "Coral", "Hoot", "Blaze", "Indi", "Gloop", "Teo",
-    "Raven", "Newton", "Ember",
-];
-pub const COLORS: [u32; 16] = [
-    0x7cc4ffff, 0xff9f43ff, 0xb48cffff, 0x2ac3a8ff, 0xff8a3dff, 0x7be0a0ff, 0xffd166ff, 0xff7eb6ff, 0xd9e2ecff,
-    0xff5d5dff, 0x6c8cffff, 0x5bc0ebff, 0xc9a26bff, 0xe84a5fff, 0xaab4c4ff, 0xa66bffff,
+pub const FACES: usize = 50;
+const REMEMBERED: usize = 600;
+pub const COLORS: [u32; FACES] = [
+    0xa039ffff, 0xff54adff, 0xff9144ff, 0xa336ffff, 0xff4155ff, 0x1afef7ff, 0x26b4ffff, 0xff28cbff, 0x28fcafff,
+    0x2461f3ff, 0xff6b5aff, 0xffc11bff, 0x19ddffff, 0xfb1d42ff, 0xaa70ffff, 0x27f0eaff, 0x68c0ffff, 0x85ff27ff,
+    0xff2822ff, 0x32e634ff, 0x1966ffff, 0xff8c6bff, 0x9a19ffff, 0xff20a1ff, 0xffcd19ff, 0x19fff8ff, 0x19ff62ff,
+    0xe2498bff, 0x19fcffff, 0x1957ffff, 0xffbe19ff, 0x1969ffff, 0x23f53eff, 0xff7419ff, 0x2b91ecff, 0xff1933ff,
+    0x2448f4ff, 0xe928f0ff, 0xff4b19ff, 0x1989ffff, 0xffcc19ff, 0x5f89b9ff, 0x9ee137ff, 0xff3219ff, 0x6dff19ff,
+    0xe234f9ff, 0x4d26ffff, 0x4d21f7ff, 0x1960ffff, 0x1bfcb9ff,
 ];
 
 fn shortened(value: &Value, depth: u8) -> Value {
@@ -105,6 +107,7 @@ pub struct Agent {
     pub session: String,
     pub avatar: usize,
     pub role: String,
+    pub task: String,
     pub doing: Doing,
     pub note: String,
     pub path: Option<PathBuf>,
@@ -115,8 +118,11 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn name(&self) -> &'static str {
-        NAMES[self.avatar % NAMES.len()]
+    pub fn name(&self) -> String {
+        match self.task.is_empty() {
+            true => self.role.clone(),
+            false => self.task.clone(),
+        }
     }
 
     pub fn color(&self) -> u32 {
@@ -132,7 +138,7 @@ impl Agent {
     }
 }
 
-pub const AVATARS: [&[u8]; 16] = [
+pub const AVATARS: [&[u8]; FACES] = [
     include_bytes!("../assets/agents/00.png"),
     include_bytes!("../assets/agents/01.png"),
     include_bytes!("../assets/agents/02.png"),
@@ -149,6 +155,40 @@ pub const AVATARS: [&[u8]; 16] = [
     include_bytes!("../assets/agents/13.png"),
     include_bytes!("../assets/agents/14.png"),
     include_bytes!("../assets/agents/15.png"),
+    include_bytes!("../assets/agents/16.png"),
+    include_bytes!("../assets/agents/17.png"),
+    include_bytes!("../assets/agents/18.png"),
+    include_bytes!("../assets/agents/19.png"),
+    include_bytes!("../assets/agents/20.png"),
+    include_bytes!("../assets/agents/21.png"),
+    include_bytes!("../assets/agents/22.png"),
+    include_bytes!("../assets/agents/23.png"),
+    include_bytes!("../assets/agents/24.png"),
+    include_bytes!("../assets/agents/25.png"),
+    include_bytes!("../assets/agents/26.png"),
+    include_bytes!("../assets/agents/27.png"),
+    include_bytes!("../assets/agents/28.png"),
+    include_bytes!("../assets/agents/29.png"),
+    include_bytes!("../assets/agents/30.png"),
+    include_bytes!("../assets/agents/31.png"),
+    include_bytes!("../assets/agents/32.png"),
+    include_bytes!("../assets/agents/33.png"),
+    include_bytes!("../assets/agents/34.png"),
+    include_bytes!("../assets/agents/35.png"),
+    include_bytes!("../assets/agents/36.png"),
+    include_bytes!("../assets/agents/37.png"),
+    include_bytes!("../assets/agents/38.png"),
+    include_bytes!("../assets/agents/39.png"),
+    include_bytes!("../assets/agents/40.png"),
+    include_bytes!("../assets/agents/41.png"),
+    include_bytes!("../assets/agents/42.png"),
+    include_bytes!("../assets/agents/43.png"),
+    include_bytes!("../assets/agents/44.png"),
+    include_bytes!("../assets/agents/45.png"),
+    include_bytes!("../assets/agents/46.png"),
+    include_bytes!("../assets/agents/47.png"),
+    include_bytes!("../assets/agents/48.png"),
+    include_bytes!("../assets/agents/49.png"),
 ];
 
 const HOOKED: [(&str, bool); 8] = [
@@ -292,6 +332,9 @@ pub struct Agents {
     pub list: Vec<Agent>,
     pub following: Option<String>,
     moves: u64,
+    faces: Vec<(String, usize)>,
+    faces_changed: bool,
+    handed: std::collections::HashMap<String, std::collections::VecDeque<String>>,
 }
 
 fn text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -343,12 +386,58 @@ impl Agents {
                 None
             }
         };
-        Agents { heard, port, list: Vec::new(), following: None, moves: 0 }
+        let faces = std::fs::read_to_string(crate::session::data_dir().join("faces.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Vec<(String, usize)>>(&text).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, avatar)| *avatar < FACES)
+            .collect();
+        Agents {
+            heard,
+            port,
+            list: Vec::new(),
+            following: None,
+            moves: 0,
+            faces,
+            faces_changed: false,
+            handed: Default::default(),
+        }
     }
 
     pub fn close(&mut self) {
         if let Some(port) = self.port.take() {
             let _ = std::fs::remove_file(ports_dir().join(port.to_string()));
+        }
+    }
+
+    fn face_of(&mut self, key: &str) -> usize {
+        if let Some(at) = self.faces.iter().position(|(kept, _)| kept == key) {
+            let kept = self.faces.remove(at);
+            self.faces.push(kept.clone());
+            return kept.1;
+        }
+        let in_use = |avatar: usize| self.list.iter().any(|agent| agent.avatar == avatar);
+        let kept_by = |avatar: usize| self.faces.iter().rposition(|(_, kept)| *kept == avatar);
+        let avatar = (0..FACES)
+            .filter(|avatar| !in_use(*avatar))
+            .min_by_key(|avatar| kept_by(*avatar).map_or(0, |at| at + 1))
+            .unwrap_or(self.list.len() % FACES);
+        self.faces.push((key.to_string(), avatar));
+        if self.faces.len() > REMEMBERED {
+            self.faces.remove(0);
+        }
+        self.faces_changed = true;
+        avatar
+    }
+
+    fn save_faces(&mut self) {
+        if !std::mem::take(&mut self.faces_changed) {
+            return;
+        }
+        let file = crate::session::data_dir().join("faces.json");
+        if let Err(why) = std::fs::write(&file, serde_json::to_string(&self.faces).unwrap_or_default()) {
+            log::warn!("the faces of the assistants could not be kept: {why}");
         }
     }
 
@@ -360,13 +449,18 @@ impl Agents {
         if let Some(at) = self.list.iter().position(|agent| agent.key == key) {
             return &mut self.list[at];
         }
-        let free = (0..NAMES.len()).find(|avatar| self.list.iter().all(|agent| agent.avatar != *avatar));
-        log::info!("{} ({role}) is on the canvas", NAMES[free.unwrap_or(self.list.len() % NAMES.len())]);
+        let avatar = self.face_of(key);
+        log::info!("an assistant ({role}) is on the canvas with face {avatar}");
+        let task = match key.split_once('/') {
+            Some(_) => self.handed.get_mut(session).and_then(|tasks| tasks.pop_front()).unwrap_or_default(),
+            None => String::new(),
+        };
         self.list.push(Agent {
             key: key.to_string(),
             session: session.to_string(),
-            avatar: free.unwrap_or(self.list.len() % NAMES.len()),
+            avatar,
             role: role.to_string(),
+            task,
             doing: Doing::Thinking,
             note: String::new(),
             path: None,
@@ -390,6 +484,7 @@ impl Agents {
             _ => agent.at.elapsed() < GONE_AFTER,
         });
         changed |= before != self.list.len();
+        self.save_faces();
         if self.following.as_ref().is_some_and(|key| self.find(key).is_none()) {
             self.following = None;
         }
@@ -415,6 +510,9 @@ impl Agents {
         let agent = self.agent(key, key, &role);
         agent.role = role;
         agent.at = Instant::now();
+        if let Some(task) = text(event, &["task"]) {
+            agent.task = brief(&first_line(task), 48);
+        }
         agent.note = text(event, &["note"]).map(|note| brief(note, 90)).unwrap_or_default();
         agent.doing = match text(event, &["action"]).unwrap_or("read") {
             "edit" | "write" => Doing::Editing,
@@ -465,8 +563,20 @@ impl Agents {
         let cwd = text(hook, &["cwd"]).map(PathBuf::from);
         self.moves += 1;
         let moves = self.moves;
+        let handed = match (event, text(hook, &["tool_name"])) {
+            ("PreToolUse", Some("Agent" | "Task")) => {
+                hook.get("tool_input").and_then(|input| text(input, &["description"]))
+            }
+            _ => None,
+        };
+        if let Some(task) = handed {
+            self.handed.entry(session.to_string()).or_default().push_back(brief(&first_line(task), 48));
+        }
         let agent = self.agent(&key, session, &role);
         agent.at = Instant::now();
+        if let Some(task) = text(hook, &["prompt"]).filter(|_| inner.is_none() && event == "UserPromptSubmit") {
+            agent.task = brief(&first_line(task), 48);
+        }
         match event {
             "SubagentStop" => (agent.doing, agent.note) = (Doing::Leaving, String::new()),
             "Stop" => (agent.doing, agent.note) = (Doing::Waiting, String::new()),
@@ -540,7 +650,16 @@ mod tests {
     use super::*;
 
     fn heard(events: &[Value]) -> Agents {
-        let mut agents = Agents { heard: None, port: None, list: Vec::new(), following: None, moves: 0 };
+        let mut agents = Agents {
+            heard: None,
+            port: None,
+            list: Vec::new(),
+            following: None,
+            moves: 0,
+            faces: Vec::new(),
+            faces_changed: false,
+            handed: Default::default(),
+        };
         for event in events {
             agents.hear(event);
         }
@@ -558,7 +677,10 @@ mod tests {
         let agents =
             heard(&[hook("PreToolUse", "Read", json!({ "file_path": under("src/a.rs"), "offset": 40, "limit": 20 }))]);
         let agent = &agents.list[0];
-        assert_eq!((agent.name(), agent.role.as_str(), agent.doing), ("Nova", "Claude Code", Doing::Reading));
+        assert_eq!(
+            (agent.name().as_str(), agent.role.as_str(), agent.doing),
+            ("Claude Code", "Claude Code", Doing::Reading)
+        );
         assert_eq!(agent.path.as_deref(), Some(std::path::Path::new(&under("src/a.rs"))));
         assert_eq!(agent.lines, Some((39, 20)));
 
@@ -596,10 +718,25 @@ mod tests {
             }
             json!({ "source": "claude", "hook": hook })
         };
-        let mut agents =
-            heard(&[hook("PreToolUse", None), hook("PreToolUse", Some("a1")), hook("PreToolUse", Some("a2"))]);
-        let seen: Vec<(&str, &str)> = agents.list.iter().map(|agent| (agent.name(), agent.role.as_str())).collect();
-        assert_eq!(seen, [("Nova", "Claude Code"), ("Rusty", "Explore"), ("Juno", "Explore")]);
+        let mut asks = hook("UserPromptSubmit", None);
+        asks["hook"]["prompt"] = json!("Make the parser faster\nand keep the tests green");
+        let mut hands = hook("PreToolUse", None);
+        hands["hook"]["tool_name"] = json!("Agent");
+        hands["hook"]["tool_input"] = json!({ "description": "Find where tokens are read" });
+        let mut agents = heard(&[asks, hands, hook("PreToolUse", Some("a1")), hook("PreToolUse", Some("a2"))]);
+        let seen: Vec<(String, &str, usize)> =
+            agents.list.iter().map(|agent| (agent.name(), agent.role.as_str(), agent.avatar)).collect();
+        let named = |name: &str, role: &'static str, face| (name.to_string(), role, face);
+        assert_eq!(
+            seen,
+            [
+                named("Make the parser faster", "Claude Code", 0),
+                named("Find where tokens are read", "Explore", 1),
+                named("Explore", "Explore", 2)
+            ]
+        );
+        let again = agents.face_of("s1/a1");
+        assert_eq!((again, agents.face_of("s9")), (1, 3), "a face is kept, and a new one is one never given");
         agents.hear(&hook("SubagentStop", Some("a1")));
         assert_eq!(agents.list[1].doing, Doing::Leaving);
         agents.hear(&hook("Stop", None));

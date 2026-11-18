@@ -3101,7 +3101,7 @@ fn peer_marks(painter: &egui::Painter, st: &UiState, canvas: Rect) {
 
 pub struct AgentView {
     pub key: String,
-    pub name: &'static str,
+    pub name: String,
     pub role: String,
     pub said: String,
     pub color: u32,
@@ -3113,7 +3113,7 @@ pub struct AgentView {
 pub struct AgentMark {
     pub avatar: usize,
     pub color: u32,
-    pub name: &'static str,
+    pub name: String,
     pub said: String,
     pub at: Pos2,
     pub lines: Vec<Rect>,
@@ -3153,14 +3153,18 @@ fn face(
 ) {
     let rect = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
     if ringed {
-        painter.circle_stroke(center, radius + 3.5, Stroke::new(1.5, color));
+        let ring = Rect::from_center_size(center, Vec2::splat(radius * 2.0 + 7.0));
+        let round = CornerRadius::same(((radius + 3.5) * 0.46) as u8);
+        painter.rect_stroke(ring, round, Stroke::new(1.5, color), egui::StrokeKind::Middle);
     }
-    painter.circle_filled(center, radius + 1.5, if quiet { color.gamma_multiply(0.45) } else { color });
+    let corner = |r: f32| CornerRadius::same((r * 0.46).min(120.0) as u8);
+    let around = Rect::from_center_size(center, Vec2::splat(radius * 2.0 + 3.0));
+    painter.rect_filled(around, corner(radius + 1.5), if quiet { color.gamma_multiply(0.45) } else { color });
     let tint = if quiet { Color32::from_gray(150) } else { Color32::WHITE };
     match faces.get(avatar % faces.len().max(1)) {
         Some(picture) => {
             let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            let round = CornerRadius::same(radius.min(120.0) as u8);
+            let round = corner(radius);
             painter.add(egui::epaint::RectShape::filled(rect, round, tint).with_texture(picture.id(), whole));
         }
         None => {
@@ -3187,7 +3191,7 @@ fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, c
             painter.circle_stroke(center, 17.0 + beat * 4.0, Stroke::new(2.0, color.gamma_multiply(0.75 - beat * 0.5)));
         }
         face(painter, &st.faces, mark.avatar, center, 14.0, color, mark.quiet, false);
-        let tag = if mark.quiet { mark.name.to_string() } else { format!("{} · {}", mark.name, mark.said) };
+        let tag = if mark.quiet { mark.name.clone() } else { format!("{} · {}", mark.name, mark.said) };
         let tint = if mark.quiet { color.gamma_multiply(0.55) } else { color };
         name_tag(painter, center + Vec2::new(-14.0, 18.0), &tag, tint);
     }

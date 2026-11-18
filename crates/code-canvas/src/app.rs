@@ -3813,7 +3813,9 @@ impl App {
                     self.agents.hear(&event);
                     self.request_redraw();
                 }
-                Err(_) => match self.agents.list.iter().find(|agent| agent.name().eq_ignore_ascii_case(said.trim())) {
+                Err(_) => match self.agents.list.iter().find(|agent| {
+                    agent.name().eq_ignore_ascii_case(said.trim()) || agent.role.eq_ignore_ascii_case(said.trim())
+                }) {
                     Some(agent) => {
                         let key = agent.key.clone();
                         self.agent_op(ui::AgentOp::Follow(Some(key)));

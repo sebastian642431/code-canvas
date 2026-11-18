@@ -1,8 +1,8 @@
 title: An assistant that reads lines of a file (plain event and Claude Code hook) shows beside those lines, which are washed
 folders: rust-small
 limit: 40
-expect-log: Nova \(Codex\) is on the canvas
-expect-log: Rusty \(Claude Code\) is on the canvas
+expect-log: an assistant \(Codex\) is on the canvas
+expect-log: an assistant \(Claude Code\) is on the canvas
 forbid-log: script: agent needs
 
 wait 3000

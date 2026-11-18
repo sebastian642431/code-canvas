@@ -1,7 +1,7 @@
 title: Following an assistant takes the canvas to where it is, and again each time it moves
 folders: odd-files
 limit: 50
-expect-log: Nova \(Codex\) is on the canvas
+expect-log: an assistant \(Codex\) is on the canvas
 forbid-log: script: agent needs
 
 wait 3500
@@ -11,7 +11,7 @@ agent {"agent":"c1","name":"Codex","action":"read","path":"{WORK}/fix/odd-files/
 wait 800
 mark before-following
 wait 400
-agent Nova
+agent Codex
 wait 3000
 mark at-big-9000
 wait 500

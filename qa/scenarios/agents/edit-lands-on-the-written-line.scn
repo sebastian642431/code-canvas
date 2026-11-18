@@ -1,7 +1,7 @@
 title: An assistant's edit is placed on the line that has the text it wrote, also when the file changes a moment after the hook says so
 folders: rust-small
 limit: 45
-expect-log: Nova \(Claude Code\) is on the canvas
+expect-log: an assistant \(Claude Code\) is on the canvas
 forbid-log: script: agent needs
 
 wait 3000

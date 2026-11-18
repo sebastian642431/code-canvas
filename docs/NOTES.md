@@ -1797,8 +1797,21 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
 - Hooks are separate processes and arrive out of order: a tool event for someone
   who has left is not theirs to come back with, and a `SubagentStop` that names
   no agent is nobody's.
-- Faces: sixteen pictures drawn for the app (`assets/agents`), names and colours
-  in the same order. An assistant takes the first face nobody has.
+- Faces: fifty mascots made with Codex for the app (`assets/agents`, rounded
+  squares of 128 pixels cut from sheets of nine), each with the colour of its
+  ground in `COLORS`. **An assistant keeps its face**: the key of an assistant
+  (its session, or session/helper) and the face it took are remembered in
+  `faces.json` in the data folder (the last 600), so a session that comes back
+  has the same face. A new one takes, of the faces nobody on the canvas has,
+  the one given longest ago or never.
+- **Assistants have no names; they are called by what they are doing**
+  (`Agent::task`, `Agent::name`): the main assistant by the first line of what
+  it was last asked (`UserPromptSubmit`'s `prompt`), a helper by the
+  description of the task it was handed (the `Agent`/`Task` tool's
+  `description`, queued per session in `Agents::handed` and taken by the next
+  helper of that session), a plain event by its `task`. With none it is called
+  by its kind (`Claude Code`, `Explore`, `Codex`). `agent <text>` in a script
+  follows the one whose name or kind it is.
 - Following one sets `App::following`, the same travel a change on disk causes,
   each time it moves (`Agent::moved`) or its line is found.
 
