@@ -2220,7 +2220,11 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   on the canvas (in a folded or hidden folder, ignored, or outside every open
   folder, such as another working copy), `bring_into_view` unfolds and shows
   the folders on the way and `show_path` puts the file on the canvas, then the
-  canvas goes there. The name taken from a prompt skips markup such as
+  canvas goes there. A folder opened that way (outside every open folder) is
+  taken off again when the assistant moves outside it or is no longer followed
+  (`App::follow_page`, `let_go_of_follow_page`), unless something was typed in
+  it, so following does not leave a folder behind for every place it went.
+  The name taken from a prompt skips markup such as
   `<agent-message …>` (`spoken`).
 - **Assistants have no names; they are called by what they are doing**
   (`Agent::task`, `Agent::name`): the main assistant by the first line of what

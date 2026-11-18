@@ -1,0 +1,19 @@
+title: Following an assistant that works outside the open folders shows its file, and the folder opened for that goes when it moves elsewhere or is no longer followed
+folders: rust-small
+fixtures: plain, git-history
+expect-log: showing .*plain.*main\.rs from outside the open folders
+expect-log: plain/src was opened to follow an assistant: it goes now
+forbid-log: script: ignoring
+
+wait 3000
+agent {"agent":"codex-1","name":"Codex","task":"Tidy the plain copy","action":"read","path":"{WORK}/fix/plain/src/main.rs","line":1,"lines":3}
+wait 800
+agent Codex
+wait 2500
+mark a-following-outside
+wait 600
+agent {"agent":"codex-1","name":"Codex","task":"Tidy the plain copy","action":"read","path":"{WORK}/fix/git-history/src/side.rs","line":1,"lines":2}
+wait 3000
+mark b-moved-to-another-folder
+wait 600
+quit

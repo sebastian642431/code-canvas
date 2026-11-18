@@ -53,6 +53,18 @@ impl App {
         (rel.is_empty() || r.layout.node_for_path(&r.repo, &rel).is_some()).then_some((index, rel))
     }
 
+    /// Takes off the canvas the folder opened only to follow an assistant somewhere outside the
+    /// open folders, unless something was typed in it.
+    pub(super) fn let_go_of_follow_page(&mut self) {
+        let Some(id) = self.follow_page.take() else { return };
+        let Some(index) = self.pages.iter().position(|page| page.id == id && page.only) else { return };
+        if self.pages[index].editors.values().any(|editor| editor.dirty) {
+            return;
+        }
+        log::info!("{} was opened to follow an assistant: it goes now", self.pages[index].root.display());
+        self.close_folder(index, false);
+    }
+
     fn bring_into_view(&mut self, path: &Path) {
         let Some((index, rel)) = self.locate_file(path) else { return };
         let filter = &mut self.pages[index].filter;
@@ -180,7 +192,15 @@ impl App {
                         if let Some(path) = agent.path.clone().filter(|path| path.is_file()) {
                             self.agent_followed = Some(now);
                             self.bring_into_view(&path);
+                            let outside = self.locate_file(&path).is_none();
+                            if outside {
+                                self.let_go_of_follow_page();
+                            }
+                            let before = self.pages.len();
                             self.show_path(&path, now.1.map(|line| (line, 0, 1)));
+                            if outside && self.pages.len() > before {
+                                self.follow_page = self.pages.last().map(|page| page.id);
+                            }
                         }
                     }
                 }
@@ -196,6 +216,9 @@ impl App {
         match op {
             AgentOp::Follow(key) => {
                 self.share_let_go();
+                if key.is_none() {
+                    self.let_go_of_follow_page();
+                }
                 self.agents.following = key;
                 self.agent_followed = None;
             }
