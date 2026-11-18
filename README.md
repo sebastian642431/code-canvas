@@ -83,6 +83,9 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   **side by side** in two columns of the same card. The lines that did not change
   fold away, so a long file is only its changes. With *Show only changed files*
   the canvas becomes the change itself.
+- Cards (Source Control, Search, an assistant's chat…) are dragged by their title
+  anywhere on the canvas and sized by their sides and corner; a double click on
+  the title docks them again.
 - With the pointer, dragging over code selects it; the hand, or the right button,
   moves the canvas.
 - With the **pencil** (`D`) you draw over the canvas, to point things out while you

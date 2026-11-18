@@ -1,0 +1,27 @@
+title: A card is moved by its title and made larger or smaller by its sides and corner, and keeps that place after a restart
+folders: git-changes
+forbid-log: WARN.*script
+
+wait 3000
+right symbols
+left changes
+wait 900
+mark a-docked
+wait 400
+ui drag 1400 60 700 260
+wait 900
+mark b-moved
+wait 400
+ui drag 997 500 1150 500
+wait 600
+ui drag 1145 878 1145 640
+wait 900
+mark c-resized
+wait 400
+quit
+
+=== again
+wait 3500
+mark d-after-restart
+wait 400
+quit

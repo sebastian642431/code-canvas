@@ -2046,6 +2046,14 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     14, on one line: the menu of Source Control is a `MenuButton` made from a
     button of that size, not `menu_button`, whose own padding made it narrower
     than its neighbours.
+  - **A card can be put anywhere on the canvas and sized.** Dragged by its
+    title it leaves the row of docked cards and keeps a place of its own
+    (`Rails::cards`: the key of its panel to x, y, width and height from the
+    corner of the canvas), saved with the bars. Its right side, bottom and
+    corner make it larger or smaller (no smaller than 250 by 150); its left
+    side too. A double click on its title docks it again. A free card is kept
+    inside the canvas when the window shrinks, and it is not counted in the
+    room the docked ones take (`cards_reach`).
   - The Timeline under the files folds away by its title (`Prefs::timeline`):
     closed, it is a row of its own height that cannot be dragged taller.
   - **The question before deleting shows what is about to go** (`ui::Preview`,

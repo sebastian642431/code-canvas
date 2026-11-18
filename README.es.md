@@ -62,6 +62,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   mientras escribís (Rust con rust-analyzer, que la app ofrece instalar).
 - **Seguir a la IA**: cuando un asistente u otro programa cambia un archivo, el lienzo
   viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
+- Las tarjetas (Source Control, Search, el chat de un asistente…) se arrastran por su
+  título a cualquier lugar del lienzo y se agrandan o achican por sus bordes y la
+  esquina; doble clic en el título las vuelve a acomodar.
 - **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el cursor, arrastrar selecciona.
 - **Imágenes y videos dentro del lienzo**: la imagen se dibuja en su tarjeta, y un video,
   un audio o un PDF se reproduce dentro de su tarjeta al tocarlo.

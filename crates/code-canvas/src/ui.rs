@@ -1079,6 +1079,7 @@ fn cards(
     const AWAY: f32 = 8.0;
     const BETWEEN: f32 = 6.0;
     const NARROWEST: f32 = 250.0;
+    const LOWEST: f32 = 150.0;
     const UNDER: f32 = 50.0;
     let mut next = canvas.right() - AWAY;
     let height = (canvas.height() - AWAY - UNDER).max(120.0);
@@ -1086,8 +1087,9 @@ fn cards(
     for panel in st.cards.clone().iter().rev() {
         let key = panel.key();
         let room = next - canvas.left() - AWAY;
-        if room < NARROWEST {
-            break;
+        let free = st.rails.cards.get(&key).copied();
+        if free.is_none() && room < NARROWEST {
+            continue;
         }
         let usual = match panel {
             Panel::Console => 600.0,
@@ -1096,13 +1098,35 @@ fn cards(
         };
         let wanted = st.card_widths.get(&key).copied().unwrap_or(usual);
         let width = wanted.clamp(NARROWEST, room.min(760.0));
-        let rect = Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, height));
+        let rect = match free {
+            Some([x, y, w, h]) => {
+                let w = w.clamp(NARROWEST, (canvas.width() - 2.0 * AWAY).max(NARROWEST));
+                let h = h.clamp(LOWEST, (canvas.height() - 2.0 * AWAY).max(LOWEST));
+                let x = x.clamp(AWAY, (canvas.width() - w - AWAY).max(AWAY));
+                let y = y.clamp(AWAY, (canvas.height() - h - AWAY).max(AWAY));
+                Rect::from_min_size(canvas.min + Vec2::new(x, y), Vec2::new(w, h)).round()
+            }
+            None => Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, height)),
+        };
+        let mut placed = None;
+        let mut settled = false;
         let id = egui::Id::unique(("card", &key));
         let own_cross = *panel == Panel::Media;
         let mut shut = false;
         let first_page = st.page_places.len();
         egui::Area::new(id).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.painter().rect(rect, 12.0, pal().card, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+            let title = Rect::from_min_max(rect.left_top(), Pos2::new(rect.right() - 34.0, rect.top() + 40.0));
+            let hold = ui.interact(title, id.with("hold"), Sense::click_and_drag());
+            if hold.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                placed = Some(rect.translate(hold.drag_delta()));
+            }
+            settled |= hold.drag_stopped();
+            if hold.double_clicked() && free.is_some() {
+                st.rails.cards.remove(&key);
+                settled = true;
+            }
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(1.0)), |ui| {
                 ui.set_clip_rect(rect.shrink(1.0));
                 ui.set_min_size(rect.shrink(1.0).size());
@@ -1131,10 +1155,65 @@ fn cards(
                     Rect::from_center_size(Pos2::new(rect.left(), grip.center().y), Vec2::new(2.0, grip.height()));
                 ui.painter().rect_filled(line, 1.0, pal().border_strong);
             }
-            if pull.dragged() {
+            if pull.dragged() && free.is_some() {
+                let left = (rect.left() + pull.drag_delta().x).min(rect.right() - NARROWEST);
+                placed = Some(Rect::from_min_max(Pos2::new(left, rect.top()), rect.max));
+            } else if pull.dragged() {
                 st.card_widths.insert(key.clone(), (width - pull.drag_delta().x).clamp(NARROWEST, 760.0));
             }
+            settled |= pull.drag_stopped() && free.is_some();
+            let (r, b) = (rect.right(), rect.bottom());
+            let sides = [
+                (
+                    "right",
+                    Rect::from_min_max(Pos2::new(r - 3.0, rect.top() + 14.0), Pos2::new(r + 5.0, b - 14.0)),
+                    [1.0, 0.0],
+                ),
+                (
+                    "bottom",
+                    Rect::from_min_max(Pos2::new(rect.left() + 14.0, b - 3.0), Pos2::new(r - 14.0, b + 5.0)),
+                    [0.0, 1.0],
+                ),
+                ("corner", Rect::from_min_max(Pos2::new(r - 14.0, b - 14.0), Pos2::new(r + 5.0, b + 5.0)), [1.0, 1.0]),
+            ];
+            for (name, grip, [wider, taller]) in sides {
+                let pull = ui.interact(grip, id.with(name), Sense::drag());
+                if pull.hovered() || pull.dragged() {
+                    ui.ctx().set_cursor_icon(match (wider > 0.0, taller > 0.0) {
+                        (true, true) => egui::CursorIcon::ResizeNwSe,
+                        (true, false) => egui::CursorIcon::ResizeHorizontal,
+                        _ => egui::CursorIcon::ResizeVertical,
+                    });
+                    let mark = Stroke::new(2.0, pal().border_strong);
+                    if wider > 0.0 {
+                        ui.painter().vline(
+                            r - 1.0,
+                            (b - 26.0 * taller - (1.0 - taller) * (rect.height() - 28.0))..=(b - 14.0),
+                            mark,
+                        );
+                    }
+                    if taller > 0.0 {
+                        ui.painter().hline(
+                            (r - 26.0 * wider - (1.0 - wider) * (rect.width() - 28.0))..=(r - 14.0),
+                            b - 1.0,
+                            mark,
+                        );
+                    }
+                }
+                if pull.dragged() {
+                    let grown = rect.size() + Vec2::new(pull.drag_delta().x * wider, pull.drag_delta().y * taller);
+                    placed = Some(Rect::from_min_size(rect.min, grown.max(Vec2::new(NARROWEST, LOWEST))));
+                }
+                settled |= pull.drag_stopped();
+            }
         });
+        if let Some(at) = placed {
+            let from = at.min - canvas.min;
+            st.rails.cards.insert(key.clone(), [from.x, from.y, at.width(), at.height()]);
+        }
+        if settled {
+            actions.push(Action::RailsChanged);
+        }
         st.card_places.push(CardPlace {
             over: rect.expand(5.0),
             pages: first_page..st.page_places.len(),
@@ -1145,8 +1224,10 @@ fn cards(
         if shut {
             st.close_panel(panel);
         }
-        next = rect.left() - BETWEEN;
-        st.cards_reach = canvas.right() - rect.left() + AWAY;
+        if free.is_none() {
+            next = rect.left() - BETWEEN;
+            st.cards_reach = canvas.right() - rect.left() + AWAY;
+        }
     }
 }
 

@@ -30,6 +30,7 @@ pub struct Rails {
     pub left: Vec<String>,
     pub right: Vec<String>,
     pub homes: u32,
+    pub cards: std::collections::BTreeMap<String, [f32; 4]>,
 }
 
 pub const HOMES: u32 = 2;
@@ -161,7 +162,12 @@ mod tests {
     #[test]
     fn an_arrangement_of_before_the_sides_changed_goes_home_once() {
         let home = |key: &str| if key.starts_with("view:") { Side::Right } else { Side::Left };
-        let mut rails = Rails { left: keys(&["view:chat", "files"]), right: keys(&["symbols", "search"]), homes: 0 };
+        let mut rails = Rails {
+            left: keys(&["view:chat", "files"]),
+            right: keys(&["symbols", "search"]),
+            homes: 0,
+            ..Default::default()
+        };
         rails.at_home(home);
         assert_eq!(
             (rails.left.clone(), rails.right.clone()),
@@ -174,8 +180,12 @@ mod tests {
 
     #[test]
     fn a_damaged_file_never_shows_an_icon_twice() {
-        let rails =
-            Rails { left: keys(&["files", "symbols", "files"]), right: keys(&["symbols", "unknown"]), homes: 0 };
+        let rails = Rails {
+            left: keys(&["files", "symbols", "files"]),
+            right: keys(&["symbols", "unknown"]),
+            homes: 0,
+            ..Default::default()
+        };
         assert_eq!(rails.arrange(&available()), [keys(&["files", "symbols", "search"]), keys(&["view:chat"])]);
     }
 }
