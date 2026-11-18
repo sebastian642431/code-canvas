@@ -58,6 +58,7 @@ pub enum Step {
     Minimize(bool),
     Delete(String),
     Console(String),
+    Account(String),
     Rename(String),
     Ignored(String),
     Part(String),
@@ -143,6 +144,7 @@ fn parse_step(text: &str) -> Option<Step> {
         }
         "find" => Step::Find(arg.into()),
         "where" => Step::Where,
+        "account" => Step::Account(arg.into()),
         "drag" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             let mut next = || parts.next()?.ok();

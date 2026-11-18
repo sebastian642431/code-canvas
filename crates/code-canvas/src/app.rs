@@ -24,6 +24,7 @@ use crate::session::{self, PageSession, Session};
 use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState};
 
 mod assistants;
+mod github_sync;
 mod sharing;
 
 struct Gfx {
@@ -234,6 +235,7 @@ pub struct App {
     playing: Option<PathBuf>,
     player_shown: bool,
     inking: bool,
+    github: github_sync::GitHub,
     peeking: bool,
     still: Still,
     commit_from: Option<Place>,
@@ -362,6 +364,7 @@ impl App {
             playing: None,
             player_shown: false,
             inking: false,
+            github: Default::default(),
             peeking: false,
             still: Default::default(),
             commit_from: None,
@@ -2066,6 +2069,8 @@ impl App {
                 self.exit_requested = true;
             }
             (ui::Asked::Exit, ui::Answer::Cancel) => self.restart_as = None,
+            (ui::Asked::Sync, ui::Answer::Yes) => self.sync_answered(true),
+            (ui::Asked::Sync, ui::Answer::Other) => self.sync_answered(false),
             _ => {}
         }
         self.request_redraw();
@@ -3249,6 +3254,7 @@ impl App {
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
             Action::Agent(op) => self.agent_op(op),
+            Action::Account(op) => self.account_op(op),
             Action::ToggleUi => {
                 self.ui.bare = !self.ui.bare;
                 if self.ui.bare {
@@ -3743,6 +3749,14 @@ impl App {
                 self.apply(Action::ToggleUi);
             }
             Step::Delete(path) => self.apply(Action::File(FileOp::Delete(path))),
+            Step::Account(what) => match what.as_str() {
+                "signin" => self.account_op(ui::AccountOp::SignIn),
+                "cancel" => self.account_op(ui::AccountOp::Cancel),
+                "sync" => self.account_op(ui::AccountOp::SyncNow),
+                "signout" => self.account_op(ui::AccountOp::SignOut),
+                "menu" => self.ui.account.menu = !self.ui.account.menu,
+                other => log::warn!("script: account needs signin|cancel|sync|signout|menu, not '{other}'"),
+            },
             Step::Console(said) => {
                 self.ui.show(Panel::Console);
                 if self.ui.console.term.is_none() {
@@ -4038,6 +4052,7 @@ impl App {
             }
         }
         busy |= self.symbols_stale.is_some();
+        busy |= self.poll_github();
         busy |= self.poll_copies();
         if self.unsent_edit.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_millis(250)) {
             if let Some((path, _)) = self.unsent_edit.take() {

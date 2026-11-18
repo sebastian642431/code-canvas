@@ -471,6 +471,7 @@ pub enum Action {
     Fit,
     ZoomBy(f32),
     ToggleFullScreen,
+    Account(AccountOp),
     ClearDoodles,
     FrameSelection,
     CollapseAll,
@@ -813,6 +814,8 @@ pub fn build(
         }
     }
     layout_menu(&ctx, st, actions);
+    account_menu(&ctx, st, actions);
+    sign_in_modal(&ctx, st, actions);
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     workspace_drop(&ctx, st, canvas);
@@ -1574,7 +1577,7 @@ fn rail(
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
             ui.add_space(5.0);
-            account_button(ui, st);
+            account_button(ui, st, actions);
             let tip = st.keys.hint("Settings: version, theme, colours, shortcuts", Command::Settings);
             if icon_button(ui, icons::SETTINGS, RAIL_ICON, st.settings.open, pal().hover).on_hover_text(tip).clicked() {
                 st.settings.toggle();
@@ -1589,10 +1592,11 @@ fn rail(
     });
 }
 
-fn account_button(ui: &mut egui::Ui, st: &mut UiState) {
+fn account_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     st.account.poll(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(RAIL_ICON, Sense::click());
-    if resp.hovered() {
+    st.account.button = Some(rect);
+    if resp.hovered() || st.account.menu {
         ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
     }
     let account = &st.account;
@@ -1609,15 +1613,118 @@ fn account_button(ui: &mut egui::Ui, st: &mut UiState) {
             ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
         }
     }
-    let tip = match (&account.user, account.known) {
-        (Some(user), _) => format!("GitHub: {user}\nThe account git uses on this computer. Click to open its page"),
-        (None, true) => "Not signed in to GitHub: git has no GitHub account on this computer yet. Push to GitHub once and it shows here".to_string(),
-        (None, false) => "Looking for your GitHub account…".to_string(),
+    let tip = match &account.user {
+        Some(user) => format!("GitHub: {user}\nYour settings and extensions are kept on your GitHub"),
+        None => "Sign in with GitHub to keep your settings and extensions, and have them on any computer".to_string(),
     };
     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
-        if let Some(user) = &account.user {
-            let _ = crate::files::open_web_link(&format!("https://github.com/{user}"));
+        match st.account.user.is_some() {
+            true => st.account.menu = !st.account.menu,
+            false => actions.push(Action::Account(AccountOp::SignIn)),
         }
+    }
+}
+
+fn account_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    const WIDTH: f32 = 280.0;
+    let (Some(button), Some(user)) = (st.account.button.filter(|_| st.account.menu), st.account.user.clone()) else {
+        return;
+    };
+    let area = egui::Area::new(egui::Id::unique("account"))
+        .pivot(Align2::LEFT_BOTTOM)
+        .fixed_pos(Pos2::new(button.right() + 10.0, button.bottom()))
+        .order(egui::Order::Foreground);
+    let resp = area.show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, pal().border_strong))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(12));
+        frame.show(ui, |ui| {
+            ui.set_width(WIDTH);
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.horizontal(|ui| {
+                ui.label(icon(icons::GITHUB, 15.0, pal().text_dim));
+                ui.label(RichText::new(&user).size(14.0).strong().color(pal().text));
+            });
+            let note = "Settings, colours, shortcuts and the list of extensions are kept in a secret gist of your GitHub, so another computer where you sign in gets them too.";
+            ui.add(egui::Label::new(RichText::new(note).size(11.5).color(pal().text_dim)).wrap());
+            if !st.account.synced.is_empty() {
+                ui.label(RichText::new(&st.account.synced).size(11.5).color(pal().text_faint));
+            }
+            ui.horizontal(|ui| {
+                if ext_panels::pill(ui, "Sync now", false) {
+                    actions.push(Action::Account(AccountOp::SyncNow));
+                }
+                if ext_panels::pill(ui, "Sign out", false) {
+                    actions.push(Action::Account(AccountOp::SignOut));
+                }
+            });
+        });
+    });
+    st.floating.push(resp.response.rect);
+    let away = ctx.input(|i| i.pointer.any_pressed())
+        && ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|at| !resp.response.rect.contains(at) && !button.contains(at));
+    if away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        st.account.menu = false;
+    }
+}
+
+fn sign_in_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    if !st.account.signing {
+        return;
+    }
+    st.floating.push(ctx.content_rect());
+    st.page_places.clear();
+    let frame = Frame::NONE
+        .fill(pal().card)
+        .stroke(Stroke::new(1.0, pal().border_strong))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::same(20));
+    let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    egui::Modal::new(egui::Id::unique("sign in")).backdrop_color(Color32::from_black_alpha(150)).frame(frame).show(ctx, |ui| {
+        ui.set_width(400.0);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.horizontal(|ui| {
+            ui.label(icon(icons::GITHUB, 18.0, pal().text));
+            ui.label(RichText::new("Sign in with GitHub").size(15.5).strong().color(pal().text));
+        });
+        let about = "Your settings and extensions will be kept in a secret gist of your own GitHub. Nothing else of your account is used.";
+        ui.add(egui::Label::new(RichText::new(about).size(12.5).color(pal().text_dim)).wrap());
+        match &st.account.code {
+            Some((code, page)) => {
+                let step = format!("Enter this code at {page}:");
+                ui.label(RichText::new(step).size(12.5).color(pal().text));
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(code).font(FontId::monospace(28.0)).color(pal().text));
+                });
+                ui.vertical_centered(|ui| {
+                    if ext_panels::pill(ui, "Copy the code and open GitHub", true) {
+                        actions.push(Action::Account(AccountOp::CopyAndOpen));
+                    }
+                });
+                ui.label(RichText::new("Waiting for you on GitHub…").size(11.5).color(pal().text_faint));
+            }
+            None if st.account.said.is_empty() => {
+                ui.label(RichText::new("Asking GitHub for a code…").size(12.0).color(pal().text_faint));
+            }
+            None => {}
+        }
+        if !st.account.said.is_empty() {
+            let said = RichText::new(&st.account.said).size(12.0).color(c(theme::get().problem_error));
+            ui.add(egui::Label::new(said).wrap());
+        }
+        ui.add_space(4.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ask_button(ui, "Cancel", ChoiceLook::Plain) {
+                cancel = true;
+            }
+        });
+    });
+    if cancel {
+        actions.push(Action::Account(AccountOp::Cancel));
     }
 }
 
@@ -3361,6 +3468,15 @@ pub struct AgentMark {
     pub quiet: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AccountOp {
+    SignIn,
+    Cancel,
+    CopyAndOpen,
+    SyncNow,
+    SignOut,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentOp {
     Follow(Option<String>),
@@ -3651,6 +3767,7 @@ pub enum Asked {
     Close { folder: std::path::PathBuf, forget: bool },
     Overwrite { folder: std::path::PathBuf, path: String },
     Share { join: bool },
+    Sync,
     Exit,
 }
 

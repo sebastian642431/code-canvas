@@ -102,6 +102,18 @@ function Read-Log($dir) {
 
 $env:CODE_CANVAS_SHARE_ON = '127.0.0.1'
 $env:CLAUDE_CONFIG_DIR = Join-Path $Work 'claude'
+$fakeGitHub = $null
+foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
+if ($head.ContainsKey('github')) {
+    $port = Get-Random -Minimum 20000 -Maximum 40000
+    $fakeArgs = @('-I', (Join-Path $PSScriptRoot 'fake\github.py'), $port)
+    if ($head['github'] -ne 'empty') { $fakeArgs += (Join-Path $PSScriptRoot "fake\$($head['github'])") }
+    $fakeGitHub = Start-Process -FilePath python -ArgumentList $fakeArgs -PassThru -WindowStyle Hidden
+    Start-Sleep -Milliseconds 800
+    $env:CODE_CANVAS_GITHUB_SITE = "http://127.0.0.1:$port"
+    $env:CODE_CANVAS_GITHUB_API = "http://127.0.0.1:$port"
+    $env:CODE_CANVAS_GITHUB_CLIENT = 'fake'
+}
 $problems = @()
 $seen = @{}
 $pictures = 0
@@ -199,6 +211,11 @@ foreach ($want in $many['absent-file']) {
     $file = Fill $want
     if (-not [IO.Path]::IsPathRooted($file)) { $file = Join-Path $fix $file }
     if (Test-Path -LiteralPath $file) { $problems += "$file should not be there" }
+}
+
+if ($fakeGitHub) {
+    try { & taskkill /PID $fakeGitHub.Id /T /F | Out-Null } catch {}
+    foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
 }
 
 $ours = @('code-canvas.exe', 'node.exe', 'rust-analyzer.exe', 'rust-analyzer-proc-macro-srv.exe')

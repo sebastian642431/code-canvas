@@ -1702,6 +1702,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `type` | `type <text>` | Type at the caret. |
 | `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
+| `account` | `account signin\|cancel\|sync\|signout\|menu` | The GitHub account: start signing in, give up, sync now, sign out, open its menu. |
 | `tool` | `tool move\|edit\|draw\|rub\|clear\|colour <n>\|width <n>` | The pointer (`edit`), the hand (`move`) or the pencil (`draw`) of the toolbar; `rub` is the pencil rubbing out, `clear` takes away everything drawn, `colour` and `width` pick one of the pencil's by its place. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived; or follow the one with that name. |
@@ -2082,14 +2083,33 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     account, Settings, Help, sharing, and then the faces of the assistants
     and the people in the session, one above the other, as many as fit. They
     were in the header, side by side; the share panel opens beside its button.
-  - **The GitHub account** is the one git already uses on this computer
-    (`account.rs`): `git credential fill` for github.com, with
-    `GCM_INTERACTIVE=never` and `GIT_TERMINAL_PROMPT=0` so nothing is ever
-    asked on screen, no window, given up after 15 seconds. Only the
-    `username=` line is kept; the rest of the answer (the token) is dropped at
-    once. Its picture comes from `github.com/<user>.png` and is kept as
-    `github-<user>.png` in the data folder. A click opens its page. Nothing of
-    it is in the repository or the release.
+  - **The GitHub account** is each person's own, signed in from the app
+    (`account.rs`, `app/github_sync.rs`, `github.rs`): GitHub's device flow.
+    The app asks for a code, shows it, the person enters it on
+    github.com/login/device with their account, and the app waits for the
+    sign-in (`Waited`). It asks only for the `gist` scope. The app's id with
+    GitHub (`github::CLIENT_ID`) is the only thing about it in the program:
+    it is public by design, like the one every desktop app carries, and
+    names no person. Without it the window says the version cannot sign in.
+  - The sign-in is kept in `github.token` in the data folder, sealed with
+    Windows' DPAPI for that Windows user (`sync::keep_token`); it is never
+    written as it is, never logged, never in the repository.
+  - **Settings sync** (`sync.rs`): `prefs.json`, `theme.json`,
+    `keybindings.json`, `commit.json` and the list of extensions installed and
+    switched off (`extensions.json`) go to a secret gist of the person's own,
+    found again by its `code-canvas.json`. `github.json` keeps the gist and a
+    digest of what was last in step (`State::synced`; a digest ignores
+    spacing). On sign-in and at start `sync::plan` decides: nothing on GitHub
+    sends this computer's; only one side changed since the last time, that
+    side wins; a computer never set up takes GitHub's; both changed asks
+    (`Asked::Sync`). Afterwards every 4 seconds what changed here is sent,
+    not while extensions are being installed. Taking GitHub's writes the
+    files and loads them again, installs the missing extensions and switches
+    the others on or off.
+  - The scenarios sign in to a GitHub of their own on this computer
+    (`qa/fake/github.py`, header `github:`); the app is pointed at it with
+    `CODE_CANVAS_GITHUB_SITE`, `CODE_CANVAS_GITHUB_API` and
+    `CODE_CANVAS_GITHUB_CLIENT`.
   - **Customize the layout** (the button left of the window's buttons,
     `layout_menu`): the bar of icons, the dock, the status bar and the toolbar
     of the canvas are shown or hidden (`Prefs::rail`, `status`, `toolbar`;

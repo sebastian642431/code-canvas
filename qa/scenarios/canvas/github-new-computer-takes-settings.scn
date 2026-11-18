@@ -1,0 +1,19 @@
+title: A computer never set up that signs in takes the settings kept on GitHub (status bar hidden there)
+folders: rust-small
+github: settings-hide-status.json
+expect-file: ../data/prefs.json :: "status": false
+expect-log: script: Account\("menu"\)
+forbid-log: Could not
+
+wait 2500
+account signin
+wait 800
+mark a-code
+wait 4500
+mark b-signed-in
+wait 400
+account menu
+wait 2500
+mark c-menu
+wait 400
+quit

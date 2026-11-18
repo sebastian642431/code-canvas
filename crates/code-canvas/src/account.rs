@@ -1,63 +1,32 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use egui::Rect;
 
 const SIDE: u32 = 96;
 
-enum Found {
-    User(Option<String>),
-    Face(egui::ColorImage),
-}
-
 #[derive(Default)]
 pub struct Account {
-    asked: bool,
-    rx: Option<Receiver<Found>>,
     pub user: Option<String>,
     pub face: Option<egui::TextureHandle>,
-    pub known: bool,
-}
-
-pub fn user_in(said: &str) -> Option<String> {
-    let user = said.lines().find_map(|line| line.strip_prefix("username="))?.trim();
-    let fits = !user.is_empty() && user.len() <= 39 && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    fits.then(|| user.to_string())
-}
-
-fn git_user() -> Option<String> {
-    let mut command = Command::new("git");
-    command
-        .args(["credential", "fill"])
-        .env("GCM_INTERACTIVE", "never")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = command.spawn().ok()?;
-    child.stdin.take()?.write_all(b"protocol=https\nhost=github.com\n\n").ok()?;
-    let started = Instant::now();
-    while child.try_wait().ok()?.is_none() {
-        if started.elapsed() > Duration::from_secs(15) {
-            let _ = child.kill();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let said = child.wait_with_output().ok()?.stdout;
-    user_in(&String::from_utf8_lossy(&said))
+    pub signing: bool,
+    pub code: Option<(String, String)>,
+    pub said: String,
+    pub synced: String,
+    pub menu: bool,
+    pub button: Option<Rect>,
+    face_for: Option<String>,
+    rx: Option<Receiver<egui::ColorImage>>,
 }
 
 fn picture(bytes: &[u8]) -> Option<egui::ColorImage> {
     let face = image::load_from_memory(bytes).ok()?.thumbnail(SIDE, SIDE).to_rgba8();
     let size = [face.width() as usize, face.height() as usize];
     Some(egui::ColorImage::from_rgba_unmultiplied(size, face.as_raw()))
+}
+
+pub fn fits(user: &str) -> bool {
+    !user.is_empty() && user.len() <= 39 && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 fn face_of(user: &str) -> Option<egui::ColorImage> {
@@ -77,27 +46,23 @@ fn face_of(user: &str) -> Option<egui::ColorImage> {
 
 impl Account {
     pub fn poll(&mut self, ctx: &egui::Context) {
-        if !std::mem::replace(&mut self.asked, true) {
-            let (tx, rx) = mpsc::channel();
-            self.rx = Some(rx);
-            std::thread::spawn(move || {
-                let user = git_user();
-                let _ = tx.send(Found::User(user.clone()));
-                crate::ext::wake_ui();
-                if let Some(face) = user.as_deref().and_then(face_of) {
-                    let _ = tx.send(Found::Face(face));
-                    crate::ext::wake_ui();
-                }
-            });
-        }
-        let Some(rx) = &self.rx else { return };
-        while let Ok(found) = rx.try_recv() {
-            match found {
-                Found::User(user) => (self.user, self.known) = (user, true),
-                Found::Face(face) => {
-                    self.face = Some(ctx.load_texture("github face", face, egui::TextureOptions::LINEAR))
-                }
+        if self.user != self.face_for {
+            self.face_for = self.user.clone();
+            self.face = None;
+            self.rx = None;
+            if let Some(user) = self.user.clone().filter(|user| fits(user)) {
+                let (tx, rx) = mpsc::channel();
+                self.rx = Some(rx);
+                std::thread::spawn(move || {
+                    if let Some(face) = face_of(&user) {
+                        let _ = tx.send(face);
+                        crate::ext::wake_ui();
+                    }
+                });
             }
+        }
+        if let Some(face) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.face = Some(ctx.load_texture("github face", face, egui::TextureOptions::LINEAR));
         }
     }
 }
@@ -107,11 +72,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_user_is_taken_from_what_git_answers() {
-        let said = "protocol=https\nhost=github.com\nusername=sebastian642431\npassword=gho_secret\n";
-        assert_eq!(user_in(said).as_deref(), Some("sebastian642431"));
-        assert_eq!(user_in("protocol=https\nhost=github.com\n"), None);
-        assert_eq!(user_in("username=a b/../c\n"), None, "nothing that is not a GitHub login");
-        assert_eq!(user_in("username=\n"), None);
+    fn only_a_github_login_is_looked_up() {
+        assert!(fits("octocat42") && fits("a-b"));
+        assert!(!fits("") && !fits("a b") && !fits("../x") && !fits(&"a".repeat(40)));
     }
 }
