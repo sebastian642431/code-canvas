@@ -32,6 +32,22 @@ pub struct CodeText<'a> {
     pub numbers: Option<[i32; 3]>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct StripRow {
+    pub left: f32,
+    pub top: f32,
+    pub bounds: [i32; 4],
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CodeStrip<'a> {
+    pub page: u32,
+    pub file_index: usize,
+    pub line: usize,
+    pub zoom: f32,
+    pub rows: &'a [StripRow],
+}
+
 pub struct Label<'a> {
     pub text: &'a str,
     pub left: f32,
@@ -203,6 +219,7 @@ impl TextLayer {
         mut tokens: Option<&mut TokenCache>,
         world_labels: &[Label],
         ui_labels: &[Label],
+        strip: Option<&CodeStrip>,
     ) {
         self.frame += 1;
         let frame = self.frame;
@@ -305,8 +322,27 @@ impl TextLayer {
         for (l, k) in world_labels.iter().zip(&world_keys) {
             world_areas.push(label_area(&self.labels[k].buffer, l));
         }
-        let ui_areas: Vec<TextArea> =
+        let mut ui_areas: Vec<TextArea> =
             ui_labels.iter().zip(&ui_keys).map(|(l, k)| label_area(&self.labels[k].buffer, l)).collect();
+        if let Some(s) = strip {
+            let chunk = s.line / CHUNK_LINES;
+            let key = ChunkKey { page: s.page, file: s.file_index as u32, chunk: chunk as u32 };
+            if let Some(shaped) = self.chunks.get(&key) {
+                let above = (s.line - chunk * CHUNK_LINES) as f32 * LINE_H * s.zoom;
+                for row in s.rows {
+                    let [left, top, right, bottom] = row.bounds;
+                    ui_areas.push(TextArea {
+                        buffer: &shaped.buffer,
+                        left: row.left,
+                        top: row.top - above,
+                        scale: s.zoom,
+                        bounds: TextBounds { left, top, right, bottom },
+                        default_color: theme::glyph_color(code_color),
+                        custom_glyphs: &[],
+                    });
+                }
+            }
+        }
 
         if let Err(e) = self.world.prepare(
             device,

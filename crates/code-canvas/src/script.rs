@@ -36,6 +36,7 @@ pub enum Step {
     Quick(String),
     Maximize,
     Click(f32, f32),
+    Hover(String),
     Drag([f32; 2], [f32; 2]),
     Move(String),
     Mark(String),
@@ -154,6 +155,7 @@ fn parse_step(text: &str) -> Option<Step> {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
             Step::Click(parts.next()?.ok()?, parts.next()?.ok()?)
         }
+        "hover" => Step::Hover(arg.into()),
         "quit" => Step::Quit,
         _ => return None,
     })
@@ -205,7 +207,8 @@ mod tests {
 
     #[test]
     fn parses_steps() {
-        let s = Script::parse("goto src/a b.rs; wait 500 ;select main;connected on; bogus; zoom 1.5;quit");
+        let s =
+            Script::parse("goto src/a b.rs; wait 500 ;select main;connected on; bogus; zoom 1.5;hover 10 20.5;quit");
         assert_eq!(
             s.steps,
             vec![
@@ -214,6 +217,7 @@ mod tests {
                 Step::Select("main".into()),
                 Step::Connected(true),
                 Step::Zoom(1.5),
+                Step::Hover("10 20.5".into()),
                 Step::Quit,
             ]
         );

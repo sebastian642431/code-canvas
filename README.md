@@ -94,6 +94,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   on the code it was drawn over as the canvas moves and zooms.
 - `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
   and Shift+Enter walk them, and with the pointer one or all can be replaced.
+- **Long lines**: a card shows up to 160 columns. With the pointer on a longer
+  line, the rest of it is shown beside the card, in the same size and colours, in
+  several rows when it does not fit; a click on it puts the caret there, and typing
+  beyond the edge shows it too, so the caret stays in view.
 - **Pictures and videos are on the canvas too**: a picture is drawn inside its
   card, and a video, a sound or a PDF plays inside its card when it is clicked
   (`Esc`, or a click somewhere else, stops it).
@@ -352,8 +356,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Colour themes from extensions (Dracula, GitHub Theme, Tokyo Night…): the
       canvas, the panels and the code take their colours. File icon themes too.
 - [ ] Grammars from extensions (highlighting is the app's own).
-- [ ] **Soft wrapping** for lines longer than the card width (160 columns today);
-      before that, the rest of a long line shown beside its card under the pointer.
+- [x] The rest of a line longer than its card (160 columns) shown beside the card,
+      under the pointer or the caret.
+- [ ] **Soft wrapping** for lines longer than the card width.
 - [x] Zoom that rests where text sits on whole pixels, so it never shimmers.
 - [x] **Language servers** give the exact uses of the selected name (references and
       incoming calls) in place of the ones guessed by name.

@@ -79,6 +79,10 @@ impl Node {
         [self.rect.x + CARD_PAD + self.gutter, self.rect.y + CARD_PAD]
     }
 
+    pub fn shown_cols(&self) -> usize {
+        ((self.col_stride - FOLD_GAP - self.gutter) / CHAR_W).round().max(0.0) as usize
+    }
+
     pub fn cell_rect(&self, line: u32, col: u32, cols: u32) -> Rect {
         let o = self.code_origin();
         let fold = line as usize / self.fold as usize;
@@ -501,6 +505,110 @@ impl Layout {
     }
 }
 
+pub const REST_MIN_COLS: usize = 24;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineCut {
+    pub origin: [f32; 2],
+    pub char_w: f32,
+    pub line_h: f32,
+    pub shown: usize,
+    pub len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RestRow {
+    pub from: usize,
+    pub to: usize,
+    pub rect: Rect,
+    pub text_left: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestOfLine {
+    pub rows: Vec<RestRow>,
+    pub frame: Rect,
+    pub beside: bool,
+    pub char_w: f32,
+}
+
+impl RestOfLine {
+    pub fn place_of(&self, col: usize) -> Option<Rect> {
+        let last = self.rows.last()?;
+        let row = match self.rows.iter().find(|r| (r.from..r.to).contains(&col)) {
+            Some(row) => row,
+            None if col == last.to => last,
+            None => return None,
+        };
+        let x = row.text_left + col as f32 * self.char_w;
+        Some(Rect::new(x, row.rect.y, self.char_w, row.rect.h))
+    }
+
+    pub fn col_at(&self, p: [f32; 2]) -> Option<usize> {
+        if !self.frame.contains(p) {
+            return None;
+        }
+        let last = self.rows.last()?;
+        let row = self.rows.iter().find(|r| p[1] < r.rect.bottom()).unwrap_or(last);
+        let col = ((p[0] - row.text_left) / self.char_w).round().max(0.0) as usize;
+        Some(col.clamp(row.from, row.to))
+    }
+}
+
+pub fn rest_of_line(cut: &LineCut, pane: Rect, pad: f32) -> Option<RestOfLine> {
+    let rest = cut.len.saturating_sub(cut.shown);
+    let in_view = cut.origin[1] >= pane.y && cut.origin[1] + cut.line_h <= pane.bottom();
+    if rest == 0 || cut.char_w <= 0.0 || cut.line_h <= 0.0 || !in_view {
+        return None;
+    }
+    let (cw, lh) = (cut.char_w, cut.line_h);
+    let cols = |room: f32| (room / cw).floor().max(0.0) as usize;
+    let rows_in = |room: f32| (room / lh).floor().max(0.0) as usize;
+    let edge = cut.origin[0] + cut.shown as f32 * cw;
+    let beside = edge >= pane.x && cols(pane.right() - pad - edge) >= rest.min(REST_MIN_COLS);
+    let (per_row, x) = if beside {
+        (rest.min(cols(pane.right() - pad - edge)), edge)
+    } else {
+        let per_row = rest.min(cols(pane.w - 2.0 * pad));
+        (per_row, pane.right() - pad - per_row as f32 * cw)
+    };
+    if per_row == 0 {
+        return None;
+    }
+    let wanted = rest.div_ceil(per_row);
+    let (top, count) = if beside {
+        (cut.origin[1], wanted.min(rows_in(pane.bottom() - pad - cut.origin[1])))
+    } else {
+        let below = rows_in(pane.bottom() - pad - cut.origin[1] - lh);
+        let above = rows_in(cut.origin[1] - pad - pane.y);
+        match wanted > below && above > below {
+            true => (cut.origin[1] - wanted.min(above) as f32 * lh, wanted.min(above)),
+            false => (cut.origin[1] + lh, wanted.min(below)),
+        }
+    };
+    if count == 0 {
+        return None;
+    }
+    let rows: Vec<RestRow> = (0..count)
+        .map(|k| {
+            let from = cut.shown + k * per_row;
+            let to = (from + per_row).min(cut.len);
+            RestRow {
+                from,
+                to,
+                rect: Rect::new(x, top + k as f32 * lh, (to - from) as f32 * cw, lh),
+                text_left: x - from as f32 * cw,
+            }
+        })
+        .collect();
+    let body = Rect::new(x, top, rows[0].rect.w, count as f32 * lh);
+    let frame = match beside {
+        true => Rect::new(x, top - pad, body.w + pad, body.h + 2.0 * pad),
+        false => body.expand(pad),
+    };
+    Some(RestOfLine { rows, frame, beside, char_w: cw })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,5 +731,93 @@ mod tests {
         assert_eq!(layout.nodes.iter().filter(|n| !n.is_dir()).count(), 1);
         assert!(layout.nodes.iter().any(|n| n.name == "src/util"));
         assert!(!layout.dir_node.contains_key("a"));
+    }
+
+    fn cut(x: f32, y: f32, len: usize) -> LineCut {
+        LineCut { origin: [x, y], char_w: 6.0, line_h: 12.0, shown: 160, len }
+    }
+
+    #[test]
+    fn a_long_line_card_shows_its_whole_width() {
+        let repo = temp_repo("cut", &[("wide.txt", format!("{}\nshort\n", "x".repeat(400)))]);
+        let layout = Layout::build(&repo);
+        let n = &layout.nodes[layout.file_node[0] as usize];
+        assert_eq!(n.shown_cols(), MAX_COLS as usize);
+        let narrow = temp_repo("narrow", &[("a.txt", "abc\n".into())]);
+        let layout = Layout::build(&narrow);
+        assert_eq!(layout.nodes[layout.file_node[0] as usize].shown_cols(), MIN_COLS as usize);
+    }
+
+    #[test]
+    fn the_rest_of_a_line_goes_on_beside_the_card() {
+        let pane = Rect::new(0.0, 0.0, 2000.0, 1000.0);
+        assert_eq!(rest_of_line(&cut(10.0, 100.0, 160), pane, 4.0), None);
+        assert_eq!(rest_of_line(&cut(10.0, 100.0, 100), pane, 4.0), None);
+        assert_eq!(rest_of_line(&cut(10.0, -5.0, 400), pane, 4.0), None);
+        assert_eq!(rest_of_line(&cut(10.0, 995.0, 400), pane, 4.0), None);
+
+        let rest = rest_of_line(&cut(10.0, 100.0, 200), pane, 4.0).unwrap();
+        assert!(rest.beside);
+        assert_eq!(rest.rows.len(), 1);
+        let row = rest.rows[0];
+        assert_eq!((row.from, row.to), (160, 200));
+        assert_eq!(row.text_left, 10.0);
+        assert_eq!(row.rect, Rect::new(10.0 + 960.0, 100.0, 240.0, 12.0));
+        assert_eq!(rest.frame, Rect::new(970.0, 96.0, 244.0, 20.0));
+    }
+
+    #[test]
+    fn a_rest_wider_than_the_room_wraps_under_its_first_row() {
+        let pane = Rect::new(0.0, 0.0, 1574.0, 1000.0);
+        let rest = rest_of_line(&cut(10.0, 100.0, 5000), pane, 4.0).unwrap();
+        assert!(rest.beside);
+        assert_eq!(rest.rows[0].rect.x, 970.0);
+        let per_row = 100;
+        assert_eq!(rest.rows.len(), (5000 - 160usize).div_ceil(per_row).min(74));
+        for (k, row) in rest.rows.iter().enumerate() {
+            assert_eq!(row.from, 160 + k * per_row);
+            assert_eq!(row.rect.x, 970.0);
+            assert_eq!(row.rect.y, 100.0 + k as f32 * 12.0);
+            assert_eq!(row.text_left + row.from as f32 * 6.0, 970.0);
+            assert!(row.rect.bottom() <= pane.bottom() - 4.0);
+        }
+        assert_eq!(rest.rows.last().unwrap().to, 5000);
+        assert_eq!(rest.frame.w, 604.0);
+
+        let low = rest_of_line(&cut(10.0, 900.0, 5000), pane, 4.0).unwrap();
+        assert_eq!(low.rows.len(), 8);
+        assert_eq!(low.rows.last().unwrap().to, 160 + 8 * per_row);
+    }
+
+    #[test]
+    fn with_no_room_beside_the_rest_sits_under_the_line_against_the_right_edge() {
+        let pane = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        let rest = rest_of_line(&cut(0.0, 100.0, 300), pane, 4.0).unwrap();
+        assert!(!rest.beside);
+        assert_eq!(rest.rows.len(), 1);
+        assert_eq!(rest.rows[0].rect, Rect::new(1000.0 - 4.0 - 140.0 * 6.0, 112.0, 840.0, 12.0));
+        assert_eq!(rest.rows[0].text_left + 160.0 * 6.0, rest.rows[0].rect.x);
+
+        let near_bottom = rest_of_line(&cut(0.0, 950.0, 3000), pane, 4.0).unwrap();
+        assert!(near_bottom.rows[0].rect.bottom() <= 950.0);
+        assert!(near_bottom.rows.len() > 2);
+        assert_eq!(near_bottom.rows.last().unwrap().rect.bottom(), 950.0);
+    }
+
+    #[test]
+    fn a_column_of_the_rest_has_its_place_in_the_rows() {
+        let pane = Rect::new(0.0, 0.0, 1574.0, 1000.0);
+        let rest = rest_of_line(&cut(10.0, 100.0, 450), pane, 4.0).unwrap();
+        assert_eq!(rest.place_of(100), None);
+        assert_eq!(rest.place_of(160), Some(Rect::new(970.0, 100.0, 6.0, 12.0)));
+        assert_eq!(rest.place_of(265), Some(Rect::new(970.0 + 5.0 * 6.0, 112.0, 6.0, 12.0)));
+        assert_eq!(rest.place_of(450), Some(Rect::new(970.0 + 90.0 * 6.0, 124.0, 6.0, 12.0)));
+        assert_eq!(rest.place_of(451), None);
+
+        assert_eq!(rest.col_at([2.0, 100.0]), None);
+        assert_eq!(rest.col_at([970.0 + 10.0 * 6.0 + 1.0, 105.0]), Some(170));
+        assert_eq!(rest.col_at([970.0 + 10.0 * 6.0 + 4.0, 113.0]), Some(271));
+        assert_eq!(rest.col_at([1560.0, 130.0]), Some(450));
+        assert_eq!(rest.col_at([971.0, 97.0]), Some(160));
     }
 }

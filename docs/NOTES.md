@@ -233,7 +233,17 @@ Resolution rules per language:
 - Files longer than `FOLD_LINES` are folded into side-by-side columns, like a
   newspaper, so one huge data file cannot stretch the whole canvas.
 - `MAX_COLS` (160): a card grows with its longest line up to that; longer lines
-  are clipped. Soft wrapping is the planned fix.
+  are clipped, and the rest of one is shown beside its card under the pointer
+  or the caret (`rest_of_line`, below). Soft wrapping is the planned fix.
+- `rest_of_line` is the geometry of that rest, in pixels of the screen: rows that
+  start where the card cuts the line (`Node::shown_cols`) and go on to the right
+  edge of the canvas, wrapping under the first row when the rest is wider. With
+  less than `REST_MIN_COLS` of room beside the card it sits under the line (over
+  it when there is more room above), against the right edge. It never leaves
+  the canvas: a line not wholly on it gets none, and rows that do not fit are
+  dropped. `RestRow::text_left` is where column 0 of the line would be drawn for
+  that row, so each row is the line's own shaped text moved left by a whole
+  number of columns.
 - Paths in `LayoutFilter` are relative to the repository root with `/` separators;
   the root itself is `""`.
 - A chain of single-child directories is one box labelled `a/b/c`. `Node::rel_path`
@@ -494,6 +504,11 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 - `TextLayer::clear` exists for theme changes: colours are part of the shaped
   text. `TextLayer::drop_page` forgets a page's chunks; the app calls it when a
   page closes and before it shows new contents of a file.
+- `CodeStrip` (the rest of a long line) draws the chunk the canvas already shaped
+  once more per row, at the same zoom, with the row as its bounds: the glyphs
+  and colours are the canvas's own. It goes with the interface text, after the
+  chips, so it is over the strip's background. Nothing is drawn while the chunk
+  is not shaped yet.
 
 ### crates/canvas-render/src/theme.rs
 
@@ -715,6 +730,25 @@ Drawing over the canvas
   in the middle becomes two, and a long straight stretch is first cut into
   short ones near the rubber so that only the part under it goes. The bin
   clears every canvas in view.
+
+The rest of a long line
+
+- `App::long_line_now` picks the line each frame: the caret's when it is beyond
+  the cut, else the one under the pointer, else the one shown while the pointer
+  is inside its strip (following the line to the right takes the pointer off the
+  card and onto the strip, which must not close it). `update_hover` redraws when
+  the pointer crosses the strip's edge.
+- Under the pointer it waits for the canvas to be still for `LONG_LINE_STILL`
+  (no travel, no zoom settling, no drag, the same camera): while the canvas
+  moves the line under the pointer changes every frame, and strips would flash.
+  `long_line_waits` asks `poll_background` for the redraw that shows it after.
+- `caret_cell` gives the caret's place in the strip when there is one, so the
+  completion list opens there and `keep_caret_visible` does not move the canvas
+  to the clamped caret at the edge.
+- A click in the strip is a click on its line: the caret goes to that column
+  (`RestOfLine::col_at`) and its card is selected, whatever card is under the
+  strip. A drag that starts in it moves the canvas (`code_under` finds no code
+  there).
 
 Back and forward
 
@@ -1510,6 +1544,11 @@ Details:
   texts on one line (two problems) follow each other.
 - The selection of the file being edited reaches one cell past the end of a line,
   for the line break.
+- `long_line` / `LongLine::draw`: the rest of a line cut at the card's edge, only
+  at the text level of detail. Its background is the card's colour made opaque
+  over the canvas, with the card's border, as the last chip; the line in the
+  card gets the faint wash of the edited line. With the caret beyond the cut,
+  the caret is drawn in the strip too (the one on the card stays at the edge).
 
 ### crates/code-canvas/src/page.rs
 
@@ -1707,6 +1746,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `mark` | `mark <name>` | Leave an empty file `marks/<name>` in the data directory. `scripts/screenshot.ps1 -Marks` takes a picture at each. |
 | `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
 | `click` | `click <x> <y>` | A click on the canvas, in physical pixels of the window. |
+| `hover` | `hover <x> <y>`, `hover <path> <line> <column>` | The pointer resting on the canvas, in physical pixels or on a cell of a card (1-based; a column past the card's edge is where it would be if the card went on): what is under it reacts (the rest of a long line). |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
 | `folders` | `folders` | Show the list of opened folders. |
 | `collapse-all` | `collapse-all` | No argument. |

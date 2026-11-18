@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
-use canvas_core::layout::{NodeKind, CARD_PAD, DIR_HEADER, FILE_LABEL_H, NONE};
-use canvas_core::{Layout, Rect, RelKind, Repo, Site, SymRef, LINE_H};
+use canvas_core::layout::{rest_of_line, LineCut, NodeKind, RestOfLine, CARD_PAD, DIR_HEADER, FILE_LABEL_H, NONE};
+use canvas_core::{Layout, Rect, RelKind, Repo, Site, SymRef, CHAR_W, LINE_H};
 use canvas_render::text::TextLayer;
-use canvas_render::{push_curve, theme, CurveVertex, Label, RectInstance, View};
+use canvas_render::{push_curve, theme, CurveVertex, Label, Lod, RectInstance, StripRow, View};
 
 use crate::ext::{Extensions, Severity};
 use crate::git::{Change, HunkKind, RowKind};
@@ -54,6 +54,65 @@ pub struct CanvasOverlay {
     pub chip_hits: Vec<(Rect, SymRef)>,
     pub toggle_hits: Vec<(Rect, String)>,
     pub preview_hits: Vec<(Rect, String)>,
+}
+
+pub struct LongLine {
+    pub file: usize,
+    pub line: usize,
+    pub rest: RestOfLine,
+    card_row: Rect,
+}
+
+pub fn long_line(page: &Page, view: View, area: Rect, s: f32, file: usize, line: usize) -> Option<LongLine> {
+    if Lod::for_zoom(view.zoom) != Lod::Text {
+        return None;
+    }
+    let r = page.ready()?;
+    let n = r.layout.file_node.get(file).filter(|&&n| n != NONE).map(|&n| &r.layout.nodes[n as usize])?;
+    let f = r.repo.files.get(file)?;
+    let shown = n.shown_cols();
+    if line >= f.line_count() || f.max_cols as usize <= shown {
+        return None;
+    }
+    let card_row = n.cell_rect(line as u32, 0, shown as u32);
+    let cut = LineCut {
+        origin: view.to_screen([card_row.x, card_row.y]),
+        char_w: CHAR_W * view.zoom,
+        line_h: LINE_H * view.zoom,
+        shown,
+        len: f.line(line).chars().count(),
+    };
+    let rest = rest_of_line(&cut, area, (4.0 * s).round())?;
+    Some(LongLine { file, line, rest, card_row })
+}
+
+impl LongLine {
+    pub fn draw(&self, out: &mut CanvasOverlay, caret: Option<usize>, s: f32) -> Vec<StripRow> {
+        let t = theme::get();
+        if caret.is_none() {
+            out.under.push(RectInstance::new(self.card_row, 0xffffff0a, 0, 0.0, 0.0));
+        }
+        let fill = theme::mix(t.background, t.card_fill | 0xff, (t.card_fill & 0xff) as f32 / 255.0);
+        out.chips.push(RectInstance::new(self.rest.frame, fill, t.card_border, 3.0 * s, 1.0));
+        if let Some(at) = caret.and_then(|col| self.rest.place_of(col)) {
+            let w = (2.0 * s).round().max(1.0);
+            out.chips.push(RectInstance::new(Rect::new(at.x - w * 0.5, at.y, w, at.h), 0xffffffff, 0, 0.0, 0.0));
+        }
+        self.rest
+            .rows
+            .iter()
+            .map(|row| StripRow {
+                left: row.text_left,
+                top: row.rect.y,
+                bounds: [
+                    row.rect.x.floor() as i32,
+                    row.rect.y.floor() as i32,
+                    row.rect.right().ceil() as i32,
+                    row.rect.bottom().ceil() as i32,
+                ],
+            })
+            .collect()
+    }
 }
 
 fn severity_color(severity: Severity) -> u32 {
