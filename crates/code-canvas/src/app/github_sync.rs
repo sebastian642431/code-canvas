@@ -215,7 +215,12 @@ impl App {
         while let Ok(heard) = self.github.rx.try_recv() {
             changed = true;
             match heard {
-                Heard::Code(code) => self.ui.account.code = Some((code.user, code.page)),
+                Heard::Code(code) => {
+                    self.ui.account.code = Some((code.user, code.page));
+                    if std::env::var_os("CODE_CANVAS_SCRIPT").is_none() {
+                        self.account_op(AccountOp::CopyAndOpen);
+                    }
+                }
                 Heard::SignInFailed(why) => {
                     self.github.waiting = None;
                     self.ui.account.code = None;

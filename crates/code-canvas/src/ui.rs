@@ -1787,10 +1787,12 @@ fn sign_in_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
                     ui.label(RichText::new(code).font(FontId::monospace(28.0)).color(pal().text));
                 });
                 ui.vertical_centered(|ui| {
-                    if ext_panels::pill(ui, "Copy the code and open GitHub", true) {
+                    if ext_panels::pill(ui, "Copy the code and open GitHub again", false) {
                         actions.push(Action::Account(AccountOp::CopyAndOpen));
                     }
                 });
+                let steps = "GitHub is open in your browser and the code is copied: paste it there (Ctrl+V), then Continue and Authorize. This window closes by itself.";
+                ui.add(egui::Label::new(RichText::new(steps).size(12.0).color(pal().text_dim)).wrap());
                 ui.label(RichText::new("Waiting for you on GitHub…").size(11.5).color(pal().text_faint));
             }
             None if st.account.said.is_empty() => {
