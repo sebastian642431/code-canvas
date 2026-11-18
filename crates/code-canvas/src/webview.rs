@@ -12,6 +12,12 @@ pub struct PageWheel {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum PageNote {
+    Still(String),
+    Settled,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct PageKey {
     pub key: String,
     pub ctrl: bool,
@@ -215,7 +221,7 @@ mod platform {
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
-    use super::{theme_json, PageKey, PageMessage, PageWheel, INIT_JS};
+    use super::{theme_json, PageKey, PageMessage, PageNote, PageWheel, INIT_JS};
 
     const ORIGIN: &str = "https://ccres.localhost";
 
@@ -232,7 +238,10 @@ mod platform {
         queued: Vec<String>,
         theme: u64,
         holes: Vec<[i32; 4]>,
+        veiled: bool,
     }
+
+    const FAR: i32 = 1 << 20;
 
     #[link(name = "gdi32")]
     extern "system" {
@@ -253,7 +262,6 @@ mod platform {
 
     fn cut_out(web: &WebView, holes: &[[i32; 4]]) {
         const DIFFERENCE: i32 = 4;
-        const FAR: i32 = 1 << 20;
         let window = web.hwnd().0;
         unsafe {
             if holes.is_empty() {
@@ -298,6 +306,7 @@ mod platform {
         shown: Vec<(String, Rect)>,
         keys: Vec<PageKey>,
         wheels: Vec<PageWheel>,
+        notes: Vec<(String, PageNote)>,
         links: Vec<String>,
         follow: bool,
     }
@@ -453,6 +462,7 @@ mod platform {
                 shown: Vec::new(),
                 keys: Vec::new(),
                 wheels: Vec::new(),
+                notes: Vec::new(),
                 links: Vec::new(),
                 follow: true,
             }
@@ -511,15 +521,23 @@ mod platform {
             }
         }
 
+        pub fn veil(&mut self, handle: &str, veiled: bool) {
+            if let Some(view) = self.views.get_mut(handle) {
+                view.veiled = veiled;
+            }
+        }
+
         pub fn close(&mut self, handle: &str) {
             self.views.remove(handle);
             self.shared.lock().unwrap().html.remove(handle);
             self.shown.retain(|(shown, _)| shown != handle);
         }
 
-        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect)], covers: &[Rect]) {
-            let targets: Vec<(&str, Rect, Vec<[i32; 4]>)> =
-                targets.iter().filter_map(|(handle, area)| Some((*handle, *area, holes_in(*area, covers)?))).collect();
+        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect, Vec<Rect>)]) {
+            let targets: Vec<(&str, Rect, Vec<[i32; 4]>)> = targets
+                .iter()
+                .filter_map(|(handle, area, covers)| Some((*handle, *area, holes_in(*area, covers)?)))
+                .collect();
             let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.shown)
                 .into_iter()
                 .partition(|(shown, _)| targets.iter().any(|(wanted, ..)| wanted == shown));
@@ -536,7 +554,8 @@ mod platform {
                     match self.create(window, handle, area) {
                         Ok(web) => {
                             let theme = canvas_render::theme::revision();
-                            let view = View { web, ready: false, queued: Vec::new(), theme, holes: Vec::new() };
+                            let view =
+                                View { web, ready: false, queued: Vec::new(), theme, holes: Vec::new(), veiled: false };
                             self.views.insert(handle.to_string(), view);
                         }
                         Err(e) => {
@@ -550,6 +569,7 @@ mod platform {
                     if placed != Some(area) {
                         let _ = view.web.set_bounds(bounds(area));
                     }
+                    let holes = if view.veiled { vec![[0, 0, FAR, FAR]] } else { holes };
                     if view.holes != holes {
                         cut_out(&view.web, &holes);
                         view.holes = holes;
@@ -646,6 +666,10 @@ mod platform {
                         ctrl: flag("ctrl"),
                         shift: flag("shift"),
                     });
+                } else if let Some(still) = v.get("still").and_then(Value::as_str) {
+                    self.notes.push((handle, PageNote::Still(still.to_string())));
+                } else if v.get("settled").is_some() {
+                    self.notes.push((handle, PageNote::Settled));
                 } else if let Some(message) = v.get("message") {
                     out.push((handle, message.clone()));
                 } else if let Some(k) = v.get("key") {
@@ -669,6 +693,10 @@ mod platform {
 
         pub fn take_wheels(&mut self) -> Vec<PageWheel> {
             std::mem::take(&mut self.wheels)
+        }
+
+        pub fn take_notes(&mut self) -> Vec<(String, PageNote)> {
+            std::mem::take(&mut self.notes)
         }
 
         pub fn take_links(&mut self) -> Vec<String> {
@@ -714,7 +742,7 @@ mod platform {
     use canvas_core::Rect;
     use serde_json::Value;
 
-    use super::{PageKey, PageMessage, PageWheel};
+    use super::{PageKey, PageMessage, PageNote, PageWheel};
 
     pub struct WebViews;
 
@@ -727,9 +755,10 @@ mod platform {
         pub fn set_html(&mut self, _handle: &str, _html: String) {}
         pub fn post(&mut self, _handle: &str, _message: &Value) {}
         pub fn close(&mut self, _handle: &str) {}
+        pub fn veil(&mut self, _handle: &str, _veiled: bool) {}
         pub fn run(&mut self, _script: &str) {}
         pub fn run_in(&mut self, _handle: &str, _script: &str) {}
-        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect)], _covers: &[Rect]) {}
+        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect, Vec<Rect>)]) {}
         pub fn poll(&mut self) -> Vec<PageMessage> {
             Vec::new()
         }
@@ -737,6 +766,9 @@ mod platform {
             Vec::new()
         }
         pub fn take_wheels(&mut self) -> Vec<PageWheel> {
+            Vec::new()
+        }
+        pub fn take_notes(&mut self) -> Vec<(String, PageNote)> {
             Vec::new()
         }
         pub fn take_links(&mut self) -> Vec<String> {

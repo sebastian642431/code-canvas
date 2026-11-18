@@ -228,10 +228,18 @@ pub enum FindOp {
     Close,
 }
 
+pub struct CardPlace {
+    pub over: Rect,
+    pub pages: std::ops::Range<usize>,
+    floating: usize,
+    layer: egui::LayerId,
+}
+
 pub struct UiState {
     pub files: bool,
     pub cards: Vec<Panel>,
     pub cards_reach: f32,
+    pub card_places: Vec<CardPlace>,
     pub console: crate::term::Console,
     card_widths: std::collections::HashMap<String, f32>,
     pub explorer_filter: String,
@@ -290,6 +298,7 @@ impl Default for UiState {
             files: true,
             cards: Vec::new(),
             cards_reach: 0.0,
+            card_places: Vec::new(),
             console: Default::default(),
             card_widths: Default::default(),
             explorer_filter: String::new(),
@@ -710,6 +719,7 @@ pub fn build(
     actions: &mut Vec<Action>,
 ) -> Rect {
     st.floating.clear();
+    st.card_places.clear();
     st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
@@ -1072,6 +1082,7 @@ fn cards(
         let id = egui::Id::unique(("card", &key));
         let own_cross = *panel == Panel::Media;
         let mut shut = false;
+        let first_page = st.page_places.len();
         egui::Area::new(id).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.painter().rect(rect, 12.0, pal().card, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(1.0)), |ui| {
@@ -1105,6 +1116,12 @@ fn cards(
             if pull.dragged() {
                 st.card_widths.insert(key.clone(), (width - pull.drag_delta().x).clamp(NARROWEST, 760.0));
             }
+        });
+        st.card_places.push(CardPlace {
+            over: rect.expand(5.0),
+            pages: first_page..st.page_places.len(),
+            floating: st.floating.len(),
+            layer: egui::LayerId::new(egui::Order::Middle, id),
         });
         st.floating.push(rect.expand(5.0));
         if shut {
@@ -3975,8 +3992,17 @@ pub fn note_covers(ctx: &egui::Context, st: &mut UiState) {
         above.filter_map(|layer| Some((layer, memory.area_rect(layer.id)?))).collect()
     });
     let drawn = |layer: egui::LayerId| ctx.graphics(|all| all.get(layer).is_some_and(|shapes| !shapes.is_empty()));
-    st.covers = st.floating.clone();
-    st.covers.extend(shown.into_iter().filter(|(layer, _)| drawn(*layer)).map(|(_, rect)| rect));
+    let cards = &st.card_places;
+    let a_card = |layer: egui::LayerId| cards.iter().any(|card| card.layer == layer);
+    let floating = st.floating.iter().enumerate().filter(|(at, _)| !cards.iter().any(|card| card.floating == *at));
+    let mut covers: Vec<Rect> = floating.map(|(_, rect)| *rect).collect();
+    covers.extend(shown.into_iter().filter(|(layer, _)| !a_card(*layer) && drawn(*layer)).map(|(_, rect)| rect));
+    st.covers = covers;
+}
+
+pub fn covers_of(covers: &[Rect], cards: &[CardPlace], page: Option<usize>) -> Vec<Rect> {
+    let others = cards.iter().filter(|card| !page.is_some_and(|page| card.pages.contains(&page)));
+    covers.iter().copied().chain(others.map(|card| card.over)).collect()
 }
 
 fn tooltip(ctx: &egui::Context, canvas: Rect, info: &FrameInfo) {
@@ -4016,6 +4042,25 @@ mod tests {
         assert_eq!(title, "function add(a: number, b: number): number");
         assert_eq!(rest, "Adds two numbers.\n*@param* `a`");
         assert_eq!(super::hover_text(""), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn a_card_does_not_cover_the_page_it_holds() {
+        use super::{covers_of, CardPlace};
+        use egui::{pos2, Rect};
+        let card = |left: f32, pages: std::ops::Range<usize>| CardPlace {
+            over: Rect::from_min_max(pos2(left, 40.0), pos2(left + 420.0, 800.0)),
+            pages,
+            floating: 0,
+            layer: egui::LayerId::background(),
+        };
+        let menu = Rect::from_min_max(pos2(700.0, 100.0), pos2(900.0, 300.0));
+        let (assistant, console) = (card(1000.0, 0..1), card(560.0, 1..1));
+        let cards = [assistant, console];
+        let (theirs, others) = (cards[0].over, cards[1].over);
+        assert_eq!(covers_of(&[menu], &cards, Some(0)), vec![menu, others], "its own card is not over it");
+        assert_eq!(covers_of(&[menu], &cards, Some(1)), vec![menu, theirs, others], "a page of no card");
+        assert_eq!(covers_of(&[menu], &cards, None), vec![menu, theirs, others], "what plays on the canvas");
     }
 
     #[test]

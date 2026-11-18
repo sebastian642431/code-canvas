@@ -656,6 +656,27 @@ Pictures and what plays
 - What plays is one webview (`media::PLAYER`) placed over the card each frame
   (`App::player_place`), hidden and paused when the card is too small or off the
   canvas. It is a window of its own: it covers the toolbar where they overlap.
+- **The player is the whole card, cut at the edge of the canvas.** The window of
+  the player has the place and the size of its card even where the card goes
+  beyond the canvas, and what is beyond is cut out of it like anything that
+  floats over a page (`beyond` in `App::redraw`). It used to be only the part of
+  the card in view, and the video fitted itself into that part: zoomed in, or
+  with the card half out, the video was somewhere else than its card and changed
+  size as the canvas moved. The video fills its page (`object-fit: contain`), so
+  a small one grows with its card too.
+- **While its card changes size a still stands in for what plays**
+  (`App::stand_still`, `Still`). A browser window that is resized draws itself
+  at the new size some frames late, and a zoom is a resize every frame: the
+  video trembled and stretched. Now, when the card changes size, the page is
+  asked for a picture of what it shows (`media::ASK_STILL`, sent back as a
+  `PageNote::Still`); as soon as it comes the window is veiled
+  (`WebViews::veil`: all of it cut out, yet still there and drawing) and the
+  picture is painted in the card by egui, like the pictures, asked again every
+  150 ms. A quarter of a second after the last change the page is asked to say
+  when it has drawn itself (`ASK_SETTLED`, two frames of its own), and only then
+  is the veil lifted; the picture stays under it a moment more. A card too small
+  for the player keeps the picture. The wheel over a veiled player is the
+  window's own, so the cursor is noted from the page's wheel before.
 
 Back and forward
 
@@ -885,6 +906,15 @@ Graphics and the frame
   included; `WebViews::show`, `holes_in`, `cut_out` set a window region with
   those holes). A page wholly covered is hidden. This is the only `unsafe` code
   of the app (four Win32 calls).
+- **A card is not over the page it holds.** A card on the canvas is itself a
+  rectangle of the interface above the canvas, and the page of an extension or
+  of a Markdown file is inside one: counted as a cover, each card covered the
+  whole of its own page, so the page was never made and the card stayed empty
+  (the panel of Claude Code, with nothing in the log). `ui::cards` notes which
+  pages were placed while each card was drawn (`CardPlace::pages`),
+  `note_covers` leaves the cards out of `UiState::covers`, and
+  `ui::covers_of` gives each page the covers plus every card but its own. A
+  card still covers what plays on the canvas under it.
 - The interface font has no arrows: keys are named in words (`Chord::label`:
   Left, Right, Up, Down) and arrows in text come from the icon font.
 - Deep rows of the explorer keep their names: the indent of a level shrinks

@@ -14,6 +14,61 @@ const WHEEL: &str = r#"
   }, { passive: false, capture: true });
 </script>"#;
 
+pub const ASK_STILL: &str = "window.__ccStill && window.__ccStill()";
+pub const ASK_SETTLED: &str = "window.__ccSettled && window.__ccSettled()";
+
+const STILL: &str = r#"
+<script>
+  const playing = document.getElementById('media');
+  const shot = document.createElement('canvas');
+  window.__ccStill = () => {
+    const [w, h] = [window.innerWidth, window.innerHeight];
+    if (!playing.videoWidth || !w || !h) return;
+    const k = 1280 / Math.max(w, h);
+    shot.width = Math.round(w * k);
+    shot.height = Math.round(h * k);
+    const fit = Math.min(shot.width / playing.videoWidth, shot.height / playing.videoHeight);
+    const [vw, vh] = [playing.videoWidth * fit, playing.videoHeight * fit];
+    const pen = shot.getContext('2d');
+    pen.fillStyle = '#000';
+    pen.fillRect(0, 0, shot.width, shot.height);
+    pen.drawImage(playing, (shot.width - vw) / 2, (shot.height - vh) / 2, vw, vh);
+    window.ipc.postMessage(JSON.stringify({ still: shot.toDataURL('image/jpeg', 0.85) }));
+  };
+  window.__ccSettled = () => requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.ipc.postMessage(JSON.stringify({ settled: true }));
+  }));
+</script>"#;
+
+pub fn still(sent: &str) -> Option<(egui::ColorImage, [u32; 2])> {
+    let bytes = from_base64(sent.split_once("base64,")?.1)?;
+    let picture = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [picture.width(), picture.height()];
+    Some((egui::ColorImage::from_rgba_unmultiplied(size.map(|side| side as usize), picture.as_raw()), size))
+}
+
+fn from_base64(text: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut held, mut bits) = (0u32, 0u32);
+    for c in text.bytes().filter(|c| *c != b'=') {
+        let six = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        held = (held << 6) | six as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((held >> bits) as u8);
+        }
+    }
+    Some(bytes)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Image,
@@ -86,7 +141,9 @@ pub fn page(path: &Path, kind: Kind) -> String {
   img.addEventListener('click', () => document.body.classList.toggle('actual'));
 </script>"#
         ),
-        Kind::Video => format!(r#"<video id="media" src="{url}" controls autoplay preload="metadata"></video>{WHEEL}"#),
+        Kind::Video => {
+            format!(r#"<video id="media" src="{url}" controls autoplay preload="metadata"></video>{WHEEL}{STILL}"#)
+        }
         Kind::Audio => format!(r#"<audio id="media" src="{url}" controls autoplay preload="metadata"></audio>{WHEEL}"#),
         Kind::Pdf => format!(r#"<iframe id="media" class="page" src="{url}"></iframe>"#),
     };
@@ -100,7 +157,7 @@ pub fn page(path: &Path, kind: Kind) -> String {
         background: repeating-conic-gradient(#16171c 0% 25%, #101115 0% 50%) 50% / 16px 16px; }}
   body.actual {{ display: block; }}
   body.actual img {{ max-width: none; max-height: none; cursor: zoom-out; }}
-  video {{ max-width: 100%; max-height: 100%; background: #000; }}
+  video {{ display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }}
   audio {{ width: min(90%, 520px); }}
   iframe.page {{ width: 100%; height: 100%; border: 0; }}
   #info {{ padding: 6px; }}
@@ -130,6 +187,32 @@ mod tests {
         let html = page(Path::new("C:/v/clip one.mp4"), Kind::Video);
         assert!(html.contains(r#"<video id="media" src="https://ccres.localhost/file/C%3A/v/clip%20one.mp4" controls"#));
         assert!(page(Path::new("a.png"), Kind::Image).contains("<img"));
+    }
+
+    #[test]
+    fn a_still_is_read_from_what_the_page_sends() {
+        assert_eq!(from_base64("TWFu").as_deref(), Some(&b"Man"[..]));
+        assert_eq!(from_base64("TWE=").as_deref(), Some(&b"Ma"[..]));
+        assert_eq!(from_base64("TQ==").as_deref(), Some(&b"M"[..]));
+        assert_eq!(from_base64("T W"), None);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([10, 20, 30, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let sent: String = png.into_inner().chunks(3).map(to_base64).collect();
+        let (picture, size) = still(&format!("data:image/png;base64,{sent}")).unwrap();
+        assert_eq!((size, picture.pixels[0]), ([3, 2], egui::Color32::from_rgb(10, 20, 30)));
+        assert!(still("data:image/jpeg;base64,AAAA").is_none() && still("nothing").is_none());
+    }
+
+    fn to_base64(three: &[u8]) -> String {
+        const SIGNS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let held = three.iter().fold(0u32, |held, b| (held << 8) | *b as u32) << (8 * (3 - three.len()));
+        let signs = (0..4).map(|at| match at <= three.len() {
+            true => SIGNS[(held >> (18 - 6 * at)) as usize & 63] as char,
+            false => '=',
+        });
+        signs.collect()
     }
 
     #[test]

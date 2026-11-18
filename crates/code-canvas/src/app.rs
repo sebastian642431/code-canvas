@@ -90,6 +90,16 @@ const CHECKERS: [(&[&str], &str, &str, &str); 2] = [
 const INSTALL_IT: &str = "Install it";
 const NEVER: &str = "Do not ask again";
 
+#[derive(Default)]
+struct Still {
+    size: [f32; 2],
+    resized: Option<Instant>,
+    asked: Option<Instant>,
+    picture: Option<egui::TextureHandle>,
+    settling: Option<Instant>,
+    lifted: Option<Instant>,
+}
+
 struct Place {
     page: u32,
     anchor: String,
@@ -223,6 +233,7 @@ pub struct App {
     pictures: crate::pictures::Pictures,
     playing: Option<PathBuf>,
     player_shown: bool,
+    still: Still,
     commit_from: Option<Place>,
     sharing: sharing::Sharing,
     workspace: Vec<session::Known>,
@@ -348,6 +359,7 @@ impl App {
             pictures: crate::pictures::Pictures::new(),
             playing: None,
             player_shown: false,
+            still: Default::default(),
             commit_from: None,
             sharing: Default::default(),
             workspace: saved.workspace.clone(),
@@ -2167,6 +2179,7 @@ impl App {
             self.webviews.allow_file(path);
             self.webviews.set_html(crate::media::PLAYER, crate::media::page(path, kind));
             self.playing = Some(path.to_path_buf());
+            self.still = Default::default();
         }
         self.request_redraw();
         true
@@ -2176,6 +2189,7 @@ impl App {
         if self.playing.take().is_some() {
             self.webviews.close(crate::media::PLAYER);
             self.player_shown = false;
+            self.still = Default::default();
             self.request_redraw();
         }
     }
@@ -2189,14 +2203,90 @@ impl App {
         Some(Rect::new(tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]))
     }
 
-    fn player_place(&self) -> Option<Rect> {
+    fn player_card(&self) -> Option<Rect> {
         let (i, rel) = self.locate_file(self.playing.as_deref()?)?;
         let card = self.card_on_screen(self.pages.get(i).filter(|_| self.shown().contains(&i))?, &rel)?;
-        let area = self.canvas;
-        let (left, top) = (card.x.max(area.x), card.y.max(area.y));
-        let (right, bottom) = (card.right().min(area.right()), card.bottom().min(area.bottom()));
-        let seen = Rect::new(left.round(), top.round(), (right - left).round(), (bottom - top).round());
-        (card.w >= 200.0 && card.h >= 120.0 && seen.w >= 120.0 && seen.h >= 80.0).then_some(seen)
+        Some(Rect::new(card.x.round(), card.y.round(), card.w.round(), card.h.round()))
+    }
+
+    fn player_place(&self) -> Option<Rect> {
+        let (card, area) = (self.player_card()?, self.canvas);
+        let seen_w = card.right().min(area.right()) - card.x.max(area.x);
+        let seen_h = card.bottom().min(area.bottom()) - card.y.max(area.y);
+        (card.w >= 200.0 && card.h >= 120.0 && seen_w >= 120.0 && seen_h >= 80.0).then_some(card)
+    }
+
+    fn stand_still(&mut self) -> bool {
+        const RESTS: Duration = Duration::from_millis(250);
+        const AGAIN: Duration = Duration::from_millis(150);
+        const GIVEN: Duration = Duration::from_millis(400);
+        const UNDER: Duration = Duration::from_millis(120);
+        let player = crate::media::PLAYER;
+        let notes = self.webviews.take_notes();
+        let Some(card) = self.player_card() else {
+            self.still = Default::default();
+            self.webviews.veil(player, false);
+            return false;
+        };
+        let (placed, now, s) = (self.player_place().is_some(), Instant::now(), self.scale());
+        let still = &mut self.still;
+        if (card.w - still.size[0]).abs() >= 1.0 || (card.h - still.size[1]).abs() >= 1.0 {
+            if still.size != [0.0, 0.0] {
+                still.resized = Some(now);
+            }
+            still.size = [card.w, card.h];
+        }
+        let moving = still.resized.is_some_and(|at| now.duration_since(at) < RESTS);
+        let mut settled = false;
+        for (_, note) in notes.into_iter().filter(|(page, _)| page == player) {
+            match note {
+                crate::webview::PageNote::Still(sent) if moving || still.picture.is_some() => {
+                    let Some((picture, _)) = crate::media::still(&sent) else { continue };
+                    let Some(g) = self.gfx.as_ref() else { continue };
+                    let smooth = egui::TextureOptions::LINEAR;
+                    match still.picture.as_mut() {
+                        Some(texture) => texture.set(picture, smooth),
+                        None => {
+                            log::debug!("a still stands in the card of what plays");
+                            still.picture = Some(g.egui.load_texture("what plays", picture, smooth));
+                        }
+                    }
+                    still.lifted = None;
+                }
+                crate::webview::PageNote::Still(_) => {}
+                crate::webview::PageNote::Settled => settled = true,
+            }
+        }
+        if moving {
+            (still.settling, still.lifted) = (None, None);
+            if still.asked.is_none_or(|at| now.duration_since(at) >= AGAIN) {
+                still.asked = Some(now);
+                self.webviews.run_in(player, crate::media::ASK_STILL);
+            }
+        } else if still.lifted.is_some_and(|at| now.duration_since(at) >= UNDER) {
+            *still = Still { size: still.size, ..Default::default() };
+        } else if still.picture.is_some() && still.lifted.is_none() && placed {
+            match still.settling {
+                None => {
+                    still.settling = Some(now);
+                    self.webviews.run_in(player, crate::media::ASK_SETTLED);
+                }
+                Some(since) if settled || now.duration_since(since) >= GIVEN => {
+                    let waited = now.duration_since(since).as_millis();
+                    log::debug!("what plays is seen again, {waited} ms after its card came to rest");
+                    (still.settling, still.lifted) = (None, Some(now));
+                }
+                Some(_) => {}
+            }
+        } else if still.picture.is_none() {
+            still.asked = None;
+        }
+        self.webviews.veil(player, still.picture.is_some() && still.lifted.is_none());
+        if let Some(texture) = still.picture.as_ref().filter(|_| card.h >= 24.0) {
+            let at = egui::Rect::from_min_size(egui::pos2(card.x / s, card.y / s), egui::vec2(card.w / s, card.h / s));
+            self.ui.pictures.push((texture.id(), at));
+        }
+        moving || still.settling.is_some() || still.lifted.is_some()
     }
 
     fn place_pictures(&mut self) {
@@ -3970,6 +4060,7 @@ impl App {
             let turned = self.scale() * WHEEL_NOTCH / 100.0;
             let moved = [-wheel.moved[0] * turned, -wheel.moved[1] * turned];
             let at = [place.x + wheel.at[0] * self.scale(), place.y + wheel.at[1] * self.scale()];
+            self.cursor = at;
             self.wheel(moved, at, wheel.ctrl, wheel.shift);
         }
         for url in self.webviews.take_links() {
@@ -4365,6 +4456,7 @@ impl App {
             self.pictures.begin_frame(&g.egui);
         }
         self.place_pictures();
+        let standing = self.stand_still();
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
         let mut actions = Vec::new();
@@ -4410,17 +4502,19 @@ impl App {
         self.canvas = self.canvas_full;
         let shown = self.shown();
         {
-            let places: Vec<(String, Rect)> = self
+            let scaled = |r: &egui::Rect| Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s);
+            let places: Vec<(String, Rect, Option<usize>)> = self
                 .ui
                 .page_places
                 .iter()
-                .filter_map(|(panel, r)| {
+                .enumerate()
+                .filter_map(|(place, (panel, r))| {
                     let handle = match panel {
                         Panel::Media => self.ui.media.as_ref().map(|_| crate::media::HANDLE.to_string())?,
                         Panel::Webview(view) => self.ext.shown(view)?.handle.clone()?,
                         _ => return None,
                     };
-                    Some((handle, Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s)))
+                    Some((handle, scaled(r), Some(place)))
                 })
                 .collect();
             let mut places = places;
@@ -4429,17 +4523,28 @@ impl App {
                 let quiet = "document.querySelectorAll('video,audio').forEach((m) => m.pause())";
                 self.webviews.run_in(crate::media::PLAYER, quiet);
             }
-            places.extend(player.map(|at| (crate::media::PLAYER.to_string(), at)));
-            let targets: Vec<(&str, Rect)> = places.iter().map(|(handle, at)| (handle.as_str(), *at)).collect();
-            let covers: Vec<Rect> = self
-                .ui
-                .covers
+            places.extend(player.map(|at| (crate::media::PLAYER.to_string(), at, None)));
+            let (area, far) = (self.canvas, 1.0e6);
+            let beyond = [
+                Rect::new(area.x - far, -far, far, 2.0 * far),
+                Rect::new(area.right(), -far, far, 2.0 * far),
+                Rect::new(-far, area.y - far, 2.0 * far, far),
+                Rect::new(-far, area.bottom(), 2.0 * far, far),
+            ];
+            let targets: Vec<(&str, Rect, Vec<Rect>)> = places
                 .iter()
-                .map(|r| Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s))
+                .map(|(handle, at, place)| {
+                    let covers = ui::covers_of(&self.ui.covers, &self.ui.card_places, *place);
+                    let mut covers: Vec<Rect> = covers.iter().map(scaled).collect();
+                    if handle == crate::media::PLAYER {
+                        covers.extend(beyond);
+                    }
+                    (handle.as_str(), *at, covers)
+                })
                 .collect();
             let g = self.gfx.as_ref().unwrap();
             let t = Instant::now();
-            self.webviews.show(&g.window, &targets, &covers);
+            self.webviews.show(&g.window, &targets);
             let ms = t.elapsed().as_secs_f32() * 1000.0;
             if ms > 8.0 {
                 log::debug!("placing the webview took {ms:.1} ms");
@@ -4447,7 +4552,7 @@ impl App {
         }
         let area = self.canvas;
 
-        let mut animating = travelling;
+        let mut animating = travelling || standing;
         for i in shown.iter().copied() {
             let active = i == self.active;
             let Some(page) = self.pages.get_mut(i) else { continue };
