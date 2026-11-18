@@ -2,8 +2,8 @@ title: A file is made in the host's folder while a guest has text not saved: it 
 folders: share-text
 limit: 75
 expect-log: share: share-text is shared, 4 files
-expect-log: scanned 'share-text': 5 files
-guest-expect-log: scanned 'share-text': 5 files
+expect-log: updated 'fresh\.txt' \(made\) alone in
+guest-expect-log: updated 'fresh\.txt' \(made\) alone in
 
 wait 3000
 share start writers
