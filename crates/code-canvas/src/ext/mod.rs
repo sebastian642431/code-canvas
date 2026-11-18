@@ -1,3 +1,6 @@
+pub mod compat;
+pub mod details;
+pub mod gallery;
 pub mod host;
 pub mod market;
 pub mod views;
@@ -89,7 +92,10 @@ pub struct Installed {
     pub status: Status,
     pub error: String,
     pub activation_ms: u32,
+    /// What it asked the host for while running that is not there yet (`vscode.…`).
     pub unsupported: Vec<String>,
+    /// Its package.json, and what of it does not work in Code Canvas (`compat::gaps`).
+    pub manifest: Arc<gallery::Manifest>,
     pub icon: Option<PathBuf>,
     pub commands: Vec<(String, String)>,
     pub views: Vec<String>,
@@ -99,6 +105,23 @@ pub struct Installed {
     pub color_themes: Vec<ColorThemeDecl>,
     pub languages: Vec<LanguageDecl>,
     pub grammars: Vec<GrammarDecl>,
+}
+
+impl Installed {
+    /// What of it does not work in Code Canvas, one line each: what its manifest brings,
+    /// then what it asked for while running.
+    pub fn not_available(&self) -> Vec<String> {
+        let mut out = compat::lines(&self.manifest.gaps);
+        out.extend(self.unsupported.iter().map(|api| format!("vscode.{api} (asked for while running)")));
+        out
+    }
+
+    /// Its publisher and name as the registry spells them.
+    pub fn namespace_and_name(&self) -> (String, String) {
+        let v = &self.manifest.json;
+        let text = |key: &str| v.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        (text("publisher"), text("name"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -510,6 +533,12 @@ pub struct Extensions {
     pub searching: bool,
     pub market_error: String,
     pub installing: HashSet<String>,
+    /// Icons, pages, READMEs and manifests of the registry, kept for the session.
+    pub gallery: gallery::Gallery,
+    /// The extension whose page is open (publisher or namespace, name), installed or not.
+    pub details_of: Option<(String, String)>,
+    /// The README and changelog of installed extensions, with where their links start.
+    local_texts: HashMap<String, LocalTexts>,
     pub diagnostics: HashMap<String, FileDiagnostics>,
     front_tab: HashMap<String, String>,
     pub revision: u64,
@@ -769,6 +798,7 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         error: String::new(),
         activation_ms: 0,
         unsupported: Vec::new(),
+        manifest: Arc::new(gallery::Manifest::new(v.clone())),
         icon: v.get("icon").and_then(Value::as_str).map(|i| dir.join(i)).filter(|p| p.is_file()),
         commands: manifest_commands(&v, &nls),
         views: manifest_views(&v, &nls),
@@ -808,6 +838,27 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         languages: manifest_languages(&v),
         grammars: manifest_grammars(&v, dir),
     })
+}
+
+type LocalText = Option<(String, String)>;
+type LocalTexts = (LocalText, LocalText);
+
+/// The README and the changelog in an extension's folder, each with where its relative
+/// links start.
+fn local_texts(dir: &Path) -> LocalTexts {
+    let files: Vec<PathBuf> =
+        std::fs::read_dir(dir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    let read = |stem: &str| -> LocalText {
+        let found = files.iter().find(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
+            p.is_file()
+                && (name == stem
+                    || name.strip_prefix(stem).is_some_and(|rest| [".md", ".markdown", ".txt"].contains(&rest)))
+        })?;
+        let text = std::fs::read_to_string(found).ok()?;
+        Some((text, format!("{}/", crate::media::file_url(dir))))
+    };
+    (read("readme"), read("changelog"))
 }
 
 fn strings(v: Option<&Value>) -> Vec<String> {
@@ -859,6 +910,9 @@ impl Extensions {
             searching: false,
             market_error: String::new(),
             installing: HashSet::new(),
+            gallery: gallery::Gallery::new(waker.clone()),
+            details_of: None,
+            local_texts: HashMap::new(),
             diagnostics: HashMap::new(),
             front_tab: HashMap::new(),
             revision: 0,
@@ -905,6 +959,7 @@ impl Extensions {
 
     fn reload_installed(&mut self) {
         self.installed_revision += 1;
+        self.local_texts.clear();
         self.installed =
             market::installed_dirs(&self.dir).iter().filter_map(|d| read_installed(d, &self.disabled)).collect();
         self.installed.sort_by_key(|e| e.display_name.to_lowercase());
@@ -981,10 +1036,90 @@ impl Extensions {
         let query = self.query.clone();
         self.searching = true;
         self.market_error.clear();
+        self.gallery.forget_failures();
         self.job(move || {
             let found = market::search(&query);
             Job::Search(query, found)
         });
+    }
+
+    /// Opens the page of an extension of the registry or installed: what the card of
+    /// `Panel::Extension` shows.
+    pub fn open_details(&mut self, namespace: &str, name: &str) {
+        self.details_of = Some((namespace.to_string(), name.to_string()));
+    }
+
+    /// Opens the page of an installed extension, by id.
+    pub fn open_installed(&mut self, id: &str) -> bool {
+        let Some((namespace, name)) = self.installed.iter().find(|e| e.id == id).map(Installed::namespace_and_name)
+        else {
+            return false;
+        };
+        self.open_details(&namespace, &name);
+        true
+    }
+
+    pub fn details_id(&self) -> Option<String> {
+        self.details_of.as_ref().map(|(namespace, name)| format!("{namespace}.{name}").to_lowercase())
+    }
+
+    /// Everything the open page shows, asking the registry for what is missing. An installed
+    /// extension's README, changelog and manifest are those of its folder.
+    pub fn details_view(&mut self) -> Option<details::View> {
+        use gallery::Got;
+        let (namespace, name) = self.details_of.clone()?;
+        let id = format!("{namespace}.{name}").to_lowercase();
+        let market = self.gallery.details(&namespace, &name);
+        let installed = self.installed.iter().find(|e| e.id == id);
+        let (readme_here, changelog_here) = match installed {
+            Some(e) => self.local_texts.entry(e.id.clone()).or_insert_with(|| local_texts(&e.dir)).clone(),
+            None => (None, None),
+        };
+        let installed_version = installed.map(|e| e.version.clone());
+        let manifest_here = installed.map(|e| e.manifest.clone());
+        let from_registry = |gallery: &mut gallery::Gallery, pick: fn(&market::MarketDetails) -> &String| match &market
+        {
+            Got::Ready(d) => (gallery.text(pick(d)), details::folder_of(pick(d))),
+            Got::Loading => (Got::Loading, String::new()),
+            Got::Failed(why) if details::not_found(why) => (Got::Failed("unknown".into()), String::new()),
+            Got::Failed(why) => (Got::Failed(why.clone()), String::new()),
+        };
+        // An installed one's own README, whose pictures beside it are looked for where the
+        // registry keeps its files (the folder's own are not served to pages).
+        let registry_folder = |pick: fn(&market::MarketDetails) -> &String| {
+            market.ready().map(|d| details::folder_of(pick(d))).filter(|folder| !folder.is_empty())
+        };
+        let (readme, readme_base) = match readme_here {
+            Some((text, base)) => (Got::Ready(Arc::new(text)), registry_folder(|d| &d.readme).unwrap_or(base)),
+            None => from_registry(&mut self.gallery, |d| &d.readme),
+        };
+        let (changelog, changelog_base) = match changelog_here {
+            Some((text, base)) => (Got::Ready(Arc::new(text)), registry_folder(|d| &d.changelog).unwrap_or(base)),
+            None => from_registry(&mut self.gallery, |d| &d.changelog),
+        };
+        let manifest = match (manifest_here, &market) {
+            (Some(m), _) => Got::Ready(m),
+            (None, Got::Ready(d)) => self.gallery.manifest_of(&namespace, &name, &d.item.version),
+            (None, Got::Loading) => Got::Loading,
+            (None, Got::Failed(why)) => Got::Failed(why.clone()),
+        };
+        let first_released = match &market {
+            Got::Ready(_) => self.gallery.first_released(&namespace, &name),
+            _ => Got::Loading,
+        };
+        Some(details::View {
+            id,
+            namespace,
+            name,
+            market,
+            manifest,
+            readme,
+            readme_base,
+            changelog,
+            changelog_base,
+            first_released,
+            installed: installed_version,
+        })
     }
 
     pub fn install_defaults(&mut self) {
@@ -1416,7 +1551,7 @@ impl Extensions {
 
     pub fn poll(&mut self) -> (Vec<Event>, bool) {
         let mut events: Vec<Event> = self.dropped_webviews.drain(..).map(Event::WebviewClosed).collect();
-        let mut changed = !events.is_empty();
+        let mut changed = !events.is_empty() | self.gallery.poll();
 
         while let Ok(job) = self.jobs_rx.try_recv() {
             changed = true;

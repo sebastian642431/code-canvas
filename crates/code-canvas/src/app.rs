@@ -198,6 +198,8 @@ pub struct App {
     preview_hits: Vec<(Rect, String)>,
     lens_hits: Vec<(Rect, ext::views::Lens)>,
     preview: Option<String>,
+    /// What the webview of an extension's page was last made from (`details::View::stamp`).
+    extension_page: String,
     curves_for: Option<u32>,
     last_frame: Instant,
     frame_ms: f32,
@@ -335,6 +337,7 @@ impl App {
             preview_hits: Vec::new(),
             lens_hits: Vec::new(),
             preview: None,
+            extension_page: String::new(),
             curves_for: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
@@ -2576,6 +2579,34 @@ impl App {
         }
     }
 
+    /// Makes the webview of the extension's page shown on its card again when what it shows
+    /// changed: another extension or tab, or its README, manifest or registry page arrived.
+    fn place_extension_page(&mut self) {
+        if !self.ui.page_places.iter().any(|(panel, _)| *panel == Panel::Extension) {
+            return;
+        }
+        let tab = self.ui.extension_tab;
+        let Some(view) = self.ext.details_view() else { return };
+        let stamp = view.stamp(tab);
+        if self.extension_page != stamp || !self.webviews.has_html(ext::details::PAGE) {
+            self.webviews.set_html(ext::details::PAGE, ext::details::page_html(&view, tab));
+            let verdict = match &view.manifest {
+                ext::gallery::Got::Ready(m) if m.gaps.is_empty() => "works in Code Canvas".to_string(),
+                ext::gallery::Got::Ready(m) => {
+                    format!("not available yet: {}", ext::compat::lines(&m.gaps).join(" · "))
+                }
+                other => format!("manifest {}", other.stage()),
+            };
+            log::info!(
+                "the page of {} shows its {} ({verdict}; registry {})",
+                view.id,
+                tab.title(),
+                view.market.stage()
+            );
+            self.extension_page = stamp;
+        }
+    }
+
     fn refresh_preview(&mut self) {
         let Some(path) = self.ui.media.clone().filter(|_| self.preview.is_some()) else { return };
         let Some(text) = self.markdown_text(&path) else { return };
@@ -3893,6 +3924,24 @@ impl App {
                 self.ui.show(Panel::Extensions);
                 self.ext.query = text;
                 self.ext.search();
+            }
+            Step::Ext(arg) => {
+                let mut words = arg.split_whitespace();
+                let first = words.next().unwrap_or_default();
+                let tab = match first.split_once('.') {
+                    Some((namespace, name)) => {
+                        self.ext.open_details(namespace, name);
+                        self.ui.extension = first.to_lowercase();
+                        self.ui.show(Panel::Extension);
+                        words.next()
+                    }
+                    None => Some(first),
+                };
+                match tab.map(|word| (word, ext::details::Tab::from_word(word))) {
+                    Some((_, Some(tab))) => self.ui.extension_tab = tab,
+                    Some((word, None)) => log::warn!("script: ext knows no tab '{word}'"),
+                    None => self.ui.extension_tab = ext::details::Tab::Details,
+                }
             }
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
@@ -5251,6 +5300,7 @@ impl App {
         }
         self.canvas = self.canvas_full;
         let shown = self.shown();
+        self.place_extension_page();
         {
             let scaled = |r: &egui::Rect| Rect::new(r.left() * s, r.top() * s, r.width() * s, r.height() * s);
             let places: Vec<(String, Rect, Option<usize>)> = self
@@ -5261,6 +5311,7 @@ impl App {
                 .filter_map(|(place, (panel, r))| {
                     let handle = match panel {
                         Panel::Media => self.ui.media.as_ref().map(|_| crate::media::HANDLE.to_string())?,
+                        Panel::Extension => ext::details::PAGE.to_string(),
                         Panel::Webview(view) => self.ext.shown(view)?.handle.clone()?,
                         _ => return None,
                     };

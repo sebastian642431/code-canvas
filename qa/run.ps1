@@ -156,6 +156,14 @@ if ($head.ContainsKey('github')) {
     $env:CODE_CANVAS_GITHUB_API = "http://127.0.0.1:$port"
     $env:CODE_CANVAS_GITHUB_CLIENT = 'fake'
 }
+$fakeOpenVsx = $null
+Remove-Item 'Env:CODE_CANVAS_OPEN_VSX' -ErrorAction SilentlyContinue
+if ($head.ContainsKey('openvsx')) {
+    $port = Get-Random -Minimum 20000 -Maximum 40000
+    $fakeOpenVsx = Start-Process -FilePath python -ArgumentList @('-I', (Join-Path $PSScriptRoot 'fake\openvsx.py'), $port) -PassThru -WindowStyle Hidden -RedirectStandardError (Join-Path $Work 'openvsx.log') -RedirectStandardOutput (Join-Path $Work 'openvsx.out')
+    Start-Sleep -Milliseconds 800
+    $env:CODE_CANVAS_OPEN_VSX = "http://127.0.0.1:$port/api"
+}
 $problems = @()
 $seen = @{}
 $pictures = 0
@@ -259,6 +267,11 @@ foreach ($want in $many['absent-file']) {
 if ($fakeGitHub) {
     try { & taskkill /PID $fakeGitHub.Id /T /F | Out-Null } catch {}
     foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
+}
+
+if ($fakeOpenVsx) {
+    try { & taskkill /PID $fakeOpenVsx.Id /T /F | Out-Null } catch {}
+    Remove-Item 'Env:CODE_CANVAS_OPEN_VSX' -ErrorAction SilentlyContinue
 }
 
 if ($relay) {

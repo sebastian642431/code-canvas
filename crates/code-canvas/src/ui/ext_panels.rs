@@ -55,6 +55,149 @@ enum Op {
     Uninstall(String),
     Enable(String, bool),
     Install(String, String),
+    /// Open the page of an extension: of the registry (namespace, name), or installed (id, "").
+    Open(String, String),
+}
+
+fn star_color() -> Color32 {
+    c(theme::get().problem_warning)
+}
+
+fn glyph(name: &str, otherwise: &'static str) -> &'static str {
+    crate::codicons::glyph(name).unwrap_or(otherwise)
+}
+
+/// Five stars filled to the rating, from `at` (the middle of their left side); gives the width.
+fn stars(painter: &egui::Painter, at: Pos2, rating: f32, size: f32) -> f32 {
+    let font = FontId::proportional(size);
+    for i in 0..5 {
+        let left = rating - i as f32;
+        let name = if left >= 0.75 {
+            "star-full"
+        } else if left >= 0.25 {
+            "star-half"
+        } else {
+            "star-empty"
+        };
+        let x = at.x + i as f32 * (size + 1.0);
+        painter.text(Pos2::new(x, at.y), Align2::LEFT_CENTER, glyph(name, "*"), font.clone(), star_color());
+    }
+    5.0 * (size + 1.0)
+}
+
+/// An icon of the registry as a texture, once it has arrived (asked for the first time it is wanted).
+fn market_icon(
+    ctx: &egui::Context,
+    cache: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    gallery: &mut crate::ext::gallery::Gallery,
+    url: &str,
+) -> Option<egui::TextureHandle> {
+    if let Some(texture) = cache.get(url) {
+        return Some(texture.clone());
+    }
+    let picture = gallery.icon(url)?;
+    let texture = ctx.load_texture(format!("market-icon-{url}"), (*picture).clone(), egui::TextureOptions::LINEAR);
+    cache.insert(url.to_string(), texture.clone());
+    Some(texture)
+}
+
+/// Paints text from the left middle `at`, in at most `width`; gives the width it took.
+fn put(painter: &egui::Painter, at: Pos2, text: &str, size: f32, color: Color32, width: f32) -> f32 {
+    super::text_fit(painter, at, text, FontId::proportional(size), color, width)
+}
+
+/// Paints text that ends at `right` (middle height `y`); gives where it starts.
+fn put_right(painter: &egui::Painter, right: f32, y: f32, text: &str, size: f32, color: Color32) -> f32 {
+    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(size), color);
+    let x = right - galley.size().x;
+    painter.galley(Pos2::new(x, y - galley.size().y * 0.5), galley, color);
+    x
+}
+
+const RESULT_H: f32 = 66.0;
+
+/// One extension of a search, as VS Code lists them: icon, name, downloads and stars, a line
+/// of what it does, its publisher and whether it works here, and Install.
+fn result_row(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, item: &crate::ext::MarketItem) -> Option<Op> {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), RESULT_H), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return None;
+    }
+    let id = item.id();
+    let painter = ui.painter().clone();
+    if ui.rect_contains_pointer(rect) {
+        painter.rect_filled(rect, 8.0, pal().well);
+    }
+    let slot = Rect::from_min_size(rect.left_top() + Vec2::new(8.0, 11.0), Vec2::splat(44.0));
+    let texture = market_icon(ui.ctx(), &mut st.market_icons, &mut ext.gallery, &item.icon);
+    icon_slot(ui, slot, texture.as_ref(), true);
+
+    let x = slot.right() + 11.0;
+    let right = rect.right() - 8.0;
+    let (y1, y2, y3) = (rect.top() + 15.0, rect.top() + 33.0, rect.top() + 51.0);
+    let mut stats_left = right;
+    if let Some(rating) = item.rating {
+        stats_left = put_right(&painter, stats_left, y1, &format!("{rating:.1}"), 11.5, pal().text_dim) - 3.0;
+        stats_left = put_right(&painter, stats_left, y1, glyph("star-full", "*"), 12.0, star_color()) - 10.0;
+    }
+    stats_left = put_right(&painter, stats_left, y1, &compact(item.downloads), 11.5, pal().text_dim) - 3.0;
+    stats_left = put_right(&painter, stats_left, y1, glyph("cloud-download", icons::DOWNLOAD), 12.0, pal().text_dim);
+    if item.deprecated {
+        stats_left = put_right(&painter, stats_left - 10.0, y1, "deprecated", 11.5, c(theme::get().problem_warning));
+    }
+    put(&painter, Pos2::new(x, y1), &item.display_name, 13.5, pal().text, stats_left - 10.0 - x);
+    put(&painter, Pos2::new(x, y2), &item.description, 12.0, pal().text_dim, right - x);
+
+    // The button first, so the line of the publisher knows its room.
+    let busy = ext.installing.contains(&id);
+    let installed = ext.is_installed(&id);
+    let button = Rect::from_min_max(Pos2::new(right - 90.0, y3 - 11.0), Pos2::new(right, y3 + 11.0));
+    let mut op = None;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(button).layout(Layout::right_to_left(Align::Center)));
+    if busy {
+        child.spinner();
+    } else if installed {
+        child.label(RichText::new("installed").size(11.5).color(pal().text_faint));
+    } else if pill(&mut child, "Install", true) {
+        op = Some(Op::Install(item.namespace.clone(), item.name.clone()));
+    }
+    let button_left = child.min_rect().left().min(right - 50.0);
+
+    let mut at = x + put(&painter, Pos2::new(x, y3), &item.namespace, 11.5, pal().text_faint, 160.0);
+    if item.verified {
+        let check = glyph("verified-filled", icons::CIRCLE_CHECK);
+        painter.text(Pos2::new(at + 4.0, y3), Align2::LEFT_CENTER, check, FontId::proportional(12.0), pal().accent);
+        at += 18.0;
+    }
+    // Whether it works here: its manifest, asked for only while its row is on screen.
+    let room = button_left - 8.0 - (at + 10.0);
+    let manifest = ext.gallery.manifest_of(&item.namespace, &item.name, &item.version);
+    if room > 40.0 {
+        if let Some(m) = manifest.ready() {
+            let (mark, words, color) = if m.gaps.is_empty() {
+                (icons::CHECK, "works here".to_string(), pal().text_faint)
+            } else {
+                let n = m.gaps.len();
+                let long = format!("{n} unsupported");
+                let fits = painter.layout_no_wrap(long.clone(), FontId::proportional(11.5), pal().text).size().x
+                    <= room - 15.0;
+                (icons::TRIANGLE_ALERT, if fits { long } else { n.to_string() }, c(theme::get().problem_warning))
+            };
+            let start = at + 10.0;
+            painter.text(Pos2::new(start, y3), Align2::LEFT_CENTER, mark, FontId::proportional(11.0), color);
+            let used = put(&painter, Pos2::new(start + 15.0, y3), &words, 11.5, color, room - 15.0);
+            if !m.gaps.is_empty() {
+                let tip_rect = Rect::from_min_max(Pos2::new(start, y3 - 8.0), Pos2::new(start + 15.0 + used, y3 + 8.0));
+                let tip = crate::ext::compat::lines(&m.gaps).join("\n");
+                ui.interact(tip_rect, ui.scope_id().with(("gaps", &id)), Sense::hover())
+                    .on_hover_text(format!("Not in Code Canvas yet:\n{tip}"));
+            }
+        }
+    }
+    if op.is_none() && resp.clicked() {
+        op = Some(Op::Open(item.namespace.clone(), item.name.clone()));
+    }
+    op
 }
 
 fn icon_slot(ui: &egui::Ui, slot: Rect, texture: Option<&egui::TextureHandle>, enabled: bool) {
@@ -187,13 +330,14 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                                     op = Some(Op::Enable(e.id.clone(), !e.enabled));
                                 }
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                    let missing = e.not_available();
                                     let mut by = e.publisher.clone();
-                                    if !e.unsupported.is_empty() {
-                                        by.push_str(&format!("  ·  {} features not available yet", e.unsupported.len()));
+                                    if !missing.is_empty() {
+                                        by.push_str(&format!("  ·  {} features not available yet", missing.len()));
                                     }
                                     let label = ui.add(egui::Label::new(RichText::new(by).size(11.5).color(pal().text_faint)).truncate());
-                                    if !e.unsupported.is_empty() {
-                                        label.on_hover_text(e.unsupported.join("\n"));
+                                    if !missing.is_empty() {
+                                        label.on_hover_text(missing.join("\n"));
                                     }
                                 });
                             });
@@ -205,8 +349,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                 }
                 row.end(ui);
                 if open {
-                    st.extension = e.id.clone();
-                    st.show(Panel::Extension);
+                    op = Some(Op::Open(e.id.clone(), String::new()));
                 }
             }
 
@@ -225,41 +368,37 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     ui.label(RichText::new(format!("The registry could not be reached: {}", ext.market_error)).size(12.0).color(c(theme::get().problem_error)));
                 });
             }
-            for item in &ext.results {
-                let id = item.id();
-                well(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&item.display_name).size(13.5).strong().color(pal().text));
-                        if item.verified {
-                            ui.label(icon(icons::CIRCLE_CHECK, 12.0, pal().accent)).on_hover_text("Verified publisher");
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ext.installing.contains(&id) {
-                                ui.spinner();
-                            } else if ext.is_installed(&id) {
-                                ui.label(RichText::new("installed").size(11.5).color(pal().text_faint));
-                            } else if pill(ui, "Install", true) {
-                                op = Some(Op::Install(item.namespace.clone(), item.name.clone()));
-                            }
-                        });
-                    });
-                    ui.label(
-                        RichText::new(format!("{} · {} downloads · {}", item.namespace, compact(item.downloads), item.version))
-                            .size(11.5)
-                            .color(pal().text_faint),
-                    );
-                    if !item.description.is_empty() {
-                        let short: String = item.description.chars().take(140).collect();
-                        ui.label(RichText::new(short).size(12.0).color(pal().text_dim));
-                    }
-                });
+            let results = std::mem::take(&mut ext.results);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for item in &results {
+                if let Some(chosen) = result_row(ui, st, ext, item) {
+                    op = Some(chosen);
+                }
             }
+            ext.results = results;
         });
     });
+    apply(st, ext, op);
+}
+
+fn apply(st: &mut UiState, ext: &mut Extensions, op: Option<Op>) {
     match op {
         Some(Op::Uninstall(id)) => ext.uninstall(&id),
         Some(Op::Enable(id, on)) => ext.set_enabled(&id, on),
         Some(Op::Install(namespace, name)) => ext.install(&namespace, &name),
+        Some(Op::Open(id, name)) if name.is_empty() => {
+            if ext.open_installed(&id) {
+                st.extension = id;
+                st.extension_tab = Default::default();
+                st.show(Panel::Extension);
+            }
+        }
+        Some(Op::Open(namespace, name)) => {
+            ext.open_details(&namespace, &name);
+            st.extension = format!("{namespace}.{name}").to_lowercase();
+            st.extension_tab = Default::default();
+            st.show(Panel::Extension);
+        }
         None => {}
     }
 }
@@ -396,38 +535,289 @@ pub fn extension_icon(
         .clone()
 }
 
+/// The page of one extension, installed or not: VS Code's "Extension: Name" tab. Its head is
+/// drawn here; the README, the features and the changelog are a webview page below
+/// (`ext::details`), placed through `page_places`.
 pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions) {
-    let Some(e) = ext.installed.iter().find(|e| e.id == st.extension) else {
+    use crate::ext::details::Tab;
+    use crate::ext::gallery::Got;
+    if ext.details_id().as_deref() != Some(st.extension.as_str()) && !st.extension.is_empty() {
+        ext.open_installed(&st.extension.clone());
+    }
+    let Some(view) = ext.details_view() else {
         Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
-            ui.label(RichText::new("This extension is not installed any more.").size(12.0).color(pal().text_dim));
+            ui.label(RichText::new("Choose an extension in the Extensions panel.").size(12.0).color(pal().text_dim));
         });
         return;
     };
-    let mut run = None;
+    let installed_at = ext.installed.iter().position(|e| e.id == view.id);
+    if installed_at.is_none() && st.extension_tab == Tab::Runtime {
+        st.extension_tab = Tab::Details;
+    }
+    let market = view.market.ready().cloned();
+    let mut op = None;
     let mut back = false;
-    Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 10, bottom: 6 }).show(ui, |ui| {
+    Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 4 }).show(ui, |ui| {
         ui.horizontal(|ui| {
-            back = small_icon(ui, icons::ARROW_LEFT, "Back to the installed extensions");
-            if let Some(texture) = extension_icon(ui.ctx(), &mut st.ext_icons, e) {
-                ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::splat(22.0)).corner_radius(4));
-            }
-            ui.label(RichText::new(&e.display_name).size(14.0).color(pal().text));
+            back = small_icon(ui, icons::ARROW_LEFT, "Back to the extensions");
+            ui.label(RichText::new("Extension").size(12.0).color(pal().text_faint));
         });
-        ui.label(RichText::new(format!("{} · {}", e.publisher, e.version)).size(11.5).color(pal().text_faint));
-        if !e.description.is_empty() {
-            ui.add_space(2.0);
-            ui.label(RichText::new(&e.description).size(12.0).color(pal().text_dim));
+        let e = installed_at.map(|i| &ext.installed[i]);
+        let display_name = market
+            .as_ref()
+            .map(|d| d.item.display_name.clone())
+            .or_else(|| e.map(|e| e.display_name.clone()))
+            .unwrap_or_else(|| view.name.clone());
+        let publisher = market
+            .as_ref()
+            .map(|d| d.publisher.clone())
+            .or_else(|| e.map(|e| e.publisher.clone()))
+            .unwrap_or_else(|| view.namespace.clone());
+        let description = e
+            .map(|e| e.description.clone())
+            .filter(|d| !d.is_empty())
+            .or_else(|| market.as_ref().map(|d| d.item.description.clone()))
+            .unwrap_or_default();
+        let version = e.map(|e| e.version.clone()).or_else(|| market.as_ref().map(|d| d.item.version.clone()));
+        let texture = match e {
+            Some(e) => extension_icon(ui.ctx(), &mut st.ext_icons, e),
+            None => None,
         }
-        if e.status == Status::Failed {
-            ui.label(
-                RichText::new(format!("It failed to start: {}", e.error))
-                    .size(11.5)
-                    .color(c(theme::get().problem_error)),
-            );
-        }
+        .or_else(|| {
+            let url = market.as_ref()?.item.icon.clone();
+            market_icon(ui.ctx(), &mut st.market_icons, &mut ext.gallery, &url)
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let (slot, _) = ui.allocate_exact_size(Vec2::splat(72.0), Sense::hover());
+            icon_slot(ui, slot, texture.as_ref(), true);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(RichText::new(&display_name).size(18.0).color(pal().text)).truncate());
+                    if let Some(version) = &version {
+                        ui.label(RichText::new(format!("v{version}")).size(11.5).color(pal().text_faint));
+                    }
+                    if market.as_ref().is_some_and(|d| d.preview) {
+                        ui.label(RichText::new("Preview").size(11.0).color(pal().accent));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(RichText::new(&publisher).size(12.5).color(pal().text_dim));
+                    if market.as_ref().is_some_and(|d| d.item.verified) {
+                        let check = glyph("verified-filled", icons::CIRCLE_CHECK);
+                        ui.label(icon(check, 13.0, pal().accent))
+                            .on_hover_text(format!("{} is a verified publisher", view.namespace));
+                    }
+                    if let Some(d) = &market {
+                        ui.label(RichText::new("  |  ").size(12.0).color(pal().text_faint));
+                        ui.label(icon(glyph("cloud-download", icons::DOWNLOAD), 13.0, pal().text_dim));
+                        ui.label(RichText::new(format_count(d.item.downloads)).size(12.0).color(pal().text_dim))
+                            .on_hover_text("Downloads from Open VSX");
+                        if let Some(rating) = d.item.rating {
+                            ui.label(RichText::new("  |  ").size(12.0).color(pal().text_faint));
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(5.0 * 14.0, 16.0), Sense::hover());
+                            stars(ui.painter(), rect.left_center(), rating, 13.0);
+                            resp.on_hover_text(format!("Rated {rating:.1} out of 5 by {} people", d.item.reviews));
+                            ui.label(RichText::new(format!("({})", d.item.reviews)).size(12.0).color(pal().text_dim));
+                        }
+                    }
+                });
+                if !description.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(&description).size(12.5).color(pal().text)).wrap());
+                }
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let id = view.id.clone();
+                    if ext.installing.contains(&id) {
+                        ui.spinner();
+                        ui.label(RichText::new("Installing …").size(12.0).color(pal().text_dim));
+                    } else if let Some(e) = e {
+                        let (label, on) = if e.enabled { ("Disable", false) } else { ("Enable", true) };
+                        if pill(ui, label, !e.enabled) {
+                            op = Some(Op::Enable(id.clone(), on));
+                        }
+                        if pill(ui, "Uninstall", false) {
+                            op = Some(Op::Uninstall(id.clone()));
+                        }
+                    } else if market.is_some() {
+                        if pill(ui, "Install", true) {
+                            op = Some(Op::Install(view.namespace.clone(), view.name.clone()));
+                        }
+                    } else if let Got::Failed(why) = &view.market {
+                        let (text, color) = if crate::ext::details::not_found(why) {
+                            ("Not found on Open VSX".to_string(), pal().text_dim)
+                        } else {
+                            (format!("The registry could not be reached: {why}"), c(theme::get().problem_error))
+                        };
+                        ui.label(RichText::new(text).size(12.0).color(color));
+                    } else {
+                        ui.spinner();
+                        ui.label(RichText::new("Asking Open VSX …").size(12.0).color(pal().text_dim));
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+        works_here(ui, &view, e, &ext.node);
     });
+
+    let mut tabs = vec![Tab::Details, Tab::Features, Tab::Changelog];
+    if installed_at.is_some() {
+        tabs.push(Tab::Runtime);
+    }
+    Frame::NONE.inner_margin(Margin { left: 12, right: 12, top: 2, bottom: 0 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 18.0;
+            for tab in tabs {
+                let active = st.extension_tab == tab;
+                let color = if active { pal().text } else { pal().text_dim };
+                let galley = ui.painter().layout_no_wrap(tab.title().to_string(), FontId::proportional(12.5), color);
+                let (rect, resp) = ui.allocate_exact_size(galley.size() + Vec2::new(0.0, 12.0), Sense::click());
+                let color = if resp.hovered() { pal().text } else { color };
+                ui.painter().galley(Pos2::new(rect.left(), rect.top() + 4.0), galley, color);
+                if active {
+                    let line = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 2.0), rect.right_bottom());
+                    ui.painter().rect_filled(line, 1.0, pal().accent);
+                }
+                if resp.clicked() {
+                    st.extension_tab = tab;
+                }
+            }
+        });
+    });
+    let line = ui.available_rect_before_wrap();
+    ui.painter().hline(line.x_range(), line.top(), Stroke::new(1.0, pal().border));
+
+    if st.extension_tab.in_page() {
+        let rect = ui.available_rect_before_wrap().shrink(1.0);
+        ui.allocate_rect(rect, Sense::hover());
+        if !crate::webview::AVAILABLE {
+            let text = "The README shows only on Windows for now.";
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.5), pal().text_dim);
+        }
+        st.page_places.push((Panel::Extension, rect));
+    } else if let Some(i) = installed_at {
+        runtime_status(ui, ext, i);
+    }
+    apply(st, ext, op);
+    if back {
+        st.close_panel(&Panel::Extension);
+        st.show(Panel::Extensions);
+    }
+}
+
+fn format_count(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// "Works in Code Canvas", or what of the extension does not yet: from its manifest (the
+/// registry's copy before it is installed) and, once it runs, from what it asked for.
+fn works_here(
+    ui: &mut egui::Ui,
+    view: &crate::ext::details::View,
+    installed: Option<&crate::ext::Installed>,
+    node: &NodeStatus,
+) {
+    use crate::ext::gallery::Got;
+    let mut missing = match &view.manifest {
+        Got::Ready(m) => crate::ext::compat::lines(&m.gaps),
+        Got::Loading => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Reading its manifest to see whether it works here …")
+                        .size(12.0)
+                        .color(pal().text_dim),
+                );
+            });
+            return;
+        }
+        Got::Failed(_) => return,
+    };
+    if let Some(e) = installed {
+        missing.extend(e.unsupported.iter().map(|api| format!("vscode.{api} (asked for while running)")));
+    }
+    let has_code =
+        view.manifest.ready().is_some_and(|m| m.json.get("main").and_then(serde_json::Value::as_str).is_some());
+    let warn = c(theme::get().problem_warning);
+    Frame::NONE.fill(pal().well).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 7)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if missing.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(icon(glyph("pass-filled", icons::CIRCLE_CHECK), 14.0, pal().accent));
+                    ui.label(RichText::new("Works in Code Canvas").size(12.5).color(pal().text));
+                    ui.label(RichText::new("everything it brings is supported").size(12.0).color(pal().text_dim));
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(icon(icons::TRIANGLE_ALERT, 14.0, warn));
+                    let n = missing.len();
+                    let title =
+                        format!("{n} feature{} not available in Code Canvas yet", if n == 1 { "" } else { "s" });
+                    ui.label(RichText::new(title).size(12.5).color(pal().text));
+                });
+                for line in &missing {
+                    ui.add(
+                        egui::Label::new(RichText::new(format!("      ·  {line}")).size(12.0).color(pal().text_dim))
+                            .wrap(),
+                    );
+                }
+            }
+            if has_code {
+                let (text, color) = match node {
+                    NodeStatus::Missing(_) => ("Its code needs Node.js, which was not found on this computer.", warn),
+                    _ => ("Its code runs on Node.js, in the app's extension host.", pal().text_faint),
+                };
+                ui.label(RichText::new(format!("      {text}")).size(11.5).color(color));
+            }
+        },
+    );
+}
+
+/// What an installed extension does now: started or not, its views and its commands.
+fn runtime_status(ui: &mut egui::Ui, ext: &mut Extensions, at: usize) {
+    let e = &ext.installed[at];
+    let mut run = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 0, bottom: 8 }).show(ui, |ui| {
+        Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 4, bottom: 8 }).show(ui, |ui| {
+            let (state, color) = match e.status {
+                Status::Active => (format!("Started in {} ms", e.activation_ms), pal().text),
+                Status::Activating => ("Starting …".to_string(), pal().text_dim),
+                Status::Failed => (format!("It failed to start: {}", e.error), c(theme::get().problem_error)),
+                Status::Declarative => ("It has no code to start: what it brings is in use.".to_string(), pal().text),
+                Status::Disabled => ("Disabled".to_string(), pal().text_dim),
+                Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => {
+                    ("Not started: it needs Node.js".to_string(), c(theme::get().problem_warning))
+                }
+                Status::Idle => ("Not started yet: it starts when it is needed".to_string(), pal().text_dim),
+            };
+            section(ui, icons::HISTORY, "Status");
+            well(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(state).size(12.5).color(color)).wrap());
+            });
+            if !e.unsupported.is_empty() {
+                section(ui, icons::TRIANGLE_ALERT, "Asked for while running, not available yet");
+                well(ui, |ui| {
+                    for api in &e.unsupported {
+                        ui.label(RichText::new(format!("vscode.{api}")).size(12.0).monospace().color(pal().text_dim));
+                    }
+                });
+            }
             if !e.views.is_empty() {
                 section(ui, icons::LAYOUT_GRID, "Views");
                 well(ui, |ui| {
@@ -470,9 +860,6 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
     });
     if let Some((id, title)) = run {
         ext.run_command(&id, &title);
-    }
-    if back {
-        st.show(Panel::Extensions);
     }
 }
 

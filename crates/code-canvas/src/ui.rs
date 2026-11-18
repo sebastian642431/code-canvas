@@ -283,7 +283,11 @@ pub struct UiState {
     rail_drag: Option<RailDrag>,
     rail_move: Option<(Panel, Side, Option<String>)>,
     pub extension: String,
+    /// The tab the page of an extension shows.
+    pub extension_tab: crate::ext::details::Tab,
     ext_icons: std::collections::HashMap<String, Option<egui::TextureHandle>>,
+    /// Icons of the registry, by address.
+    market_icons: std::collections::HashMap<String, egui::TextureHandle>,
     pub theme: crate::themes::ThemeFile,
     pub keys: Keymap,
     pub key_file: crate::keys::KeyFile,
@@ -357,7 +361,9 @@ impl Default for UiState {
             rail_order: Default::default(),
             rail_drag: None,
             rail_move: None,
+            extension_tab: Default::default(),
             ext_icons: Default::default(),
+            market_icons: Default::default(),
             theme: Default::default(),
             keys: Keymap::new(&Default::default()),
             key_file: Default::default(),
@@ -1360,6 +1366,7 @@ fn cards(
         }
         let usual = match panel {
             Panel::Console => 600.0,
+            Panel::Extension => 580.0,
             page if page.is_page() => 420.0,
             _ => 330.0,
         };

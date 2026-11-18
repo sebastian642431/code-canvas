@@ -1643,6 +1643,39 @@ Camera
 - `install` takes the latest version, in the build for this platform (`platform`,
   e.g. `win32-x64`) when the extension ships one per platform. `search` with an
   empty query lists the most downloaded.
+- `api()` is Open VSX, or `CODE_CANVAS_OPEN_VSX` (the QA runs' own registry,
+  `qa/fake/openvsx.py`).
+- A search answer carries each extension's icon address, stars and reviews
+  (`parse_search`); `/{namespace}/{name}` the rest of its page (`parse_details`:
+  publisher, README, changelog, manifest and license addresses, repository, links,
+  categories, tags, size). The registry sends files on to where it keeps them
+  (a redirect ureq follows). "Published" is the time of the oldest version
+  (`first_released`, three small requests); `allVersions` lists only some.
+
+### crates/code-canvas/src/ext/compat.rs, gallery.rs, details.rs
+
+- `compat::gaps` reads a manifest for what Code Canvas cannot do yet: custom editors,
+  keyboard shortcuts, snippets, debugging, tasks, notebooks, terminal profiles,
+  sign-in providers, VS Code's chat, product icon themes, TypeScript server plugins,
+  menu entries outside a view's title and rows, code only for the browser, extension
+  packs and dependencies (not installed with it). It is the same check before
+  installing (the registry's copy of package.json) and after (`Installed::manifest`);
+  what an installed one asks the host for while running and is missing
+  (`Installed::unsupported`) comes on top (`Installed::not_available`).
+- A result row asks for its manifest only while it is on screen: one small request
+  per row seen, six at a time, kept for the session.
+- `Gallery` keeps icons, registry pages, READMEs, changelogs and manifests for the
+  session, asked on threads, `AT_ONCE` = 6 at a time; a new search forgets what
+  failed, so it is asked again.
+- An extension's page is the `Panel::Extension` card on the canvas, as a Markdown
+  file's preview is: its head is drawn by the card (`extension_view`), the README,
+  the features and the changelog are a page of the webview `details::PAGE`, made
+  again when `View::stamp` changes. An installed one's README and changelog are the
+  ones in its folder, with their relative links read from the registry's folder.
+  Links to the web open in the browser (`webview::opens_links`).
+- A webview set again while it was still starting could keep the first page: the
+  page's `ready` now loads it again when it fetched an older one
+  (`Shared::made`/`served`).
 
 ### crates/code-canvas/src/ext/mod.rs
 
@@ -2396,6 +2429,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `git` | `git stage [path]`, `git unstage [path]`, `git discard [path]`, `git commit <message>` | Source control. Discarding asks first. |
 | `install` | `install <publisher.name>` | Install an extension from Open VSX. |
 | `ext-search` | `ext-search <text>` | Search the extension registry. |
+| `ext` | `ext <publisher.name> [details\|features\|changelog\|runtime]`, `ext <tab>` | Open the page of an extension (of the registry or installed) on its tab, or change the tab of the one open. The log says "the page of <id> shows its <tab> (works in Code Canvas \| not available yet: …; registry ready)". |
 | `format` | `format <path>` | Format a file with the installed formatter. |
 | `command` | `command <id>` | Run an extension's command. |
 | `lens` | `lens <path> <line> [n]`, `lens report <path>` | What a click on the n-th code lens (1-based) of a line (1-based) does; log every line's lenses as "script: lenses of <path> line N: a \| b". |

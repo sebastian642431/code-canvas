@@ -129,10 +129,18 @@ const KEEP_SCROLL: &str = r#"
 "#;
 
 pub fn page(text: &str, file: &Path) -> String {
+    let folder = crate::media::file_url(file.parent().unwrap_or(Path::new("")));
+    document(&body(text), &format!("{folder}/"), &file.to_string_lossy(), "")
+}
+
+/// A page of the app's look around `article` (HTML already made safe, such as `body`'s),
+/// whose relative links start at `base`; `key` names where it was scrolled to, kept while
+/// the app runs; `style` is added to the app's.
+pub fn document(article: &str, base: &str, key: &str, style: &str) -> String {
     let t = theme::get();
     let nonce = format!("{:016x}", std::collections::hash_map::RandomState::new().build_hasher().finish());
-    let folder = crate::media::file_url(file.parent().unwrap_or(Path::new("")));
-    let name = serde_json::to_string(&file.to_string_lossy()).unwrap_or_default().replace('<', "\\u003c");
+    let base = base.replace(['"', '<', '>'], "");
+    let name = serde_json::to_string(key).unwrap_or_default().replace('<', "\\u003c");
     let variables = format!(
         ":root {{ --card: {}; --text: {}; --dim: {}; --border: {}; --well: {}; --row: {}; --accent: {}; --warn: {}; }}",
         colour(t.card),
@@ -151,11 +159,10 @@ pub fn page(text: &str, file: &Path) -> String {
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{policy}\">\n\
-         <base href=\"{folder}/\">\n\
-         <style>{variables}{STYLE}</style></head>\n\
-         <body><article>{}</article>\n\
-         <script nonce=\"{nonce}\">const FILE = {name};{KEEP_SCROLL}</script></body></html>",
-        body(text)
+         <base href=\"{base}\">\n\
+         <style>{variables}{STYLE}{style}</style></head>\n\
+         <body><article>{article}</article>\n\
+         <script nonce=\"{nonce}\">const FILE = {name};{KEEP_SCROLL}</script></body></html>"
     )
 }
 

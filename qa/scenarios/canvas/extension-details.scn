@@ -1,0 +1,52 @@
+title: Registry results show icon, downloads, stars and whether each works here; a click on a row opens its page (README, features, changelog), its Install button installs it, and the page then shows its runtime status
+folders: rust-small
+openvsx: on
+expect-log: the page of qa-tools\.bru-lite shows its Details \(not available yet: Custom editors: Bru Request Editor · Keyboard shortcuts \(2\) · Menu entries: in editor/title
+expect-log: the page of qa-tools\.bru-lite shows its Features
+expect-log: the page of qa-tools\.bru-lite shows its Changelog
+expect-log: the page of qa-tools\.lint-plus shows its Details \(works in Code Canvas; registry ready\)
+expect-log: the page of qa-tools\.web-only shows its Details \(not available yet: Its code: it is written only for VS Code in a browser
+expect-log: the page of qa-tools\.nobody shows its Details \(manifest failed; registry failed\)
+expect-file: {WORK}\data\extensions\qa-tools.bru-lite-1.2.0\package.json :: "name": "bru-lite"
+expect-file: {WORK}\data\extensions\qa-tools.bru-lite-1.2.0\README.md :: Send API requests without leaving the editor
+
+wait 2500
+ext-search qa
+wait 2500
+mark results
+wait 600
+ext qa-tools.bru-lite
+wait 2500
+mark details
+wait 600
+ext features
+wait 1500
+mark features
+wait 600
+ext changelog
+wait 1500
+mark changelog
+wait 600
+ui click 190 280
+wait 2000
+mark works-here
+wait 600
+ext qa-tools.web-only
+wait 2000
+mark web-only
+wait 600
+ext qa-tools.nobody
+wait 2000
+mark not-on-registry
+wait 600
+ui click 295 231
+wait 3500
+ext qa-tools.bru-lite
+wait 2000
+mark installed
+wait 600
+ext runtime
+wait 1200
+mark runtime
+wait 600
+quit

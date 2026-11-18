@@ -208,6 +208,13 @@ fn theme_json() -> String {
     Value::Object(colours).to_string()
 }
 
+/// Pages of the app's own whose links to the web open in the browser, not in the page: a
+/// Markdown file and an extension's page.
+#[cfg(windows)]
+fn opens_links(handle: &str) -> bool {
+    handle == crate::media::HANDLE || handle == crate::ext::details::PAGE
+}
+
 #[cfg(windows)]
 mod platform {
     use std::borrow::Cow;
@@ -222,13 +229,17 @@ mod platform {
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
-    use super::{theme_json, PageKey, PageMessage, PageNote, PageWheel, INIT_JS};
+    use super::{opens_links, theme_json, PageKey, PageMessage, PageNote, PageWheel, INIT_JS};
 
     const ORIGIN: &str = "https://ccres.localhost";
 
     #[derive(Default)]
     struct Shared {
         html: HashMap<String, String>,
+        /// How many times each page's HTML was set, and which of those times the page last
+        /// fetched: a page set again while its webview was still starting may have missed it.
+        made: HashMap<String, u64>,
+        served: HashMap<String, u64>,
         roots: Vec<PathBuf>,
         files: Vec<PathBuf>,
     }
@@ -381,7 +392,10 @@ mod platform {
     fn serve(shared: &Mutex<Shared>, request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         let path = decode(request.uri().path());
         if let Some(handle) = path.strip_prefix("/view/") {
-            return match shared.lock().unwrap().html.get(handle) {
+            let mut shared = shared.lock().unwrap();
+            let made = shared.made.get(handle).copied().unwrap_or(0);
+            shared.served.insert(handle.to_string(), made);
+            return match shared.html.get(handle) {
                 Some(html) => respond(200, "text/html; charset=utf-8", html.clone().into_bytes()),
                 None => respond(404, "text/plain", b"no such view".to_vec()),
             };
@@ -485,7 +499,11 @@ mod platform {
         }
 
         pub fn set_html(&mut self, handle: &str, html: String) {
-            self.shared.lock().unwrap().html.insert(handle.to_string(), html);
+            {
+                let mut shared = self.shared.lock().unwrap();
+                shared.html.insert(handle.to_string(), html);
+                *shared.made.entry(handle.to_string()).or_insert(0) += 1;
+            }
             if let Some(view) = self.views.get_mut(handle) {
                 view.ready = false;
                 view.queued.clear();
@@ -602,7 +620,7 @@ mod platform {
                     move |url: String| {
                         let elsewhere = url.split('#').next() != Some(own.as_str());
                         let web = url.starts_with("https://") || url.starts_with("http://");
-                        if owner != crate::media::HANDLE || !elsewhere || !web {
+                        if !opens_links(&owner) || !elsewhere || !web {
                             return true;
                         }
                         let _ = tx.send((owner.clone(), serde_json::json!({ "navigate": url }).to_string()));
@@ -647,14 +665,24 @@ mod platform {
             while let Ok((handle, body)) = self.rx.try_recv() {
                 let Ok(v) = serde_json::from_str::<Value>(&body) else { continue };
                 if v.get("ready").is_some() {
+                    let behind = {
+                        let shared = self.shared.lock().unwrap();
+                        shared.made.get(&handle).copied().unwrap_or(0)
+                            > shared.served.get(&handle).copied().unwrap_or(0)
+                    };
                     if let Some(view) = self.views.get_mut(&handle) {
+                        if behind {
+                            // It was set again while this page was loading: show the newer one.
+                            let _ = view.web.load_url(&format!("{ORIGIN}/view/{handle}"));
+                            continue;
+                        }
                         view.ready = true;
                         for script in view.queued.drain(..) {
                             let _ = view.web.evaluate_script(&script);
                         }
                     }
                 } else if let Some(url) = v.get("navigate").and_then(Value::as_str) {
-                    if handle == crate::media::HANDLE {
+                    if opens_links(&handle) {
                         self.links.push(url.to_string());
                     }
                 } else if let Some(w) = v.get("wheel") {
@@ -754,6 +782,9 @@ mod platform {
         pub fn set_roots(&mut self, _roots: Vec<PathBuf>) {}
         pub fn allow_file(&mut self, _file: &std::path::Path) {}
         pub fn set_html(&mut self, _handle: &str, _html: String) {}
+        pub fn has_html(&self, _handle: &str) -> bool {
+            true
+        }
         pub fn post(&mut self, _handle: &str, _message: &Value) {}
         pub fn close(&mut self, _handle: &str) {}
         pub fn veil(&mut self, _handle: &str, _veiled: bool) {}
