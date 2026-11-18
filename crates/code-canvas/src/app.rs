@@ -169,6 +169,7 @@ struct Drag {
 
 pub struct App {
     gfx: Option<Gfx>,
+    grammars: crate::grammars::Grammars,
     pages: Vec<Page>,
     active: usize,
     next_id: u32,
@@ -340,6 +341,7 @@ impl App {
             last_save: Instant::now(),
             ext,
             symbols_stale: None,
+            grammars: Default::default(),
             unsent_edit: None,
             typed: None,
             heads: HashMap::new(),
@@ -917,6 +919,7 @@ impl App {
             return self.share_stop(None);
         }
         let page = self.pages.remove(i);
+        self.grammars.forget_page(page.id);
         if let Some(g) = &mut self.gfx {
             g.renderer.text.drop_page(page.id);
         }
@@ -1648,6 +1651,15 @@ impl App {
         if let Some(g) = self.gfx.as_mut() {
             g.renderer.text.drop_page(page.id);
             page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
+        }
+        let id = page.id;
+        if let Some(r) = page.ready_mut() {
+            if let Some(index) = r.repo.file_index(&rel) {
+                let serial = self.grammars.ask(id, index, &r.repo.files[index], true);
+                if let Some(painted) = serial.and_then(|serial| self.grammars.wait(id, index, serial)) {
+                    r.tokens.paint(index, painted);
+                }
+            }
         }
         page.want_head(&rel);
         self.symbols_stale = Some(Instant::now());
@@ -4378,6 +4390,7 @@ impl App {
                     None => log::warn!("script: no canvas is shown yet"),
                 }
             }
+            Step::Colours(arg) => self.script_colours(&arg),
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -4867,7 +4880,8 @@ impl App {
                     NodeKind::File(fi) => {
                         let f = &r.repo.files[fi];
                         let lines = page.line_count(&f.rel_path).unwrap_or(f.line_count());
-                        let mut status = format!("{}  ·  {lines} lines  ·  {}", f.rel_path, f.lang.name());
+                        let lang = self.grammars.language(f).unwrap_or(f.lang.name());
+                        let mut status = format!("{}  ·  {lines} lines  ·  {lang}", f.rel_path);
                         if let Some(note) = &f.note {
                             status.push_str(&format!("  ·  {note}"));
                         }
@@ -4913,6 +4927,61 @@ impl App {
                         };
                         (status, on_canvas.then(|| (format!("{}/", n.name), detail)))
                     }
+                }
+            }
+        }
+    }
+
+    fn paint_grammars(&mut self) {
+        let changed = self.grammars.update(&self.ext, self.ui.prefs.grammars_everywhere);
+        let painter = self.grammars.painter();
+        let done = self.grammars.take();
+        let Some(g) = self.gfx.as_mut() else { return };
+        for page in &mut self.pages {
+            let id = page.id;
+            let PageState::Ready(r) = &mut page.state else { continue };
+            if changed || (painter.is_some() && !r.tokens.has_painter()) {
+                r.tokens.set_painter(painter.clone());
+                g.renderer.text.drop_page(id);
+            }
+        }
+        for done in done {
+            let Some(page) = self.pages.iter_mut().find(|page| page.id == done.page) else { continue };
+            let PageState::Ready(r) = &mut page.state else { continue };
+            if r.repo.files.get(done.file as usize).is_none_or(|file| file.serial() != done.serial) {
+                continue;
+            }
+            let fresh = r.tokens.paint(done.file as usize, done.painted);
+            g.renderer.text.drop_chunks(done.page, done.file, &fresh);
+        }
+    }
+
+    fn script_colours(&mut self, arg: &str) {
+        let (rel, line) = match arg.rsplit_once(' ').map(|(rel, line)| (rel, line.parse::<usize>())) {
+            Some((rel, Ok(line))) if line > 0 => (rel, line - 1),
+            _ => return log::warn!("script: colours wants a path and a line"),
+        };
+        let Some(r) = self.pages.get_mut(self.active).and_then(|page| page.ready_mut()) else { return };
+        let Some(index) = r.repo.file_index(rel).filter(|&i| line < r.repo.files[i].line_count()) else {
+            return log::warn!("script: no line {} in {rel}", line + 1);
+        };
+        let file = &r.repo.files[index];
+        let tokens = r.tokens.chunk(index, file, line / canvas_core::CHUNK_LINES);
+        let said: Vec<String> = tokens
+            .line(line % canvas_core::CHUNK_LINES)
+            .iter()
+            .map(|t| format!("{} {}", format!("{:?}", t.kind).to_lowercase(), &file.text()[t.range()]))
+            .collect();
+        log::info!("script: colours of {rel} line {}: {}", line + 1, said.join(" · "));
+    }
+
+    fn ask_grammars(&mut self) {
+        for page in &mut self.pages {
+            let id = page.id;
+            let PageState::Ready(r) = &mut page.state else { continue };
+            for index in r.tokens.take_asked() {
+                if let Some(file) = r.repo.files.get(index as usize) {
+                    self.grammars.ask(id, index as usize, file, false);
                 }
             }
         }
@@ -4964,6 +5033,7 @@ impl App {
                 selected: offer.selected,
             })
         });
+        self.paint_grammars();
         self.share_view();
         self.agents_view();
         self.know_folders();
@@ -5393,6 +5463,7 @@ impl App {
         if again || animating || st.text_pending || any_loading || stats_changed {
             g.window.request_redraw();
         }
+        self.ask_grammars();
     }
 }
 

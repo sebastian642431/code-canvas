@@ -1,0 +1,34 @@
+title: With the setting on, a grammar from an extension colours a language the app knows too (here Rust, every word a number, what it leaves out in the plain colour); turned off under Highlighting, Rust is coloured by the app again
+folders: grammars
+extensions: grammar-extension
+prefs: {"grammars_everywhere": true}
+expect-log: the grammar of rust coloured src/main\.rs: 4 of its 4 lines tokenized
+expect-log: the grammar of quill coloured src/hello\.quill
+expect-log: script: colours of src/main\.rs line 2: number let · number answer · punct = · ident 42 · punct ; · comment // the answer$
+expect-log: script: colours of src/hello\.quill line 3: keyword module · type Greeter$
+expect-log: script: colours of src/main\.rs line 2: keyword let · ident answer · punct = · number 42 · punct ; · comment // the answer$
+expect-file: {WORK}/data/prefs.json :: "grammars_everywhere": false
+
+resize 1600 1000
+wait 3000
+colours src/hello.quill 1
+goto src/main.rs
+wait 2500
+mark rust
+wait 500
+colours src/main.rs 2
+colours src/hello.quill 3
+left settings:highlighting
+wait 1200
+mark setting
+wait 500
+ui click 542 256
+wait 500
+mark setting-off
+wait 500
+left settings:close
+wait 1000
+colours src/main.rs 2
+mark rust-own
+wait 500
+quit

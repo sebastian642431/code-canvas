@@ -458,6 +458,10 @@ impl TextLayer {
         self.numbers.retain(|k, _| k.page != page);
     }
 
+    pub fn drop_chunks(&mut self, page: u32, file: u32, chunks: &[u32]) {
+        self.chunks.retain(|k, _| k.page != page || k.file != file || !chunks.contains(&k.chunk));
+    }
+
     pub fn cached_chunks(&self) -> usize {
         self.chunks.len()
     }

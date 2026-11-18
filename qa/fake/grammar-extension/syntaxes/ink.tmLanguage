@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>Ink</string>
+	<key>scopeName</key>
+	<string>source.ink</string>
+	<key>fileTypes</key>
+	<array>
+		<string>ink</string>
+	</array>
+	<key>patterns</key>
+	<array>
+		<!-- knots are headings, diverts are keywords -->
+		<dict>
+			<key>match</key>
+			<string>^\s*(===?)\s*([A-Za-z_]+)\s*(===?)?\s*$</string>
+			<key>name</key>
+			<string>markup.heading.knot.ink</string>
+		</dict>
+		<dict>
+			<key>match</key>
+			<string>(-&gt;)\s*([A-Za-z_]+|END)</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.control.divert.ink</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.function.ink</string>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>match</key>
+			<string>//.*$</string>
+			<key>name</key>
+			<string>comment.line.ink</string>
+		</dict>
+		<dict>
+			<key>match</key>
+			<string>^\s*[*+]</string>
+			<key>name</key>
+			<string>keyword.other.choice.ink</string>
+		</dict>
+	</array>
+</dict>
+</plist>

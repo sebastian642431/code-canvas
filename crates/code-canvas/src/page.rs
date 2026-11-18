@@ -700,7 +700,7 @@ impl Page {
             changed = true;
         }
         if changed {
-            r.tokens = Default::default();
+            r.tokens.reset();
             if r.repo.files.len() <= 60_000 {
                 r.repo.reindex_symbols();
             }
@@ -831,7 +831,7 @@ impl Page {
         let Some(index) = r.repo.file_index(rel_path) else { return };
         let before = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
         r.repo.replace_source(index, &source, &ScanOptions::default());
-        r.tokens = Default::default();
+        r.tokens.reset();
         let after = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
         if !self.selections.is_empty() {
             self.selections.clear();
@@ -1263,7 +1263,7 @@ impl Page {
         let PageState::Ready(r) = &mut self.state else { return false };
         let Some(index) = r.repo.file_index(rel_path) else { return false };
         r.repo.reload_file(index, &ScanOptions::default());
-        r.tokens = Default::default();
+        r.tokens.reset();
         self.search = None;
         self.select_again(selected);
         self.relayout(renderer, device, filters);

@@ -1,0 +1,73 @@
+title: Languages the app does not know are coloured by the grammars their extension brings (JSON or a property list, an embedded language, an injection), deep in a long file and while typing, and Rust looks as it always did
+folders: grammars
+extensions: grammar-extension
+expect-log: grammars of extensions: 4 \(for 4 file names and extensions\)
+expect-log: the grammar of quill coloured src/hello\.quill: 21 of its 21 lines tokenized
+expect-log: the grammar of quill coloured big/long\.quill: 6000 of its 6000 lines tokenized
+expect-log: the grammar of ink coloured notes/story\.ink: 8 of its 8 lines
+expect-log: script: colours of src/hello\.quill line 2: comment only the grammar of its extension\. · keyword TODO · comment : more -\}
+expect-log: script: colours of src/hello\.quill line 3: keyword module · type Greeter$
+expect-log: script: colours of src/hello\.quill line 5: keyword let · ident greeting · punct : · type Text · punct = · string "hello, \\"world\\""$
+expect-log: script: colours of src/hello\.quill line 8: keyword fun · function greet · punct \( · ident name · punct : · type Text · punct \) · punct -> · type Text · punct \{$
+expect-log: script: colours of src/hello\.quill line 15: comment -- a line comment, FIXME later$
+expect-log: script: colours of src/hello\.quill line 17: heading === · heading start · heading ===$
+expect-log: script: colours of src/hello\.quill line 18: ident Hello · ident there · punct \. · keyword -> · function meet$
+expect-log: script: colours of Quillfile line 3: keyword give · function build · punct \( · ident target · punct , · number 3 · punct \)$
+expect-log: script: colours of src/main\.rs line 2: keyword let · ident answer · punct = · number 42 · punct ; · comment // the answer$
+expect-log: script: colours of notes/story\.ink line 2: heading === · heading meet · heading ===$
+expect-log: script: colours of notes/story\.ink line 4: keyword \* · ident Knock · keyword -> · function knock$
+expect-log: script: colours of big/long\.quill line 3003: comment let value_3002: Number = 3002 -- line 3003$
+expect-log: script: colours of big/long\.quill line 3006: keyword let · ident value_3005 · punct : · type Number · punct = · number 3005 · comment -- line 3006$
+expect-log: script: colours of big/long\.quill line 5990: keyword let · ident value_5989 · punct : · type Number
+expect-log: script: colours of src/hello\.quill line 11: comment \{-  \}$
+expect-log: script: colours of src/hello\.quill line 12: comment give greeting$
+expect-log: script: colours of src/hello\.quill line 21: comment fun shout
+expect-log: script: colours of src/hello\.quill line 12: keyword give · ident greeting$
+forbid-log: the grammar of rust
+forbid-log: grammar .* (is left out|cannot be used|cannot be read|is not a property list|is in a format)
+expect-file: grammars/src/hello.quill :: (?m)^  \}\n  give greeting$
+
+resize 1600 1000
+wait 3000
+colours Quillfile 1
+goto src/hello.quill
+wait 2500
+mark quill
+wait 500
+colours src/hello.quill 2
+colours src/hello.quill 3
+colours src/hello.quill 5
+colours src/hello.quill 8
+colours src/hello.quill 15
+colours src/hello.quill 17
+colours src/hello.quill 18
+colours src/main.rs 2
+colours Quillfile 3
+goto notes/story.ink
+wait 2000
+mark ink
+wait 500
+colours notes/story.ink 2
+colours notes/story.ink 4
+goto big/long.quill
+wait 4000
+colours big/long.quill 3003
+colours big/long.quill 3006
+colours big/long.quill 5990
+mark long
+wait 500
+goto src/hello.quill
+wait 1500
+tool edit
+edit src/hello.quill 11 1
+type {-
+colours src/hello.quill 11
+colours src/hello.quill 12
+colours src/hello.quill 21
+mark typed
+wait 500
+key undo
+colours src/hello.quill 12
+key save
+wait 500
+quit

@@ -125,6 +125,11 @@ const TRAILS: (&str, &str) = (
     "Its last places, faint in its colour and joined by a dotted line: a ring where it read, a dot where it edited. They fade out in ten minutes. Point at one to see what it did there.",
 );
 
+const GRAMMARS: (&str, &str) = (
+    "Colour every language with its extension's grammar",
+    "A language Code Canvas does not know is always coloured by the grammar its extension brings. On, so are the ones it knows (Rust, TypeScript, Python…), when an extension brings a grammar for them.",
+);
+
 const UPDATES: (&str, &str) =
     ("Look for new versions of Code Canvas", "Asks GitHub for the latest release when the app starts.");
 
@@ -439,6 +444,17 @@ fn appearance(
             note(ui, "Every colour of a theme can be changed under Colours.");
         });
     }
+    let highlighting = hit(f, &[GRAMMARS.0, GRAMMARS.1, "grammar", "highlighting"]);
+    if highlighting {
+        section(ui, icons::CODE, "Highlighting");
+        well(ui, |ui| {
+            let mut next = st.prefs.clone();
+            option(ui, "", &mut next.grammars_everywhere, GRAMMARS);
+            if next != st.prefs {
+                actions.push(Action::SetPrefs(next));
+            }
+        });
+    }
     let icons_shown = hit(f, &["File icons", "icon theme", "Built in"])
         || ext.icon_themes().any(|theme| hit(f, &[theme.label.as_str()]));
     if icons_shown {
@@ -460,7 +476,7 @@ fn appearance(
             }
         });
     }
-    !presets.is_empty() || icons_shown
+    !presets.is_empty() || icons_shown || highlighting
 }
 
 fn colours(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Action>) -> bool {

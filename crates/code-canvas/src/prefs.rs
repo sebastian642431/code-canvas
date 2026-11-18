@@ -28,6 +28,7 @@ pub struct Prefs {
     pub trails: bool,
     pub code_lenses: bool,
     pub wrap: bool,
+    pub grammars_everywhere: bool,
 }
 
 impl Default for Prefs {
@@ -58,6 +59,7 @@ impl Default for Prefs {
             trails: true,
             code_lenses: true,
             wrap: false,
+            grammars_everywhere: false,
         }
     }
 }

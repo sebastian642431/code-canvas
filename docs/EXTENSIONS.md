@@ -47,9 +47,24 @@ not come back.
 is listed in the settings next to the built-in ones. The app has far fewer
 colours than VS Code, so a theme is read as a few anchors (the editor's and the
 side bar's background and foreground, the accent, the selection) from which the
-rest is made, and its `tokenColors` give the colours of code by scope. The
-grammar is still the app's own: what a theme says about scopes the app does not
-tell apart is not used.
+rest is made, and its `tokenColors` give the colours of code by scope. Code has
+eleven colours (keywords, types, functions, macros, strings, numbers, comments,
+punctuation, names, headings, prose): what a theme says about finer scopes than
+those is not used.
+
+**Grammars** work: a language the app does not know (Elm, Terraform, Ink, a
+language of your company's own…) is coloured by the TextMate grammar its
+extension brings (`contributes.languages` and `contributes.grammars`,
+`.tmLanguage.json` or the older property-list `.tmLanguage`), embedded languages
+and injections included.
+They need no Node: grammars are read and run inside the app, on a thread of their
+own, with the same engine VS Code uses ported to Rust. Each token's scopes become
+one of the eleven kinds above, coloured by the theme. Languages the app colours
+itself (Rust, the C family, Python, the web's, shell, TOML, YAML, JSON, Markdown,
+SQL, Lua…) keep its own colours, unless *Settings → Appearance → Highlighting →
+Colour every language with its extension's grammar* is on. The status bar names
+the grammar's language when it is the one colouring the file. Files over 200,000
+lines keep the app's own colours; lines over 4,000 characters are left plain.
 
 **File icon themes** work: install one (Symbols, Material Icon Theme) and the
 explorer and the go-to-file list use it. With several, pick one in the settings.
@@ -91,6 +106,7 @@ theirs:
 | webview views and panels | a browser view (WebView2) over the right panel |
 | tree views | a card of lists, opened from the extension's icon in the right rail |
 | code lenses | faint links on the card above their line |
+| TextMate grammars | the colours of a language the app does not know (or of every one, if asked) |
 | `editor.action.showReferences` | the name is selected: its uses are drawn |
 | `showInformationMessage` & co. | notices in the corner of the canvas |
 
@@ -186,8 +202,10 @@ In the app, script steps cover the same ground (see "Testing the real app" in
 `format <path>`, `command <id>`, `left extensions|problems|<publisher.name>`,
 `right <publisher.name>` (its first icon in the right rail, a tree card too),
 `lens report <path>`, `lens <path> <line> [n]`, `tree report`, `tree <row>`,
-`tree button <command> <row>`, `tree title <command>`. `qa/host/views.test.js` drives
-the host's lenses and trees with `qa/fake/views-extension`.
+`tree button <command> <row>`, `tree title <command>`, `colours <path> <line>` (the
+kind of each token of a line, as drawn). `qa/host/views.test.js` drives the host's
+lenses and trees with `qa/fake/views-extension`; `qa/fake/grammar-extension` brings
+grammars only (the scenarios `canvas/grammars-*.scn`).
 
 ## A model of our own, later
 

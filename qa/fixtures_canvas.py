@@ -127,7 +127,59 @@ def long_lines(root):
     write(root, "src/table.rs", "\n".join(lines) + "\n")
 
 
+QUILL = """{- Quill is made up: no app knows it,
+   only the grammar of its extension. TODO: more -}
+module Greeter
+
+let greeting: Text = "hello, \\"world\\""
+let count: Number = 42
+
+fun greet(name: Text) -> Text {
+  when count > 10 {
+    give shout(greeting ++ name)
+  }
+  give greeting
+}
+
+-- a line comment, FIXME later
+let story = script <<INK
+=== start ===
+Hello there. -> meet
+INK
+
+fun shout(text: Text) -> Text { give upper(text) }
+"""
+
+INK = """// A story in ink, read by a grammar written as a property list.
+=== meet ===
+The door opens.
+* Knock -> knock
++ Walk away -> END
+
+=== knock ===
+Nobody answers. -> END
+"""
+
+
+def grammars(root):
+    """Files of languages only a grammar from an extension knows: Quill (.quill, Quillfile), Ink (.ink), a Quill file of 6000 lines with a comment opened deep inside it, and Rust beside them."""
+    write(root, "src/hello.quill", QUILL)
+    write(root, "Quillfile", '-- what to build\nlet target = "all"\ngive build(target, 3)\n')
+    write(root, "notes/story.ink", INK)
+    write(root, "src/main.rs", 'fn main() {\n    let answer = 42; // the answer\n    println!("{answer}");\n}\n')
+    lines = []
+    for i in range(6000):
+        if i == 3000:
+            lines.append("{- a comment opened deep in the file")
+        elif i == 3004:
+            lines.append("   and closed four lines later -}")
+        else:
+            lines.append(f"let value_{i}: Number = {i} -- line {i + 1}")
+    write(root, "big/long.quill", "\n".join(lines) + "\n")
+
+
 FIXTURES = {
+    "grammars": grammars,
     "media": media,
     "deep-tree": deep_tree,
     "many-files": many_files,

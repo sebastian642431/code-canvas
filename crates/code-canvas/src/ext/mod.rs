@@ -97,6 +97,23 @@ pub struct Installed {
     pub menus: Vec<views::MenuItem>,
     pub icon_themes: Vec<IconThemeDecl>,
     pub color_themes: Vec<ColorThemeDecl>,
+    pub languages: Vec<LanguageDecl>,
+    pub grammars: Vec<GrammarDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LanguageDecl {
+    pub id: String,
+    pub extensions: Vec<String>,
+    pub filenames: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Hash)]
+pub struct GrammarDecl {
+    pub language: Option<String>,
+    pub scope_name: String,
+    pub file: PathBuf,
+    pub inject_to: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -510,6 +527,7 @@ pub struct Extensions {
     dropped_webviews: Vec<String>,
     pub host_running: bool,
     pub views: views::Views,
+    pub installed_revision: u64,
 
     dir: PathBuf,
     data_dir: PathBuf,
@@ -787,7 +805,42 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
                     .collect()
             })
             .unwrap_or_default(),
+        languages: manifest_languages(&v),
+        grammars: manifest_grammars(&v, dir),
     })
+}
+
+fn strings(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(|s| Some(s.as_str()?.to_string())).collect())
+        .unwrap_or_default()
+}
+
+fn manifest_languages(v: &Value) -> Vec<LanguageDecl> {
+    let Some(list) = v.pointer("/contributes/languages").and_then(Value::as_array) else { return Vec::new() };
+    list.iter()
+        .filter_map(|l| {
+            Some(LanguageDecl {
+                id: l.get("id")?.as_str()?.to_string(),
+                extensions: strings(l.get("extensions")).into_iter().map(|e| e.to_lowercase()).collect(),
+                filenames: strings(l.get("filenames")).into_iter().map(|f| f.to_lowercase()).collect(),
+            })
+        })
+        .collect()
+}
+
+fn manifest_grammars(v: &Value, dir: &Path) -> Vec<GrammarDecl> {
+    let Some(list) = v.pointer("/contributes/grammars").and_then(Value::as_array) else { return Vec::new() };
+    list.iter()
+        .filter_map(|g| {
+            Some(GrammarDecl {
+                language: g.get("language").and_then(Value::as_str).map(str::to_string),
+                scope_name: g.get("scopeName")?.as_str()?.to_string(),
+                file: dir.join(g.get("path")?.as_str()?),
+                inject_to: strings(g.get("injectTo")),
+            })
+        })
+        .collect()
 }
 
 impl Extensions {
@@ -823,6 +876,7 @@ impl Extensions {
             dropped_webviews: Vec::new(),
             host_running: false,
             views: views::Views::default(),
+            installed_revision: 0,
             dir,
             data_dir,
             disabled,
@@ -850,6 +904,7 @@ impl Extensions {
     }
 
     fn reload_installed(&mut self) {
+        self.installed_revision += 1;
         self.installed =
             market::installed_dirs(&self.dir).iter().filter_map(|d| read_installed(d, &self.disabled)).collect();
         self.installed.sort_by_key(|e| e.display_name.to_lowercase());
@@ -1244,6 +1299,14 @@ impl Extensions {
 
     pub fn color_themes(&self) -> impl Iterator<Item = &ColorThemeDecl> {
         self.installed.iter().filter(|e| e.enabled).flat_map(|e| e.color_themes.iter())
+    }
+
+    pub fn languages(&self) -> impl Iterator<Item = &LanguageDecl> {
+        self.installed.iter().filter(|e| e.enabled).flat_map(|e| e.languages.iter())
+    }
+
+    pub fn grammars(&self) -> impl Iterator<Item = &GrammarDecl> {
+        self.installed.iter().filter(|e| e.enabled).flat_map(|e| e.grammars.iter())
     }
 
     pub fn icon_themes(&self) -> impl Iterator<Item = &IconThemeDecl> {

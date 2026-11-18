@@ -51,6 +51,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [ext/when.rs](#cratescode-canvassrcextwhenrs) ·
   [files.rs](#cratescode-canvassrcfilesrs) ·
   [git.rs](#cratescode-canvassrcgitrs) ·
+  [grammars.rs](#cratescode-canvassrcgrammarsrs) ·
   [icon_theme.rs](#cratescode-canvassrcicon_themers) ·
   [keys.rs](#cratescode-canvassrckeysrs) ·
   [markdown.rs](#cratescode-canvassrcmarkdownrs) ·
@@ -58,6 +59,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [overlay.rs](#cratescode-canvassrcoverlayrs) ·
   [page.rs](#cratescode-canvassrcpagers) ·
   [paths.rs](#cratescode-canvassrcpathsrs) ·
+  [plist.rs](#cratescode-canvassrcplistrs) ·
   [prefs.rs](#cratescode-canvassrcprefsrs) ·
   [script.rs](#cratescode-canvassrcscriptrs) ·
   [session.rs](#cratescode-canvassrcsessionrs) ·
@@ -147,6 +149,26 @@ loading, the pre-order layout and the symbol index are explained in
   `TokenCache::chunk`.
 - `max_chunks` is a soft limit. Above it, `begin_frame` evicts the least recently
   used chunks down to 3/4 of the limit.
+- **Painted tokens** are the ones a grammar of an extension gave
+  (`code-canvas/src/grammars.rs`). The cache has a `Painter` (which files a grammar
+  colours, from the app) and keeps a `Painted` per file: one slice of `Piece`s
+  (byte offset in the line, length, kind) per line, how many lines the file has,
+  and the `SourceFile::serial` of the text they belong to. `chunk` builds a chunk's
+  `Token`s from the pieces when every line of the chunk is there, the serial is the
+  file's and each piece lies inside its line on character boundaries; otherwise the
+  chunk is the app's own tokens, and the file goes in `asked` (the app sends it to
+  the grammar thread, `take_asked`).
+- Pieces are per line, not per chunk, so after an edit only the lines that changed
+  are new: the lines after it are shared with the version before even though their
+  byte offsets moved.
+- `reset` (an edit, a diff shown) forgets the chunks but keeps the painted files:
+  the serial tells which are still right, so the other files of the page keep their
+  colours while one is typed in. `set_painter` (grammars installed or removed, the
+  setting changed) forgets everything.
+- `paint` returns the chunks that are newly covered, which the app takes off the
+  shaped text (`TextLayer::drop_chunks`).
+- Above `PAINTED_LINES` (a million lines) painted in all, the files that have no
+  chunk in the cache any more are let go; they are asked again when seen.
 
 ### crates/canvas-core/src/deps.rs
 
@@ -396,6 +418,10 @@ The phases are in "Loading a folder" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - `LOAD_PROFILE`: CPU nanoseconds per loading step, summed over all threads, as
   `[stat, read, normalise, analyse]`. Only `scan_bench` reads it.
 - `ScanOptions::skip_files` are lockfiles: huge and rarely useful.
+- `SourceFile::serial` is a number no other `SourceFile` made by this run has.
+  Every new text (`replace_source`, `replace_shown`, a scan) makes a new
+  `SourceFile`, so the serial says "this very text" without hashing it: tokens a
+  grammar made are only used while it matches.
 
 ### crates/canvas-core/src/store.rs
 
@@ -463,6 +489,10 @@ the same data types.
   `i`. It is what lets any chunk be tokenized on demand without starting from the
   top of the file.
 - `tokenize_range` expects normalised text (no `\r`, no tabs).
+- These tokens are the app's own. A file whose language only an extension's
+  grammar knows (or any language, with `grammars_everywhere`) is coloured by that
+  grammar instead, through `TokenCache` (see `cache.rs`); everything else that reads
+  tokens (`analyze` and its blocks, symbols, `refs.rs`) keeps using these.
 - `dominant_kind`: most character cells wins, but comments and punctuation only
   win when little else is there.
 - A block comment's opener is consumed before looking for its close, so `/*/` is
@@ -588,6 +618,8 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
   tokens are the line's own, so a string or a comment keeps its colour on every
   row. The chunk is drawn from the row of its first line. Turning wrapping on or
   off drops the shaped text of every page (`Action::SetPrefs`).
+- `TextLayer::drop_chunks` forgets some chunks of one file: those a grammar has
+  just coloured, which were shaped with the app's own tokens.
 
 ### crates/canvas-render/src/theme.rs
 
@@ -1414,6 +1446,15 @@ Default extensions
   failed to arrive (no network) is tried again; one the user removed afterwards
   does not come back.
 
+Languages and grammars
+
+- `read_installed` keeps `contributes.languages` (id, extensions and file names,
+  lower case) and `contributes.grammars` (language, scope name, file, `injectTo`)
+  of every extension, with or without code: grammars need no host. `languages()`
+  and `grammars()` are those of the enabled ones. `installed_revision` moves each
+  time the list is read again (install, removal, enabling, disabling), which is
+  what tells `grammars.rs` to load them again.
+
 Host and documents
 
 - `MAX_OPEN` = 48 documents kept open in the host; the least recently seen go
@@ -1599,6 +1640,79 @@ Details:
 - `change_for_message`: the diff of what is staged, or of everything when nothing
   is (new files by name), plus the latest subjects. `None` when there is nothing
   to commit.
+
+### crates/code-canvas/src/grammars.rs
+
+TextMate grammars of extensions (`contributes.grammars`) colour the languages the
+app's own tokenizer does not know (`Lang::Plain`), or every language with
+`Prefs::grammars_everywhere`.
+
+- **Why `irosashi`.** The grammars of real extensions are written for Oniguruma
+  (`\G`, look-behind, possessive quantifiers, `\h`, back-references from `begin` in
+  `end`...), so the engine has to be Oniguruma or a faithful copy. Looked at:
+  `syntect` reads Sublime's `.sublime-syntax`, not `.tmLanguage.json`, and its
+  pure-Rust backend (`fancy-regex`) lacks part of Oniguruma; the `onig` crate is C
+  (a C build, and the engine on top would be ours to write); `vscode-textmate` +
+  `vscode-oniguruma` in the extension host is the reference but needs Node
+  (grammars are declarative and should work without it), a WASM blob to ship and
+  every token of every file sent over the pipe; `giallo` is EUPL. `irosashi`
+  (MIT) is a Rust port of `vscode-textmate` on `ferroni` (BSD-2-Clause), a pure
+  Rust port of Oniguruma: no C, no Node, about 2 MB of executable, and its authors
+  check it token for token against `vscode-textmate` on 234 grammars. Its embedded
+  grammars and themes are left out (`default-features = false`): only the ones of
+  installed extensions are loaded. It needs Rust 1.94, hence the workspace's
+  `rust-version`.
+- `Matcher`: the languages of `contributes.languages` that have a grammar, by file
+  name and by extension (`.d.zed` before `.zed`: every suffix from a dot, the
+  longest first), lower case. `paints` is the `Painter` of every page's
+  `TokenCache`: also no note (but "truncated") and at most `MAX_LINES` (200,000)
+  lines; bigger files keep the app's tokens.
+- `Grammars::update` runs at the start of every frame and does something only when
+  the installed extensions (`Extensions::installed_revision`) or the setting
+  changed: a new matcher, a new `generation` (results of the old one are dropped),
+  and the grammar thread loads the grammars again. The app then gives every page
+  the new painter and drops its shaped text (`App::paint_grammars`).
+- One thread, `grammars`, does all the work (`Worker`); the UI thread only sends a
+  file's text (`ask`, at the end of a frame for what `TokenCache` asked) and
+  installs what comes back (`take`, at the start of the next one, then
+  `TokenCache::paint`). The thread is started with the first grammar.
+- The grammar files are read on that thread: `.json` as they are (a BOM taken
+  off), `.tmLanguage` / `.plist` / `.xml` through `plist.rs`, anything else is
+  left out with a warning. A grammar without `language` (an injection, or one only
+  included by others) is registered under its scope name; `injectTo` of the
+  manifest is written into the grammar, where `irosashi` looks for it. A grammar
+  that does not load, or whose session cannot be made, is logged once and its files
+  keep the app's tokens.
+- **Work is sliced.** `step` runs the task with the least left (an edit first) for
+  `SLICE` (15 ms) or until an edit arrives (`hurry`), then reads the channel again.
+  A long file sends what it has every `SEND_EVERY` (150 ms), so its top is coloured
+  while the rest is still being read; chunks not covered yet are the app's own.
+  Lines longer than `MAX_LINE_BYTES` (4,000) are not tokenized (no colour, the
+  state goes on unchanged), so a minified file does not stall it.
+- **Edits.** The thread keeps, per page and file (`Memo`, the least recently used
+  let go above `MEMO_LINES` in all), each line's hash, the state after it and its
+  pieces. A new version keeps the lines in front of the first changed one, and
+  from the end of the change on, as soon as the state before a line is the one the
+  same line had before, takes the rest of the old lines as they are: typing in a
+  long file tokenizes a line or two. The state is shared between equal lines, so
+  keeping it per line is cheap.
+- **No flicker while typing.** `App::after_edit` sends the edited file as urgent
+  and waits for it up to `EDIT_WAIT` (8 ms) before the frame is drawn (`wait`; the
+  work is still on the other thread). Late, the file shows the app's tokens for a
+  frame or two. Other results that arrive meanwhile go to `backlog`.
+- `flying` remembers which version of which file is being worked on, so a file
+  asked again every frame is sent once; a finished one is forgotten there.
+- **Scopes to kinds** (`rule_of`): the innermost scope that one of `RULES` fits
+  (the rule is the scope or its start up to a dot; the longest rule wins) decides;
+  `meta.*`, `source.*` and unknown names say nothing and the next scope out is
+  asked. A rule has a kind for words and one for the rest: `keyword.operator` is a
+  keyword when it is a word (`typeof`, `new`) and punctuation otherwise; a token no
+  scope says anything about is a name (words) or punctuation, or prose under
+  `text.*`. The theme's colours of each kind come from the same scope names
+  (`themes.rs`).
+- `cut` makes pieces like the app's own tokens: no blanks (strings and comments
+  are trimmed at both ends and joined over the blanks between their parts, other
+  tokens are split into words), and pieces of the same kind that touch are one.
 
 ### crates/code-canvas/src/icon_theme.rs
 
@@ -1913,6 +2027,14 @@ Details:
   whole. A folder ends in a slash so the next name can be typed straight away.
 - Columns (`Partial::start`) are in characters, not bytes.
 
+### crates/code-canvas/src/plist.rs
+
+- `to_json` reads an XML property list (the older `.tmLanguage` grammars) into
+  JSON: `dict`, `array`, `string`, `integer`, `real`, `true`, `false`, and `data`
+  and `date` as strings; comments, `<?xml?>` and `<!DOCTYPE>` are skipped, the five
+  named entities, numeric ones and CDATA are read. Anything else makes it `None`:
+  the grammar is left out rather than half read.
+
 ### crates/code-canvas/src/prefs.rs
 
 `prefs.json`, edited by the settings panel:
@@ -1931,6 +2053,7 @@ Details:
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
 | `wrap` | Wrap lines wider than their card into the rows under them instead of cutting them (`canvas_core::layout::set_wrap`, off by default). |
 | `codex`, `asked_codex` | Follow Codex from the session files it writes (`codex.rs`), and whether the app already offered it. |
+| `grammars_everywhere` | Let a grammar of an extension colour the languages the app's own tokenizer knows too (off by default: only the ones it does not know, see `grammars.rs`). |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
 ### qa
@@ -2005,6 +2128,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
+| `colours` | `colours <path> <line>` | Logs "script: colours of <path> line N: keyword let · ident x · …": the kind of each token of that line (1-based) as the canvas draws it, from a grammar or the app's own. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
 | `git` | `git stage [path]`, `git unstage [path]`, `git discard [path]`, `git commit <message>` | Source control. Discarding asks first. |
@@ -2398,6 +2522,10 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
     `keyword.control`); the longest fitting rule wins, the later of two as long.
     Of `a b c` only `c` counts, and a rule with ` - ` is left out. A kind with no
     rule is the plain foreground.
+  - Grammars of extensions (`grammars.rs`) go the other way, from a token's
+    scopes to one of these kinds, with the same scope names, so what a theme says
+    about `storage.type` or `entity.name.function` lands about where VS Code puts
+    it. Code has these eleven colours, not one per scope.
   - Relations keep the built-in colours: they have to be told apart from each
     other, which no theme promises.
 - `colors`: colours changed by the user, key → `#rrggbb` or `#rrggbbaa`. Keys that
