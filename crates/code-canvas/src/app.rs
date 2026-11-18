@@ -204,6 +204,8 @@ pub struct App {
     symbols_stale: Option<Instant>,
     unsent_edit: Option<(PathBuf, Instant)>,
     typed: Option<Instant>,
+    heads: HashMap<PathBuf, Option<String>>,
+    heads_read: Option<Instant>,
     own_build: Option<(PathBuf, Option<std::time::SystemTime>, u64)>,
     build_checked: Instant,
     hover_probe: Option<((u32, u32, u32), Instant, bool)>,
@@ -332,6 +334,8 @@ impl App {
             symbols_stale: None,
             unsent_edit: None,
             typed: None,
+            heads: HashMap::new(),
+            heads_read: None,
             own_build: own_build(),
             build_checked: Instant::now(),
             hover_probe: None,
@@ -755,11 +759,25 @@ impl App {
         }
     }
 
-    fn workspace_rows(&self) -> Vec<ui::WorkspaceRow> {
+    fn workspace_rows(&mut self) -> Vec<ui::WorkspaceRow> {
+        const AGAIN: Duration = Duration::from_secs(5);
+        let stale = self.heads_read.is_none_or(|at| at.elapsed() > AGAIN);
+        if stale {
+            self.heads_read = Some(Instant::now());
+            self.heads =
+                self.workspace.iter().map(|known| (known.path.clone(), crate::git::head_of(&known.path))).collect();
+        }
         let row = |known: &session::Known| {
             let page = self.pages.iter().position(|page| page.root == known.path);
             let name = known.path.file_name().map(|name| name.to_string_lossy().into_owned());
+            let open = page.and_then(|page| self.pages[page].git.as_ref());
+            let branch = match open {
+                Some(git) => Some(format!("{}{}", git.branch, if git.changes.is_empty() { "" } else { "*" })),
+                None => self.heads.get(&known.path).cloned().flatten(),
+            };
             ui::WorkspaceRow {
+                branch,
+                branches: open.map(|git| git.branches.clone()).unwrap_or_default(),
                 path: known.path.clone(),
                 title: name.unwrap_or_else(|| known.path.display().to_string()),
                 files: known.files,

@@ -946,9 +946,47 @@ pub fn ago(seconds: i64) -> String {
     "just now".to_string()
 }
 
+pub fn head_of(folder: &std::path::Path) -> Option<String> {
+    let dot = folder.join(".git");
+    let dir = match dot.is_file() {
+        true => {
+            let pointed = std::fs::read_to_string(&dot).ok()?;
+            let at = std::path::PathBuf::from(pointed.trim().strip_prefix("gitdir:")?.trim());
+            if at.is_absolute() {
+                at
+            } else {
+                folder.join(at)
+            }
+        }
+        false => dot,
+    };
+    head_named(&std::fs::read_to_string(dir.join("HEAD")).ok()?)
+}
+
+pub fn head_named(head: &str) -> Option<String> {
+    let head = head.trim();
+    match head.strip_prefix("ref:") {
+        Some(name) => Some(name.trim().trim_start_matches("refs/heads/").to_string()).filter(|name| !name.is_empty()),
+        None if head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()) => Some(head[..7].to_string()),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_branch_is_read_from_head() {
+        assert_eq!(head_named("ref: refs/heads/develop\n").as_deref(), Some("develop"));
+        assert_eq!(head_named("ref: refs/heads/feature/x").as_deref(), Some("feature/x"));
+        assert_eq!(
+            head_named("3b5d3698c0ffee1234567890abcdef1234567890").as_deref(),
+            Some("3b5d369"),
+            "a detached head"
+        );
+        assert_eq!(head_named("garbage"), None);
+    }
 
     #[test]
     fn the_files_of_a_commit_are_the_ones_under_the_folder() {

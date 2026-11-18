@@ -356,7 +356,7 @@ pub fn changes_panel(
         return;
     }
     let writing = page.writing_message();
-    let Page { git, commit_message, only_changed, git_note, title, diff, showing, .. } = page;
+    let Page { git, commit_message, only_changed, git_note, diff, showing, .. } = page;
     let Some(g) = git.as_ref() else {
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(pal().text_dim));
         return;
@@ -366,70 +366,35 @@ pub fn changes_panel(
 
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        if group_header(ui, "Repositories", "repositories", None, None).0 {
+        {
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
             let mid = rect.center().y;
-            ui.painter().text(
-                Pos2::new(rect.left() + 26.0, mid),
-                Align2::LEFT_CENTER,
-                icons::BOOK_MARKED,
-                FontId::proportional(13.0),
-                pal().text_dim,
-            );
-            let sync_at = Rect::from_center_size(Pos2::new(rect.right() - 20.0, mid), Vec2::splat(22.0));
-            let sync = ui.interact(sync_at, ui.scope_id().with("sync"), Sense::click());
-            if sync.hovered() {
-                ui.painter().rect_filled(sync_at, 5.0, pal().hover);
+            let title = RichText::new("Repositories").size(12.5).color(pal().text);
+            let galley = ui.painter().layout_no_wrap(title.text().to_string(), FontId::proportional(12.5), pal().text);
+            ui.painter().galley(Pos2::new(rect.left() + 26.0, mid - galley.size().y * 0.5), galley, pal().text);
+            let mut said = icons::ARROW_UP_DOWN.to_string();
+            if g.behind > 0 {
+                said.push_str(&format!(" {}{}", g.behind, icons::ARROW_DOWN));
             }
-            ui.painter().text(
-                sync_at.center(),
-                Align2::CENTER_CENTER,
-                icons::REPEAT_2,
-                FontId::proportional(13.0),
-                pal().text_dim,
-            );
-            if sync.on_hover_text("Sync: pull (fast-forward only), then push").clicked() && !busy {
+            if g.ahead > 0 {
+                said.push_str(&format!(" {}{}", g.ahead, icons::ARROW_UP));
+            }
+            let shown = ui.painter().layout_no_wrap(said, FontId::proportional(13.0), pal().text_dim);
+            let width = (shown.size().x + 12.0).max(22.0);
+            let at = Rect::from_center_size(Pos2::new(rect.right() - 10.0 - width * 0.5, mid), Vec2::new(width, 22.0));
+            let sync = ui.interact(at, ui.scope_id().with("sync"), Sense::click());
+            if sync.hovered() {
+                ui.painter().rect_filled(at, 5.0, pal().hover);
+            }
+            let color = if sync.hovered() { pal().text } else { pal().text_dim };
+            ui.painter().galley(at.center() - shown.size() * 0.5, shown, color);
+            let tip = match (g.behind, g.ahead) {
+                (0, 0) => "Sync: pull (fast-forward only), then push".to_string(),
+                (behind, ahead) => format!("Sync: pull {behind} and push {ahead} (pull fast-forward only, then push)"),
+            };
+            if sync.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() && !busy {
                 actions.push(Action::Git(GitOp::Sync));
             }
-            let mut branch =
-                format!("{}  {}{}", icons::GIT_BRANCH, g.branch, if g.changes.is_empty() { "" } else { "*" });
-            if g.ahead > 0 {
-                branch.push_str(&format!("  {}{}", icons::ARROW_UP, g.ahead));
-            }
-            if g.behind > 0 {
-                branch.push_str(&format!("  {}{}", icons::ARROW_DOWN, g.behind));
-            }
-            let galley = ui.painter().layout_no_wrap(branch.clone(), FontId::proportional(12.0), pal().text_dim);
-            let at = Rect::from_min_size(
-                Pos2::new(sync_at.left() - 12.0 - galley.size().x, rect.top() + 1.0),
-                Vec2::new(galley.size().x + 8.0, ROW_H - 2.0),
-            );
-            let name_clip =
-                Rect::from_min_max(Pos2::new(rect.left() + 46.0, rect.top()), Pos2::new(at.left() - 6.0, rect.bottom()));
-            ui.painter().with_clip_rect(name_clip).text(
-                name_clip.left_center(),
-                Align2::LEFT_CENTER,
-                title.as_str(),
-                FontId::proportional(12.5),
-                pal().text,
-            );
-            let mut inner = ui
-                .new_child(egui::UiBuilder::new().max_rect(at).layout(egui::Layout::right_to_left(egui::Align::Center)));
-            inner
-                .menu_button(RichText::new(branch).size(12.0).color(pal().text_dim), |ui| {
-                    ui.set_min_width(200.0);
-                    ui.label(RichText::new("Switch to a branch").size(11.0).color(pal().text_faint));
-                    for name in &g.branches {
-                        if ui.selectable_label(*name == g.branch, name).clicked() {
-                            if *name != g.branch && !busy {
-                                actions.push(Action::Git(GitOp::Switch(name.clone())));
-                            }
-                            ui.close();
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Branch: click to switch");
         }
 
         if group_header(ui, "Changes", "changes", None, None).0 {

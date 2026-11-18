@@ -1190,6 +1190,9 @@ fn rail_frame(side: Side) -> Frame {
 }
 
 fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect) {
+    // The flares reach 2 * FLARE past the tab, more than the gap above the first icon; keep the
+    // right edge unclipped so the tab still covers the seam into the dock.
+    let painter = painter.with_clip_rect(bar.shrink2(Vec2::new(0.0, 1.0)));
     let tab = Rect::from_min_max(icon.left_top() + Vec2::new(3.0, 0.0), Pos2::new(bar.right(), icon.bottom()));
     let round = CornerRadius { nw: 9, sw: 9, ne: 0, se: 0 };
     painter.rect_filled(tab, round, pal().row);
@@ -2038,6 +2041,14 @@ fn folder_row(
     });
 }
 
+fn short_branch(branch: &str) -> String {
+    const MOST: usize = 18;
+    match branch.chars().count() > MOST {
+        true => format!("{}…", branch.chars().take(MOST - 1).collect::<String>()),
+        false => branch.to_string(),
+    }
+}
+
 pub struct WorkspaceRow {
     pub path: std::path::PathBuf,
     pub title: String,
@@ -2045,6 +2056,8 @@ pub struct WorkspaceRow {
     pub page: Option<usize>,
     pub active: bool,
     pub loading: bool,
+    pub branch: Option<String>,
+    pub branches: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2113,19 +2126,45 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
             ui.painter().text(Pos2::new(rect.left() + 22.0, mid), Align2::CENTER_CENTER, folder, font.clone(), tint);
             let button = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(22.0));
             let pressed = ui.interact(button, ui.scope_id().with(("workspace", &row.path)), Sense::click());
-            let count = match (row.loading, row.files) {
-                (true, _) => "reading…".to_string(),
-                (false, Some(files)) => files.to_string(),
-                (false, None) => String::new(),
+            let count = match (row.loading, &row.branch, row.files) {
+                (true, ..) => "reading…".to_string(),
+                (false, Some(branch), _) => format!("{} {}", icons::GIT_BRANCH, short_branch(branch)),
+                (false, None, Some(files)) => files.to_string(),
+                (false, None, None) => String::new(),
             };
             let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
-            let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), pal().text_faint);
+            let shade = if row.branch.is_some() && on { pal().text_dim } else { pal().text_faint };
+            let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), shade);
             let name_end = right - counted.size().x - 8.0;
-            ui.painter().galley(
-                Pos2::new(right - counted.size().x, mid - counted.size().y * 0.5),
-                counted,
-                pal().text_faint,
+            let chip = Rect::from_min_size(
+                Pos2::new(right - counted.size().x - 4.0, mid - 10.0),
+                Vec2::new(counted.size().x + 8.0, 20.0),
             );
+            let switchable = row.active && !row.branches.is_empty();
+            let mut chip_hot = false;
+            if switchable {
+                let place = ui.interact(chip, ui.scope_id().with(("branch", &row.path)), Sense::click());
+                chip_hot = place.hovered();
+                if chip_hot {
+                    ui.painter().rect_filled(chip, 5.0, pal().border_strong);
+                }
+                let current = row.branch.as_deref().unwrap_or_default().trim_end_matches('*').to_string();
+                egui::Popup::menu(&place).show(|ui| {
+                    ui.set_min_width(200.0);
+                    ui.label(RichText::new("Switch to a branch").size(11.0).color(pal().text_faint));
+                    for name in &row.branches {
+                        if ui.selectable_label(*name == current, name).clicked() {
+                            if *name != current {
+                                actions.push(Action::Git(crate::git::GitOp::Switch(name.clone())));
+                            }
+                            ui.close();
+                        }
+                    }
+                });
+                place.on_hover_text("Branch: click to switch to another");
+            }
+            let shade = if chip_hot { pal().text } else { shade };
+            ui.painter().galley(Pos2::new(right - counted.size().x, mid - counted.size().y * 0.5), counted, shade);
             text_fit(
                 ui.painter(),
                 Pos2::new(rect.left() + 36.0, mid),
@@ -2147,12 +2186,16 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                     pal().text_dim,
                 );
             }
+            let mut about = row.path.display().to_string();
+            if let Some(branch) = &row.branch {
+                about.push_str(&format!("\nBranch {branch}"));
+            }
+            if let Some(files) = row.files {
+                about.push_str(&format!(" · {files} files"));
+            }
             let tip = match on {
-                true => format!("{}\nOn the canvas. Click to go to it; the cross takes it off.", row.path.display()),
-                false => format!(
-                    "{}\nNot on the canvas. Click, or drag it onto the canvas, to put it there.",
-                    row.path.display()
-                ),
+                true => format!("{about}\nOn the canvas. Click to go to it; the cross takes it off."),
+                false => format!("{about}\nNot on the canvas. Click, or drag it onto the canvas, to put it there."),
             };
             if pressed.on_hover_text(if on { "Take it off the canvas" } else { "Put it on the canvas" }).clicked() {
                 let op = if on { WorkspaceOp::TakeOff(row.path.clone()) } else { WorkspaceOp::Put(row.path.clone()) };
