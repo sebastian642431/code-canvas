@@ -39,6 +39,10 @@ pub enum Panel {
 }
 
 impl Panel {
+    pub fn docks(&self) -> bool {
+        matches!(self, Panel::Files | Panel::Changes | Panel::Search | Panel::Extensions)
+    }
+
     pub fn key(&self) -> String {
         match self {
             Panel::Files => "files".to_string(),
@@ -387,7 +391,7 @@ impl UiState {
 
     pub fn is_open(&self, panel: &Panel) -> bool {
         match panel {
-            Panel::Files | Panel::Changes => self.files && self.dock == *panel,
+            panel if panel.docks() => self.files && self.dock == *panel,
             card => self.cards.contains(card),
         }
     }
@@ -402,7 +406,7 @@ impl UiState {
 
     pub fn close_panel(&mut self, panel: &Panel) {
         match panel {
-            Panel::Files | Panel::Changes => {
+            panel if panel.docks() => {
                 if self.dock == *panel {
                     self.files = false;
                 }
@@ -412,7 +416,7 @@ impl UiState {
     }
 
     pub fn show(&mut self, panel: Panel) {
-        if matches!(panel, Panel::Files | Panel::Changes) {
+        if panel.docks() {
             (self.files, self.dock) = (true, panel);
             return;
         }
@@ -441,14 +445,13 @@ impl UiState {
 
     pub fn restore(&mut self, files: bool, cards: &[String]) {
         self.files = files;
-        let docked = |panel: &Panel| matches!(panel, Panel::Files | Panel::Changes);
         let open: Vec<Panel> = cards.iter().filter_map(|key| Panel::from_key(key)).collect();
-        self.dock = if open.contains(&Panel::Changes) { Panel::Changes } else { Panel::Files };
-        self.cards = open.into_iter().filter(|panel| !docked(panel) && !panel.is_page()).collect();
+        self.dock = open.iter().find(|panel| panel.docks()).cloned().unwrap_or(Panel::Files);
+        self.cards = open.into_iter().filter(|panel| !panel.docks() && !panel.is_page()).collect();
     }
 
     pub fn open_keys(&self) -> Vec<String> {
-        let docked = (self.dock == Panel::Changes).then(|| Panel::Changes.key());
+        let docked = (self.dock != Panel::Files).then(|| self.dock.key());
         docked.into_iter().chain(self.cards.iter().map(Panel::key)).collect()
     }
 }
@@ -778,7 +781,7 @@ pub fn build(
         actions.push(Action::RailsChanged);
     }
     if st.files && !bare {
-        files_dock(ui, st, pages, active, actions);
+        files_dock(ui, st, pages, active, ext, actions);
     }
 
     let free = ui.available_rect_before_wrap();
@@ -1119,9 +1122,14 @@ fn status_bar(
                 save = label.on_hover_text(tip).clicked();
             }
             let (errors, warnings) = ext.totals();
-            if errors + warnings > 0 {
+            {
                 let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
-                let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
+                let color = match (errors, warnings) {
+                    (0, 0) if st.is_open(&Panel::Problems) => pal().text,
+                    (0, 0) => pal().text_dim,
+                    (0, _) => c(theme::get().problem_warning),
+                    _ => c(theme::get().problem_error),
+                };
                 let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
                 if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
                     panel_to_show = Some(Panel::Problems);
@@ -1185,7 +1193,14 @@ fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect) {
 const RAIL_ICON: Vec2 = Vec2::splat(34.0);
 const RAIL_REACH: f32 = 56.0;
 
-fn files_dock(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
+fn files_dock(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    pages: &mut [Page],
+    active: usize,
+    ext: &mut Extensions,
+    actions: &mut Vec<Action>,
+) {
     let dock = egui::Panel::left("left").resizable(true).default_size(290.0).size_range(230.0..=560.0);
     let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: EDGE as i8 });
     let was = ui.style().visuals.widgets.clone();
@@ -1207,6 +1222,11 @@ fn files_dock(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: u
                 workspace_list(ui, st, actions);
                 git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions);
             }
+            Panel::Search => {
+                folder_row(ui, st, pages, active, actions, false);
+                search_panel(ui, st, pages.get(active), actions);
+            }
+            Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
             _ => files_panel(ui, st, pages, active, actions),
         }
     });
@@ -1224,8 +1244,7 @@ fn card_of(
 ) {
     match panel {
         Panel::Files => {}
-        Panel::Search => search_panel(ui, st, pages.get(active), actions),
-        Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
+        Panel::Search | Panel::Extensions => {}
         Panel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
         Panel::Changes => {}
         Panel::Extension => ext_panels::extension_view(ui, st, ext),
@@ -1419,7 +1438,6 @@ fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
             "Source control".to_string(),
         ),
         own(Panel::Extensions, crate::codicons::glyph("extensions").unwrap_or(icons::PUZZLE), "Extensions".to_string()),
-        own(Panel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions".to_string()),
         own(Panel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names".to_string()),
         own(Panel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which".to_string()),
         own(
@@ -3379,30 +3397,58 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         st.share.open = !st.share.open;
     }
     st.share.button = Some(rect);
-    let room = ((ui.available_height() - 8.0) / 30.0).max(0.0) as usize;
+    const STEP: f32 = 21.0;
+    let room = ((ui.available_height() - 16.0) / STEP).max(0.0) as usize;
     if !st.agents.is_empty() || st.share.people.iter().any(|person| !person.me) {
         ui.add_space(4.0);
         let (line, _) = ui.allocate_exact_size(Vec2::new(18.0, 1.0), Sense::hover());
         ui.painter().rect_filled(line, 0.0, pal().border);
-        ui.add_space(4.0);
+        ui.add_space(8.0);
     }
+    ui.spacing_mut().item_spacing.y = 0.0;
     load_faces(ui.ctx(), st);
-    for agent in st.agents.iter().take(room.min(8)) {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, 30.0), Sense::click());
-        face(ui.painter(), &st.faces, agent.avatar, rect.center(), 11.0, c(agent.color), agent.quiet, agent.followed);
+    let cut = |ui: &egui::Ui, at: Pos2, round: f32| {
+        let behind = Rect::from_center_size(at, Vec2::splat(28.0));
+        ui.painter().rect_filled(behind, CornerRadius::same(round as u8), pal().well);
+    };
+    for agent in st.agents.iter().take(room.min(12)) {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, STEP), Sense::click());
+        let at = rect.center() - Vec2::new(0.0, 2.0);
+        cut(ui, at, 12.0);
+        let lifted = if resp.hovered() { Vec2::new(0.0, -2.0) } else { Vec2::ZERO };
+        face(ui.painter(), &st.faces, agent.avatar, at + lifted, 11.0, c(agent.color), agent.quiet, agent.followed);
         let how = if agent.followed { "You follow it. Click to stop." } else { "Click to follow it on the canvas." };
-        if resp.on_hover_text(format!("{} · {}\n{}\n{how}", agent.name, agent.role, agent.said)).clicked() {
+        if resp
+            .on_hover_text(format!(
+                "{} · {}
+{}
+{how}",
+                agent.name, agent.role, agent.said
+            ))
+            .clicked()
+        {
             actions.push(Action::Agent(AgentOp::Follow((!agent.followed).then(|| agent.key.clone()))));
         }
     }
     let following = st.share.following;
-    for person in st.share.people.iter().filter(|person| !person.me).take(room.saturating_sub(st.agents.len()).min(6)) {
+    let left = room.saturating_sub(st.agents.len().min(12)).min(8);
+    for person in st.share.people.iter().filter(|person| !person.me).take(left) {
         let followed = following == Some(person.id);
         let tip = match followed {
             true => format!("{}: you follow what they look at. Click to stop.", person.name),
             false => format!("{}: click to follow what they look at", person.name),
         };
-        if avatar(ui, person, 22.0, followed).on_hover_text(tip).clicked() {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, STEP), Sense::click());
+        let at = rect.center() - Vec2::new(0.0, 2.0);
+        cut(ui, at, 15.0);
+        let color = c(person.color);
+        if followed {
+            ui.painter().circle_stroke(at, 13.0, Stroke::new(1.5, color));
+        }
+        ui.painter().circle_filled(at, 11.0, if resp.hovered() { color } else { color.gamma_multiply(0.9) });
+        let font = FontId::proportional(11.5);
+        ui.painter().text(at, Align2::CENTER_CENTER, initial(&person.name), font, readable_on(color));
+        if resp.on_hover_text(tip).clicked() {
             actions.push(Action::Share(ShareOp::Follow((!followed).then_some(person.id))));
         }
     }

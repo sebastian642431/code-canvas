@@ -1,0 +1,22 @@
+title: Files, Search, Source control and Extensions are tabs of the left dock: each takes the place of the other
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+left search
+wait 800
+mark a-search
+wait 400
+left extensions
+wait 1200
+mark b-extensions
+wait 400
+left changes
+wait 800
+mark c-changes
+wait 400
+left files
+wait 800
+mark d-files
+wait 400
+quit

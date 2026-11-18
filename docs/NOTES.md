@@ -2068,9 +2068,9 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     side too. A double click on its title docks it again. A free card is kept
     inside the canvas when the window shrinks, and it is not counted in the
     room the docked ones take (`cards_reach`).
-  - **Source Control is docked where the files are**, not a card
-    (`UiState::dock`: `Panel::Files` or `Panel::Changes`; `files` says whether
-    the dock is open). Its icon on the bar swaps the dock to it, with the
+  - **Files, Search, Source Control and Extensions are tabs of the dock**, not
+    cards (`Panel::docks`, `UiState::dock`; `files` says whether the dock is
+    open): each takes the place of the other. Its icon on the bar swaps the dock to it, with the
     folder switcher and the workspace above it (`folder_row`), so choosing
     another folder shows that repository's changes. Which one is docked is
     saved with the open cards (`UiState::open_keys`).
@@ -2079,6 +2079,11 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     has no separator, and the dock's resize line is drawn with no stroke (the
     pointer still turns into the resize arrows there). The tab of the icon
     whose panel is docked flares into the dock at both ends (`rail_tab`).
+  - Problems is not an icon of the bar: its count is always in the status
+    bar, and a click there opens it.
+  - The faces at the bottom of the bar overlap like a stack of cards, each
+    21 points above the one below with a ring of the bar's colour around it;
+    the one above is drawn last, so it is on top.
   - **The bottom of the bar of icons** holds, from the bottom up: the GitHub
     account, Settings, Help, sharing, and then the faces of the assistants
     and the people in the session, one above the other, as many as fit. They
