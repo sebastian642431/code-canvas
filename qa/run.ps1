@@ -101,6 +101,7 @@ function Read-Log($dir) {
 }
 
 $env:CODE_CANVAS_SHARE_ON = '127.0.0.1'
+$env:CODE_CANVAS_QUIET = '1'
 $env:CLAUDE_CONFIG_DIR = Join-Path $Work 'claude'
 $fakeGitHub = $null
 foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }

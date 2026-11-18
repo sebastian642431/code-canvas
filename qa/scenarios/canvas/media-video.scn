@@ -13,7 +13,7 @@ menu 1000 450
 wait 600
 mark video-menu
 wait 500
-ui click 500 860
+ui click 370 420
 wait 300
 open video/clip.mp4
 wait 2000

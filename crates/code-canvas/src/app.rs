@@ -3222,7 +3222,13 @@ impl App {
             }
             Action::ToggleMaximize => {
                 if let Some(g) = &self.gfx {
-                    g.window.set_maximized(!g.window.is_maximized());
+                    match (quiet_window(), g.window.current_monitor()) {
+                        (true, Some(screen)) => {
+                            g.window.set_outer_position(screen.position());
+                            let _ = g.window.request_inner_size(screen.size());
+                        }
+                        _ => g.window.set_maximized(!g.window.is_maximized()),
+                    }
                 }
             }
             Action::Minimize => {
@@ -5012,6 +5018,7 @@ impl ApplicationHandler for App {
             .with_maximized(self.start_maximized)
             .with_min_inner_size(LogicalSize::new(720.0, 420.0))
             .with_decorations(false)
+            .with_active(!quiet_window())
             .with_window_icon(crate::icon::window_icon());
         #[cfg(windows)]
         let attrs = {
@@ -5022,6 +5029,9 @@ impl ApplicationHandler for App {
                 .with_taskbar_icon(crate::icon::taskbar_icon())
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
+        if quiet_window() {
+            keep_out_of_the_way(&window);
+        }
 
         let connect = |backends: wgpu::Backends| {
             let mut descriptor =
@@ -5351,6 +5361,35 @@ impl ApplicationHandler for App {
         });
     }
 }
+
+fn quiet_window() -> bool {
+    std::env::var_os("CODE_CANVAS_QUIET").is_some_and(|quiet| !quiet.is_empty())
+}
+
+#[cfg(windows)]
+fn keep_out_of_the_way(window: &Window) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    const EXSTYLE: i32 = -20;
+    const NO_ACTIVATE: isize = 0x0800_0000;
+    const BOTTOM: isize = 1;
+    const KEEP: u32 = 0x0001 | 0x0002 | 0x0010;
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongPtrW(window: isize, index: i32) -> isize;
+        fn SetWindowLongPtrW(window: isize, index: i32, value: isize) -> isize;
+        fn SetWindowPos(window: isize, after: isize, x: i32, y: i32, w: i32, h: i32, flags: u32) -> i32;
+    }
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
+    let hwnd = handle.hwnd.get();
+    unsafe {
+        SetWindowLongPtrW(hwnd, EXSTYLE, GetWindowLongPtrW(hwnd, EXSTYLE) | NO_ACTIVATE);
+        SetWindowPos(hwnd, BOTTOM, 0, 0, 0, 0, KEEP);
+    }
+}
+
+#[cfg(not(windows))]
+fn keep_out_of_the_way(_window: &Window) {}
 
 #[cfg(test)]
 mod tests {
