@@ -12,11 +12,13 @@ wait 1000
 deps all on
 wait 1500
 mark every-edge-bundled
+wait 1000
 wait 300
 deps report
 goto src/api
 wait 1500
 mark every-edge-zoomed-in
+wait 1000
 wait 300
 deps all off
 goto src/data
@@ -24,6 +26,7 @@ wait 1500
 fit
 wait 1200
 mark folder-bundled
+wait 1000
 wait 300
 deps report
 goto src/core/core0/core0.ts
@@ -31,6 +34,7 @@ wait 1500
 zoom 0.25
 wait 1200
 mark file-in-a-cycle
+wait 1000
 wait 300
 deps report
 goto src/util/util0/util2.ts
@@ -38,5 +42,6 @@ wait 1500
 zoom 0.6
 wait 1200
 mark arrowheads-close
+wait 1000
 wait 300
 quit
