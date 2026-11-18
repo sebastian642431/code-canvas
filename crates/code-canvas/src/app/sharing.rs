@@ -1104,6 +1104,7 @@ impl App {
                     role: helper.role.clone(),
                     task: helper.task.clone(),
                     title: String::new(),
+                    cwd: None,
                     doing: crate::agents::Doing::of_code(helper.doing),
                     note: helper.note.clone(),
                     path: helper.at.as_ref().and_then(path_of),

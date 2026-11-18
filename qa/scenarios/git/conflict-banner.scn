@@ -1,0 +1,33 @@
+title: A cherry-pick that conflicts shows the banner and the conflicted file; taking their side and continuing finishes it
+folders: git-conflict
+expect-file: git-conflict/notes.txt :: beta from topic
+expect-file: git-conflict/.git/logs/HEAD :: cherry-pick.*topic change
+forbid-log: WARN.*script
+
+wait 3500
+left changes
+wait 1500
+palette Open All Commits
+wait 500
+press enter
+wait 2500
+mark a-commits
+wait 500
+ui right 1100 170
+wait 1000
+mark b-menu
+wait 500
+ui click 1200 288
+wait 2500
+mark c-banner
+wait 500
+wait 500
+ui click 222 423
+wait 2500
+mark d-took-theirs
+wait 500
+ui click 103 162
+wait 2500
+mark e-finished
+wait 500
+quit

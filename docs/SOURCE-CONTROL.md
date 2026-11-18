@@ -45,11 +45,11 @@ drawn flat. Blame is still to do.
 - A commit's details: message and people, its changes with the diff viewer, the file tree at that commit.
 - File history and blame from any file.
 
-### 4. Rewriting history
+### 4. Rewriting history (done, except amending an older commit)
 Cherry-pick, revert, reset (soft, mixed, hard: the hard one asks), interactive rebase
 (reorder, squash, fixup, reword, drop) by dragging rows, amend an older commit, reflog to undo.
 
-### 5. Merges and conflicts
+### 5. Merges and conflicts (the banner and per-file Mine/Theirs/Resolved are done; the three-way editor is not)
 A banner while a merge, rebase or cherry-pick is in progress (continue, skip, abort), and a built-in
 three-way conflict editor on the canvas: theirs, ours, result.
 

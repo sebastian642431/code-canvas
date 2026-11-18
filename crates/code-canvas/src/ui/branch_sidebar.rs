@@ -1,5 +1,5 @@
 //! The part of Source Control under the changes: the branches of this computer, the ones on each
-//! remote, the tags and the stashes, each in a section that opens and closes. A click on a branch
+//! remote, the tags, the stashes and the reflog, each in a section that opens and closes. A click on a branch
 //! switches to it and a right click offers what can be done with it.
 
 use std::collections::{HashMap, HashSet};
@@ -8,7 +8,7 @@ use egui::{Align2, FontId, Pos2, Sense, Ui, Vec2};
 
 use super::branch_picker::{local_row, remote_row, row, section_head, tree};
 use super::{menu_gap, menu_row, pal, text_fit, Action, NameFor};
-use crate::git::{GitOp, GitState, HistoryQuery, LocalBranch, RemoteBranch, Stash};
+use crate::git::{GitOp, GitState, HistoryQuery, LocalBranch, ReflogEntry, RemoteBranch, ResetMode, Stash};
 use crate::icons;
 
 /// Which sections and which folders inside them the person closed or opened.
@@ -255,6 +255,35 @@ fn stash_menu(ui: &mut Ui, stash: &Stash, actions: &mut Vec<Action>) {
     }
 }
 
+/// What a right click on a line of the reflog offers: go back to where HEAD was (the "undo").
+fn reflog_menu(ui: &mut Ui, g: &GitState, entry: &ReflogEntry, actions: &mut Vec<Action>) {
+    ui.set_width(270.0);
+    ui.spacing_mut().item_spacing.y = 1.0;
+    let hash = &entry.hash;
+    let short = &hash[..hash.len().min(8)];
+    let mut chosen = None;
+    if menu_row(ui, icons::HISTORY, "Reset current branch to here…") {
+        let text = format!(
+            "'{}' goes back to {short} and every change you have not committed is lost. The commits after it can be found again here, in the reflog.",
+            g.branch
+        );
+        let op = GitOp::Reset { to: hash.clone(), mode: ResetMode::Hard };
+        chosen = Some(confirm(op, format!("Reset '{}' to {short}?", g.branch), &text, "Reset", true));
+    }
+    if menu_row(ui, icons::GIT_BRANCH, "New branch here…") {
+        chosen = Some(Action::GitName(NameFor::NewBranch { from: Some(hash.clone()) }));
+    }
+    menu_gap(ui);
+    if menu_row(ui, icons::COPY, "Copy hash") {
+        ui.ctx().copy_text(hash.clone());
+        ui.close();
+    }
+    if let Some(action) = chosen {
+        actions.push(action);
+        ui.close();
+    }
+}
+
 /// A flat row with a glyph, a label and a faint note on the right.
 fn plain_row(ui: &mut Ui, glyph: &str, label: &str, note: &str, tip: &str) -> egui::Response {
     let (rect, resp) = row(ui);
@@ -367,6 +396,28 @@ impl Side {
             }
             if g.stashes.is_empty() {
                 ui.label(egui::RichText::new("        Nothing is stashed.").size(11.5).color(pal().text_faint));
+            }
+        }
+        if self.section(ui, "reflog", "Reflog", g.reflog.len()) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let icon = glyph("history", icons::HISTORY);
+            for entry in &g.reflog {
+                let (hash, ago) = (&entry.hash[..entry.hash.len().min(8)], crate::git::ago(now - entry.time));
+                let tip = format!(
+                    "{}\n{hash} · {} · {ago}\nClick to select it in All Commits. Right click to go back to it.",
+                    entry.what, entry.name
+                );
+                let resp = plain_row(ui, icon, &entry.what, &ago, &tip);
+                if resp.clicked() {
+                    actions.push(Action::HistorySelect(entry.hash.clone()));
+                }
+                resp.context_menu(|ui| reflog_menu(ui, g, entry, actions));
+            }
+            if g.reflog.is_empty() {
+                ui.label(egui::RichText::new("        Nothing yet.").size(11.5).color(pal().text_faint));
             }
         }
         ui.add_space(4.0);

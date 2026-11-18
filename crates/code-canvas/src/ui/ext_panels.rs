@@ -409,7 +409,22 @@ fn apply(st: &mut UiState, ext: &mut Extensions, op: Option<Op>) {
     }
 }
 
-pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, actions: &mut Vec<Action>) {
+/// The problems of the open folder, and under its summary the other open folders that have some, each a click away.
+pub fn problems_panel(ui: &mut egui::Ui, pages: &[Page], active: usize, ext: &Extensions, actions: &mut Vec<Action>) {
+    let page = pages.get(active);
+    let elsewhere: Vec<(usize, String, u32, u32)> = pages
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != active)
+        .filter_map(|(index, other)| {
+            let (errors, warnings) = ext.totals_under(&other.root);
+            let name = other
+                .root
+                .file_name()
+                .map_or_else(|| other.root.display().to_string(), |name| name.to_string_lossy().into_owned());
+            (errors + warnings > 0).then_some((index, name, errors, warnings))
+        })
+        .collect();
     let mut files: Vec<_> = page.map(|p| ext.diagnostics_under(&p.root).collect()).unwrap_or_default();
     files.sort_by(|a, b| a.0.cmp(b.0));
     let errors: u32 = files.iter().map(|(_, d)| d.errors).sum();
@@ -428,6 +443,14 @@ pub fn problems_panel(ui: &mut egui::Ui, page: Option<&Page>, ext: &Extensions, 
             format!("{errors} errors · {warnings} warnings · in {} files", files.len())
         };
         ui.label(RichText::new(summary).size(11.5).color(pal().text_dim));
+        for (index, name, errors, warnings) in &elsewhere {
+            let text = format!("{}  {name}: {errors} errors · {warnings} warnings", icons::FOLDER);
+            let color = if *errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
+            let label = egui::Label::new(RichText::new(text).size(11.5).color(color)).sense(Sense::click());
+            if ui.add(label).on_hover_text("In another open folder: click to go to it").clicked() {
+                actions.push(Action::SwitchTab(*index));
+            }
+        }
     });
     let Some(repo) = page.and_then(|p| p.ready()).map(|r| &r.repo) else { return };
 

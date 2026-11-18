@@ -157,6 +157,8 @@ pub struct Page {
     found: Option<(Vec<Site>, FoundLines)>,
     pub git: Option<GitState>,
     pub history: crate::history::HistoryView,
+    /// The interactive rebase being arranged in its card.
+    pub rebase: Option<crate::rebase::Plan>,
     git_rx: Option<Receiver<Option<GitState>>>,
     pub only_changed: bool,
     pub editors: std::collections::HashMap<String, Editor>,
@@ -403,6 +405,7 @@ impl Page {
             found: None,
             git: None,
             history: Default::default(),
+            rebase: None,
             git_rx: None,
             only_changed: false,
             editors: Default::default(),
@@ -1005,6 +1008,21 @@ impl Page {
             (crate::git::GitOp::Rebase(branch), Ok(_)) => {
                 self.git_note = Some((true, format!("Rebased onto {branch}.")))
             }
+            (crate::git::GitOp::InteractiveRebase { stash, .. }, Ok(_)) => {
+                self.rebase = None;
+                let kept = if *stash { " Your changes are in Stashes: pop them to bring them back." } else { "" };
+                self.git_note = Some((true, format!("Rebased.{kept}")));
+            }
+            (crate::git::GitOp::Carry { operation, how }, Ok(_)) => {
+                let done = match how {
+                    crate::git::Carry::Continue => "finished",
+                    crate::git::Carry::Skip => "went on without that step",
+                    crate::git::Carry::Abort => "given up: everything is as it was",
+                };
+                self.git_note = Some((true, format!("{} {done}.", operation.noun())));
+            }
+            (crate::git::GitOp::CherryPick(_), Ok(_)) => self.git_note = Some((true, "Cherry-picked.".into())),
+            (crate::git::GitOp::Revert(_), Ok(_)) => self.git_note = Some((true, "Reverted.".into())),
             (_, Ok(_)) => {}
             (_, Err(e)) => self.git_note = Some((false, e)),
         }

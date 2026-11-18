@@ -2320,7 +2320,10 @@ impl App {
         let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
         match &op {
             GitOp::Stage(path) => self.save_these(unsaved.into_iter().filter(|(_, rel)| rel == path).collect(), false),
-            GitOp::StageAll | GitOp::Stash | GitOp::Commit { all: true, .. } => self.save_these(unsaved, false),
+            GitOp::StageAll
+            | GitOp::Stash
+            | GitOp::Commit { all: true, .. }
+            | GitOp::InteractiveRebase { stash: true, .. } => self.save_these(unsaved, false),
             GitOp::Discard(path) => self.drop_edits(active, Some(path)),
             GitOp::DiscardAll => self.drop_edits(active, None),
             _ => {}
@@ -3726,6 +3729,73 @@ impl App {
                 self.session_dirty = true;
                 self.request_redraw();
             }
+            Action::HistorySelect(hash) => {
+                if !self.ui.cards.contains(&Panel::History) {
+                    return;
+                }
+                let found = self.pages.get_mut(self.active).and_then(|page| {
+                    let at = page.history.index_of(&hash)?;
+                    page.history.scroll_to = Some(at);
+                    page.history.selected = Some(hash.clone());
+                    Some(page.history.commits[at].commit())
+                });
+                if found.is_some() {
+                    self.apply(Action::ShowCommit(found));
+                }
+                self.request_redraw();
+            }
+            Action::RebaseFrom(hash) => {
+                let Some(page) = self.pages.get_mut(self.active) else { return };
+                match crate::git::rebase_range(&page.root, &hash) {
+                    Some(crate::git::RebaseRange { base, commits })
+                        if !commits.is_empty() && commits.len() <= crate::rebase::MOST =>
+                    {
+                        page.rebase = Some(crate::rebase::Plan::new(base, commits));
+                        self.ui.show(Panel::Rebase);
+                    }
+                    Some(range) if range.commits.is_empty() => {
+                        let text = "There is no commit to rebase from there.";
+                        self.ext.notice(ext::Level::Info, "Source Control", text);
+                    }
+                    Some(_) => {
+                        let text = format!("That is more than {} commits: choose a later commit.", crate::rebase::MOST);
+                        self.ext.notice(ext::Level::Info, "Source Control", text);
+                    }
+                    None => {
+                        let text =
+                            "Only a commit that your branch grew from, and that is not a merge, can start a rebase.";
+                        self.ext.notice(ext::Level::Info, "Source Control", text);
+                    }
+                }
+                self.request_redraw();
+            }
+            Action::RebaseCancel => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.rebase = None;
+                }
+                self.ui.close_panel(&Panel::Rebase);
+                self.request_redraw();
+            }
+            Action::RebaseStart => {
+                use crate::git::{Change, GitOp};
+                let Some(page) = self.pages.get(self.active) else { return };
+                let Some(plan) = page.rebase.as_ref() else { return };
+                let dirty = page.git.as_ref().is_some_and(|g| g.changes.iter().any(|c| c.change != Change::Untracked))
+                    || self.unsaved().iter().any(|(i, _)| *i == self.active);
+                let op = GitOp::InteractiveRebase { base: plan.base.clone(), todo: plan.todo(), stash: dirty };
+                if dirty {
+                    let text = "You have changes that are not committed. They are put aside in a stash first (see Stashes in Source Control): pop it when the rebase is done.";
+                    let title = "Stash your changes and rebase?".to_string();
+                    return self.apply(Action::GitConfirm {
+                        op,
+                        title,
+                        text: text.to_string(),
+                        button: "Stash and rebase",
+                        danger: false,
+                    });
+                }
+                self.run_git(self.active, op);
+            }
             Action::HistoryHide(name) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.history.toggle_hidden(&name);
@@ -4153,6 +4223,24 @@ impl App {
                     }
                     ("mode", Some(page)) if mode.is_some() => page.history.set_mode(mode.unwrap_or_default()),
                     _ => log::warn!("script: history needs search <text> or mode message|author|hash|file"),
+                }
+                self.request_redraw();
+            }
+            Step::Rebase(what) => {
+                let (verb, rest) = what.split_once(' ').unwrap_or((what.as_str(), ""));
+                let (row, rest) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+                let row = row.parse::<usize>().unwrap_or(0).saturating_sub(1);
+                let plan = self.pages.get_mut(self.active).and_then(|page| page.rebase.as_mut());
+                match (verb, plan) {
+                    ("action", Some(plan)) => match crate::rebase::Verb::from_word(rest.trim()) {
+                        Some(pick) => plan.set(row, pick),
+                        None => log::warn!("script: rebase action needs pick, reword, squash, fixup or drop"),
+                    },
+                    ("reword", Some(plan)) if row < plan.entries.len() => {
+                        plan.entries[row].pick = crate::rebase::Verb::Reword;
+                        plan.entries[row].message = rest.to_string();
+                    }
+                    _ => log::warn!("script: rebase needs action <row> <word> or reword <row> <message>, and a plan"),
                 }
                 self.request_redraw();
             }
@@ -4870,6 +4958,10 @@ impl App {
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
             changed |= page.poll_git_op();
+            if i == self.active && page.rebase.is_none() && self.ui.cards.contains(&Panel::Rebase) {
+                self.ui.close_panel(&Panel::Rebase);
+                changed = true;
+            }
             for sym in std::mem::take(&mut page.want_exact) {
                 if let Some((path, line, col)) = page.use_site(sym) {
                     self.ext.request_relations(&path, line, col, page.id, (sym.file, sym.index));

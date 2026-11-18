@@ -126,6 +126,9 @@ pub struct Agent {
     /// The title the program gave the session (Claude Code makes one up from what it was asked), shown in place
     /// of the words of the prompt.
     pub title: String,
+    /// The folder the session works in, when the program says it: an assistant shows on the canvas only when
+    /// it works in one of its folders.
+    pub cwd: Option<PathBuf>,
     pub doing: Doing,
     pub note: String,
     pub path: Option<PathBuf>,
@@ -583,6 +586,7 @@ impl Agents {
             role: role.to_string(),
             task,
             title: String::new(),
+            cwd: None,
             doing: Doing::Thinking,
             note: String::new(),
             path: None,
@@ -663,6 +667,9 @@ impl Agents {
         let agent = self.agent(key, session, &role);
         agent.role = role;
         agent.at = Instant::now();
+        if let Some(cwd) = text(event, &["cwd"]) {
+            agent.cwd = Some(PathBuf::from(cwd));
+        }
         if let Some(task) = text(event, &["task"]) {
             agent.task = brief(&spoken(task), 48);
         }
@@ -738,6 +745,9 @@ impl Agents {
         };
         let agent = self.agent(&key, session, &role);
         agent.at = Instant::now();
+        if cwd.is_some() {
+            agent.cwd = cwd.clone();
+        }
         if transcript.is_some() {
             agent.transcript = transcript;
         }

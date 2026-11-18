@@ -38,6 +38,8 @@ pub enum Step {
     Deps(String),
     /// `search <text>` or `mode message|author|hash|file`: what the All Commits card looks for.
     History(String),
+    /// `action <row> pick|reword|squash|fixup|drop` or `reword <row> <message>`: what the rebase card plans (rows count from 1).
+    Rebase(String),
     Tab(usize),
     Folders,
     Zoom(f32),
@@ -138,6 +140,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "connected" => Step::Connected(arg == "on"),
         "deps" => Step::Deps(arg.into()),
         "history" => Step::History(arg.into()),
+        "rebase" => Step::Rebase(arg.into()),
         "tab" => Step::Tab(arg.parse().ok()?),
         "folders" => Step::Folders,
         "zoom" => Step::Zoom(arg.parse().ok()?),

@@ -401,6 +401,144 @@ pub struct GitState {
     pub ms: u32,
     pub prefix: String,
     pub head: String,
+    /// A merge, cherry-pick, revert or rebase that stopped and waits to be finished.
+    pub in_progress: Option<InProgress>,
+    /// Where HEAD has been lately, the newest first (the "undo" list).
+    pub reflog: Vec<ReflogEntry>,
+}
+
+impl GitState {
+    /// How many files are in conflict.
+    pub fn conflicts(&self) -> usize {
+        self.changes.iter().filter(|change| change.change == Change::Conflicted).count()
+    }
+}
+
+/// What git is in the middle of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    Merge,
+    CherryPick,
+    Revert,
+    Rebase,
+}
+
+impl Operation {
+    /// What the banner says it is doing.
+    pub fn doing(self) -> &'static str {
+        match self {
+            Operation::Merge => "Merging",
+            Operation::CherryPick => "Cherry-picking",
+            Operation::Revert => "Reverting",
+            Operation::Rebase => "Rebasing",
+        }
+    }
+
+    pub fn noun(self) -> &'static str {
+        match self {
+            Operation::Merge => "Merge",
+            Operation::CherryPick => "Cherry-pick",
+            Operation::Revert => "Revert",
+            Operation::Rebase => "Rebase",
+        }
+    }
+
+    /// The git command that goes with `--continue`, `--skip` and `--abort`.
+    fn command(self) -> &'static str {
+        match self {
+            Operation::Merge => "merge",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+            Operation::Rebase => "rebase",
+        }
+    }
+
+    /// A merge cannot leave one of its steps out; the others can.
+    pub fn can_skip(self) -> bool {
+        self != Operation::Merge
+    }
+}
+
+/// An operation that stopped, and how far it got when it has steps (a rebase: step 2 of 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InProgress {
+    pub operation: Operation,
+    pub step: Option<(u32, u32)>,
+}
+
+/// What can be done with an operation that stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carry {
+    Continue,
+    Skip,
+    Abort,
+}
+
+/// Which side of a conflict a file is taken from, as git names them (`--ours` is the branch the
+/// folder is on; in a rebase that is the branch being rebased onto).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Ours,
+    Theirs,
+}
+
+/// Tells what is in progress from the names that are in the git folder (`MERGE_HEAD`,
+/// `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge`, `rebase-apply`). A rebase wins over the
+/// others: it leaves `CHERRY_PICK_HEAD` while it replays a commit that conflicts. `git am` also
+/// uses `rebase-apply`, and is not one of these.
+fn in_progress_of(present: &[&str], step: Option<(u32, u32)>) -> Option<InProgress> {
+    let has = |name: &str| present.contains(&name);
+    let operation = if has("rebase-merge") || (has("rebase-apply") && !has("rebase-apply/applying")) {
+        Operation::Rebase
+    } else if has("MERGE_HEAD") {
+        Operation::Merge
+    } else if has("CHERRY_PICK_HEAD") {
+        Operation::CherryPick
+    } else if has("REVERT_HEAD") {
+        Operation::Revert
+    } else {
+        return None;
+    };
+    Some(InProgress { operation, step: step.filter(|_| operation == Operation::Rebase) })
+}
+
+/// Looks in the git folder for an operation that stopped.
+fn read_in_progress(git_dir: &Path) -> Option<InProgress> {
+    let names =
+        ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "rebase-apply/applying"];
+    let present: Vec<&str> = names.iter().copied().filter(|name| git_dir.join(name).exists()).collect();
+    let number = |file: &str| std::fs::read_to_string(git_dir.join(file)).ok()?.trim().parse::<u32>().ok();
+    let step = if present.contains(&"rebase-merge") {
+        number("rebase-merge/msgnum").zip(number("rebase-merge/end"))
+    } else {
+        number("rebase-apply/next").zip(number("rebase-apply/last"))
+    };
+    in_progress_of(&present, step)
+}
+
+/// A line of `git reflog`: where HEAD was, and what moved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflogEntry {
+    pub hash: String,
+    /// `HEAD@{3}`.
+    pub name: String,
+    /// What was done, as git writes it: `commit: Add x`, `checkout: moving from a to b`.
+    pub what: String,
+    pub time: i64,
+}
+
+/// Reads `git reflog -n 30 --format=%H%x1f%gd%x1f%gs%x1f%ct`.
+fn parse_reflog(text: &str) -> Vec<ReflogEntry> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\u{1f}');
+            let hash = parts.next().filter(|hash| !hash.is_empty())?;
+            let name = parts.next()?;
+            let what = parts.next()?;
+            let time = parts.next()?.trim().parse().ok()?;
+            Some(ReflogEntry { hash: hash.to_string(), name: name.to_string(), what: what.to_string(), time })
+        })
+        .collect()
 }
 
 /// A branch of this computer, with the remote branch it follows and how far apart they are.
@@ -729,6 +867,23 @@ pub enum GitOp {
         to: String,
         mode: ResetMode,
     },
+    /// Take one side of a file in conflict, and mark it resolved.
+    Take {
+        path: String,
+        side: Side,
+    },
+    /// Carry on with, skip a step of, or give up an operation that stopped.
+    Carry {
+        operation: Operation,
+        how: Carry,
+    },
+    /// Rebase with the todo list the person arranged: `base` is the commit to start after (none: from
+    /// the first commit of the history), `todo` the text of the list, `stash` puts the changes aside first.
+    InteractiveRebase {
+        base: Option<String>,
+        todo: String,
+        stash: bool,
+    },
 }
 
 /// How far `git reset` goes: only the branch, the branch and the index, or the files too.
@@ -821,7 +976,122 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
         GitOp::CherryPick(hash) => vec![s(&["cherry-pick", hash])],
         GitOp::Revert(hash) => vec![s(&["revert", "--no-edit", hash])],
         GitOp::Reset { to, mode } => vec![s(&["reset", &format!("--{}", mode.word()), to])],
+        GitOp::Take { path, side } => {
+            let side = if *side == Side::Ours { "--ours" } else { "--theirs" };
+            vec![s(&["checkout", side, "--", path]), s(&["add", "--", path])]
+        }
+        GitOp::Carry { operation, how } => match (operation, how) {
+            (Operation::Merge, Carry::Continue) => vec![s(&["commit", "--no-edit"])],
+            (Operation::Merge, Carry::Skip) => Vec::new(),
+            (Operation::Merge, Carry::Abort) => vec![s(&["merge", "--abort"])],
+            (_, how) => {
+                let flag = match how {
+                    Carry::Continue => "--continue",
+                    Carry::Skip => "--skip",
+                    Carry::Abort => "--abort",
+                };
+                vec![s(&[operation.command(), flag])]
+            }
+        },
+        GitOp::InteractiveRebase { .. } => Vec::new(),
     }
+}
+
+/// Quotes a text for `sh` so that it is read back as it is: in single quotes, with each single
+/// quote closed, escaped and opened again.
+pub fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// Whether some file is still in conflict.
+fn has_conflicts(root: &Path) -> bool {
+    git(root, &["diff", "--name-only", "--diff-filter=U"]).is_some_and(|out| !out.iter().all(u8::is_ascii_whitespace))
+}
+
+/// The stretch of history an interactive rebase replays.
+pub struct RebaseRange {
+    /// The commit it starts after; none when it starts at the first commit of the history.
+    pub base: Option<String>,
+    /// `(hash, subject)`, oldest first.
+    pub commits: Vec<(String, String)>,
+}
+
+/// The commits an interactive rebase from `hash` replays, oldest first as `(hash, subject)`, and
+/// the commit it starts after (none when `hash` is the first commit of the history). Merges are
+/// left out, as a rebase does. None when `hash` is not behind HEAD or is a merge.
+pub fn rebase_range(root: &Path, hash: &str) -> Option<RebaseRange> {
+    let text = |out: Vec<u8>| String::from_utf8_lossy(&out).into_owned();
+    git(root, &["merge-base", "--is-ancestor", hash, "HEAD"])?;
+    let parents = git(root, &["rev-list", "--parents", "-n", "1", hash]).map(text)?;
+    let mut words = parents.split_whitespace().skip(1);
+    let base = words.next().map(str::to_string);
+    if words.next().is_some() {
+        return None;
+    }
+    let range = base.as_ref().map(|base| format!("{base}..HEAD")).unwrap_or_else(|| "HEAD".to_string());
+    let args = ["log", "--no-merges", "--topo-order", "--reverse", "--format=%H%x1f%s", range.as_str()];
+    let listed = git(root, &args).map(text)?;
+    let commits = listed
+        .lines()
+        .filter_map(|line| line.split_once('\u{1f}'))
+        .map(|(hash, subject)| (hash.to_string(), subject.to_string()))
+        .collect();
+    Some(RebaseRange { base, commits })
+}
+
+/// Runs a rebase with the todo list given. The list is written to a file and the sequence editor
+/// of this one run is `cp` of that file over the list git made, so no editor ever opens.
+fn interactive_rebase(root: &Path, base: Option<&str>, todo: &str, stash: bool) -> Result<String, String> {
+    if stash {
+        run_steps(root, &[vec!["stash".to_string(), "push".to_string(), "--include-untracked".to_string()]], false)?;
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let file = std::env::temp_dir().join(format!("code-canvas-rebase-{}-{nanos}.txt", std::process::id()));
+    std::fs::write(&file, todo).map_err(|e| format!("The list of the rebase could not be written: {e}"))?;
+    let editor = format!("cp {}", sh_quote(&file.to_string_lossy().replace('\\', "/")));
+    let mut c = command(root);
+    c.env("GIT_SEQUENCE_EDITOR", editor).env("GIT_EDITOR", "true");
+    c.args(["rebase", "-i"]);
+    match base {
+        Some(base) => c.arg(base),
+        None => c.arg("--root"),
+    };
+    let out = c.stdin(Stdio::null()).output();
+    let _ = std::fs::remove_file(&file);
+    let out = out.map_err(|e| format!("git could not be run: {e}"))?;
+    if out.status.success() {
+        return Ok(String::new());
+    }
+    Err(failure(root, &out, true))
+}
+
+/// What to tell when git failed: a conflict that stopped the operation is not an error to read.
+fn failure(root: &Path, out: &std::process::Output, may_stop: bool) -> String {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+    if may_stop && has_conflicts(root) {
+        return "Stopped on a conflict: fix the files marked in red, then Continue.".to_string();
+    }
+    let err = text(&out.stderr);
+    if err.is_empty() {
+        text(&out.stdout)
+    } else {
+        err
+    }
+}
+
+fn run_steps(root: &Path, steps: &[Vec<String>], may_stop: bool) -> Result<String, String> {
+    let mut said = String::new();
+    for args in steps {
+        let mut c = command(root);
+        let out = c.args(args).stdin(Stdio::null()).output().map_err(|e| format!("git could not be run: {e}"))?;
+        if !out.status.success() {
+            return Err(failure(root, &out, may_stop));
+        }
+        if said.is_empty() {
+            said = String::from_utf8_lossy(&out.stdout).trim().lines().next().unwrap_or_default().to_string();
+        }
+    }
+    Ok(said)
 }
 
 fn checkout(root: &Path, from: Option<&str>, paths: &[&str]) -> Result<(), String> {
@@ -881,20 +1151,18 @@ pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
         }
         other => other.clone(),
     };
-    let mut said = String::new();
-    for args in steps(&op) {
-        let mut c = command(root);
-        let out = c.args(&args).stdin(Stdio::null()).output().map_err(|e| format!("git could not be run: {e}"))?;
-        let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
-        if !out.status.success() {
-            let err = text(&out.stderr);
-            return Err(if err.is_empty() { text(&out.stdout) } else { err });
-        }
-        if said.is_empty() {
-            said = text(&out.stdout).lines().next().unwrap_or_default().to_string();
-        }
+    if let GitOp::InteractiveRebase { base, todo, stash } = &op {
+        return interactive_rebase(root, base.as_deref(), todo, *stash);
     }
-    Ok(said)
+    let may_stop = matches!(
+        op,
+        GitOp::Merge(_)
+            | GitOp::Rebase(_)
+            | GitOp::CherryPick(_)
+            | GitOp::Revert(_)
+            | GitOp::Carry { how: Carry::Continue | Carry::Skip, .. }
+    );
+    run_steps(root, &steps(&op), may_stop)
 }
 
 pub fn change_for_message(root: &Path) -> Option<crate::commit_ai::Change> {
@@ -921,7 +1189,10 @@ const MAX_CHANGES: usize = 5000;
 
 fn command(root: &Path) -> Command {
     let mut c = Command::new("git");
-    c.env("GIT_OPTIONAL_LOCKS", "0").arg("-C").arg(root).args(["-c", "core.quotepath=off", "--literal-pathspecs"]);
+    // Nothing the app runs may open an editor or a pager: an editor is `true` (keep the message git
+    // made), and the rebase that needs a list sets its own sequence editor.
+    c.env("GIT_OPTIONAL_LOCKS", "0").env("GIT_EDITOR", "true").env("GIT_SEQUENCE_EDITOR", "true");
+    c.env("GIT_PAGER", "cat").arg("-C").arg(root).args(["-c", "core.quotepath=off", "--literal-pathspecs"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -942,7 +1213,7 @@ fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    let (status, prefix, diff, log, list, ignored, remote_refs, remote_names, tag_refs, stash_list) =
+    let (status, prefix, diff, log, list, ignored, remote_refs, remote_names, tag_refs, stash_list, git_dir, reflog) =
         std::thread::scope(|s| {
             let status = s.spawn(|| {
                 git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."])
@@ -968,6 +1239,8 @@ pub fn load(root: &Path) -> Option<GitState> {
                 git(root, &["for-each-ref", "refs/tags", "--sort=-creatordate", "--format=%(refname:short)"])
             });
             let stash_list = s.spawn(|| git(root, &["stash", "list", "--format=%gd%x1f%s"]));
+            let git_dir = s.spawn(|| git(root, &["rev-parse", "--git-dir"]));
+            let reflog = s.spawn(|| git(root, &["reflog", "-n", "30", "--format=%H%x1f%gd%x1f%gs%x1f%ct"]));
             let ignored = s.spawn(|| {
                 git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
             });
@@ -983,6 +1256,8 @@ pub fn load(root: &Path) -> Option<GitState> {
                 done(remote_names),
                 done(tag_refs),
                 done(stash_list),
+                done(git_dir),
+                done(reflog),
             )
         });
     let status = status?;
@@ -1006,6 +1281,13 @@ pub fn load(root: &Path) -> Option<GitState> {
     }
     if let Some(tags) = tag_refs {
         state.tags = parse_tags(&String::from_utf8_lossy(&tags));
+    }
+    if let Some(dir) = git_dir {
+        let dir = String::from_utf8_lossy(&dir).trim().to_string();
+        state.in_progress = read_in_progress(&root.join(dir));
+    }
+    if let Some(reflog) = reflog {
+        state.reflog = parse_reflog(&String::from_utf8_lossy(&reflog));
     }
     if let Some(stashes) = stash_list {
         state.stashes = parse_stashes(&String::from_utf8_lossy(&stashes));
@@ -1915,6 +2197,113 @@ mod tests {
         assert_eq!(one(GitOp::StashApply(2)), v(&["stash", "apply", "stash@{2}"]));
         assert_eq!(one(GitOp::StashPopAt(0)), v(&["stash", "pop", "stash@{0}"]));
         assert_eq!(one(GitOp::StashDrop(1)), v(&["stash", "drop", "stash@{1}"]));
+    }
+
+    #[test]
+    fn what_is_in_progress() {
+        assert_eq!(in_progress_of(&[], None), None);
+        let merging = in_progress_of(&["MERGE_HEAD"], None).unwrap();
+        assert_eq!(merging.operation, Operation::Merge);
+        assert_eq!(in_progress_of(&["CHERRY_PICK_HEAD"], None).unwrap().operation, Operation::CherryPick);
+        assert_eq!(in_progress_of(&["REVERT_HEAD"], None).unwrap().operation, Operation::Revert);
+        let rebase = in_progress_of(&["rebase-merge", "CHERRY_PICK_HEAD"], Some((2, 5))).unwrap();
+        assert_eq!((rebase.operation, rebase.step), (Operation::Rebase, Some((2, 5))));
+        assert_eq!(in_progress_of(&["rebase-apply"], None).unwrap().operation, Operation::Rebase);
+        assert_eq!(in_progress_of(&["rebase-apply", "rebase-apply/applying"], None), None, "git am is not a rebase");
+        assert_eq!(in_progress_of(&["MERGE_HEAD"], Some((1, 2))).unwrap().step, None, "only a rebase has steps");
+    }
+
+    #[test]
+    fn conflict_and_carry_steps() {
+        let v = |args: &[&[&str]]| {
+            args.iter().map(|a| a.iter().map(|s| s.to_string()).collect::<Vec<String>>()).collect::<Vec<_>>()
+        };
+        let take = |side| steps(&GitOp::Take { path: "a b.txt".into(), side });
+        assert_eq!(take(Side::Ours), v(&[&["checkout", "--ours", "--", "a b.txt"], &["add", "--", "a b.txt"]]));
+        assert_eq!(take(Side::Theirs), v(&[&["checkout", "--theirs", "--", "a b.txt"], &["add", "--", "a b.txt"]]));
+        let carry = |operation, how| steps(&GitOp::Carry { operation, how });
+        assert_eq!(carry(Operation::Merge, Carry::Continue), v(&[&["commit", "--no-edit"]]));
+        assert_eq!(carry(Operation::Merge, Carry::Abort), v(&[&["merge", "--abort"]]));
+        assert!(carry(Operation::Merge, Carry::Skip).is_empty());
+        assert_eq!(carry(Operation::Rebase, Carry::Continue), v(&[&["rebase", "--continue"]]));
+        assert_eq!(carry(Operation::Rebase, Carry::Skip), v(&[&["rebase", "--skip"]]));
+        assert_eq!(carry(Operation::CherryPick, Carry::Abort), v(&[&["cherry-pick", "--abort"]]));
+        assert_eq!(carry(Operation::Revert, Carry::Continue), v(&[&["revert", "--continue"]]));
+        assert!(!Operation::Merge.can_skip() && Operation::Rebase.can_skip());
+    }
+
+    #[test]
+    fn the_reflog_is_read() {
+        let text = "aaa\u{1f}HEAD@{0}\u{1f}commit: Add x\u{1f}1700000100\naaa\u{1f}HEAD@{1}\u{1f}checkout: moving from a to b\u{1f}1700000000\nbad line\n";
+        let entries = parse_reflog(text);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "HEAD@{0}");
+        assert_eq!(entries[0].what, "commit: Add x");
+        assert_eq!(entries[1].what, "checkout: moving from a to b");
+        assert_eq!(entries[1].time, 1_700_000_000);
+    }
+
+    /// A conflict stops a cherry-pick, the banner's state is read, a side is taken and it goes on.
+    #[test]
+    fn a_conflict_is_resolved_and_the_cherry_pick_continues() {
+        let Some(dir) = repository("conflict") else { return };
+        let write = |text: &str| std::fs::write(dir.join("f.txt"), text).unwrap();
+        write("base\n");
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &["commit", "-q", "-m", "base"]).unwrap();
+        git(&dir, &["switch", "-q", "-c", "topic"]).unwrap();
+        write("topic\n");
+        git(&dir, &["commit", "-q", "-am", "topic change"]).unwrap();
+        git(&dir, &["switch", "-q", "-"]).unwrap();
+        write("main\n");
+        git(&dir, &["commit", "-q", "-am", "main change"]).unwrap();
+        let picked = run(&dir, &GitOp::CherryPick("topic".into()));
+        assert!(picked.is_err(), "the pick stops on the conflict");
+        let state = load(&dir).unwrap();
+        assert_eq!(state.in_progress.map(|p| p.operation), Some(Operation::CherryPick));
+        assert_eq!(state.conflicts(), 1);
+        run(&dir, &GitOp::Take { path: "f.txt".into(), side: Side::Theirs }).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap().trim(), "topic");
+        assert_eq!(load(&dir).unwrap().conflicts(), 0);
+        run(&dir, &GitOp::Carry { operation: Operation::CherryPick, how: Carry::Continue }).unwrap();
+        let state = load(&dir).unwrap();
+        assert_eq!(state.in_progress, None);
+        assert_eq!(state.graph[0].commit.subject, "topic change");
+        assert!(state.reflog.iter().any(|entry| entry.what.contains("topic change")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The list we make reorders, squashes, rewords (with quotes in the message) and drops.
+    #[test]
+    fn an_interactive_rebase_runs_the_list() {
+        let Some(dir) = repository("rebase-list") else { return };
+        let commit = |name: &str| {
+            std::fs::write(dir.join(format!("{name}.txt")), name).unwrap();
+            git(&dir, &["add", "-A"]).unwrap();
+            git(&dir, &["commit", "-q", "-m", name]).unwrap();
+        };
+        for name in ["base", "c1", "c2", "c3", "c4"] {
+            commit(name);
+        }
+        let range = rebase_range(&dir, said(&dir, &["rev-parse", "HEAD~3"]).trim()).unwrap();
+        assert_eq!(range.commits.len(), 4, "c1 to c4");
+        let mut plan = crate::rebase::Plan::new(range.base.clone(), range.commits);
+        use crate::rebase::Verb;
+        plan.move_to(3, 2);
+        plan.set(1, Verb::Squash);
+        plan.set(3, Verb::Drop);
+        plan.entries[2].pick = Verb::Reword;
+        plan.entries[2].message = "Say \"hi\" it's $HOME".to_string();
+        let op = GitOp::InteractiveRebase { base: plan.base.clone(), todo: plan.todo(), stash: false };
+        run(&dir, &op).unwrap();
+        let subjects = said(&dir, &["log", "--format=%s", "--reverse"]);
+        let subjects: Vec<&str> = subjects.lines().collect();
+        assert_eq!(subjects.len(), 3, "base, c1 with c2 melted in, and the reworded one: {subjects:?}");
+        assert_eq!(subjects[2], "Say \"hi\" it's $HOME");
+        assert!(dir.join("c2.txt").exists() && dir.join("c4.txt").exists());
+        assert!(!dir.join("c3.txt").exists(), "c3 was dropped");
+        assert_eq!(load(&dir).unwrap().in_progress, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -13,12 +13,15 @@ use crate::tree_ops;
 
 mod branch_picker;
 mod branch_sidebar;
+mod conflict_row;
 mod console;
 mod deps_panel;
 mod ext_panels;
 mod files_tree;
 mod git_panel;
 mod history_panel;
+mod progress_banner;
+mod rebase_panel;
 mod settings;
 mod versions_menu;
 
@@ -47,6 +50,8 @@ pub enum Panel {
     Consoles(u64),
     /// Every commit of the repository, with the lines of its branches.
     History,
+    /// The commits of an interactive rebase, arranged before it starts.
+    Rebase,
     Webview(String),
     /// A container of an extension's tree views, by its id.
     Tree(String),
@@ -75,6 +80,7 @@ impl Panel {
             Panel::Console => "console".to_string(),
             Panel::Consoles(card) => format!("console:{card}"),
             Panel::History => "history".to_string(),
+            Panel::Rebase => "rebase".to_string(),
             Panel::Webview(view) => format!("view:{view}"),
             Panel::Tree(id) => format!("{}{id}", crate::ext::TREE),
         }
@@ -93,6 +99,7 @@ impl Panel {
             "media" => Panel::Media,
             "console" => Panel::Console,
             "history" => Panel::History,
+            "rebase" => Panel::Rebase,
             card if card.starts_with("console:") => Panel::Consoles(card["console:".len()..].parse().ok()?),
             tree if tree.starts_with(crate::ext::TREE) => Panel::Tree(tree[crate::ext::TREE.len()..].to_string()),
             view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
@@ -739,6 +746,14 @@ pub enum Action {
     HistoryOnly(String),
     /// Leave a branch out of the All Commits card, or bring it back.
     HistoryHide(String),
+    /// Select a commit in the All Commits card, when it is open and has read that far.
+    HistorySelect(String),
+    /// Open the card to arrange an interactive rebase that starts at a commit.
+    RebaseFrom(String),
+    /// Start the rebase arranged in the card.
+    RebaseStart,
+    /// Close the card without rebasing.
+    RebaseCancel,
     Share(ShareOp),
     Workspace(WorkspaceOp),
     Agent(AgentOp),
@@ -1466,7 +1481,7 @@ fn status_bar(
                 let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
                 save = label.on_hover_text(tip).clicked();
             }
-            let (errors, warnings) = ext.totals();
+            let (errors, warnings) = page.map_or((0, 0), |page| ext.totals_under(&page.root));
             {
                 let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
                 let color = match (errors, warnings) {
@@ -1683,7 +1698,7 @@ fn card_of(
     match panel {
         Panel::Files => {}
         Panel::Search | Panel::Extensions => {}
-        Panel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
+        Panel::Problems => ext_panels::problems_panel(ui, pages, active, ext, actions),
         Panel::Changes => {}
         Panel::Extension => ext_panels::extension_view(ui, st, ext),
         Panel::Help => help_panel(ui, &st.keys),
@@ -1700,6 +1715,7 @@ fn card_of(
         Panel::Console => console::console_panel(ui, st, ext, actions, crate::consoles::MAIN),
         Panel::Consoles(card) => console::console_panel(ui, st, ext, actions, *card),
         Panel::History => history_panel::history_panel(ui, pages.get_mut(active), actions),
+        Panel::Rebase => rebase_panel::rebase_panel(ui, pages.get_mut(active), actions),
         Panel::Tree(id) => ext_panels::tree_panel(ui, st, ext, id),
     }
 }
@@ -1733,6 +1749,7 @@ fn cards(
             Panel::Console | Panel::Consoles(_) => 600.0,
             Panel::Extension => 580.0,
             Panel::History => 760.0,
+            Panel::Rebase => 520.0,
             page if page.is_page() => 420.0,
             _ => 330.0,
         };
@@ -1966,7 +1983,7 @@ fn paint_look(ui: &egui::Ui, st: &mut UiState, ext: &Extensions, look: &RailLook
 fn rail_badge(ui: &egui::Ui, ext: &Extensions, page: Option<&Page>, panel: &Panel, icon: Rect) {
     match panel {
         Panel::Problems => {
-            let (errors, warnings) = ext.totals();
+            let (errors, warnings) = page.map_or((0, 0), |page| ext.totals_under(&page.root));
             if errors + warnings > 0 {
                 let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
                 ui.painter().circle_filled(icon.right_top() + Vec2::new(-9.0, 9.0), 3.5, color);
@@ -4413,8 +4430,7 @@ fn rail_face(
 fn round_picture(painter: &egui::Painter, texture: egui::TextureId, center: Pos2, radius: f32, tint: Color32) {
     const SIDES: usize = 32;
     let mut mesh = egui::Mesh::with_texture(texture);
-    mesh.colored_vertex(center, tint);
-    mesh.vertices[0].uv = Pos2::new(0.5, 0.5);
+    mesh.vertices.push(egui::epaint::Vertex { pos: center, uv: Pos2::new(0.5, 0.5), color: tint });
     for i in 0..=SIDES {
         let angle = i as f32 / SIDES as f32 * std::f32::consts::TAU;
         let (sin, cos) = angle.sin_cos();

@@ -2276,8 +2276,9 @@ impl Extensions {
         }
     }
 
-    pub fn totals(&self) -> (u32, u32) {
-        self.diagnostics.values().fold((0, 0), |(e, w), d| (e + d.errors, w + d.warnings))
+    /// The errors and warnings in the files of one folder: what its Problems panel lists.
+    pub fn totals_under(&self, root: &Path) -> (u32, u32) {
+        self.diagnostics_under(root).fold((0, 0), |(e, w), (_, d)| (e + d.errors, w + d.warnings))
     }
 }
 
@@ -2353,8 +2354,9 @@ mod tests {
             ]
         });
         ext.on_message(&message, &mut events);
-        assert_eq!(ext.totals(), (1, 1));
         let root = if cfg!(windows) { "c:\\work\\app" } else { "C:/Work/App" };
+        assert_eq!(ext.totals_under(Path::new(root)), (1, 1));
+        assert_eq!(ext.totals_under(Path::new("C:/Work/Other")), (0, 0), "another folder counts only its own");
         let found: Vec<_> = ext.diagnostics_under(Path::new(root)).collect();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, "src/a.ts");
@@ -2362,7 +2364,7 @@ mod tests {
         assert_eq!(ext.diagnostics_under(Path::new("C:/Work/Other")).count(), 0);
 
         ext.on_message(&json!({ "type": "diagnostics", "path": "C:\\Work\\App\\src\\a.ts", "items": [] }), &mut events);
-        assert_eq!(ext.totals(), (0, 0));
+        assert_eq!(ext.totals_under(Path::new(root)), (0, 0));
     }
 
     #[test]

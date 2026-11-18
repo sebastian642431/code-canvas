@@ -1,19 +1,22 @@
-title: Following an assistant that works outside the open folders shows its file, and the folder opened for that goes when it moves elsewhere or is no longer followed
+title: An assistant that works outside the folders here (another chat, in another editor) does not show on the canvas and cannot be followed; once it reads a file of a folder here it shows and is followed there
 folders: rust-small
-fixtures: plain, git-history
-expect-log: showing .*plain.*main\.rs from outside the open folders
-expect-log: plain/src was opened to follow an assistant: it goes now
-forbid-log: script: ignoring
+fixtures: plain
+expect-log: an assistant \(Codex\) works outside the folders here: it is not followed
+forbid-log: from outside the open folders
+forbid-log: was opened to follow an assistant
+forbid-log: script: agent needs
 
 wait 3000
 agent {"agent":"codex-1","name":"Codex","task":"Tidy the plain copy","action":"read","path":"{WORK}/fix/plain/src/main.rs","line":1,"lines":3}
 wait 800
 agent Codex
 wait 2500
-mark a-following-outside
+mark a-not-followed-outside
 wait 600
-agent {"agent":"codex-1","name":"Codex","task":"Tidy the plain copy","action":"read","path":"{WORK}/fix/git-history/src/side.rs","line":1,"lines":2}
-wait 3000
-mark b-moved-to-another-folder
+agent {"agent":"codex-1","name":"Codex","task":"Tidy the plain copy","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":1,"lines":2}
+wait 800
+agent Codex
+wait 2500
+mark b-followed-in-a-folder-here
 wait 600
 quit

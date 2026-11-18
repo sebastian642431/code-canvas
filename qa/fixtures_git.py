@@ -186,8 +186,35 @@ def git_graph(root):
     commit(root, "main 6")
 
 
+def git_conflict(root):
+    """main and the branch topic both changed the second line of notes.txt after their common commit, and
+    topic also made topic-only.txt: cherry-picking the topic commit onto main stops on a conflict in notes.txt."""
+    init(root)
+    write(root, "notes.txt", "alpha\nbeta\ngamma\n")
+    commit(root, "base notes")
+    git(root, "switch", "-q", "-c", "topic")
+    write(root, "notes.txt", "alpha\nbeta from topic\ngamma\n")
+    write(root, "topic-only.txt", "only on topic\n")
+    commit(root, "topic change")
+    git(root, "switch", "-q", "main")
+    write(root, "notes.txt", "alpha\nbeta from main\ngamma\n")
+    commit(root, "main change")
+
+
+def git_rebase(root):
+    """main with a base commit and four commits after it (c1 to c4), each adding its own file."""
+    init(root)
+    write(root, "base.txt", "base\n")
+    commit(root, "base")
+    for n in (1, 2, 3, 4):
+        write(root, f"c{n}.txt", f"commit {n}\n")
+        commit(root, f"c{n} adds a file")
+
+
 FIXTURES = {
     "git-graph": git_graph,
+    "git-conflict": git_conflict,
+    "git-rebase": git_rebase,
     "git-sidebar": git_sidebar,
     "git-remote-branches": git_remote_branches,
     "git-shifted": git_shifted,

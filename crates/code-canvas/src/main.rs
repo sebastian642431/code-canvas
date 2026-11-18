@@ -31,6 +31,7 @@ mod pictures;
 mod plist;
 mod prefs;
 mod rails;
+mod rebase;
 mod script;
 mod session;
 mod share;
@@ -82,9 +83,15 @@ fn init_logging() {
     .init();
 
     let default_hook = std::panic::take_hook();
+    // A test instance (a QA script or the benchmark) only writes the crash to its log: a window would pop up on
+    // the screen of whoever is working while the tests run.
+    let testing = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
     std::panic::set_hook(Box::new(move |info| {
         log::error!("panic: {info}");
         default_hook(info);
+        if testing {
+            return;
+        }
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
             .set_title("Code Canvas crashed")

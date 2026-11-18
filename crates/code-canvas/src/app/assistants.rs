@@ -37,6 +37,35 @@ fn step_said(step: &Step) -> String {
 }
 
 impl App {
+    /// Whether an assistant works in this canvas: the folder of its session, or a file it read or changed, is
+    /// inside one of the WORKSPACE folders. One working in a folder that is not here (another chat in another
+    /// editor) does not show and cannot be followed. The assistants of a shared session always show.
+    fn belongs(&self, agent: &Agent) -> bool {
+        if agent.from.is_some() {
+            return true;
+        }
+        let key = |path: &Path| ext::path_key(path.to_string_lossy().trim_end_matches(['/', '\\']));
+        let roots: Vec<String> = self
+            .workspace
+            .iter()
+            .map(|known| &known.path)
+            .chain(self.pages.iter().map(|page| &page.root))
+            .map(|root| key(root))
+            .collect();
+        let inside = |path: &Path| {
+            let path = key(path);
+            roots
+                .iter()
+                .any(|root| path == *root || path.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/')))
+        };
+        agent
+            .cwd
+            .iter()
+            .chain(agent.path.iter())
+            .chain(agent.trail.iter().map(|step| &step.path))
+            .any(|path| inside(path))
+    }
+
     fn agent_file(&self, agent: &Agent) -> Option<(usize, String)> {
         self.file_on_canvas(agent.path.as_deref()?)
     }
@@ -172,6 +201,11 @@ impl App {
             }
         }
         let followed = self.agents.following.as_ref().and_then(|key| self.agents.find(key)).cloned();
+        if let Some(agent) = followed.as_ref().filter(|agent| !self.belongs(agent)) {
+            log::info!("an assistant ({}) works outside the folders here: it is not followed", agent.role);
+            self.agent_op(AgentOp::Follow(None));
+            return true;
+        }
         let busy = self.drag.is_some() || self.pages.get(self.active).is_some_and(|page| page.editing.is_some());
         if let Some(agent) = followed.filter(|_| !busy) {
             let now = (agent.moved, agent.lines.map(|lines| lines.0));
@@ -280,7 +314,7 @@ impl App {
         }
         let mut files: std::collections::HashMap<&Path, Option<(usize, String)>> = Default::default();
         let mut trails = Vec::new();
-        for agent in self.agents.list.iter().filter(|agent| !agent.trail.is_empty()) {
+        for agent in self.agents.list.iter().filter(|agent| !agent.trail.is_empty() && self.belongs(agent)) {
             let mut steps = Vec::new();
             for step in &agent.trail {
                 let file = files
@@ -320,7 +354,7 @@ impl App {
         }
         let shown = self.shown();
         let (mut views, mut marks) = (Vec::new(), Vec::new());
-        for agent in &self.agents.list {
+        for agent in self.agents.list.iter().filter(|agent| self.belongs(agent)) {
             let said = self.agent_said(agent);
             let owner = self.share_owner(agent);
             let model = crate::models::name(&agent.model);

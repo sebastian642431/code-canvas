@@ -3,6 +3,7 @@
 //! read from git on a thread of their own, the first one when the card opens and the next ones when
 //! the list is scrolled near its end.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -86,6 +87,9 @@ pub struct HistoryView {
     pub selected: Option<String>,
     /// A row the list is to scroll to.
     pub scroll_to: Option<usize>,
+    /// The commits read so far that HEAD grew from, HEAD itself too.
+    behind_head: HashSet<String>,
+    behind_head_for: (String, usize),
 }
 
 impl Default for HistoryView {
@@ -107,6 +111,8 @@ impl Default for HistoryView {
             stamp: String::new(),
             selected: None,
             scroll_to: None,
+            behind_head: HashSet::new(),
+            behind_head_for: (String::new(), 0),
         }
     }
 }
@@ -241,6 +247,27 @@ impl HistoryView {
         changed
     }
 
+    /// Works out which of the commits read so far HEAD grew from (children come before their
+    /// parents in the list, so one pass is enough). Nothing is done when it is already known.
+    pub fn mark_ancestors(&mut self, head: &str) {
+        if self.behind_head_for.0 == head && self.behind_head_for.1 == self.commits.len() {
+            return;
+        }
+        self.behind_head_for = (head.to_string(), self.commits.len());
+        self.behind_head.clear();
+        self.behind_head.insert(head.to_string());
+        for commit in &self.commits {
+            if self.behind_head.contains(&commit.hash) {
+                self.behind_head.extend(commit.parents.iter().cloned());
+            }
+        }
+    }
+
+    /// Whether HEAD grew from this commit, or it is HEAD: a commit an interactive rebase can start at.
+    pub fn is_behind_head(&self, hash: &str) -> bool {
+        self.behind_head.contains(hash)
+    }
+
     pub fn index_of(&self, hash: &str) -> Option<usize> {
         self.commits.iter().position(|commit| commit.hash == hash)
     }
@@ -266,6 +293,31 @@ mod tests {
         view.toggle_hidden("d");
         view.toggle_hidden("d");
         assert!(view.query.hidden.is_empty());
+    }
+
+    #[test]
+    fn the_commits_head_grew_from_are_found() {
+        let commit = |hash: &str, parents: &[&str]| HistoryCommit {
+            hash: hash.to_string(),
+            parents: parents.iter().map(|p| p.to_string()).collect(),
+            author: String::new(),
+            email: String::new(),
+            time: 0,
+            refs: Vec::new(),
+            subject: String::new(),
+        };
+        // main: m3 <- m2 <- m1 and a branch b2 <- b1 that left m1 (children come before parents).
+        let commits = vec![
+            commit("b2", &["b1"]),
+            commit("m3", &["m2"]),
+            commit("m2", &["m1"]),
+            commit("b1", &["m1"]),
+            commit("m1", &[]),
+        ];
+        let mut view = HistoryView { commits, ..HistoryView::default() };
+        view.mark_ancestors("m3");
+        assert!(view.is_behind_head("m3") && view.is_behind_head("m2") && view.is_behind_head("m1"));
+        assert!(!view.is_behind_head("b1") && !view.is_behind_head("b2"));
     }
 
     #[test]

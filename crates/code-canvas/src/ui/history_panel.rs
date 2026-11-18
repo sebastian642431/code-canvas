@@ -141,7 +141,7 @@ fn confirm(op: GitOp, title: String, text: &str, button: &'static str, danger: b
 }
 
 /// What a right click on a commit offers.
-fn commit_menu(ui: &mut Ui, g: &GitState, commit: &HistoryCommit, actions: &mut Vec<Action>) {
+fn commit_menu(ui: &mut Ui, g: &GitState, commit: &HistoryCommit, can_rebase: bool, actions: &mut Vec<Action>) {
     ui.set_width(270.0);
     ui.spacing_mut().item_spacing.y = 1.0;
     let hash = &commit.hash;
@@ -172,6 +172,12 @@ fn commit_menu(ui: &mut Ui, g: &GitState, commit: &HistoryCommit, actions: &mut 
     }
     if menu_row(ui, icons::ROTATE_CCW, "Revert") {
         chosen = Some(Action::Git(GitOp::Revert(hash.clone())));
+    }
+    if can_rebase {
+        let glyph = crate::codicons::glyph("git-compare").unwrap_or(icons::GIT_BRANCH);
+        if menu_row(ui, glyph, "Interactive rebase from here…") {
+            chosen = Some(Action::RebaseFrom(hash.clone()));
+        }
     }
     menu_gap(ui);
     ui.label(RichText::new(format!("   Reset '{}' to here", g.branch)).size(11.5).color(pal().text_faint));
@@ -331,12 +337,14 @@ fn empty_card(ui: &mut Ui, why: &str) {
 
 pub(super) fn history_panel(ui: &mut Ui, page: Option<&mut Page>, actions: &mut Vec<Action>) {
     let Some(page) = page else { return empty_card(ui, "Open a folder to see its commits.") };
+    let busy = page.git_busy();
     let Some(g) = page.git.as_ref() else {
         return empty_card(ui, "This folder is not a git repository, or git is still being read.");
     };
     let history = &mut page.history;
     let stamp = stamp_of(g);
     history.update(&page.root, &stamp);
+    history.mark_ancestors(&g.head);
     if let Some(wait) = history.typing_left() {
         ui.ctx().request_repaint_after(wait);
     }
@@ -350,6 +358,7 @@ pub(super) fn history_panel(ui: &mut Ui, page: Option<&mut Page>, actions: &mut 
             }
         });
     });
+    super::progress_banner::banner(ui, g, busy, actions);
     if reload {
         history.reload();
     }
@@ -455,7 +464,9 @@ pub(super) fn history_panel(ui: &mut Ui, page: Option<&mut Page>, actions: &mut 
                 if resp.clicked() {
                     picked = Some(i);
                 }
-                resp.context_menu(|ui| commit_menu(ui, g, commit, actions));
+                let can_rebase =
+                    list.is_behind_head(&commit.hash) && commit.parents.len() <= 1 && g.in_progress.is_none();
+                resp.context_menu(|ui| commit_menu(ui, g, commit, can_rebase, actions));
             }
         });
         if last + 60 >= total && history.more {

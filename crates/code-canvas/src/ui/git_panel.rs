@@ -363,8 +363,12 @@ pub fn changes_panel(
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(pal().text_dim));
         return;
     };
-    let staged: Vec<&FileChange> = g.changes.iter().filter(|ch| ch.staged.is_some()).collect();
-    let unstaged: Vec<&FileChange> = g.changes.iter().filter(|ch| ch.unstaged.is_some()).collect();
+    let staged: Vec<&FileChange> =
+        g.changes.iter().filter(|ch| ch.staged.is_some() && ch.change != Change::Conflicted).collect();
+    let unstaged: Vec<&FileChange> =
+        g.changes.iter().filter(|ch| ch.unstaged.is_some() && ch.change != Change::Conflicted).collect();
+    let conflicted: Vec<&FileChange> = g.changes.iter().filter(|ch| ch.change == Change::Conflicted).collect();
+    super::progress_banner::banner(ui, g, busy, actions);
 
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -564,6 +568,15 @@ pub fn changes_panel(
                 }
             });
 
+            if !conflicted.is_empty() {
+                let (open, _) = group_header(ui, "Merge Changes", "conflicts", Some(conflicted.len()), None);
+                if open {
+                    let rebasing = g.in_progress.is_some_and(|p| p.operation == crate::git::Operation::Rebase);
+                    for ch in &conflicted {
+                        actions.extend(super::conflict_row::conflict_row(ui, file_icons, ch, rebasing, busy));
+                    }
+                }
+            }
             if !staged.is_empty() {
                 let (open, all) =
                     group_header(ui, "Staged Changes", "staged", Some(staged.len()), Some((icons::MINUS, "Unstage all")));
