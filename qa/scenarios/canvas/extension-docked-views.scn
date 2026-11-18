@@ -55,8 +55,10 @@ ui drag 448 400 640 400
 wait 900
 mark i-panel-wider
 wait 400
+ui move 1100 400
+wait 600
 ui click 1545 20
-wait 700
+wait 900
 ui click 1500 256
 wait 1500
 mark j-sides-swapped-under-the-menu

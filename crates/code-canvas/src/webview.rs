@@ -293,12 +293,13 @@ mod platform {
         ready: bool,
         queued: Vec<String>,
         theme: u64,
-        holes: Vec<[i32; 4]>,
+        shape: Shape,
         veiled: bool,
     }
 
     const FAR: i32 = 1 << 20;
     const ROUND: i32 = 22;
+    const CARD_ROUND: f64 = 11.0;
     const HIDE_SETTLES: std::time::Duration = std::time::Duration::from_millis(400);
 
     #[link(name = "gdi32")]
@@ -319,15 +320,16 @@ mod platform {
         fn SetWindowRgn(window: *mut std::ffi::c_void, region: *mut std::ffi::c_void, redraw: i32) -> i32;
     }
 
-    fn cut_out(web: &WebView, holes: &[[i32; 4]]) {
+    fn cut_out(web: &WebView, shape: &Shape) {
+        const UNION: i32 = 2;
         const DIFFERENCE: i32 = 4;
         let window = web.hwnd().0;
+        let Shape { holes, width, height, round } = shape;
         unsafe {
-            if holes.is_empty() {
-                SetWindowRgn(window, std::ptr::null_mut(), 1);
-                return;
-            }
-            let seen = CreateRectRgn(0, 0, FAR, FAR);
+            let seen = CreateRoundRectRgn(0, 0, width + 1, height + 1, round * 2, round * 2);
+            let upper = CreateRectRgn(0, 0, *width, (height - round).max(0));
+            CombineRgn(seen, seen, upper, UNION);
+            DeleteObject(upper);
             for [left, top, right, bottom] in holes {
                 let hole = CreateRoundRectRgn(*left, *top, *right + 1, *bottom + 1, ROUND, ROUND);
                 CombineRgn(seen, seen, hole, DIFFERENCE);
@@ -337,6 +339,14 @@ mod platform {
                 DeleteObject(seen);
             }
         }
+    }
+
+    #[derive(Default, PartialEq)]
+    struct Shape {
+        holes: Vec<[i32; 4]>,
+        width: i32,
+        height: i32,
+        round: i32,
     }
 
     fn holes_in(area: Rect, covers: &[Rect]) -> Option<Vec<[i32; 4]>> {
@@ -604,8 +614,14 @@ mod platform {
                     match self.create(window, handle, area) {
                         Ok(web) => {
                             let theme = canvas_render::theme::revision();
-                            let view =
-                                View { web, ready: false, queued: Vec::new(), theme, holes: Vec::new(), veiled: false };
+                            let view = View {
+                                web,
+                                ready: false,
+                                queued: Vec::new(),
+                                theme,
+                                shape: Shape::default(),
+                                veiled: false,
+                            };
                             self.views.insert(handle.to_string(), view);
                         }
                         Err(e) => {
@@ -620,9 +636,11 @@ mod platform {
                         let _ = view.web.set_bounds(bounds(area));
                     }
                     let holes = if view.veiled { vec![[0, 0, FAR, FAR]] } else { holes };
-                    if view.holes != holes {
-                        cut_out(&view.web, &holes);
-                        view.holes = holes;
+                    let round = (CARD_ROUND * window.scale_factor()).round() as i32;
+                    let shape = Shape { holes, width: area.w.round() as i32, height: area.h.round() as i32, round };
+                    if view.shape != shape {
+                        cut_out(&view.web, &shape);
+                        view.shape = shape;
                     }
                     if placed.is_none() {
                         let _ = view.web.set_visible(true);
