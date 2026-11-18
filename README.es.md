@@ -24,7 +24,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   TypeScript…) los usos del nombre elegido pasan a ser los exactos.
 - **Dependencias**: qué archivo importa a cuál, leído de los `import`. Al seleccionar
   un archivo o una carpeta salen curvas hacia lo que usa y desde lo que lo usa, con un
-  panel que lista ambas cosas.
+  panel que lista ambas cosas. Cada curva termina en una flecha en el archivo
+  importado, y las que son parte de un ciclo de imports van punteadas. Cuando son
+  muchas, las que van entre dos carpetas se juntan en una sola más gruesa con su
+  cantidad; si te acercás o seleccionás un archivo, se vuelven a abrir.
 - **Buscar**: explorador con casillas y filtro, `Ctrl+P` para ir a un archivo,
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
 - **Archivos**: clic derecho en el explorador para crear, renombrar, borrar (a la

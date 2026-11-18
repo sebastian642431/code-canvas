@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
+use canvas_core::deps::Edge;
 use canvas_core::layout::{NodeKind, CARD_PAD, DIR_HEADER, FILE_LABEL_H, NONE};
 use canvas_core::{Layout, Rect, RelKind, Repo, Site, SymRef, LINE_H};
 use canvas_render::text::TextLayer;
-use canvas_render::{push_curve, theme, CurveVertex, Label, RectInstance, View};
+use canvas_render::{curve_point, push_curve, push_edge, theme, CurveVertex, Label, RectInstance, Stroke, View};
 
 use crate::ext::{Extensions, Severity};
 use crate::git::{Change, HunkKind, RowKind};
@@ -73,59 +74,144 @@ fn rel_color(kind: RelKind) -> u32 {
 }
 
 const MAX_DEP_CURVES: usize = 4000;
-const MAX_ALL_EDGES: usize = 40_000;
+const BUNDLE_FROM: usize = 300;
+const GROUP_PX: f32 = 150.0;
+const ARROW_WORLD: f32 = LINE_H * 0.9;
+const MAX_DEP_MARKS: usize = 300;
 
-fn dep_curves(out: &mut Vec<CurveVertex>, r: &Ready, node: usize, deps: &DepFilters, scale: f32) -> (usize, usize) {
-    let Some(n) = r.layout.nodes.get(node) else { return (0, 0) };
+#[derive(Clone, Copy, Debug)]
+pub struct DepMark {
+    pub at: [f32; 2],
+    pub count: u32,
+    pub color: u32,
+}
+
+pub fn zoom_step(zoom: f32) -> i32 {
+    (zoom.max(1e-9).log2() * 2.0).round() as i32
+}
+
+fn edge_width(count: u32, scale: f32) -> f32 {
+    (1.25 + 0.7 * (count.max(1) as f32).log2()).min(7.0) * scale
+}
+
+fn crossing<'r>(r: &'r Ready, node: usize, deps: &DepFilters) -> (Vec<&'r Edge>, Vec<&'r Edge>) {
+    let Some(n) = r.layout.nodes.get(node) else { return (Vec::new(), Vec::new()) };
     let range = node as u32..n.subtree_end;
     let inside = |f: u32| r.layout.file_anchor.get(f as usize).is_some_and(|a| range.contains(a));
-    let anchor = |file: u32, line: u32| r.layout.anchor(&Site { file, line, col: 0, len: 0 }).map(|(p, _)| p);
-    let mut files: Vec<u32> = Vec::new();
-    match n.kind {
-        NodeKind::File(fi) => files.push(fi as u32),
-        NodeKind::Dir => {
-            let all = (0..r.repo.files.len() as u32).filter(|f| inside(*f));
-            files.extend(all);
-        }
-    }
-    let (mut drawn, mut total) = (0, 0);
+    let files: Vec<u32> = match n.kind {
+        NodeKind::File(fi) => vec![fi as u32],
+        NodeKind::Dir => (0..r.repo.files.len() as u32).filter(|f| inside(*f)).collect(),
+    };
+    let shown = |e: &&Edge| deps.kinds[e.kind.index()];
+    let mut outgoing = Vec::new();
+    let mut incoming = Vec::new();
     for &f in &files {
-        let outgoing = r.deps.outgoing(f).iter().filter(|e| !inside(e.to)).map(|e| (e, true));
-        let incoming = r.deps.incoming(f).filter(|e| !inside(e.from)).map(|e| (e, false));
-        for (e, out_edge) in outgoing.chain(incoming) {
-            if !deps.kinds[e.kind.index()] {
-                continue;
-            }
-            total += 1;
-            if drawn >= MAX_DEP_CURVES {
-                continue;
-            }
-            let (Some(a), Some(b)) = (anchor(e.from, e.line), anchor(e.to, 0)) else { continue };
-            let color = with_alpha(if out_edge { theme::get().dep_out } else { theme::get().dep_in }, 0.7);
-            push_curve(out, a, b, color, 1.25 * scale);
-            drawn += 1;
-        }
+        outgoing.extend(r.deps.outgoing(f).iter().filter(|e| !inside(e.to)).filter(shown));
+        incoming.extend(r.deps.incoming(f).filter(|e| !inside(e.from)).filter(shown));
     }
-    (drawn, total)
+    (outgoing, incoming)
+}
+
+fn box_end(rect: Rect, toward: [f32; 2]) -> [f32; 2] {
+    let x = if toward[0] > rect.right() { rect.right() } else { rect.x };
+    let y = toward[1].clamp(rect.y + rect.h * 0.2, rect.bottom() - rect.h * 0.2);
+    [x, y]
+}
+
+#[derive(Default)]
+struct DepsDrawn {
+    edges: usize,
+    curves: usize,
+    bundled: bool,
+}
+
+struct DepPen<'a> {
+    out: &'a mut Vec<CurveVertex>,
+    marks: &'a mut Vec<DepMark>,
+    scale: f32,
+    groups: Option<&'a [u32]>,
+}
+
+impl DepPen<'_> {
+    fn draw(&mut self, r: &Ready, edges: &[&Edge], color: u32, room: usize) -> DepsDrawn {
+        let site = |file: u32, line: u32| Site { file, line, col: 0, len: 0 };
+        let anchor = |file: u32, line: u32| r.layout.anchor(&site(file, line)).map(|(p, _)| p);
+        let arrow = ARROW_WORLD;
+        let mut done = DepsDrawn::default();
+        let Some(groups) = self.groups else {
+            for e in edges {
+                if done.curves >= room {
+                    break;
+                }
+                let (Some(a), Some(b)) = (anchor(e.from, e.line), anchor(e.to, 0)) else { continue };
+                let stroke = Stroke { dashed: r.deps.in_cycle(e), arrow };
+                push_edge(self.out, a, b, color, edge_width(1, self.scale), stroke);
+                done.edges += 1;
+                done.curves += 1;
+            }
+            return done;
+        };
+        done.bundled = true;
+        let group = |f: u32| r.layout.file_anchor.get(f as usize).filter(|a| **a != NONE).map(|&a| groups[a as usize]);
+        let pairs = edges
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| Some((group(e.from)?, group(e.to)?, r.deps.in_cycle(e), i as u32)));
+        let bundles = canvas_core::deps::bundle(pairs);
+        for b in bundles.iter().take(room) {
+            let e = edges[b.first as usize];
+            let (from, to) = (&r.layout.nodes[b.from as usize], &r.layout.nodes[b.to as usize]);
+            let middle = |n: &canvas_core::Node, file: u32, line: u32| match n.is_dir() {
+                true => Some(n.rect.center()),
+                false => anchor(file, line),
+            };
+            let (Some(ma), Some(mb)) = (middle(from, e.from, e.line), middle(to, e.to, 0)) else { continue };
+            let a = if from.is_dir() { box_end(from.rect, mb) } else { ma };
+            let z = if to.is_dir() { box_end(to.rect, ma) } else { mb };
+            let stroke = Stroke { dashed: b.cyclic, arrow };
+            push_edge(self.out, a, z, color, edge_width(b.count, self.scale), stroke);
+            if b.count > 1 && (from.is_dir() || to.is_dir()) && self.marks.len() < MAX_DEP_MARKS {
+                self.marks.push(DepMark { at: curve_point(a, z, 0.5), count: b.count, color: with_alpha(color, 1.0) });
+            }
+            done.edges += b.count as usize;
+            done.curves += 1;
+        }
+        done
+    }
 }
 
 pub fn build_curves(page: &mut Page, filters: &RelFilters, deps: &DepFilters, scale: f32) -> Vec<CurveVertex> {
     let mut out = Vec::new();
+    page.dep_marks.clear();
+    page.dep_zoom = None;
+    page.dep_edges = (0, 0);
     let PageState::Ready(r) = &page.state else { return out };
+    let step = zoom_step(page.camera.zoom);
+    let min_size = GROUP_PX * scale / 2f32.powf(step as f32 / 2.0);
+    let mut marks = Vec::new();
+    let mut bundled = false;
     if deps.all {
-        let step = r.deps.edges.len().div_ceil(MAX_ALL_EDGES).max(1);
-        for e in r.deps.edges.iter().step_by(step).filter(|e| deps.kinds[e.kind.index()]) {
-            let a = r.layout.anchor(&Site { file: e.from, line: e.line, col: 0, len: 0 });
-            let b = r.layout.anchor(&Site { file: e.to, line: 0, col: 0, len: 0 });
-            if let (Some((a, _)), Some((b, _))) = (a, b) {
-                push_curve(&mut out, a, b, with_alpha(theme::get().dep_out, 0.16), scale);
-            }
-        }
+        let edges: Vec<&Edge> = r.deps.edges.iter().filter(|e| deps.kinds[e.kind.index()]).collect();
+        let groups = (edges.len() > BUNDLE_FROM).then(|| r.layout.groups(min_size, page.selected));
+        let mut pen = DepPen { out: &mut out, marks: &mut marks, scale, groups: groups.as_deref() };
+        let color = with_alpha(theme::get().dep_out, 0.35);
+        bundled |= pen.draw(r, &edges, color, MAX_DEP_CURVES).bundled;
     }
-    page.dep_edges = match (deps.selected, page.selected) {
-        (true, Some(node)) => dep_curves(&mut out, r, node, deps, scale),
-        _ => (0, 0),
-    };
+    if let (true, Some(node)) = (deps.selected, page.selected) {
+        let (outgoing, incoming) = crossing(r, node, deps);
+        let total = outgoing.len() + incoming.len();
+        let groups = (total > BUNDLE_FROM).then(|| r.layout.groups(min_size, Some(node)));
+        let mut pen = DepPen { out: &mut out, marks: &mut marks, scale, groups: groups.as_deref() };
+        let colors = theme::get();
+        let went = pen.draw(r, &outgoing, with_alpha(colors.dep_out, 0.7), MAX_DEP_CURVES);
+        let came = pen.draw(r, &incoming, with_alpha(colors.dep_in, 0.7), MAX_DEP_CURVES - went.curves);
+        bundled |= went.bundled || came.bundled;
+        page.dep_edges = (went.edges + came.edges, total);
+    }
+    page.dep_marks = marks;
+    if bundled {
+        page.dep_zoom = Some(step);
+    }
     for sel in &mut page.selections {
         sel.outside = 0;
         let def = r.repo.sym_site(sel.sym);
@@ -814,6 +900,34 @@ pub fn build(
         if let Some(sym) = chip.sym {
             out.chip_hits.push((rect, sym));
         }
+    }
+    let size = (10.5 * s).round();
+    let h = (size * 1.3).ceil() + 3.0 * s;
+    for mark in &page.dep_marks {
+        if out.chips.len() >= MAX_CHIPS {
+            break;
+        }
+        let p = view.to_screen(mark.at);
+        if !area.contains(p) {
+            continue;
+        }
+        let label = mark.count.to_string();
+        let w = text.measure(&label, size, false) + 10.0 * s;
+        let rect = Rect::new(p[0] - w * 0.5, p[1] - h * 0.5, w, h);
+        if placed.iter().any(|q| q.intersects(&rect)) {
+            continue;
+        }
+        placed.push(rect);
+        out.chips.push(RectInstance::new(rect, theme::get().chip_fill, mark.color, h * 0.5, 1.0));
+        out.chip_labels.push(OwnedLabel {
+            left: rect.x + 5.0 * s,
+            top: rect.y + (h - size * 1.3) * 0.5,
+            text: label,
+            size,
+            color: theme::get().chip_text,
+            max_w: f32::INFINITY,
+            bold: false,
+        });
     }
     out
 }

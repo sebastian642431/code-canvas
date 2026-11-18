@@ -3705,6 +3705,22 @@ impl App {
             Step::CollapseAll => self.apply(Action::CollapseAll),
             Step::ExpandAll => self.apply(Action::ExpandAll),
             Step::Connected(on) => self.apply(Action::SetOnlyConnected(on)),
+            Step::Deps(arg) => {
+                let (what, on) = arg.split_once(' ').unwrap_or((arg.as_str(), "on"));
+                match what {
+                    "all" => self.ui.deps.all = on == "on",
+                    "selected" => self.ui.deps.selected = on == "on",
+                    "report" => {
+                        if let Some(page) = self.pages.get(self.active) {
+                            let ((drawn, total), marks) = (page.dep_edges, page.dep_marks.len());
+                            let bundled = if page.dep_zoom.is_some() { "bundled" } else { "one by one" };
+                            log::info!("script: deps {drawn} of {total} edges drawn, {bundled}, {marks} counts");
+                        }
+                    }
+                    _ => log::warn!("script: deps all|selected on|off, not '{arg}'"),
+                }
+                self.apply(Action::DepsChanged);
+            }
             Step::Tab(n) => self.show_folder(n.saturating_sub(1)),
             Step::Folders => {
                 self.ui.show(Panel::Files);
@@ -4805,6 +4821,10 @@ impl App {
                 Some(page) => {
                     if page.curves_node != page.selected {
                         page.curves_node = page.selected;
+                        page.curves_dirty = true;
+                    }
+                    let step = overlay::zoom_step(page.camera.zoom);
+                    if page.target.is_none() && page.dep_zoom.is_some_and(|z| z != step) {
                         page.curves_dirty = true;
                     }
                     if page.curves_dirty || self.curves_for != Some(page.id) {

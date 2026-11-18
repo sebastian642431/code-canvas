@@ -35,7 +35,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Which file imports which, read from the import statements (JS/TS, C and C++, Rust,
   Python, Java and Kotlin). Select a file or a folder: curves go to what it depends on
   and come from what uses it, and a panel lists both.
+- Each edge ends in an arrowhead at the file imported; the ones in an import cycle
+  are dashed, so a cycle shows on both of its files.
 - Counts per kind of relationship with switches, and an option to draw every edge.
+  When there are many, the edges between two folders become one thicker edge with
+  their count; zooming in, or selecting a file, opens them up again.
   On Chromium: 1.35 million edges found in half a second.
 
 **Finding things**
@@ -359,8 +363,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       incoming calls) in place of the ones guessed by name.
 - [ ] The same for outgoing calls and implementations.
 - [x] Dependency edges between files (imports), for the selected file or folder.
-- [ ] Dependencies: edges bundled per folder so that all of them can be drawn on a
-      huge repository, arrowheads, backwards edges, arranging by namespace.
+- [x] Dependencies: edges bundled per folder so that all of them can be drawn on a
+      huge repository, arrowheads, the edges of import cycles dashed.
+- [ ] Dependencies: arranging the canvas by namespace or by layer.
 - [x] Git: changed files and lines on the canvas, file timeline.
 - [x] Git: staging, committing and syncing from the source control panel.
 - [x] Git: the diff inside each file (removed lines too), together or with what it

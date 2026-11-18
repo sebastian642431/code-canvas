@@ -8,7 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use canvas_core::layout::{NodeKind, FOLD_GAP};
 use canvas_core::{Layout, Rect, Repo, TokenCache, CHAR_W, LINE_H};
 
-pub use curve::{push_curve, CurveVertex};
+pub use curve::{curve_point, push_curve, push_edge, CurveVertex, Stroke};
 pub use scene::{CodeInstance, Lod, RectInstance, SceneData, SceneGpu};
 pub use text::{CodeText, Label, TextLayer};
 
@@ -264,8 +264,10 @@ impl Renderer {
             label: Some("curve.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/curve.wgsl").into()),
         });
-        let curve_attrs =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Float32, 4 => Uint32];
+        let curve_attrs = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Float32, 4 => Uint32,
+            5 => Float32, 6 => Float32, 7 => Float32, 8 => Float32x2
+        ];
         let curve_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("curve"),
             layout: Some(&rect_layout),

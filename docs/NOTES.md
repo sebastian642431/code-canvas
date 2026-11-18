@@ -170,6 +170,20 @@ What it is and how fast: see "Dependencies between files" in
   each way.
 - `MAX_STATEMENT_LINES` = 40: a statement that spans several lines is followed for
   that many lines.
+- **Import cycles** are found once, when the edges are built (`cycles`, Tarjan's
+  strongly connected components without recursion: a ring of 200,000 files must
+  not overflow the stack). `Deps::in_cycle(edge)`: both ends are in the same
+  component of two or more files, so a cycle of two files marks both edges.
+  `Module` edges (`mod x;`) are left out: a module using an item of its parent is
+  how Rust is written, not a cycle. Every kind counts whatever the switches of
+  the panel say.
+- `bundle` merges the edges whose ends fall in the same pair of groups into one
+  `Bundle` with a count, biggest first, and drops those within one group. A
+  bundle is `cyclic` when an edge in it is in a cycle or a bundle goes the other
+  way between the same groups (the two folders import each other). `first` is
+  the index of one of its edges, for where a file end sits. It sorts packed
+  `u64` keys (in parallel above 100,000): Chromium's 1.35 million edges in tens of
+  milliseconds.
 
 Resolution rules per language:
 
@@ -247,6 +261,11 @@ Resolution rules per language:
   deterministic.
 - A collapsed box grows with what it holds, but stays much smaller than expanded:
   its side is `sqrt(lines) × 6`, clamped to 140..1600.
+- `Layout::groups(min_size, keep)`: for every node, the node it is drawn into
+  when dependencies are bundled: the outermost folder whose box is smaller than
+  `min_size` on both sides holds everything in it; anything else is itself. The
+  root and the folders around `keep` (the selection) never fold, so a selected
+  file and its neighbours are seen one by one. One pass over the pre-order.
 - Children are packed tallest first, which packs best; ties keep the alphabetical
   order. A file's slot includes the label strip above its card, and `Layout::hit`
   counts that strip as part of the card.
@@ -472,6 +491,12 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
   too).
 - `curve.wgsl`: vertices carry a world position plus a normal; the ribbon is
   extruded in screen space, so its width stays constant in pixels at any zoom.
+  `along` (world distance from the start) times the zoom gives dashes of a
+  constant length in pixels; `dash` 0 is a solid line. A vertex with `arrow` > 0
+  belongs to an arrowhead: its `half_width` and `shift` are in arrowhead lengths,
+  and that length is `arrow` × zoom clamped to 3.2..7 times the line's width (at
+  least 6 px), the width travelling in `dash`. So a head is never huge nor lost,
+  and it needs no new tessellation when the zoom changes.
 
 ### crates/canvas-render/src/curve.rs
 
@@ -479,6 +504,9 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
   to the left when they are stacked (two places in the same file or column).
 - `push_curve`: neighbouring quads share their edge exactly, so there are no gaps
   and no overlap. A degenerate curve produces nothing.
+- `push_edge` is `push_curve` with a `Stroke`: dashed, and an arrowhead at `b`
+  pointing the way the curve arrives (a tapered ribbon: anti-aliased like the
+  line). `arrow_px` is the shader's sizing, kept here for its test.
 
 ### crates/canvas-render/src/gpu_util.rs
 
@@ -1491,9 +1519,19 @@ Details:
 - `SYMBOL_HOVER_MIN_PX` = 0.6: symbols react to the pointer once a line is at
   least that many pixels tall.
 - `MAX_DEP_CURVES` = 4000: most dependency curves drawn for one selection, and for
-  "every edge" (a sample of them in a huge repository).
-- `dep_curves`: a file hidden inside a collapsed folder counts as being where that
-  folder is. Each curve starts at the line of the import.
+  "every edge"; with bundles the biggest come first.
+- Dependency curves: a file hidden inside a collapsed folder counts as being where
+  that folder is. Each curve starts at the line of the import and ends in an
+  arrowhead at the top of the file imported; one in an import cycle is dashed.
+- **Bundles.** Above `BUNDLE_FROM` (300) edges (every edge, or a big folder's), the
+  edges are merged per pair of `Layout::groups`: folders smaller than `GROUP_PX`
+  (150 px) on screen are one end. A bundle is thicker with its count (log scale,
+  at most 7 px) and ends on the side of the folder's box that faces the other
+  end; a count chip sits in its middle (`Page::dep_marks`, at most
+  `MAX_DEP_MARKS`). Zooming in opens the folders, and selecting a file opens the
+  folders around it. The groups follow the zoom in steps of √2 (`zoom_step`):
+  `Page::dep_zoom` is the step the curves were made for, and `App` makes them
+  again when the camera, at rest, is on another one.
 - A relation that ends at a definition attaches to the start of its line (see
   `Repo::sym_line_start`). A plain mention outside any function gets no chip.
 - Labels: screen rectangles of placed labels are remembered; parents are visited
@@ -1712,6 +1750,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `collapse-all` | `collapse-all` | No argument. |
 | `expand-all` | `expand-all` | No argument. |
 | `connected` | `connected on\|off` | Show only connected files. |
+| `deps` | `deps all\|selected on\|off`, `deps report` | The switches of the Dependencies panel: every edge, the edges of the selection. `report` logs "script: deps N of M edges drawn, bundled\|one by one, K counts" for the selection. |
 | `changed` | `changed on\|off` | Show only the files git reports as changed. |
 | `tab` | `tab <n>` | Switch to tab `n`, 1-based. |
 | `zoom` | `zoom <factor>` | Zoom by a factor. |

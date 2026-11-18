@@ -54,13 +54,130 @@ pub struct Deps {
     pub external: u32,
     pub counts: [u32; 5],
     pub ms: u128,
+    pub cycles: usize,
+    pub cyclic_edges: usize,
     out_start: Vec<u32>,
     by_to: Vec<u32>,
     in_start: Vec<u32>,
     pairs: usize,
+    cycle_of: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bundle {
+    pub from: u32,
+    pub to: u32,
+    pub count: u32,
+    pub cyclic: bool,
+    pub first: u32,
+}
+
+pub fn bundle(pairs: impl Iterator<Item = (u32, u32, bool, u32)>) -> Vec<Bundle> {
+    let mut keyed: Vec<(u64, u32, bool)> = pairs
+        .filter(|p| p.0 != p.1)
+        .map(|(from, to, cyclic, first)| (((from as u64) << 32) | to as u64, first, cyclic))
+        .collect();
+    if keyed.len() > 100_000 {
+        keyed.par_sort_unstable();
+    } else {
+        keyed.sort_unstable();
+    }
+    let mut out: Vec<Bundle> = Vec::new();
+    for (key, first, cyclic) in keyed {
+        let (from, to) = ((key >> 32) as u32, key as u32);
+        match out.last_mut() {
+            Some(b) if (b.from, b.to) == (from, to) => {
+                b.count += 1;
+                b.cyclic |= cyclic;
+            }
+            _ => out.push(Bundle { from, to, count: 1, cyclic, first }),
+        }
+    }
+    let back: Vec<bool> =
+        out.iter().map(|b| out.binary_search_by_key(&(b.to, b.from), |o| (o.from, o.to)).is_ok()).collect();
+    for (b, back) in out.iter_mut().zip(back) {
+        b.cyclic |= back;
+    }
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| (a.from, a.to).cmp(&(b.from, b.to))));
+    out
+}
+
+const NO_CYCLE: u32 = u32::MAX;
+
+fn counts_in_cycles(e: &Edge) -> bool {
+    e.kind != DepKind::Module && e.from != e.to
+}
+
+fn cycles(edges: &[Edge], out_start: &[u32], files: usize) -> (Vec<u32>, usize) {
+    const NEW: u32 = u32::MAX;
+    let mut index = vec![NEW; files];
+    let mut low = vec![0u32; files];
+    let mut on_stack = vec![false; files];
+    let mut stack: Vec<u32> = Vec::new();
+    let mut calls: Vec<(u32, u32)> = Vec::new();
+    let mut cycle_of = vec![NO_CYCLE; files];
+    let (mut next, mut found) = (0u32, 0u32);
+    for start in 0..files as u32 {
+        if index[start as usize] != NEW {
+            continue;
+        }
+        calls.push((start, NEW));
+        while let Some(&mut (v, ref mut at)) = calls.last_mut() {
+            let vi = v as usize;
+            if *at == NEW {
+                *at = out_start[vi];
+                index[vi] = next;
+                low[vi] = next;
+                next += 1;
+                stack.push(v);
+                on_stack[vi] = true;
+            }
+            if *at < out_start[vi + 1] {
+                let e = edges[*at as usize];
+                *at += 1;
+                let w = e.to as usize;
+                if !counts_in_cycles(&e) {
+                    continue;
+                }
+                if index[w] == NEW {
+                    calls.push((e.to, NEW));
+                } else if on_stack[w] {
+                    low[vi] = low[vi].min(index[w]);
+                }
+                continue;
+            }
+            calls.pop();
+            if let Some(&(u, _)) = calls.last() {
+                low[u as usize] = low[u as usize].min(low[vi]);
+            }
+            if low[vi] != index[vi] {
+                continue;
+            }
+            let from = stack.iter().rposition(|&x| x == v).expect("v is on the stack");
+            let members = stack.split_off(from);
+            for &m in &members {
+                on_stack[m as usize] = false;
+            }
+            if members.len() > 1 {
+                for &m in &members {
+                    cycle_of[m as usize] = found;
+                }
+                found += 1;
+            }
+        }
+    }
+    (cycle_of, found as usize)
 }
 
 impl Deps {
+    pub fn in_cycle(&self, e: &Edge) -> bool {
+        if !counts_in_cycles(e) {
+            return false;
+        }
+        let of = |f: u32| self.cycle_of.get(f as usize).copied().unwrap_or(NO_CYCLE);
+        of(e.from) != NO_CYCLE && of(e.from) == of(e.to)
+    }
+
     fn build(mut edges: Vec<Edge>, files: usize) -> Deps {
         edges.par_sort_unstable_by_key(|e| (e.from, e.to, e.line, e.kind.index()));
         let mut counts = [0u32; 5];
@@ -88,7 +205,23 @@ impl Deps {
             by_to[*slot as usize] = i as u32;
             *slot += 1;
         }
-        Deps { edges, unresolved: 0, external: 0, counts, ms: 0, out_start, by_to, in_start, pairs }
+        let (cycle_of, cycles) = cycles(&edges, &out_start, files);
+        let mut deps = Deps {
+            edges,
+            unresolved: 0,
+            external: 0,
+            counts,
+            ms: 0,
+            cycles,
+            cyclic_edges: 0,
+            out_start,
+            by_to,
+            in_start,
+            pairs,
+            cycle_of,
+        };
+        deps.cyclic_edges = deps.edges.iter().filter(|e| deps.in_cycle(e)).count();
+        deps
     }
 
     pub fn outgoing(&self, file: u32) -> &[Edge] {
@@ -1101,6 +1234,71 @@ mod tests {
         assert_eq!(deps.incoming(u32::MAX).count(), 0);
     }
 
+    fn graph(files: usize, edges: &[(u32, u32, DepKind)]) -> Deps {
+        let edges =
+            edges.iter().enumerate().map(|(line, &(from, to, kind))| Edge { from, to, line: line as u32, kind });
+        Deps::build(edges.collect(), files)
+    }
+
+    fn cyclic(deps: &Deps) -> Vec<(u32, u32)> {
+        deps.edges.iter().filter(|e| deps.in_cycle(e)).map(|e| (e.from, e.to)).collect()
+    }
+
+    #[test]
+    fn edges_of_import_cycles_are_found() {
+        use DepKind::*;
+        let deps = graph(4, &[(0, 1, Import), (1, 0, Import), (2, 3, Import)]);
+        assert_eq!(cyclic(&deps), vec![(0, 1), (1, 0)], "a cycle of two files is marked on both edges");
+        assert_eq!((deps.cycles, deps.cyclic_edges), (1, 2));
+
+        let deps = graph(
+            6,
+            &[(0, 1, Import), (1, 2, Import), (2, 0, TypeOnly), (2, 3, Import), (3, 4, Import), (5, 0, Import)],
+        );
+        assert_eq!(cyclic(&deps), vec![(0, 1), (1, 2), (2, 0)], "the edges leaving the cycle are not part of it");
+        assert_eq!(deps.cycles, 1);
+
+        let deps = graph(3, &[(0, 1, Module), (1, 0, Import), (1, 2, Import)]);
+        assert!(cyclic(&deps).is_empty(), "a module using its parent is no cycle: `mod` only says where it lives");
+
+        let deps = graph(5, &[(0, 1, Import), (1, 0, ReExport), (2, 3, Include), (3, 4, Include), (4, 2, Include)]);
+        assert_eq!(cyclic(&deps).len(), 5);
+        assert_eq!(deps.cycles, 2, "two cycles apart");
+
+        let n = 200_000u32;
+        let chain: Vec<(u32, u32, DepKind)> = (0..n).map(|i| (i, (i + 1) % n, Import)).collect();
+        let deps = graph(n as usize, &chain);
+        assert_eq!((deps.cycles, deps.cyclic_edges), (1, n as usize), "a long ring needs no deep recursion");
+        assert!(!Deps::default().in_cycle(&Edge { from: 0, to: 1, line: 0, kind: Import }));
+    }
+
+    #[test]
+    fn edges_between_the_same_groups_are_bundled() {
+        let pairs = [
+            (1, 2, false, 10),
+            (1, 2, false, 11),
+            (1, 2, true, 12),
+            (2, 3, false, 13),
+            (3, 2, false, 14),
+            (4, 4, false, 15),
+        ];
+        let b = bundle(pairs.into_iter());
+        assert_eq!(
+            b,
+            vec![
+                Bundle { from: 1, to: 2, count: 3, cyclic: true, first: 10 },
+                Bundle { from: 2, to: 3, count: 1, cyclic: true, first: 13 },
+                Bundle { from: 3, to: 2, count: 1, cyclic: true, first: 14 },
+            ],
+            "biggest first; a bundle with a cycle inside, or with one going back, is cyclic; nothing within one group"
+        );
+        let many: Vec<(u32, u32, bool, u32)> = (0..300_000u32).map(|i| (i % 7, 7 + i % 5, false, i)).collect();
+        let b = bundle(many.into_iter());
+        assert_eq!(b.len(), 35);
+        assert_eq!(b.iter().map(|b| b.count).sum::<u32>(), 300_000);
+        assert!(b.iter().all(|b| !b.cyclic && b.first < 35));
+    }
+
     #[test]
     fn kinds_have_stable_indices() {
         for (i, k) in DepKind::ALL.iter().enumerate() {
@@ -1542,6 +1740,10 @@ import com.acme.dup.Twice;
             deps.unresolved,
             deps.external
         );
+        println!("{} import cycles, {} edges in them", deps.cycles, deps.cyclic_edges);
+        let t = Instant::now();
+        let bundles = bundle(deps.edges.iter().enumerate().map(|(i, e)| (e.from / 64, e.to / 64, false, i as u32)));
+        println!("bundled into {} in {:?}", bundles.len(), t.elapsed());
         for k in DepKind::ALL {
             println!("  {:<13}{}", k.label(), deps.counts[k.index()]);
         }

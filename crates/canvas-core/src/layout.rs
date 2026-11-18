@@ -499,6 +499,31 @@ impl Layout {
             }
         }
     }
+
+    pub fn groups(&self, min_size: f32, keep: Option<usize>) -> Vec<u32> {
+        let mut open = vec![false; self.nodes.len()];
+        if let Some(open_node) = open.first_mut() {
+            *open_node = true;
+        }
+        let mut at = keep.and_then(|k| self.nodes.get(k)).and_then(|n| n.parent);
+        while let Some(p) = at {
+            open[p as usize] = true;
+            at = self.nodes[p as usize].parent;
+        }
+        let mut group: Vec<u32> = (0..self.nodes.len() as u32).collect();
+        let mut i = 0;
+        while i < self.nodes.len() {
+            let n = &self.nodes[i];
+            let end = n.subtree_end as usize;
+            if n.is_dir() && !open[i] && n.rect.w.max(n.rect.h) < min_size {
+                group[i..end].fill(i as u32);
+                i = end;
+            } else {
+                i += 1;
+            }
+        }
+        group
+    }
 }
 
 #[cfg(test)]
@@ -623,5 +648,48 @@ mod tests {
         assert_eq!(layout.nodes.iter().filter(|n| !n.is_dir()).count(), 1);
         assert!(layout.nodes.iter().any(|n| n.name == "src/util"));
         assert!(!layout.dir_node.contains_key("a"));
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use crate::scan::{scan, ScanOptions};
+
+    #[test]
+    fn folders_too_small_to_see_into_are_one_group() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-groups-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for path in ["a/b/x.rs", "a/b/w.rs", "a/c/y.rs", "d/z.rs", "top.rs"] {
+            let p = dir.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "fn f() {}\n").unwrap();
+        }
+        let repo = scan(&dir, &ScanOptions::default(), None);
+        std::fs::remove_dir_all(&dir).ok();
+        let layout = Layout::build(&repo);
+        let node = |path: &str| layout.node_for_path(&repo, path).unwrap_or_else(|| panic!("no node {path}")) as u32;
+        let of = |groups: &[u32], path: &str| groups[node(path) as usize];
+
+        let none = layout.groups(0.0, None);
+        assert!(none.iter().enumerate().all(|(i, g)| *g as usize == i), "big enough: every node is its own");
+
+        let all = layout.groups(f32::INFINITY, None);
+        assert_eq!(all[0], 0, "the root never folds into one point");
+        assert_eq!(of(&all, "a/b/x.rs"), node("a"));
+        assert_eq!(of(&all, "a/c/y.rs"), node("a"));
+        assert_eq!(of(&all, "d/z.rs"), node("d"));
+        assert_eq!(of(&all, "top.rs"), node("top.rs"), "a file of an open folder stays itself");
+
+        let open = layout.groups(f32::INFINITY, Some(node("a/b/x.rs") as usize));
+        assert_eq!(of(&open, "a/b/x.rs"), node("a/b/x.rs"), "the selected file and its folders open up");
+        assert_eq!(of(&open, "a/b/w.rs"), node("a/b/w.rs"));
+        assert_eq!(of(&open, "a/c/y.rs"), node("a/c"));
+        assert_eq!(of(&open, "d/z.rs"), node("d"));
+
+        let small = layout.nodes[node("a/c") as usize].rect;
+        let between = layout.groups(small.w.max(small.h) + 1.0, None);
+        assert_eq!(of(&between, "a/c/y.rs"), node("a/c"), "only the folders smaller than the size fold");
+        assert_ne!(of(&between, "a/b/x.rs"), node("a"));
     }
 }
