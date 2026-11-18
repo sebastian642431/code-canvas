@@ -1,0 +1,57 @@
+title: With saving while typing on, a guest types in a shared file while another program appends to it on the host's disk: what was typed and the appended line both end in the file, with no Ctrl+S
+folders: share-text
+limit: 75
+expect-log: share: share-text is shared, 4 files
+expect-log: saved .*notes\.txt
+expect-file: share-text\notes.txt :: ^line 01\nline 02typed-by-beto\.x{10}\nline 03\n
+expect-file: share-text\notes.txt :: written by another program\n$
+
+wait 3000
+share start writers
+wait 11500
+touch notes.txt written by another program
+wait 3500
+goto notes.txt
+wait 1500
+mark host-after-the-other-program
+wait 9000
+mark host-after-the-guest-typed
+wait 3000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+goto notes.txt
+wait 1000
+edit notes.txt 2 1
+key end
+type typed-by-beto.
+wait 1200
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 280
+type x
+wait 6000
+mark after-typing
+wait 2500
+quit
+wait 1500

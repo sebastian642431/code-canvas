@@ -1946,7 +1946,7 @@ impl App {
         self.merged_in.remove(&(page.id, rel.to_string()));
         log::info!("saved {}", path.display());
         if let (Some(folder), Some(session)) = (page.shared, self.sharing.session.as_mut()) {
-            session.saved(folder, rel);
+            session.saved(folder, rel, format);
         }
         self.ext.file_changed(&path);
         if let Some(g) = self.gfx.as_mut() {
@@ -3997,8 +3997,14 @@ impl App {
                     None => log::warn!("script: share needs start [writers], offer, stop, join <invitation> [name], enter <invitation>, follow|writer|reader <name>, unfollow or panel"),
                 }
             }
-            Step::Agent(said) => match serde_json::from_str(&said) {
-                Ok(event) => {
+            Step::Agent(said) => match serde_json::from_str::<serde_json::Value>(&said) {
+                Ok(mut event) => {
+                    let root = self.pages.get(self.active).map(|page| page.root.clone());
+                    if let (Some(path), Some(root)) = (event.get_mut("path"), root) {
+                        if let Some(rel) = path.as_str().filter(|rel| Path::new(rel).is_relative()) {
+                            *path = serde_json::Value::String(root.join(rel).to_string_lossy().into_owned());
+                        }
+                    }
                     self.agents.hear(&event);
                     self.request_redraw();
                 }
@@ -4261,7 +4267,8 @@ impl App {
         if self.typed.is_some_and(|at| at.elapsed() > Duration::from_millis(700)) {
             self.typed = None;
             if self.ui.prefs.autosave {
-                let unsaved = self.unsaved();
+                let mut unsaved = self.unsaved();
+                unsaved.extend(self.share_unsaved());
                 self.save_some(unsaved, false, true);
             }
         }

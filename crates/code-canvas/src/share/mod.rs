@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use ot::{Link, TextOp};
 use wire::Msg;
-pub use wire::{Caret, Invite, Person, Seen};
+pub use wire::{Caret, Helper, Invite, Person, Place, Seen, Track};
 
 pub const HOST: u32 = 0;
 pub const COLORS: [u32; 8] =
@@ -121,11 +121,12 @@ pub enum Event {
     FolderGone(u32),
     Gone { folder: u32, path: String },
     Edit { folder: u32, path: String, op: TextOp, by: u32 },
-    Save { folder: u32, path: String, by: u32 },
+    Save { folder: u32, path: String, format: bool, by: u32 },
     Make { folder: u32, path: String, text: String, by: u32 },
     Drop { folder: u32, path: String, by: u32 },
     Role(bool),
     Come(u32),
+    Agents(u32),
     Ended(String),
 }
 
@@ -138,6 +139,8 @@ pub struct Session {
     pub guests_write: bool,
     pub connected: bool,
     pub ended: Option<String>,
+    pub agents: HashMap<u32, (Instant, Vec<Helper>)>,
+    own_agents: Option<(Instant, Vec<Helper>)>,
     conns: Vec<Conn>,
     net: Receiver<Net>,
     stop: Arc<AtomicBool>,
@@ -218,6 +221,8 @@ impl Session {
             guests_write: false,
             connected: host,
             ended: None,
+            agents: HashMap::new(),
+            own_agents: None,
             conns: Vec::new(),
             net,
             stop,
@@ -387,6 +392,18 @@ impl Session {
         }
     }
 
+    fn agents_to(&self, id: u32) {
+        let own = self.own_agents.iter().map(|kept| (HOST, kept));
+        for (who, (when, list)) in own.chain(self.agents.iter().map(|(who, kept)| (*who, kept))) {
+            if who != id && !list.is_empty() {
+                let mut list = list.clone();
+                let by = when.elapsed().as_millis().min(u32::MAX as u128) as u32;
+                list.iter_mut().for_each(|helper| helper.older(by));
+                self.to(id, Msg::Agents { who, list });
+            }
+        }
+    }
+
     pub fn changed(&mut self, folder: u32, path: &str, text: &str) {
         let key = (folder, path.to_string());
         let Some(doc) = self.docs.get_mut(&key) else {
@@ -423,9 +440,19 @@ impl Session {
         }
     }
 
-    pub fn saved(&mut self, folder: u32, path: &str) {
+    pub fn saved(&mut self, folder: u32, path: &str, format: bool) {
         if !self.host {
-            self.to(HOST, Msg::Save { folder, path: path.to_string() });
+            self.to(HOST, Msg::Save { folder, path: path.to_string(), format });
+        }
+    }
+
+    pub fn tell_agents(&mut self, list: Vec<Helper>) {
+        match self.host {
+            true => {
+                self.to_all(&Msg::Agents { who: HOST, list: list.clone() }, None);
+                self.own_agents = Some((Instant::now(), list));
+            }
+            false => self.to(HOST, Msg::Agents { who: self.me, list }),
         }
     }
 
@@ -565,6 +592,9 @@ impl Session {
         };
         let person = self.people.remove(at);
         self.seen.remove(&id);
+        if self.agents.remove(&id).is_some() {
+            events.push(Event::Agents(id));
+        }
         for doc in self.docs.values_mut() {
             doc.links.remove(&id);
         }
@@ -609,6 +639,7 @@ impl Session {
                 }
                 self.welcome(from);
                 self.tell_people();
+                self.agents_to(from);
                 events.push(Event::Joined(from));
             }
             _ if self.host && !greeted => {}
@@ -632,6 +663,11 @@ impl Session {
             Msg::People { list } if !self.host => {
                 let was = self.writer();
                 self.seen.retain(|id, _| list.iter().any(|person| person.id == *id));
+                let before = self.agents.len();
+                self.agents.retain(|id, _| list.iter().any(|person| person.id == *id));
+                if before != self.agents.len() {
+                    events.push(Event::Agents(HOST));
+                }
                 self.people = list;
                 if self.writer() != was {
                     events.push(Event::Role(self.writer()));
@@ -663,10 +699,10 @@ impl Session {
             Msg::Edit { folder, path, epoch, number, seen, op } => {
                 events.extend(self.edit(from, folder, path, (epoch, number, seen), op));
             }
-            Msg::Save { folder, path } if self.host => {
+            Msg::Save { folder, path, format } if self.host => {
                 let known = self.docs.contains_key(&(folder, path.clone()));
                 if known && self.person(from).is_some_and(|person| person.writer) {
-                    events.push(Event::Save { folder, path, by: from });
+                    events.push(Event::Save { folder, path, format, by: from });
                 }
             }
             Msg::Make { folder, path, text } if self.host => {
@@ -703,6 +739,23 @@ impl Session {
                     self.to_all(&Msg::Come { who }, Some(from));
                 }
                 events.push(Event::Come(who));
+            }
+            Msg::Agents { list, .. } if !Helper::sane(&list) => {}
+            Msg::Agents { who, list } => {
+                let who = if self.host { from } else { who };
+                if who == self.me || self.person(who).is_none() {
+                    return;
+                }
+                if self.host {
+                    self.to_all(&Msg::Agents { who, list: list.clone() }, Some(from));
+                }
+                let before = self.agents.get(&who).map_or(0, |(_, kept)| kept.len());
+                if before != list.len() {
+                    let name = self.person(who).map_or(String::new(), |person| person.name.clone());
+                    log::info!("share: {} of the assistants of {name} on the canvas", list.len());
+                }
+                self.agents.insert(who, (Instant::now(), list));
+                events.push(Event::Agents(who));
             }
             Msg::Bye { why } => self.gone(from, why, events),
             _ => {}
@@ -838,10 +891,10 @@ mod tests {
         let (out, _kept) = mpsc::channel();
         host.conns.push(Conn { id: 5, out, waiting: Arc::new(AtomicUsize::new(0)), greeted: true });
         let mut events = Vec::new();
-        host.got(5, Msg::Save { folder: 7, path: "a.txt".into() }, &mut events);
-        host.got(5, Msg::Save { folder: 8, path: "a.txt".into() }, &mut events);
-        host.got(5, Msg::Save { folder: 7, path: "not shared.txt".into() }, &mut events);
-        assert_eq!(events, [Event::Save { folder: 7, path: "a.txt".into(), by: 5 }]);
+        host.got(5, Msg::Save { folder: 7, path: "a.txt".into(), format: true }, &mut events);
+        host.got(5, Msg::Save { folder: 8, path: "a.txt".into(), format: true }, &mut events);
+        host.got(5, Msg::Save { folder: 7, path: "not shared.txt".into(), format: false }, &mut events);
+        assert_eq!(events, [Event::Save { folder: 7, path: "a.txt".into(), format: true, by: 5 }]);
         let before = host.invite.clone().unwrap().secret;
         host.send_away(5);
         assert_ne!(
@@ -849,6 +902,37 @@ mod tests {
             before,
             "who was sent away cannot come back with the same invitation"
         );
+    }
+
+    #[test]
+    fn the_assistants_of_each_one_reach_everyone_else() {
+        let mut host = Session::open_on("127.0.0.1", "Ana", true).unwrap();
+        host.share_folder(7, "demo", vec![("a.txt".into(), "one".into())]);
+        let helper = |key: &str, path: &str| Helper {
+            key: key.into(),
+            role: "Codex".into(),
+            at: Some(Place { folder: 7, path: path.into() }),
+            ago: 1000,
+            ..Default::default()
+        };
+        host.tell_agents(vec![helper("h1", "a.txt")]);
+        let mut invite = host.invite.clone().unwrap();
+        invite.host = "127.0.0.1".into();
+        let mut guest = Session::join(&invite, "Beto");
+        let events = until(&mut [&mut host, &mut guest], |_, all| all[1].contains(&Event::Agents(HOST)));
+        assert!(events[1].contains(&Event::FolderReady(7)), "the one sharing tells who joins of its assistants");
+        assert_eq!(guest.agents[&HOST].1[0].key, "h1");
+        assert!(guest.agents[&HOST].1[0].ago >= 1000, "with how long ago it was heard");
+
+        guest.tell_agents(vec![helper("g1", "")]);
+        until(&mut [&mut host, &mut guest], |_, all| all[0].contains(&Event::Agents(1)));
+        assert_eq!(host.agents[&1].1[0].key, "g1");
+        guest.tell_agents(vec![helper("bad", "../out.txt")]);
+        guest.tell_agents(Vec::new());
+        until(&mut [&mut host, &mut guest], |sessions, _| sessions[0].agents[&1].1.is_empty());
+
+        guest.close("left");
+        until(&mut [&mut host], |sessions, _| !sessions[0].agents.contains_key(&1));
     }
 
     #[test]

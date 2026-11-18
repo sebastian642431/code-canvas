@@ -1,4 +1,5 @@
 title: The host closes the app with a guest connected and text of the guest not saved: the host is asked, the guest is told, and joining again fails cleanly
+prefs: {"autosave": false}
 folders: share-text
 limit: 75
 expect-log: share: share-text is shared, 4 files

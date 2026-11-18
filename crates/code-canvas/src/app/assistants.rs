@@ -254,7 +254,11 @@ impl App {
                 });
             }
             if !steps.is_empty() {
-                trails.push(AgentTrail { color: agent.color(), name: agent.name(), steps });
+                let name = match self.share_owner(agent) {
+                    Some((owner, _)) => format!("{} ({owner})", agent.name()),
+                    None => agent.name(),
+                };
+                trails.push(AgentTrail { color: agent.color(), name, steps });
             }
         }
         trails
@@ -269,6 +273,7 @@ impl App {
         let (mut views, mut marks) = (Vec::new(), Vec::new());
         for agent in &self.agents.list {
             let said = self.agent_said(agent);
+            let owner = self.share_owner(agent);
             views.push(AgentView {
                 key: agent.key.clone(),
                 name: agent.name(),
@@ -278,6 +283,7 @@ impl App {
                 avatar: agent.avatar,
                 quiet: agent.quiet(),
                 followed: self.agents.following.as_deref() == Some(agent.key.as_str()),
+                owner: owner.clone(),
             });
             let Some((index, rel)) = self.agent_file(agent).filter(|(index, _)| shown.contains(index)) else {
                 continue;
@@ -295,6 +301,7 @@ impl App {
                 lines: if agent.quiet() { Vec::new() } else { lines },
                 busy: agent.busy(),
                 quiet: agent.quiet(),
+                owner,
             });
         }
         self.ui.agent_trails = self.trails_view(&shown);

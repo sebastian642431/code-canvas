@@ -932,6 +932,18 @@ impl Editor {
         self.on_disk = self.display_source();
         self.dirty = false;
     }
+
+    pub fn written_as(&mut self, unsaved: bool) {
+        self.mark_saved();
+        if unsaved {
+            self.saved_at = None;
+            self.dirty = true;
+        }
+    }
+
+    pub fn read_as(&self, disk: &str) -> bool {
+        self.on_disk == disk
+    }
 }
 
 #[cfg(test)]
@@ -1002,6 +1014,17 @@ mod tests {
         assert_eq!(e.display_source(), "all new\ntext");
         assert!(e.undo());
         assert_eq!(e.display_source(), "// theirs\nfn main() {\n    run(now);\n    stop();\n}");
+    }
+
+    #[test]
+    fn a_text_written_for_others_stays_not_saved_when_what_was_typed_is_not() {
+        let mut e = Editor::open("a.txt".into(), "one\ntwo\n");
+        at(&mut e, 0, 3);
+        e.insert(" mine");
+        e.written_as(true);
+        assert!(e.dirty && e.read_as("one mine\ntwo"), "what is on disk is known, what was typed is still to save");
+        e.written_as(false);
+        assert!(!e.dirty);
     }
 
     #[test]

@@ -129,7 +129,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   carpetas, y los archivos que crea, cambia o borra (si lo dejás editar) se crean,
   cambian o borran en tu computadora; por eso sirve para trabajar en tu otra PC, y
   por eso la app avisa antes de compartir y antes de unirse: solo con alguien de
-  confianza. Se corta con un botón y sola al cerrar la app. En la misma red funciona directo;
+  confianza. Lo que escribe un invitado se guarda en tu disco con su Ctrl+S, o solo
+  si tiene el guardado automático; si mientras tanto otro programa cambió ese
+  archivo, queda lo de los dos. Las IAs de cada uno que trabajan sobre las carpetas
+  compartidas se ven en el lienzo de todos: su cara, en qué anda, qué líneas lee o
+  edita y su rastro, con un circulito del color de su dueño; a la de otro la seguís
+  igual que a la tuya. Se corta con un botón y sola al cerrar la app. En la misma red funciona directo;
   desde afuera hace falta una VPN (Tailscale, ZeroTier) o abrir el puerto.
 - **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
   preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas
