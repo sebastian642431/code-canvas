@@ -225,6 +225,11 @@ pub fn row_of(lines: &[u32], rows: usize, line: u32) -> u32 {
     lines.get(line as usize).copied().unwrap_or(rows.saturating_sub(1) as u32)
 }
 
+pub fn shows(lines: &[u32], rows: &[Row], line: u32) -> bool {
+    let row = rows.get(row_of(lines, rows.len(), line) as usize);
+    row.is_some_and(|row| row.kind != RowKind::Gap && row.line == line)
+}
+
 fn rows_of_lines(rows: &[Row], lines_in_file: usize) -> Vec<u32> {
     const UNSET: u32 = u32::MAX;
     let mut at = vec![UNSET; lines_in_file];
@@ -1240,6 +1245,11 @@ mod tests {
         let rows = Some(folded.rows.as_slice());
         assert_eq!((line_of(rows, 0), line_of(rows, 1), line_of(rows, 2)), (None, Some(3), None));
         assert_eq!(line_of(None, 7), Some(7));
+        let seen = |line| shows(&folded.lines, &folded.rows, line);
+        assert!(!seen(0) && !seen(1) && !seen(2), "the lines folded at the top are not shown");
+        assert!(seen(3) && seen(4) && seen(5), "the change and the lines around it are");
+        assert!(!seen(6) && !seen(8) && seen(9) && seen(10));
+        assert!((0..11).all(|line| shows(&all.lines, &all.rows, line)), "nothing is folded without a fold");
         assert!(unified(old, old, Some(3)).is_none(), "nothing to show for a file that did not change");
     }
 

@@ -238,6 +238,10 @@ impl Diffed {
         crate::git::row_of(&self.lines, self.rows.len(), line)
     }
 
+    pub fn shows(&self, line: u32) -> bool {
+        crate::git::shows(&self.lines, &self.rows, line)
+    }
+
     fn text(&self) -> &str {
         self.committed.as_deref().unwrap_or(&self.plain)
     }

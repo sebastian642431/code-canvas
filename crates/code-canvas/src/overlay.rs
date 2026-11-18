@@ -16,6 +16,10 @@ fn row_of(shown: Option<&Diffed>, line: u32) -> u32 {
     shown.map_or(line, |shown| shown.row(line))
 }
 
+fn folded_away(shown: Option<&Diffed>, line: u32) -> bool {
+    shown.is_some_and(|shown| !shown.shows(line))
+}
+
 const MAX_WORLD_LABELS: usize = 600;
 const MAX_CHIPS: usize = 260;
 const MAX_BODIES: usize = 400;
@@ -501,7 +505,7 @@ fn code_lenses(
         }
         for (line, mut lenses) in lines {
             let row = row_of(rows, line);
-            if row as usize >= f.line_count() || drawn >= MAX_LENS_LINES {
+            if row as usize >= f.line_count() || drawn >= MAX_LENS_LINES || folded_away(rows, line) {
                 continue;
             }
             if !n.cell_rect(row, 0, 1).intersects(&world.expand(LINE_H * 2.0)) {
@@ -958,7 +962,7 @@ pub fn build(
             let rows = page.diffs.get(rel);
             for d in found.items.iter().take(500) {
                 let line = row_of(rows, d.line);
-                if line as usize >= f.line_count() {
+                if line as usize >= f.line_count() || folded_away(rows, d.line) {
                     continue;
                 }
                 let cols = if d.end_line > d.line {
@@ -998,7 +1002,7 @@ pub fn build(
             let rows = page.diffs.get(rel);
             for (kind, d) in types.into_iter().flat_map(|(kind, items)| items.iter().map(move |d| (kind, d))) {
                 let line = row_of(rows, d.line);
-                if line as usize >= f.line_count() || drawn >= MAX_DECORATIONS {
+                if line as usize >= f.line_count() || drawn >= MAX_DECORATIONS || folded_away(rows, d.line) {
                     continue;
                 }
                 let len = f.line(line as usize).chars().count() as u32;
