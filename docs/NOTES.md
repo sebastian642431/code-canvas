@@ -1629,6 +1629,15 @@ Camera
   started (language servers, an assistant's processes) would be left running. The
   window is hidden first, so the wait of at most three seconds is not seen.
 - `kill_tree` kills the host and whatever it started (language servers).
+- **On Windows the host lives in a job object** (`job::Job`, declared by hand like
+  the rest of the Win32 the app uses) that kills everything in it when its handle
+  closes (`KILL_ON_JOB_CLOSE`), with no breakaway allowed. The handle is the
+  `Host`'s: dropping the `Host` (after `stop_and_wait`, after the host crashed, or
+  the app ending in any way, a crash included) ends whatever the host started,
+  even a process started detached whose parent is long gone. So a host that
+  stopped cleanly no longer leaves its language servers behind. The host is
+  started suspended, put in the job, then resumed (`NtResumeProcess`), so nothing
+  it starts can slip out before. Elsewhere the job is nothing.
 - `HOST_JS` is embedded with `include_str!`, so an installed app needs no extra
   files; `Host::start` writes it to disk and runs it.
 - `Stderr` lines are what the host wrote outside the protocol: Node's own errors.

@@ -1,0 +1,11 @@
+{
+  "name": "fake-child",
+  "publisher": "qa",
+  "displayName": "QA child",
+  "description": "The first time it starts it leaves behind a detached Node process that appends a line to qa-alive.txt in the first folder every 200 ms for a minute, as a language server would keep running.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "engines": { "vscode": "^1.80.0" },
+  "capabilities": { "untrustedWorkspaces": { "supported": true } }
+}

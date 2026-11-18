@@ -1,0 +1,15 @@
+title: A process an extension leaves running, detached, ends when the app is left: nothing of it is still writing once the app starts again
+folders: rust-small
+extensions: child-extension
+expect-log: extension qa\.fake-child started
+expect-file: rust-small/qa-spawned.txt :: \Aspawned
+expect-file: rust-small/qa-alive.txt :: \Atick\r?\n[\s\S]*tick\r?\nAGAIN\r?\n\z
+
+wait 3500
+quit
+
+=== again
+wait 1500
+touch qa-alive.txt AGAIN
+wait 3000
+quit

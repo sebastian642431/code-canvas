@@ -44,6 +44,7 @@ pub enum HostEvent {
 
 pub struct Host {
     child: Child,
+    _job: Option<job::Job>,
     out: Option<mpsc::Sender<String>>,
     pub rx: Receiver<HostEvent>,
 }
@@ -196,21 +197,23 @@ pub fn node_path() -> Option<PathBuf> {
     .clone()
 }
 
-pub fn node_command(dir: &Path) -> Option<Command> {
+pub fn node_command(dir: &Path, suspended: bool) -> Option<Command> {
     let mut c = Command::new(node_path()?);
     c.env_clear().envs(host_env(std::env::vars_os(), cfg!(windows))).current_dir(dir);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        c.creation_flags(CREATE_NO_WINDOW);
+        c.creation_flags(CREATE_NO_WINDOW | if suspended { job::CREATE_SUSPENDED } else { 0 });
     }
+    #[cfg(not(windows))]
+    let _ = suspended;
     Some(c)
 }
 
 pub fn detect_node() -> Result<String, String> {
     let dir = std::env::temp_dir();
-    let mut node = node_command(&dir).ok_or("Node.js was not found on the PATH")?;
+    let mut node = node_command(&dir, false).ok_or("Node.js was not found on the PATH")?;
     let out = node.arg("--version").stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -227,9 +230,10 @@ impl Host {
             std::fs::write(&script, HOST_JS)?;
         }
         let not_found = || std::io::Error::new(std::io::ErrorKind::NotFound, "Node.js was not found");
-        let mut node = node_command(dir).ok_or_else(not_found)?;
+        let mut node = node_command(dir, true).ok_or_else(not_found)?;
         let mut child =
             node.arg(&script).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let job = job::Job::holding(&child);
         let stdin: Option<ChildStdin> = child.stdin.take();
         let (out, lines) = mpsc::channel::<String>();
         std::thread::spawn(move || {
@@ -273,7 +277,7 @@ impl Host {
             let _ = tx.send(HostEvent::Exited);
             waker.wake();
         });
-        Ok(Host { child, out: Some(out), rx })
+        Ok(Host { child, _job: job, out: Some(out), rx })
     }
 
     pub fn send(&mut self, message: &Value) -> bool {
@@ -307,6 +311,105 @@ fn kill_tree(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+
+    pub const CREATE_SUSPENDED: u32 = 0x4;
+    const EXTENDED_LIMITS: i32 = 9;
+    const KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimits {
+        per_process_user_time: i64,
+        per_job_user_time: i64,
+        flags: u32,
+        minimum_working_set: usize,
+        maximum_working_set: usize,
+        active_processes: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimits {
+        basic: BasicLimits,
+        io: [u64; 6],
+        process_memory: usize,
+        job_memory: usize,
+        peak_process_memory: usize,
+        peak_job_memory: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> *mut c_void;
+        fn SetInformationJobObject(job: *mut c_void, class: i32, info: *const c_void, len: u32) -> i32;
+        fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtResumeProcess(process: *mut c_void) -> i32;
+    }
+
+    pub struct Job(*mut c_void);
+
+    unsafe impl Send for Job {}
+
+    impl Job {
+        fn new() -> Option<Job> {
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() {
+                return None;
+            }
+            let job = Job(handle);
+            let limits = ExtendedLimits {
+                basic: BasicLimits { flags: KILL_ON_JOB_CLOSE, ..Default::default() },
+                ..Default::default()
+            };
+            let size = std::mem::size_of::<ExtendedLimits>() as u32;
+            let set = unsafe {
+                SetInformationJobObject(job.0, EXTENDED_LIMITS, &limits as *const ExtendedLimits as *const c_void, size)
+            };
+            (set != 0).then_some(job)
+        }
+
+        pub fn holding(child: &Child) -> Option<Job> {
+            let process = child.as_raw_handle();
+            let job = Job::new().filter(|job| unsafe { AssignProcessToJobObject(job.0, process) } != 0);
+            if job.is_none() {
+                log::warn!("the extension host is not tied to the app: what it starts may outlive it");
+            }
+            unsafe { NtResumeProcess(process) };
+            job
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod job {
+    pub struct Job;
+
+    impl Job {
+        pub fn holding(_child: &std::process::Child) -> Option<Job> {
+            None
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -392,6 +495,31 @@ mod tests {
         assert_eq!(off, ["CLAUDE_CODE_USE_BEDROCK"]);
         let vertex = env(&[("CLAUDE_CODE_USE_VERTEX", "1"), ("CLOUD_ML_REGION", "eu"), ("AWS_REGION", "x")], true);
         assert_eq!(vertex, ["CLAUDE_CODE_USE_VERTEX", "CLOUD_ML_REGION"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn what_the_host_starts_ends_with_it_even_once_it_left() {
+        use std::os::windows::process::CommandExt;
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-job-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |name: &str, held: u64| {
+            let file = dir.join(name);
+            let mut c = Command::new("cmd");
+            c.creation_flags(0x0800_0000 | job::CREATE_SUSPENDED);
+            c.raw_arg(format!(r#"/c start "" /b cmd /c "ping -n 2 127.0.0.1 >nul & echo done>{}""#, file.display()));
+            let mut child = c.spawn().unwrap();
+            let job = job::Job::holding(&child).expect("a job");
+            std::thread::sleep(std::time::Duration::from_millis(held));
+            drop(job);
+            let _ = child.wait();
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            file.exists()
+        };
+        assert!(run("kept.txt", 2500), "left alone, the grandchild finishes");
+        assert!(!run("cut.txt", 400), "the grandchild goes with the job, though its parent has left");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
