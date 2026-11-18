@@ -3653,9 +3653,9 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, step), Sense::click());
         stack = Some(stack.map_or(rect, |stack| stack.union(rect)));
         let at = rect.center() - Vec2::new(0.0, 2.0);
-        cut(ui, at, 12.0);
+        cut(ui, at, 15.0);
         let lifted = if resp.hovered() { Vec2::new(0.0, -2.0) } else { Vec2::ZERO };
-        face(ui.painter(), &st.faces, agent.avatar, at + lifted, 11.0, c(agent.color), agent.quiet, agent.followed);
+        rail_face(ui.painter(), &st.faces, agent.avatar, at + lifted, 12.0, !agent.quiet, agent.followed);
         if let Some((owner, color)) = &agent.owner {
             owner_badge(ui.painter(), at + lifted + Vec2::new(9.0, 9.0), 5.5, owner, c(*color));
         }
@@ -3803,6 +3803,47 @@ fn load_faces(ctx: &egui::Context, st: &mut UiState) {
         let pixels = egui::ColorImage::from_rgba_unmultiplied(size, picture.as_raw());
         st.faces.push(ctx.load_texture(format!("assistant {i}"), pixels, egui::TextureOptions::LINEAR));
     }
+}
+
+fn rail_face(
+    painter: &egui::Painter,
+    faces: &[egui::TextureHandle],
+    avatar: usize,
+    center: Pos2,
+    radius: f32,
+    working: bool,
+    followed: bool,
+) {
+    let t = theme::get();
+    let ground = if working { c(t.git_added) } else { c(t.problem_error).gamma_multiply(0.4) };
+    if followed {
+        painter.circle_stroke(center, radius + 2.5, Stroke::new(1.5, ground));
+    }
+    painter.circle_filled(center, radius, ground);
+    let Some(picture) = faces.get(avatar % faces.len().max(1)) else { return };
+    let tint = if working { Color32::WHITE } else { Color32::from_gray(170) };
+    round_picture(painter, picture.id(), center, radius * 0.86, tint);
+}
+
+fn round_picture(painter: &egui::Painter, texture: egui::TextureId, center: Pos2, radius: f32, tint: Color32) {
+    const SIDES: usize = 32;
+    let mut mesh = egui::Mesh::with_texture(texture);
+    mesh.colored_vertex(center, tint);
+    mesh.vertices[0].uv = Pos2::new(0.5, 0.5);
+    for i in 0..=SIDES {
+        let angle = i as f32 / SIDES as f32 * std::f32::consts::TAU;
+        let (sin, cos) = angle.sin_cos();
+        let at = center + Vec2::new(cos, sin) * radius;
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: at,
+            uv: Pos2::new(0.5 + cos * 0.5, 0.5 + sin * 0.5),
+            color: tint,
+        });
+        if i > 0 {
+            mesh.add_triangle(0, i as u32, i as u32 + 1);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 #[allow(clippy::too_many_arguments)]
