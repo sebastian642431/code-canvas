@@ -451,6 +451,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas-relay"
+version = "0.4.3"
+dependencies = [
+ "ring",
+]
+
+[[package]]
 name = "canvas-render"
 version = "0.4.3"
 dependencies = [
@@ -534,6 +541,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "canvas-core",
+ "canvas-relay",
  "canvas-render",
  "dirs 6.0.0",
  "egui",

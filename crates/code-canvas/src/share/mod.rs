@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use ot::{Link, TextOp};
@@ -18,6 +18,7 @@ pub const COLORS: [u32; 8] =
     [0xff6b9dff, 0x4fd6beff, 0xffb454ff, 0xa78bfaff, 0x5ab0ffff, 0xf7768eff, 0x9ece6aff, 0xe0af68ff];
 const GREETING: Duration = Duration::from_secs(10);
 const STUCK: Duration = Duration::from_secs(20);
+const STILL: Duration = Duration::from_secs(25);
 pub const MOST_TEXT: usize = 96 << 20;
 pub const LARGEST_FILE: usize = 2 << 20;
 pub const MOST_FILES: usize = 20_000;
@@ -29,6 +30,10 @@ pub fn body(text: &str) -> String {
     let text = text.strip_suffix('\n').unwrap_or(text);
     let text = text.strip_suffix('\r').unwrap_or(text);
     text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn held<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn weight(msg: &Msg) -> usize {
@@ -84,6 +89,8 @@ enum Net {
     Open(u32, Sender<Option<Msg>>, Arc<AtomicUsize>),
     Got(u32, Msg),
     Closed(u32, String),
+    Room(Invite),
+    Lost(String),
 }
 
 struct Conn {
@@ -127,6 +134,7 @@ pub enum Event {
     Role(bool),
     Come(u32),
     Agents(u32),
+    Invited,
     Ended(String),
 }
 
@@ -136,6 +144,7 @@ pub struct Session {
     pub people: Vec<Person>,
     pub seen: HashMap<u32, Seen>,
     pub invite: Option<Invite>,
+    pub relay: Option<String>,
     pub guests_write: bool,
     pub connected: bool,
     pub ended: Option<String>,
@@ -150,6 +159,7 @@ pub struct Session {
     epochs: u32,
     taken: usize,
     secret: Arc<Mutex<[u8; 16]>>,
+    relay_line: Arc<Mutex<Option<TcpStream>>>,
 }
 
 fn serve(stream: TcpStream, id: u32, secret: [u8; 16], hello: Option<Msg>, net: Sender<Net>) {
@@ -183,8 +193,15 @@ fn serve(stream: TcpStream, id: u32, secret: [u8; 16], hello: Option<Msg>, net: 
         crate::ext::wake_ui();
         let mut writing = stream.try_clone()?;
         std::thread::spawn(move || {
-            while let Ok(Some(msg)) = queued.recv() {
-                let size = weight(&msg);
+            loop {
+                let (msg, size) = match queued.recv_timeout(STILL) {
+                    Ok(Some(msg)) => {
+                        let size = weight(&msg);
+                        (msg, size)
+                    }
+                    Err(RecvTimeoutError::Timeout) => (Msg::Still, 0),
+                    Ok(None) | Err(RecvTimeoutError::Disconnected) => break,
+                };
                 let sent = wire::write_msg(&mut writing, &mut seal_out, &msg);
                 waiting.fetch_sub(size.min(waiting.load(Ordering::Relaxed)), Ordering::Relaxed);
                 if sent.is_err() {
@@ -210,6 +227,61 @@ fn serve(stream: TcpStream, id: u32, secret: [u8; 16], hello: Option<Msg>, net: 
     crate::ext::wake_ui();
 }
 
+fn through_relay(
+    relay: String,
+    (host, port): (String, u16),
+    secret: Arc<Mutex<[u8; 16]>>,
+    tx: Sender<Net>,
+    stop: Arc<AtomicBool>,
+    line: Arc<Mutex<Option<TcpStream>>>,
+) {
+    let lost = |why: String| {
+        let _ = tx.send(Net::Lost(why));
+        crate::ext::wake_ui();
+    };
+    let (mut control, room, token) = match canvas_relay::client::open(&relay, GREETING) {
+        Ok(opened) => opened,
+        Err(e) => return lost(format!("the relay at {relay} could not be reached: {e}")),
+    };
+    *held(&line) = control.handle().ok();
+    if stop.load(Ordering::Relaxed) {
+        if let Some(line) = held(&line).take() {
+            let _ = line.shutdown(Shutdown::Both);
+        }
+        return;
+    }
+    log::info!("share: the relay at {relay} gave the room {room}");
+    let _ = tx.send(Net::Room(Invite { host, port, secret: [0; 16], room: Some(room.clone()) }));
+    crate::ext::wake_ui();
+    let (ids, knocking) = (AtomicU32::new(1), Arc::new(AtomicUsize::new(0)));
+    while !stop.load(Ordering::Relaxed) {
+        match control.listen() {
+            Ok(None) => {}
+            Ok(Some(_)) if knocking.load(Ordering::Relaxed) >= MOST_KNOCKING => {}
+            Ok(Some(knock)) => {
+                knocking.fetch_add(1, Ordering::Relaxed);
+                let id = ids.fetch_add(1, Ordering::Relaxed);
+                let (relay, room, token, tx, here) =
+                    (relay.clone(), room.clone(), token.clone(), tx.clone(), knocking.clone());
+                let secret = *held(&secret);
+                std::thread::spawn(move || {
+                    match canvas_relay::client::take(&relay, &room, &token, knock, GREETING) {
+                        Ok(stream) => serve(stream, id, secret, None, tx),
+                        Err(e) => log::info!("share: someone knocked at the relay and was not let in: {e}"),
+                    }
+                    here.fetch_sub(1, Ordering::Relaxed);
+                });
+            }
+            Err(e) => {
+                if !stop.load(Ordering::Relaxed) {
+                    lost(format!("the relay at {relay} closed the room: {e}"));
+                }
+                return;
+            }
+        }
+    }
+}
+
 impl Session {
     fn new(host: bool, net: Receiver<Net>, stop: Arc<AtomicBool>) -> Session {
         Session {
@@ -218,6 +290,7 @@ impl Session {
             people: Vec::new(),
             seen: HashMap::new(),
             invite: None,
+            relay: None,
             guests_write: false,
             connected: host,
             ended: None,
@@ -232,6 +305,7 @@ impl Session {
             epochs: 0,
             taken: 0,
             secret: Arc::new(Mutex::new([0; 16])),
+            relay_line: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -279,7 +353,30 @@ impl Session {
         session.guests_write = guests_write;
         session.secret = shared;
         let host = if address == "0.0.0.0" { local_address() } else { address.to_string() };
-        session.invite = Some(Invite { host, port, secret });
+        session.invite = Some(Invite { host, port, secret, room: None });
+        session.people = vec![Person { id: HOST, name: name.to_string(), color: 0, writer: true, host: true }];
+        Ok(session)
+    }
+
+    /// Shares through a relay: a room is asked for there, and the invitation
+    /// comes when it is given (`Event::Invited`). The relay never has the secret.
+    pub fn open_through(relay: &str, name: &str, guests_write: bool) -> io::Result<Session> {
+        let Some((host, port)) = canvas_relay::client::address(relay) else {
+            let why = format!("{} is not the address of a relay", relay.trim());
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, why));
+        };
+        let relay = canvas_relay::client::written(&host, port);
+        let shared = Arc::new(Mutex::new(wire::random::<16>()));
+        let (tx, net) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let line = Arc::new(Mutex::new(None));
+        let along = (relay.clone(), shared.clone(), stop.clone(), line.clone());
+        std::thread::spawn(move || through_relay(along.0, (host, port), along.1, tx, along.2, along.3));
+        let mut session = Session::new(true, net, stop);
+        session.guests_write = guests_write;
+        session.secret = shared;
+        session.relay = Some(relay);
+        session.relay_line = line;
         session.people = vec![Person { id: HOST, name: name.to_string(), color: 0, writer: true, host: true }];
         Ok(session)
     }
@@ -288,15 +385,29 @@ impl Session {
         let (tx, net) = mpsc::channel();
         let (invite, hello) = (invite.clone(), Msg::Hello { name: name.to_string(), version: wire::VERSION });
         std::thread::spawn(move || {
-            let found = (invite.host.as_str(), invite.port).to_socket_addrs().ok().and_then(|mut all| all.next());
-            let stream = match found {
-                Some(address) => TcpStream::connect_timeout(&address, GREETING),
-                None => Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not an address", invite.host))),
+            let stream = match (invite.relay(), invite.room.as_deref()) {
+                (Some(relay), Some(room)) => {
+                    canvas_relay::client::join(&relay, room, GREETING).map_err(|e| match e.kind() {
+                        io::ErrorKind::ConnectionRefused => e.to_string(),
+                        _ => format!("the relay at {relay} could not be reached: {e}"),
+                    })
+                }
+                _ => {
+                    let found =
+                        (invite.host.as_str(), invite.port).to_socket_addrs().ok().and_then(|mut all| all.next());
+                    let stream = match found {
+                        Some(address) => TcpStream::connect_timeout(&address, GREETING),
+                        None => {
+                            Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not an address", invite.host)))
+                        }
+                    };
+                    stream.map_err(|e| format!("it could not be reached: {e}"))
+                }
             };
             match stream {
                 Ok(stream) => serve(stream, HOST, invite.secret, Some(hello), tx),
-                Err(e) => {
-                    let _ = tx.send(Net::Closed(HOST, format!("it could not be reached: {e}")));
+                Err(why) => {
+                    let _ = tx.send(Net::Closed(HOST, why));
                     crate::ext::wake_ui();
                 }
             }
@@ -546,9 +657,12 @@ impl Session {
             let _ = conn.out.send(Some(Msg::Bye { why: "the host closed your place in the session".to_string() }));
             let _ = conn.out.send(None);
         }
-        if let Some(invite) = self.invite.as_mut().filter(|_| self.host) {
-            invite.secret = wire::random::<16>();
-            *self.secret.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = invite.secret;
+        if self.host {
+            let secret = wire::random::<16>();
+            *held(&self.secret) = secret;
+            if let Some(invite) = self.invite.as_mut() {
+                invite.secret = secret;
+            }
         }
     }
 
@@ -567,6 +681,12 @@ impl Session {
         for conn in self.conns.drain(..) {
             let _ = conn.out.send(Some(Msg::Bye { why: why.to_string() }));
             let _ = conn.out.send(None);
+        }
+        if let Some(line) = held(&self.relay_line).take() {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(400));
+                let _ = line.shutdown(Shutdown::Both);
+            });
         }
         if self.ended.is_none() {
             self.ended = Some(String::new());
@@ -611,6 +731,16 @@ impl Session {
                 }
                 Net::Closed(id, why) => self.gone(id, why, &mut events),
                 Net::Got(id, msg) => self.got(id, msg, &mut events),
+                Net::Room(mut invite) => {
+                    invite.secret = *held(&self.secret);
+                    self.invite = Some(invite);
+                    events.push(Event::Invited);
+                }
+                Net::Lost(why) => {
+                    if self.ended.is_none() {
+                        self.give_up(&why, &mut events);
+                    }
+                }
             }
         }
         events
@@ -946,5 +1076,80 @@ mod tests {
         let events = until(&mut [&mut host, &mut stranger], |_, all| !all[1].is_empty());
         assert!(matches!(&events[1][..], [Event::Ended(_)]));
         assert!(events[0].is_empty() && host.people.len() == 1);
+    }
+
+    fn tap(to: std::net::SocketAddr) -> (u16, Arc<Mutex<Vec<u8>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        std::thread::spawn(move || {
+            for near in listener.incoming().flatten() {
+                let Ok(far) = TcpStream::connect(to) else { continue };
+                let ways = [(near.try_clone().unwrap(), far.try_clone().unwrap()), (far, near)];
+                for (mut from, mut into) in ways {
+                    let kept = kept.clone();
+                    std::thread::spawn(move || {
+                        let mut buffer = [0u8; 4096];
+                        while let Ok(n @ 1..) = from.read(&mut buffer) {
+                            held(&kept).extend_from_slice(&buffer[..n]);
+                            if into.write_all(&buffer[..n]).is_err() {
+                                break;
+                            }
+                        }
+                        let _ = into.shutdown(Shutdown::Both);
+                    });
+                }
+            }
+        });
+        (port, seen)
+    }
+
+    #[test]
+    fn a_session_through_a_relay_works_and_the_relay_carries_only_sealed_bytes() {
+        let relay = canvas_relay::Relay::start("127.0.0.1:0", canvas_relay::Limits::default(), true).unwrap();
+        assert!(Session::open_through("not an address", "Ana", true).is_err());
+        let mut host = Session::open_through(&relay.address().to_string(), "Ana", true).unwrap();
+        host.share_folder(7, "demo", vec![("a.txt".into(), "the plain words".into())]);
+        until(&mut [&mut host], |_, all| all[0].contains(&Event::Invited));
+        let invite = host.invite.clone().unwrap();
+        assert!(invite.written().starts_with(&format!("cc2:relay:127.0.0.1:{}:", relay.address().port())));
+        assert_eq!(Invite::read(&invite.written()), Some(invite.clone()));
+
+        let (port, carried) = tap(relay.address());
+        let mut guest = Session::join(&Invite { port, ..invite.clone() }, "Beto");
+        until(&mut [&mut host, &mut guest], |_, all| all[1].contains(&Event::FolderReady(7)));
+        assert_eq!(guest.text(7, "a.txt"), Some("the plain words"));
+        guest.changed(7, "a.txt", "the plain words, and more");
+        until(&mut [&mut host, &mut guest], |sessions, _| sessions[0].text(7, "a.txt") == guest_text(sessions[1]));
+        assert_eq!(host.text(7, "a.txt"), Some("the plain words, and more"));
+        let carried = held(&carried).clone();
+        let has = |what: &[u8]| carried.windows(what.len()).any(|bytes| bytes == what);
+        assert!(carried.len() > 100 && has(b"CCSH1"), "the tap saw the session go by");
+        assert!(!has(b"plain words") && !has(b"Beto") && !has(b"Ana"), "and could read none of it");
+        let secret: String = invite.secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert!(!has(secret.as_bytes()) && !has(&invite.secret), "nor the secret");
+
+        let mut wrong = invite.clone();
+        wrong.secret[0] ^= 1;
+        let mut stranger = Session::join(&wrong, "Eve");
+        let events = until(&mut [&mut host, &mut stranger], |_, all| !all[1].is_empty());
+        assert!(matches!(&events[1][..], [Event::Ended(_)]), "another secret gets nowhere through the relay");
+        assert_eq!(host.people.len(), 2);
+
+        let mut gone = Session::join(&Invite { room: Some("nosuchroom".into()), ..invite.clone() }, "Eve");
+        let events = until(&mut [&mut gone], |_, all| !all[0].is_empty());
+        assert!(matches!(&events[0][..], [Event::Ended(why)] if why.contains("no such room")), "{events:?}");
+
+        relay.stop();
+        let events = until(&mut [&mut host, &mut guest], |_, all| {
+            all[0].iter().any(|event| matches!(event, Event::Ended(_)))
+                && all[1].iter().any(|event| matches!(event, Event::Ended(_)))
+        });
+        assert!(events[0].iter().any(|event| matches!(event, Event::Ended(why) if why.contains("relay"))));
+    }
+
+    fn guest_text(guest: &Session) -> Option<&str> {
+        guest.text(7, "a.txt")
     }
 }

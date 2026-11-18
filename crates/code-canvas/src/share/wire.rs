@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ot::TextOp;
 
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const DEFAULT_PORT: u16 = 47800;
 const MAGIC: &[u8; 5] = b"CCSH1";
 const LARGEST: usize = 16 << 20;
@@ -152,25 +152,46 @@ pub enum Msg {
     Come { who: u32 },
     Agents { who: u32, list: Vec<Helper> },
     Said { folder: u32, path: String, epoch: u32, seen: u64 },
+    Still,
     Bye { why: String },
 }
 
+/// Where to find a session and the secret that opens it. With a `room`, `host`
+/// and `port` are the relay's and the room is the session's place there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invite {
     pub host: String,
     pub port: u16,
     pub secret: [u8; 16],
+    pub room: Option<String>,
 }
 
 impl Invite {
     pub fn written(&self) -> String {
         let secret: String = self.secret.iter().map(|byte| format!("{byte:02x}")).collect();
-        format!("cc1:{}:{}:{secret}", self.host, self.port)
+        match &self.room {
+            Some(room) => format!("cc2:relay:{}:{}:{room}:{secret}", self.host, self.port),
+            None => format!("cc1:{}:{}:{secret}", self.host, self.port),
+        }
     }
 
     pub fn read(text: &str) -> Option<Invite> {
-        let rest = text.trim().strip_prefix("cc1:")?;
+        let text = text.trim();
+        let (rest, relayed) = match text.strip_prefix("cc2:relay:") {
+            Some(rest) => (rest, true),
+            None => (text.strip_prefix("cc1:")?, false),
+        };
         let (rest, secret) = rest.rsplit_once(':')?;
+        let (rest, room) = match relayed {
+            true => {
+                let (rest, room) = rest.rsplit_once(':')?;
+                if !canvas_relay::room_name_fits(room) {
+                    return None;
+                }
+                (rest, Some(room.to_string()))
+            }
+            false => (rest, None),
+        };
         let (host, port) = rest.rsplit_once(':')?;
         if secret.len() != 32 || host.is_empty() || !secret.is_ascii() {
             return None;
@@ -179,7 +200,13 @@ impl Invite {
         for (i, byte) in bytes.iter_mut().enumerate() {
             *byte = u8::from_str_radix(&secret[i * 2..i * 2 + 2], 16).ok()?;
         }
-        Some(Invite { host: host.to_string(), port: port.parse().ok()?, secret: bytes })
+        let host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+        Some(Invite { host, port: port.parse().ok()?, secret: bytes, room })
+    }
+
+    /// The relay this invitation goes through, as an address to connect to.
+    pub fn relay(&self) -> Option<String> {
+        self.room.as_ref().map(|_| canvas_relay::client::written(&self.host, self.port))
     }
 }
 
@@ -341,7 +368,15 @@ mod tests {
     }
 
     fn pair(of_guest: &[u8; 16], of_host: &[u8; 16]) -> ((Seal, Seal), (Seal, Seal)) {
-        let (guest_salt, host_salt) = ([7u8; 16], [9u8; 16]);
+        pair_salted(of_guest, of_host, [7u8; 16], [9u8; 16])
+    }
+
+    fn pair_salted(
+        of_guest: &[u8; 16],
+        of_host: &[u8; 16],
+        guest_salt: [u8; 16],
+        host_salt: [u8; 16],
+    ) -> ((Seal, Seal), (Seal, Seal)) {
         let (to_host, to_guest) = seals(of_guest, &guest_salt, &host_salt);
         let (at_host_in, at_host_out) = seals(of_host, &guest_salt, &host_salt);
         ((to_host, to_guest), (at_host_out, at_host_in))
@@ -349,19 +384,70 @@ mod tests {
 
     #[test]
     fn an_invitation_is_read_back_as_it_was_written() {
-        let invite = Invite { host: "192.168.0.14".into(), port: 47800, secret: [0xab; 16] };
+        let invite = Invite { host: "192.168.0.14".into(), port: 47800, secret: [0xab; 16], room: None };
         let text = invite.written();
         assert_eq!(text, format!("cc1:192.168.0.14:47800:{}", "ab".repeat(16)));
         assert_eq!(Invite::read(&format!("  {text}\n")), Some(invite));
         assert_eq!(Invite::read("cc1:fe80::1:47800:00112233445566778899aabbccddeeff").unwrap().host, "fe80::1");
+        let relayed =
+            Invite { host: "relay.example.org".into(), port: 7878, secret: [1; 16], room: Some("k3x9ab2cd4ef".into()) };
+        let text = relayed.written();
+        assert_eq!(text, format!("cc2:relay:relay.example.org:7878:k3x9ab2cd4ef:{}", "01".repeat(16)));
+        assert_eq!(Invite::read(&text), Some(relayed.clone()));
+        assert_eq!(relayed.relay().as_deref(), Some("relay.example.org:7878"));
+        let v6 = Invite::read("cc2:relay:::1:7000:room1:00112233445566778899aabbccddeeff").unwrap();
+        assert_eq!((v6.host.as_str(), v6.port, v6.relay().unwrap().as_str()), ("::1", 7000, "[::1]:7000"));
         for bad in [
             "",
             "cc1:host:47800:short",
             "cc2:host:1:00112233445566778899aabbccddeeff",
             "cc1::1:00112233445566778899aabbccddeeff",
+            "cc2:relay:host:7878:00112233445566778899aabbccddeeff",
+            "cc2:relay:host:7878:no room:00112233445566778899aabbccddeeff",
+            "cc2:relay:host:7878:a/b:00112233445566778899aabbccddeeff",
         ] {
             assert!(Invite::read(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_frame_changed_replayed_reordered_or_sent_back_is_refused() {
+        let secret = [6u8; 16];
+        let frames = |count: u32| {
+            let ((mut guest_out, _), (_, host_in)) = pair(&secret, &secret);
+            let mut all = Vec::new();
+            for who in 0..count {
+                let mut one = Vec::new();
+                write_msg(&mut one, &mut guest_out, &Msg::Come { who }).unwrap();
+                all.push(one);
+            }
+            (all, host_in)
+        };
+        let (all, mut host_in) = frames(1);
+        let mut changed = all[0].clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 0x01;
+        assert!(read_msg(&mut io::Cursor::new(changed), &mut host_in).is_err(), "one bit of the tag changed");
+        let (all, mut host_in) = frames(1);
+        let mut changed = all[0].clone();
+        changed[6] ^= 0x80;
+        assert!(read_msg(&mut io::Cursor::new(changed), &mut host_in).is_err(), "one bit of the body changed");
+
+        let (all, mut host_in) = frames(2);
+        assert_eq!(read_msg(&mut io::Cursor::new(all[0].clone()), &mut host_in).unwrap(), Msg::Come { who: 0 });
+        assert!(read_msg(&mut io::Cursor::new(all[0].clone()), &mut host_in).is_err(), "the same frame again");
+        let (all, mut host_in) = frames(2);
+        assert!(read_msg(&mut io::Cursor::new(all[1].clone()), &mut host_in).is_err(), "the second before the first");
+
+        let ((mut guest_out, mut guest_in), _) = pair(&secret, &secret);
+        let mut mine = Vec::new();
+        write_msg(&mut mine, &mut guest_out, &Msg::Still).unwrap();
+        assert!(read_msg(&mut io::Cursor::new(mine), &mut guest_in).is_err(), "what one sent, sent back to it");
+
+        let (all, _) = frames(1);
+        let (_, (_, mut later_in)) = pair_salted(&secret, &secret, [1u8; 16], [2u8; 16]);
+        let played = read_msg(&mut io::Cursor::new(all[0].clone()), &mut later_in);
+        assert!(played.is_err(), "a frame of an earlier connection, played again in a new one");
     }
 
     #[test]

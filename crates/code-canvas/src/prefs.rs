@@ -29,6 +29,8 @@ pub struct Prefs {
     pub code_lenses: bool,
     pub wrap: bool,
     pub grammars_everywhere: bool,
+    pub share_relay: bool,
+    pub relay: String,
 }
 
 impl Default for Prefs {
@@ -60,6 +62,8 @@ impl Default for Prefs {
             code_lenses: true,
             wrap: false,
             grammars_everywhere: false,
+            share_relay: false,
+            relay: String::new(),
         }
     }
 }

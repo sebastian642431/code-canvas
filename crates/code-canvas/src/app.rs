@@ -3687,6 +3687,10 @@ impl App {
                 }
                 let skipped =
                     (&prefs.skip_dirs, &prefs.skip_files) != (&self.ui.prefs.skip_dirs, &self.ui.prefs.skip_files);
+                if (prefs.share_relay, &prefs.relay) != (self.ui.prefs.share_relay, &self.ui.prefs.relay) {
+                    self.ui.share.through_relay = prefs.share_relay;
+                    self.ui.share.relay = prefs.relay.clone();
+                }
                 self.ui.prefs = prefs;
                 if skipped {
                     crate::page::never_read(self.ui.prefs.skip_dirs.clone(), self.ui.prefs.skip_files.clone());
@@ -4217,6 +4221,11 @@ impl App {
                     }
                     "offer" => Some(ui::ShareOp::Offer),
                     "stop" => Some(ui::ShareOp::Stop),
+                    "relay" => {
+                        self.ui.share.relay = rest.trim().to_string();
+                        self.ui.share.through_relay = !rest.trim().is_empty();
+                        Some(ui::ShareOp::Changed)
+                    }
                     "enter" => {
                         self.ui.share.typed = rest.trim().to_string();
                         Some(ui::ShareOp::Enter)
@@ -4242,7 +4251,7 @@ impl App {
                 match op {
                     Some(op) => self.share_op(op),
                     None if verb == "panel" => {}
-                    None => log::warn!("script: share needs start [writers], offer, stop, join <invitation> [name], enter <invitation>, follow|writer|reader <name>, unfollow or panel"),
+                    None => log::warn!("script: share needs start [writers], offer, stop, relay [<address>], join <invitation> [name], enter <invitation>, follow|writer|reader <name>, unfollow or panel"),
                 }
             }
             Step::Agent(said) => match serde_json::from_str::<serde_json::Value>(&said) {

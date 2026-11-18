@@ -36,6 +36,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [gpu_util.rs](#cratescanvas-rendersrcgpu_utilrs) ·
   [text.rs](#cratescanvas-rendersrctextrs) ·
   [theme.rs](#cratescanvas-rendersrcthemers)
+- [canvas-relay](#canvas-relay)
 - [code-canvas](#code-canvas):
   [build.rs](#cratescode-canvasbuildrs) ·
   [exthost/host.js](#cratescode-canvasexthosthostjs) ·
@@ -798,6 +799,59 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 - `get()` is cheap, but take it once per function, not per item.
 - `parse_hex` reads `#rgb`, `#rrggbb` and `#rrggbbaa`, the `#` optional. `to_hex`
   writes `#rrggbb` or `#rrggbbaa`.
+
+---
+
+## canvas-relay
+
+A program of its own (`canvas-relay --listen 0.0.0.0:7878`, `src/main.rs`) and
+a library (`src/lib.rs`) that the app uses for the client side (`client`), so
+both ends speak from one place. std and `ring` (for random rooms), a thread per
+connection with a small stack, no async runtime. How to run one is in the
+README ("Sharing across networks").
+
+- **Who connects where.** Everyone connects *out* to the relay. The host sends
+  `CCRELAY1 open` and gets `room <room> <token>`: a room name (12 letters, which
+  goes in the invitation) and a token (which does not, and which only the host
+  has). That connection stays open as the room's control line; both ends say
+  `alive` every `ALIVE_EVERY` (20 s), the relay ends a room whose host is not
+  heard for `Limits::quiet`, the app a room whose relay is not heard for a
+  minute. A guest sends `CCRELAY1 join <room>`: the relay keeps the connection
+  waiting, writes `knock <n>` on the control line, and the host opens a new
+  connection with `CCRELAY1 take <room> <token> <n>` (the token is compared in
+  constant time). The relay answers `ok` to both and from then on passes each
+  one's bytes to the other. Refusals are `no room`, `no full`, `no busy`,
+  `no answer` (the host did not take the guest in `pair_wait`), `no knock`,
+  `no ask`; `client::meaning` says them in words.
+- **What it sees.** The lines above, the addresses, and the bytes of the
+  session: the greeting in clear (`CCSH1` and a random salt each way) and
+  sealed frames. The secret of the invitation never reaches it, so it cannot
+  read or change a frame without the other end refusing it, nor get in as a
+  guest (see the share notes). `Frames` checks the bytes as they pass without
+  keeping them: the greeting must start as a session's and no frame may be
+  larger than `Limits::largest` (16 MiB, what a session sends) or smaller than
+  a sealed one; otherwise the pair is cut. That keeps the relay from being a
+  tunnel for anything else.
+- **Limits** (`Limits`, each a flag of the program): rooms, connections, both
+  per address too, guests and guests waiting per room, the largest frame, the
+  first line within `greeting`, `idle` with nothing crossing either way (5 min;
+  the apps send `Msg::Still` every 25 s, so only a dead pair is parted), and
+  `room_life` (24 h, looked at every half second by the accepting thread). When
+  a room ends, by its host, by age or by `Relay::stop`, its control line, its
+  waiting guests and its pairs are all shut. Connections are counted by `Slot`
+  (dropped with the connection) under a lock of their own, never while the
+  rooms' lock is held.
+- It prints one line when a room opens or ends and when a guest joins or is
+  parted; never what crosses.
+- Tests (`cargo test -p canvas-relay`) pair a guest and a host, refuse a room
+  that does not exist, a wrong token and a knock that was not made, cut what is
+  not a session and a frame too large, part a quiet pair, end an old room and a
+  room whose host left, and hold each limit. `share::tests` runs a whole session
+  through a relay with a tap in front of it that checks nothing readable crossed.
+- QA: a scenario header `relay: on` starts `canvas-relay.exe` (next to `-Exe`)
+  on `127.0.0.1` for the run, `{RELAY}` in the steps is its address,
+  `relay-expect-log` checks what it printed, and it is stopped at the end
+  (`qa/scenarios/share/through-a-relay.scn`).
 
 ---
 
@@ -2252,6 +2306,7 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
 | `edit` | The tool of the toolbar: `false` is the hand (clicks select, nothing is edited), `true` the pencil (a click in readable code puts the caret there). |
 | `unwanted` | Extensions offered for a language and answered "Do not ask again" (`App::offer_checker`). |
 | `share_name`, `share_writers` | The name the others see in a shared session, and whether those who join can edit from the start. |
+| `share_relay`, `relay` | Share through a relay, and its address (`host[:port]`, 7878 without one; empty by default: the app ships no relay). Off, sharing is direct as before. |
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
 | `wrap` | Wrap lines wider than their card into the rows under them instead of cutting them (`canvas_core::layout::set_wrap`, off by default). |
 | `codex`, `asked_codex` | Follow Codex from the session files it writes (`codex.rs`), and whether the app already offered it. |
@@ -2315,7 +2370,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived (a relative `path` is of the folder in front, such as a guest's shared one); or follow the one with that name. |
 | `workspace` | `workspace put\|off\|forget <folder>`, `workspace all` | Put a folder of the workspace on the canvas, take it off, forget it, or put them all. |
-| `share` | `share start [writers]`, `share stop`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. |
+| `share` | `share start [writers]`, `share stop`, `share relay [<address>]`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. `share relay` sets the relay the next `share start` goes through (none: share directly). |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
 | `rename` | `rename <path>` | Start renaming a file in its row of the explorer. |
@@ -2607,6 +2662,34 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   Who has not the secret cannot open the first frame and is dropped; there is no
   other password. The invitation is `cc1:<address>:<port>:<secret in hex>`;
   the address is the one of this network unless another is written in the panel.
+  A frame changed on the way fails its tag; one played again, out of order or
+  sent back to its sender fails because the nonce is the receiver's own count of
+  that direction; one of an earlier connection fails because each connection's
+  keys come from both sides' fresh salts (`wire.rs` tests).
+- **Through a relay** (`Session::open_through`, `through_relay`, the
+  `canvas-relay` crate). With *Share through a relay* on and an address
+  (`Prefs::share_relay`, `Prefs::relay`, in Settings → Sharing and in the panel
+  before sharing), the host does not listen: a thread connects out to the relay,
+  asks for a room (`client::open`) and keeps that control line. The invitation is
+  then `cc2:relay:<relay host>:<port>:<room>:<secret>` (`Invite::room`; `host`
+  and `port` are the relay's), and it arrives later than the session
+  (`Net::Room`, `Event::Invited`: the panel says *Asking the relay for a room…*
+  until then, and under a script `invite.txt` is written then). On each `knock`
+  the thread opens a new connection that takes that guest (`client::take`) and
+  serves it exactly like an accepted one (`serve`, the same `MOST_KNOCKING`, the
+  current secret). A guest with a `cc2` invitation asks the relay for the room
+  (`client::join`) and, once the relay answers `ok`, greets as always. So
+  everything above the bytes is the same, and the relay carries only the
+  greeting and sealed frames: it never has the secret. The relay's own protocol
+  and limits are in [canvas-relay](#canvas-relay).
+  - The control line is closed by `Session::close` (`relay_line`), which ends the
+    room at once. A relay that closes the room, or is not heard for a minute,
+    ends the session for the host (`Net::Lost`), with the reason.
+  - An idle session says nothing, so a relay would part it: each connection's
+    writer sends `Msg::Still` after `STILL` (25 s) with nothing to send. That is
+    why the wire went to version 5.
+  - Sending someone away changes the secret as always; the room stays, and the
+    old invitation reaches the room but not the session.
 - **Sharing is not limited, it is warned about.** Someone who shares with their
   own second computer wants all of it to work there, so a guest's folder is a
   folder like any other: extensions and assistants get it, and what they (or
@@ -2663,9 +2746,9 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
 - `Link::waiting` is let go when the other side says what it has (`Msg::Said`,
   every `SAID_EVERY` edits it receives without sending): someone who only reads
   made the other keep every edit of the session.
-- The wire has a version (4 now: `Agents`, and `format` in `Save`; 3 brought
-  `Make` and `Drop`): an app of another version is told so, instead of failing
-  on a message it does not know.
+- The wire has a version (5 now: `Still`; 4 brought `Agents` and `format` in
+  `Save`; 3 brought `Make` and `Drop`): an app of another version is told so,
+  instead of failing on a message it does not know.
 - **Everyone's assistants on everyone's canvas** (`share_agents_out`,
   `share_agents_in`). Each app sends `Msg::Agents` with the list of its own
   assistants (`Agent::from` is `None`) that are at or have been in a shared

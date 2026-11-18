@@ -230,9 +230,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   trust.
 - It ends when you say so, and by itself when the app closes. Whoever joined is
   left with nothing of yours on their disk.
-- On the same network it works as it is. From outside, both computers need a way
-  to reach each other: a VPN both are in (Tailscale, ZeroTier) or the port of
-  the invitation forwarded on the router.
+- On the same network it works as it is. From outside, through a **relay** that
+  both apps connect out to (see [Sharing across networks](#sharing-across-networks-a-relay)),
+  a VPN both are in (Tailscale, ZeroTier) or the port of the invitation forwarded
+  on the router.
 
 **Source control**
 - A panel laid out like VS Code's: the repository and its branch, a message box and
@@ -322,6 +323,69 @@ Without arguments the previous session is restored. Folders can also be opened w
 | Open a folder in a new canvas | `Ctrl+O` |
 | Next / previous canvas | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Close the canvas / read everything from disk again | `Ctrl+W` / `F5` |
+
+## Sharing across networks: a relay
+
+When the others are on another network and there is no VPN and no forwarded port,
+a relay joins you: both apps connect *out* to it, so neither needs an address the
+other can reach. Code Canvas ships no relay and no account. You run one on any
+server with a public address (the smallest VPS is plenty), or use one run by
+someone you trust.
+
+The relay is `canvas-relay`, a small program in this repository (std and `ring`,
+no configuration file):
+
+```sh
+cargo build --release -p canvas-relay
+./target/release/canvas-relay --listen 0.0.0.0:7878
+```
+
+Let TCP port 7878 in on that server's firewall. Then in Code Canvas, *Settings →
+Sharing*: tick **Share through a relay** and write its address
+(`relay.example.org:7878`; 7878 when no port is written), or do the same in the
+share panel before *Start sharing*. The invitation becomes
+`cc2:relay:<relay address>:<room>:<secret>`; whoever pastes it joins through the
+relay, and everything else works as when sharing directly. Sharing directly
+(`cc1:` invitations) is unchanged when the box is not ticked.
+
+**What the relay sees and what it cannot.** The one who shares asks it for a room
+and keeps that connection; each guest asks for the room, the relay tells the host,
+the host opens a connection for that guest, and the relay passes the bytes of the
+two along. It sees the addresses that connect, the name of the room, when, and how
+many bytes cross. It never gets the secret of the invitation: the session is sealed
+end to end with ChaCha20-Poly1305 under keys made from that secret and fresh random
+salts (HKDF), one key and one counter each way. So it cannot read files, names or
+edits, and a frame it changes, plays again, reorders or sends back is refused; a
+stranger at the relay without the secret does not get in. What it can do is stop
+passing bytes along. Sending someone away still changes the secret, as without a
+relay.
+
+**Limits** (each one a flag, `canvas-relay --help`): 256 rooms, 1024 connections,
+64 connections and 8 rooms from one address, 32 guests in a room, frames up to
+16 MiB (what a session sends), a guest and host parted after 5 minutes with nothing
+crossing (the apps say they are still there every 25 seconds), and a room ends
+24 hours after it opened. It passes along only what starts as a Code Canvas session
+does, so it is no use as a general tunnel.
+
+To keep it running with nothing but a shell (no systemd, no Docker), one file next
+to the program:
+
+```sh
+#!/bin/sh
+# keep-relay.sh: starts canvas-relay again whenever it stops.
+# Start it with:  nohup ./keep-relay.sh >> relay.log 2>&1 &
+# and at every boot with this line in `crontab -e`:
+#   @reboot cd /home/me/relay && nohup ./keep-relay.sh >> relay.log 2>&1 &
+cd "$(dirname "$0")"
+while true; do
+  ./canvas-relay --listen 0.0.0.0:7878
+  echo "canvas-relay stopped with $?; starting again in 5 seconds"
+  sleep 5
+done
+```
+
+It writes one line when a room opens or ends and when a guest joins or is parted,
+and never anything of what crosses it.
 
 ## Performance
 
@@ -460,8 +524,10 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       as readers or writers, with everyone's pointer, caret and view, and following.
 - [x] Those who join use their own extensions and assistants on the shared
       folders, and make, rename and delete files there.
-- [ ] Sharing across networks without a VPN or a forwarded port (a relay);
-      source control for those who join; pictures and other files that are not
+- [x] Sharing across networks without a VPN or a forwarded port: a relay anyone
+      can run (`canvas-relay`), which passes the session along sealed and never has
+      its key.
+- [ ] Source control for those who join; pictures and other files that are not
       text.
 - [ ] Linux / macOS packaging, a web build (WebGPU).
 
@@ -471,6 +537,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 crates/
   canvas-core/    scanning, tokenizer, symbols, relations, search, layout   (no GPU, unit-tested)
   canvas-render/  wgpu renderer: rects, code bars, curves, text (glyphon), LOD, culling
+  canvas-relay/   the relay for sharing across networks (a program of its own; std + ring)
   code-canvas/    the app: window, UI (egui), pages, camera, extensions, git, Claude Code
     exthost/      the extension host (Node): the `vscode` API for real VS Code extensions
 docs/             ARCHITECTURE.md, EXTENSIONS.md

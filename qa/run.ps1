@@ -59,7 +59,7 @@ function Save-Window($process, $file) {
 }
 
 $head = @{}
-$many = @{ 'expect-log' = @(); 'forbid-log' = @(); 'allow-log' = @(); 'expect-file' = @(); 'absent-file' = @(); 'guest-expect-log' = @(); 'again-expect-log' = @(); 'again-forbid-log' = @() }
+$many = @{ 'expect-log' = @(); 'forbid-log' = @(); 'allow-log' = @(); 'expect-file' = @(); 'absent-file' = @(); 'guest-expect-log' = @(); 'again-expect-log' = @(); 'again-forbid-log' = @(); 'relay-expect-log' = @() }
 $steps = @{ host = @(); guest = @(); again = @() }
 $part = 'head'
 foreach ($line in Get-Content -LiteralPath $Scenario -Encoding UTF8) {
@@ -108,8 +108,20 @@ if ($all.Count -gt 0) {
 }
 $folders = @($wanted | ForEach-Object { Join-Path $fix ($_ -replace '/', '\') })
 
+$relay = $null
+$relayAddress = ''
+$relayLog = Join-Path $Work 'relay.log'
+if ($head.ContainsKey('relay')) {
+    $relayExe = Join-Path (Split-Path -Parent $Exe) 'canvas-relay.exe'
+    if (-not (Test-Path $relayExe)) { Write-Output "FAIL $name`: no relay at $relayExe (cargo build --release)"; exit 2 }
+    $relayAddress = "127.0.0.1:$(Get-Random -Minimum 40001 -Maximum 50000)"
+    $relay = Start-Process -FilePath $relayExe -ArgumentList @('--listen', $relayAddress) -PassThru -WindowStyle Hidden -RedirectStandardError $relayLog -RedirectStandardOutput (Join-Path $Work 'relay.out')
+    Start-Sleep -Milliseconds 600
+    if ($relay.HasExited) { Write-Output "FAIL $name`: the relay did not start: $(Get-Content $relayLog -Raw)"; exit 2 }
+}
+
 function Fill([string]$step) {
-    $places = @{ '{FIX}' = $fix; '{WORK}' = $Work; '{REPO}' = $repo }
+    $places = @{ '{FIX}' = $fix; '{WORK}' = $Work; '{REPO}' = $repo; '{RELAY}' = $relayAddress }
     foreach ($name in $places.Keys) {
         $path = $places[$name]
         if ($step.TrimStart().StartsWith('agent ') -or $step.TrimStart().StartsWith('touch ')) { $path = $path.Replace('\', '/') }
@@ -247,6 +259,19 @@ foreach ($want in $many['absent-file']) {
 if ($fakeGitHub) {
     try { & taskkill /PID $fakeGitHub.Id /T /F | Out-Null } catch {}
     foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
+}
+
+if ($relay) {
+    try { & taskkill /PID $relay.Id /T /F | Out-Null } catch {}
+    $relay.WaitForExit(3000) | Out-Null
+    $said = @()
+    if (Test-Path $relayLog) { $said = @(Get-Content -LiteralPath $relayLog -Encoding UTF8) }
+    foreach ($want in $many['relay-expect-log']) {
+        if (-not ($said | Where-Object { $_ -match $want })) { $problems += "the relay never said /$want/" }
+    }
+    foreach ($line in $said) {
+        if ($line -match 'panicked') { $problems += "relay: $line" }
+    }
 }
 
 $ours = @('code-canvas.exe', 'node.exe', 'rust-analyzer.exe', 'rust-analyzer-proc-macro-srv.exe')

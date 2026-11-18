@@ -52,6 +52,8 @@ quit
 | `github` | `empty`, or a file of `qa/fake` with the files of a gist: the run gets a GitHub of its own on this computer (`qa/fake/github.py`) to sign in to. |
 | `codex` | A fixture that is Codex's folder (`CODEX_HOME`) for the run, such as `codex-home`; without it, an empty folder of the run. |
 | `extensions` | Folders of `qa/fake` put in the run's extensions folder before it starts: `relations-extension` plays a language server, `views-extension` gives code lenses and tree views, `grammar-extension` brings only grammars (made-up languages, one in a property list, an injection, and one for Rust). |
+| `relay` | `on`: a relay of its own for the run (`canvas-relay.exe` next to the program, listening on `127.0.0.1` at a random port, stopped at the end); `{RELAY}` in the steps is its address, so `share relay {RELAY}` before `share start` shares through it. What it printed is in `relay.log` of the run. |
+| `relay-expect-log` | As `expect-log`, for what the relay printed. May repeat. |
 
 A line `=== again` starts a part that is run after the app has ended: the app
 is started again with no folders on the data of the first run (what it
@@ -59,7 +61,8 @@ remembered is what is being tested). Its pictures are `again-<name>.png`, and
 `again-expect-log` / `again-forbid-log` check that second log.
 
 In steps and in `expect-file`, `{FIX}` is the folder of the fixtures, `{WORK}`
-the folder of the run, `{REPO}` this repository. In an `agent` step they are
+the folder of the run, `{REPO}` this repository, `{RELAY}` the address of the
+run's relay (with `relay: on`). In an `agent` step they are
 written with forward slashes, because what follows is JSON (in a `touch` step
 too: it can append a line of JSON to a file, such as a session of Codex).
 
