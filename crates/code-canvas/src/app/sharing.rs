@@ -1055,6 +1055,7 @@ impl App {
                 ago: ago(agent.at),
                 moved: agent.moved,
                 trail,
+                model: agent.model.chars().take(80).collect(),
             });
             if list.len() == share::wire::MOST_HELPERS {
                 break;
@@ -1111,6 +1112,9 @@ impl App {
                     moved: helper.moved,
                     trail: trail.collect(),
                     from: Some(*who),
+                    model: helper.model.chars().take(80).collect(),
+                    transcript: None,
+                    model_asked: None,
                 });
             }
         }

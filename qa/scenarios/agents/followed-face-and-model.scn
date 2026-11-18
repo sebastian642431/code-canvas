@@ -1,0 +1,43 @@
+title: The face followed on the rail has an eye, every assistant says its model (Claude Code's from its transcript, its helper's from its own, Codex's from what it tells), and the bar over the canvas names who is followed and stops it with a button
+folders: rust-small
+fixtures: claude-transcripts
+limit: 70
+expect-log: an assistant \(Claude Code\) is on the canvas
+expect-log: an assistant \(Explore\) is on the canvas
+expect-log: an assistant \(Claude Code\) works with claude-opus-5-5
+expect-log: an assistant \(Explore\) works with claude-haiku-5-5
+expect-log: an assistant \(Codex\) works with gpt-5.1-codex-max
+forbid-log: script: agent needs
+
+wait 3000
+fit
+wait 1000
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"UserPromptSubmit","cwd":"{FIX}/rust-small","prompt":"Make the steps faster"}}
+wait 300
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"PreToolUse","cwd":"{FIX}/rust-small","tool_name":"Read","tool_input":{"file_path":"{FIX}/rust-small/src/main.rs","offset":1,"limit":4}}}
+wait 300
+agent {"source":"claude","hook":{"session_id":"s1","agent_id":"a7","agent_type":"Explore","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"PreToolUse","cwd":"{FIX}/rust-small","tool_name":"Read","tool_input":{"file_path":"{FIX}/rust-small/src/steps.rs","offset":1,"limit":3}}}
+wait 300
+agent {"agent":"c1","name":"Codex","action":"read","path":"{FIX}/rust-small/src/util.rs","line":1,"lines":3,"model":"gpt-5.1-codex-max"}
+wait 2500
+mark three-with-models
+wait 500
+agent Make the steps faster
+wait 2500
+mark following-the-session
+wait 500
+ui move 26 718
+wait 1500
+mark tooltip-of-the-followed
+wait 500
+ui move 26 676
+wait 1500
+mark tooltip-of-another
+wait 500
+ui move 900 600
+wait 500
+ui click 1187 71
+wait 1500
+mark stopped-by-the-button
+wait 500
+quit

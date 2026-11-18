@@ -98,6 +98,7 @@ the invitation. Its pictures are `guest-<name>.png`.
 | `versions-manifests` | One manifest of each kind whose versions the app shows (`package.json` with a `.npmrc` that sends `@latin-securities` to a private registry, `Cargo.toml`, `requirements.txt`, `go.mod`, a `.csproj`), with dependencies the fake registries know (`fixtures_versions.py`). |
 | `trust-repo` | A folder whose `.vscode/settings.json` points an extension at a program of its own (`qa.limited.path`), and a TypeScript file (`fixtures_trust.py`). |
 | `codex-home` | Codex's folder with one session at work a few minutes ago on `rust-small` (`fixtures_agents.py`), for `codex: codex-home`. |
+| `claude-transcripts` | Transcripts as Claude Code writes them: a session `s1.jsonl` answered by Opus (`claude-opus-5-5`, after an older answer by Sonnet) and its helper `s1/subagents/agent-a7.jsonl` answered by Haiku (`fixtures_agents.py`), for hook events with `"transcript_path":"{FIX}/claude-transcripts/s1.jsonl"`. |
 
 More fixtures go in a `fixtures_<area>.py` beside it with its own `FIXTURES`
 dictionary; they are picked up by name like the others.

@@ -2672,6 +2672,40 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   with `Agent::from` set to the person they belong to (see the share section):
   `Agents::agent` never takes one of them for one heard here, and only the ones
   with no `from` are sent to the others.
+- **The model each assistant works with** (`Agent::model`, the id as its program
+  says it; `models::name` makes it short for people: family and version from the
+  id, `claude-opus-5-5` is "Opus 5.5", `claude-3-5-sonnet-20241022` "Sonnet 3.5",
+  `gpt-5.1-codex-max` "GPT-5.1 Codex Max", with dates, `-v1:0`, `@…`, `[1m]` and
+  provider prefixes dropped; an id of another kind is shown as it is, cut to 24
+  characters). Nothing is shown while it is not known: no guess from the kind.
+  - Claude Code's hooks do not say it, but every event has `transcript_path`, and
+    each answer in the transcript (`"type":"assistant"`) has `message.model`; the
+    last one that is not `<synthetic>` is the model. A helper writes its own
+    transcript, `<session>/subagents/agent-<agent_id>.jsonl` beside the session's
+    (`models::of_helper`; `agent_transcript_path` when the hook gives it).
+  - Read by a thread of its own (`models::Reader`, started with the first ask):
+    only the end of the file, 256 KB, then 2 MB, then 8 MB when the answers are
+    further back than long tool results, and the first piece of a tail is not
+    taken for a line. It answers through the same channel as the hooks
+    (`{"model_of", "model"}`), so the interface never waits on a file. Asked when
+    an assistant is first heard, again every 3 s while it is not known, then at
+    most every 30 s while it works and at the end of each turn (`Stop`,
+    `SubagentStop`), where a `/model` change shows.
+  - Codex says it in each `turn_context` (`codex.rs`), and a plain event may carry
+    `"model"`. It goes to the others of a shared session with the assistant
+    (`Helper::model`, left out when empty, so older apps read it as before).
+- **Which one is followed is plain to see** (`ui.rs`): its face on the bar has a
+  small disc of the accent colour with an eye at its top right (an × while the
+  pointer is on it: a click stops), the same eye is on its face on the canvas,
+  whose name tag then also says the model (the others say it while the pointer
+  is on their face). The canvas gets a thin frame of its colour, and a bar at
+  the top middle of the canvas (lower when a commit is shown there) says
+  "Following <name>", its kind and model, with a "Stop following" button; Esc
+  and moving the canvas still stop it. The tip of each face says who it is
+  (`face_tip`: name, kind when it is not the name, model, whose), what it does,
+  and what a click does, naming the one followed now when it is another (only
+  one is followed at a time). A person of a shared session followed gets the
+  same eye and bar.
 
 ### crates/code-canvas/src/codex.rs
 
@@ -2692,7 +2726,7 @@ writes as it works and tells `Agents` what each line says, as plain events.
   (`exec` leaves when its task is complete; a `subagent` with `thread_spawn` is a
   helper of `parent_thread_id`, named by its `agent_role`; the internal ones,
   `compact`, `memory_consolidation`, guardians, are not shown). `turn_context`
-  moves the folder. The name is the first thing asked (`item_completed`
+  moves the folder and says the model. The name is the first thing asked (`item_completed`
   `UserMessage`, `user_message`, or a user `message` that is not one of the texts
   Codex adds itself: `<environment_context>`, `# AGENTS.md`…; the IDE's
   "## My request for Codex:" is cut to the request). Where it is: a

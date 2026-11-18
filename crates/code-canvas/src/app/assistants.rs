@@ -323,6 +323,8 @@ impl App {
         for agent in &self.agents.list {
             let said = self.agent_said(agent);
             let owner = self.share_owner(agent);
+            let model = crate::models::name(&agent.model);
+            let followed = self.agents.following.as_deref() == Some(agent.key.as_str());
             views.push(AgentView {
                 key: agent.key.clone(),
                 name: agent.name(),
@@ -331,8 +333,9 @@ impl App {
                 color: agent.color(),
                 avatar: agent.avatar,
                 quiet: agent.quiet(),
-                followed: self.agents.following.as_deref() == Some(agent.key.as_str()),
+                followed,
                 owner: owner.clone(),
+                model: model.clone(),
             });
             let Some((index, rel)) = self.agent_file(agent).filter(|(index, _)| shown.contains(index)) else {
                 continue;
@@ -351,6 +354,8 @@ impl App {
                 busy: agent.busy(),
                 quiet: agent.quiet(),
                 owner,
+                model,
+                followed,
             });
         }
         self.ui.agent_trails = self.trails_view(&shown);

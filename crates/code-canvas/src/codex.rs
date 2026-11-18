@@ -131,6 +131,7 @@ pub struct Session {
     task_sure: bool,
     once: bool,
     hidden: bool,
+    model: String,
 }
 
 impl Session {
@@ -176,6 +177,9 @@ impl Session {
         if !self.task.is_empty() {
             event.insert("task".into(), json!(self.task));
         }
+        if !self.model.is_empty() {
+            event.insert("model".into(), json!(self.model));
+        }
         if !note.is_empty() {
             event.insert("note".into(), json!(note));
         }
@@ -217,6 +221,9 @@ impl Session {
             "turn_context" => {
                 if let Some(cwd) = str_of(payload, "cwd") {
                     self.cwd = Some(PathBuf::from(from_url(cwd)));
+                }
+                if let Some(model) = str_of(payload, "model").filter(|model| !model.trim().is_empty()) {
+                    self.model = model.trim().to_string();
                 }
                 Vec::new()
             }
@@ -270,6 +277,9 @@ impl Session {
         }
         if let Some(cwd) = str_of(payload, "cwd") {
             self.cwd = Some(PathBuf::from(from_url(cwd)));
+        }
+        if let Some(model) = str_of(payload, "model").filter(|model| !model.trim().is_empty()) {
+            self.model = model.trim().to_string();
         }
         let source = payload.get("source").cloned().unwrap_or(Value::Null);
         self.once = source.as_str() == Some("exec");
@@ -1484,6 +1494,19 @@ mod tests {
         once.hear(&json!({ "type": "session_meta", "payload": { "id": "e", "source": "exec" } }));
         let heard = once.hear(&json!({ "type": "event_msg", "payload": { "type": "task_complete" } }));
         assert_eq!(heard[0]["action"], "done");
+    }
+
+    #[test]
+    fn the_model_a_session_works_with_is_told_with_what_it_does() {
+        let mut session = session();
+        let started = json!({ "type": "event_msg", "payload": { "type": "task_started" } });
+        assert!(session.hear(&started)[0].get("model").is_none(), "no model is told before one is known");
+        let context = json!({ "type": "turn_context", "payload": { "cwd": root(), "model": "gpt-5.1-codex-max" } });
+        assert!(session.hear(&context).is_empty());
+        assert_eq!(session.hear(&started)[0]["model"], "gpt-5.1-codex-max");
+        let other = json!({ "type": "turn_context", "payload": { "cwd": root(), "model": "gpt-5" } });
+        session.hear(&other);
+        assert_eq!(session.hear(&started)[0]["model"], "gpt-5", "a model changed between turns is the new one");
     }
 
     #[test]

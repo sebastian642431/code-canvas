@@ -12,6 +12,8 @@ const KEPT_OF_A_TEXT: usize = 600;
 const QUIET_AFTER: Duration = Duration::from_secs(45);
 const GONE_AFTER: Duration = Duration::from_secs(15 * 60);
 const LEAVING: Duration = Duration::from_secs(6);
+const MODEL_UNKNOWN_AGAIN: Duration = Duration::from_secs(3);
+const MODEL_AGAIN: Duration = Duration::from_secs(30);
 pub const TRAIL: usize = 12;
 pub const TRAIL_LASTS: Duration = Duration::from_secs(10 * 60);
 
@@ -130,6 +132,9 @@ pub struct Agent {
     pub moved: u64,
     pub trail: Vec<Step>,
     pub from: Option<u32>,
+    pub model: String,
+    pub transcript: Option<PathBuf>,
+    pub model_asked: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
@@ -192,6 +197,13 @@ impl Agent {
         self.lines = Some((line, 1));
         if let Some(last) = self.trail.last_mut().filter(|last| last.moved == self.moved) {
             last.lines = self.lines;
+        }
+    }
+
+    fn set_model(&mut self, model: &str) {
+        if self.model != model {
+            log::info!("an assistant ({}) works with {model}", self.role);
+            self.model = model.to_string();
         }
     }
 
@@ -401,6 +413,7 @@ pub struct Agents {
     faces: Vec<(String, usize)>,
     faces_changed: bool,
     handed: std::collections::HashMap<String, std::collections::VecDeque<String>>,
+    models: Option<crate::models::Reader>,
 }
 
 fn text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -485,6 +498,7 @@ impl Agents {
             faces,
             faces_changed: false,
             handed: Default::default(),
+            models: None,
         }
     }
 
@@ -577,8 +591,21 @@ impl Agents {
             moved: 0,
             trail: Vec::new(),
             from: None,
+            model: String::new(),
+            transcript: None,
+            model_asked: None,
         });
         self.list.last_mut().unwrap()
+    }
+
+    fn ask_model(&mut self, key: &str, transcript: PathBuf) {
+        let Some(tell) = self.tell.clone() else { return };
+        if self.models.is_none() {
+            self.models = crate::models::Reader::start(tell);
+        }
+        if let Some(reader) = &self.models {
+            reader.ask(key, transcript);
+        }
     }
 
     pub fn poll(&mut self) -> bool {
@@ -608,6 +635,13 @@ impl Agents {
     }
 
     pub fn hear(&mut self, event: &Value) {
+        if let Some(key) = text(event, &["model_of"]) {
+            let own = self.list.iter_mut().find(|agent| agent.key == key && agent.from.is_none());
+            if let (Some(agent), Some(model)) = (own, text(event, &["model"])) {
+                agent.set_model(model);
+            }
+            return;
+        }
         match event.get("hook") {
             Some(hook) => self.hear_hook(text(event, &["source"]).unwrap_or("assistant"), hook),
             None => self.hear_plain(event),
@@ -627,6 +661,9 @@ impl Agents {
             agent.task = brief(&spoken(task), 48);
         }
         agent.note = text(event, &["note"]).map(|note| brief(note, 90)).unwrap_or_default();
+        if let Some(model) = text(event, &["model"]) {
+            agent.set_model(model);
+        }
         agent.doing = match text(event, &["action"]).unwrap_or("read") {
             "edit" | "write" => Doing::Editing,
             "search" => Doing::Searching,
@@ -687,8 +724,24 @@ impl Agents {
         if let Some(task) = handed {
             self.handed.entry(session.to_string()).or_default().push_back(brief(&spoken(task), 48));
         }
+        let transcript = match inner {
+            None => text(hook, &["transcript_path"]).map(PathBuf::from),
+            Some(inner) => text(hook, &["agent_transcript_path"]).map(PathBuf::from).or_else(|| {
+                text(hook, &["transcript_path"]).map(|main| crate::models::of_helper(Path::new(main), inner))
+            }),
+        };
         let agent = self.agent(&key, session, &role);
         agent.at = Instant::now();
+        if transcript.is_some() {
+            agent.transcript = transcript;
+        }
+        let again = if agent.model.is_empty() { MODEL_UNKNOWN_AGAIN } else { MODEL_AGAIN };
+        let ended = matches!(event, "Stop" | "SubagentStop");
+        let ask_model =
+            agent.transcript.clone().filter(|_| ended || agent.model_asked.is_none_or(|at| at.elapsed() >= again));
+        if ask_model.is_some() {
+            agent.model_asked = Some(Instant::now());
+        }
         if let Some(task) = text(hook, &["prompt"]).filter(|_| inner.is_none() && event == "UserPromptSubmit") {
             agent.task = brief(&spoken(task), 48);
         }
@@ -760,6 +813,9 @@ impl Agents {
         if agent.moved == moves {
             agent.stepped(event == "PostToolUse");
         }
+        if let Some(transcript) = ask_model {
+            self.ask_model(&key, transcript);
+        }
     }
 }
 
@@ -788,6 +844,7 @@ mod tests {
             faces: Vec::new(),
             faces_changed: false,
             handed: Default::default(),
+            models: None,
         };
         for event in events {
             agents.hear(event);
@@ -1044,6 +1101,56 @@ mod tests {
         assert_eq!(agents.list[1].doing, Doing::Reading, "a stop that names no agent is nobody's");
         agents.hear(&json!({ "agent": "x", "path": "C:/a.rs", "line": 10, "lines": 4_294_967_295u64 }));
         assert_eq!(agents.list[2].lines, Some((9, 400)));
+    }
+
+    #[test]
+    fn the_model_of_each_assistant_comes_from_its_own_transcript_or_from_what_it_says() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-agent-models-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let main = dir.join("s1.jsonl");
+        let helper = dir.join("s1").join("subagents").join("agent-a1.jsonl");
+        std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        let answer = |model: &str| format!("{}\n", json!({ "type": "assistant", "message": { "model": model } }));
+        std::fs::write(&main, answer("claude-opus-5-5")).unwrap();
+        std::fs::write(&helper, answer("claude-haiku-5-5")).unwrap();
+        let hook = |event: &str, inner: Option<&str>| {
+            let mut hook = json!({ "session_id": "s1", "hook_event_name": event, "transcript_path": main,
+                                   "tool_name": "Read", "tool_input": { "file_path": "C:/a.rs" } });
+            if let Some(inner) = inner {
+                hook["agent_id"] = json!(inner);
+            }
+            json!({ "source": "claude", "hook": hook })
+        };
+        let mut agents = heard(&[]);
+        let (tell, listened) = mpsc::channel();
+        agents.tell = Some(tell);
+        agents.heard = Some(listened);
+        agents.hear(&hook("PreToolUse", None));
+        agents.hear(&hook("PreToolUse", Some("a1")));
+        assert_eq!(
+            (agents.list[0].transcript.as_ref(), agents.list[1].transcript.as_ref()),
+            (Some(&main), Some(&helper))
+        );
+        assert!(agents.list.iter().all(|agent| agent.model.is_empty()), "nothing is said before it is read");
+        let until = Instant::now() + Duration::from_secs(10);
+        while agents.list.iter().any(|agent| agent.model.is_empty()) && Instant::now() < until {
+            agents.faces_changed = false;
+            agents.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let models: Vec<&str> = agents.list.iter().map(|agent| agent.model.as_str()).collect();
+        assert_eq!(models, ["claude-opus-5-5", "claude-haiku-5-5"]);
+        let asked = agents.list[0].model_asked;
+        agents.hear(&hook("PostToolUse", None));
+        assert_eq!(agents.list[0].model_asked, asked, "a model known is not read again at each step");
+        agents.hear(&hook("Stop", None));
+        assert_ne!(agents.list[0].model_asked, asked, "but again when a turn ends");
+        agents.hear(&json!({ "model_of": "nobody", "model": "x" }));
+        assert_eq!(agents.list.len(), 2, "a model read late does not bring back who left");
+
+        let agents = heard(&[json!({ "agent": "c1", "name": "Codex", "action": "think", "model": "gpt-5-codex" })]);
+        assert_eq!(agents.list[0].model, "gpt-5-codex");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

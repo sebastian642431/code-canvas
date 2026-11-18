@@ -2,12 +2,13 @@ title: Following an assistant takes the canvas to where it is, and again each ti
 folders: odd-files
 limit: 50
 expect-log: an assistant \(Codex\) is on the canvas
+expect-log: an assistant \(Codex\) works with gpt-5-codex
 forbid-log: script: agent needs
 
 wait 3500
 fit
 wait 1000
-agent {"agent":"c1","name":"Codex","action":"read","path":"{WORK}/fix/odd-files/big.rs","line":9000,"lines":20}
+agent {"agent":"c1","name":"Codex","action":"read","path":"{WORK}/fix/odd-files/big.rs","line":9000,"lines":20,"model":"gpt-5-codex"}
 wait 800
 mark before-following
 wait 400

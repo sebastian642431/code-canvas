@@ -1,38 +1,41 @@
-title: Grep on a folder, Glob on the project, Bash, a subagent with a face of its own, then SubagentStop, Stop and SessionEnd
+title: Grep on a folder, Glob on the project, Bash, a subagent with a face of its own (each with the model of its transcript), then SubagentStop, Stop and SessionEnd
 folders: rust-small
+fixtures: claude-transcripts
 limit: 50
 expect-log: an assistant \(Claude Code\) is on the canvas
 expect-log: an assistant \(Explore\) is on the canvas
+expect-log: an assistant \(Claude Code\) works with claude-opus-5-5
+expect-log: an assistant \(Explore\) works with claude-haiku-5-5
 forbid-log: script: agent needs
 
 wait 3000
 fit
 wait 1000
-agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Grep","tool_input":{"pattern":"fn step_","path":"{WORK}/fix/rust-small/src"}}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Grep","tool_input":{"pattern":"fn step_","path":"{WORK}/fix/rust-small/src"}}}
 wait 1500
 mark grep-on-src
 wait 500
-agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Glob","tool_input":{"pattern":"**/*.rs"}}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Glob","tool_input":{"pattern":"**/*.rs"}}}
 wait 1500
 mark glob-on-the-project
 wait 500
-agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"{WORK}/fix/rust-small/src/main.rs","offset":4,"limit":2}}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"{WORK}/fix/rust-small/src/main.rs","offset":4,"limit":2}}}
 wait 400
-agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Bash","tool_input":{"command":"cargo test --all","description":"Run the tests"}}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Bash","tool_input":{"command":"cargo test --all","description":"Run the tests"}}}
 wait 400
-agent {"source":"claude","hook":{"session_id":"s1","agent_id":"a7","agent_type":"Explore","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"{WORK}/fix/rust-small/src/util.rs","offset":1,"limit":3}}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","agent_id":"a7","agent_type":"Explore","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Read","tool_input":{"file_path":"{WORK}/fix/rust-small/src/util.rs","offset":1,"limit":3}}}
 wait 1500
 mark bash-and-a-subagent
 wait 500
-agent {"source":"claude","hook":{"session_id":"s1","agent_id":"a7","agent_type":"Explore","hook_event_name":"SubagentStop","cwd":"{WORK}/fix/rust-small"}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","agent_id":"a7","agent_type":"Explore","hook_event_name":"SubagentStop","cwd":"{WORK}/fix/rust-small"}}
 wait 300
-agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"Stop","cwd":"{WORK}/fix/rust-small"}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"Stop","cwd":"{WORK}/fix/rust-small"}}
 wait 1500
 mark subagent-done-main-waiting
 wait 6500
 mark subagent-gone
 wait 500
-agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"SessionEnd","cwd":"{WORK}/fix/rust-small"}}
+agent {"source":"claude","hook":{"session_id":"s1","transcript_path":"{FIX}/claude-transcripts/s1.jsonl","hook_event_name":"SessionEnd","cwd":"{WORK}/fix/rust-small"}}
 wait 7500
 mark all-gone
 wait 500

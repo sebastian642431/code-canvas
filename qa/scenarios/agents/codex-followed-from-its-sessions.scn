@@ -1,4 +1,4 @@
-title: Codex is followed from the session files it writes: one at work before the app started is where it was, and a new one is seen reading lines, searching and editing as its file grows, then leaves when done
+title: Codex is followed from the session files it writes, with the model each session works with: one at work before the app started is where it was, and a new one is seen reading lines, searching and editing as its file grows, then leaves when done
 folders: rust-small
 fixtures: codex-home
 codex: codex-home
@@ -6,6 +6,8 @@ prefs: {"codex": true}
 limit: 90
 expect-log: Codex is followed: the sessions it writes in
 expect-log: an assistant \(Codex\) is on the canvas
+expect-log: an assistant \(Codex\) works with gpt-5$
+expect-log: an assistant \(Codex\) works with gpt-5.1-codex-max
 forbid-log: script: agent needs
 forbid-log: script: cannot append
 forbid-log: are not watched
@@ -21,6 +23,7 @@ mark following-the-one-before
 wait 500
 touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"session_meta","payload":{"id":"01a1ec52-0000-7000-8000-000000000002","cwd":"{FIX}/rust-small","originator":"codex_exec","cli_version":"0.169.0","source":"exec"}}
 touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"turn_context","payload":{"cwd":"{FIX}/rust-small","model":"gpt-5.1-codex-max"}}
 touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"UserMessage","id":"item-1","content":[{"type":"text","text":"Make step ten return ten times more"}]}}}
 wait 3000
 agent Make step ten return ten times more

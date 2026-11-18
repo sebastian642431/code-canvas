@@ -1060,7 +1060,8 @@ pub fn build(
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     workspace_drop(&ctx, st, canvas);
-    following_bar(&ctx, st, canvas, actions);
+    let commit_shown = pages.get(active).is_some_and(|page| page.showing.is_some());
+    following_bar(&ctx, st, canvas, commit_shown, actions);
     share_panel(&ctx, st, actions);
     card_menu(&ctx, st, canvas, actions);
     versions_menu::version_menu(&ctx, st, canvas, actions);
@@ -3935,7 +3936,14 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         let behind = Rect::from_center_size(at, Vec2::splat(28.0));
         ui.painter().rect_filled(behind, CornerRadius::same(round as u8), pal().well);
     };
-    for agent in st.agents.iter().take(room.min(12)) {
+    let followed_name = followed_name(st);
+    let mut badges = Vec::new();
+    let mut on_rail: Vec<&AgentView> = st.agents.iter().take(room.min(12)).collect();
+    let hidden = st.agents.iter().skip(on_rail.len()).find(|agent| agent.followed);
+    if let (Some(followed), Some(last)) = (hidden, on_rail.last_mut()) {
+        *last = followed;
+    }
+    for agent in on_rail {
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, step), Sense::click());
         stack = Some(stack.map_or(rect, |stack| stack.union(rect)));
         let at = rect.center() - Vec2::new(0.0, 2.0);
@@ -3946,17 +3954,10 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         if let Some((owner, color)) = &agent.owner {
             owner_badge(ui.painter(), at + lifted + Vec2::new(9.0, 9.0), 5.5, owner, c(*color));
         }
-        let how = if agent.followed { "You follow it. Click to stop." } else { "Click to follow it on the canvas." };
-        let whose = agent.owner.as_ref().map(|(owner, _)| format!(", of {owner}")).unwrap_or_default();
-        if resp
-            .on_hover_text(format!(
-                "{} · {}{whose}
-{}
-{how}",
-                agent.name, agent.role, agent.said
-            ))
-            .clicked()
-        {
+        if agent.followed {
+            badges.push((at + lifted + Vec2::new(10.0, -10.0), resp.hovered()));
+        }
+        if resp.on_hover_text(face_tip(agent, followed_name.as_deref())).clicked() {
             actions.push(Action::Agent(AgentOp::Follow((!agent.followed).then(|| agent.key.clone()))));
         }
     }
@@ -3964,10 +3965,8 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
     let left = room.saturating_sub(st.agents.len().min(12)).min(8);
     for person in st.share.people.iter().filter(|person| !person.me).take(left) {
         let followed = following == Some(person.id);
-        let tip = match followed {
-            true => format!("{}: you follow what they look at. Click to stop.", person.name),
-            false => format!("{}: click to follow what they look at", person.name),
-        };
+        let tip = follow_how(&format!("what {} looks at", person.name), followed, followed_name.as_deref());
+        let tip = format!("{}\n{tip}", person.name);
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, step), Sense::click());
         stack = Some(stack.map_or(rect, |stack| stack.union(rect)));
         let at = rect.center() - Vec2::new(0.0, 2.0);
@@ -3975,6 +3974,7 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         let color = c(person.color);
         if followed {
             ui.painter().circle_stroke(at, 13.0, Stroke::new(1.5, color));
+            badges.push((at + Vec2::new(10.0, -10.0), resp.hovered()));
         }
         ui.painter().circle_filled(at, 11.0, if resp.hovered() { color } else { color.gamma_multiply(0.9) });
         let font = FontId::proportional(11.5);
@@ -3983,7 +3983,54 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
             actions.push(Action::Share(ShareOp::Follow((!followed).then_some(person.id))));
         }
     }
+    for (at, stop) in badges {
+        follow_badge(ui.painter(), at, 6.0, stop);
+    }
     st.faces_stack = stack;
+}
+
+fn followed_name(st: &UiState) -> Option<String> {
+    let person = st.share.following.and_then(|id| st.share.people.iter().find(|person| person.id == id));
+    let agent = st.agents.iter().find(|agent| agent.followed);
+    person.map(|person| person.name.clone()).or_else(|| agent.map(|agent| agent.name.clone()))
+}
+
+fn about_agent(agent: &AgentView) -> String {
+    let mut about = agent.name.clone();
+    if agent.role != agent.name {
+        about = format!("{about} · {}", agent.role);
+    }
+    if !agent.model.is_empty() {
+        about = format!("{about} · {}", agent.model);
+    }
+    if let Some((owner, _)) = &agent.owner {
+        about = format!("{about}, of {owner}");
+    }
+    about
+}
+
+fn follow_how(what: &str, followed: bool, following: Option<&str>) -> String {
+    match (followed, following) {
+        (true, _) => format!("You are following {what} · click to stop"),
+        (false, Some(other)) => format!("Click to follow {what} instead of {other}"),
+        (false, None) => format!("Click to follow {what}"),
+    }
+}
+
+fn face_tip(agent: &AgentView, following: Option<&str>) -> String {
+    let how = follow_how(&agent.name, agent.followed, following);
+    format!("{}\n{}\n{how}", about_agent(agent), agent.said)
+}
+
+fn follow_badge(painter: &egui::Painter, at: Pos2, radius: f32, stop: bool) {
+    painter.circle_filled(at, radius + 1.5, pal().well);
+    painter.circle_filled(at, radius, pal().accent);
+    let glyph = match stop {
+        true => icons::X,
+        false => crate::codicons::glyph("eye").unwrap_or(icons::X),
+    };
+    let size = if stop { radius * 1.35 } else { radius * 1.6 };
+    painter.text(at, Align2::CENTER_CENTER, glyph, FontId::proportional(size), pal().on_accent);
 }
 
 fn name_tag(painter: &egui::Painter, at: Pos2, name: &str, color: Color32) {
@@ -4034,6 +4081,7 @@ pub struct AgentView {
     pub quiet: bool,
     pub followed: bool,
     pub owner: Option<(String, u32)>,
+    pub model: String,
 }
 
 pub struct AgentMark {
@@ -4046,6 +4094,8 @@ pub struct AgentMark {
     pub busy: bool,
     pub quiet: bool,
     pub owner: Option<(String, u32)>,
+    pub model: String,
+    pub followed: bool,
 }
 
 pub struct AgentTrail {
@@ -4271,6 +4321,9 @@ fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, c
     load_faces(ctx, st);
     agent_trails(ctx, painter, st, canvas);
     let beat = (ctx.input(|i| i.time) * 4.0).sin() as f32 * 0.5 + 0.5;
+    let pointer = ctx
+        .pointer_hover_pos()
+        .filter(|at| canvas.contains(*at) && !st.floating.iter().any(|taken| taken.contains(*at)));
     for mark in &st.agent_marks {
         let color = c(mark.color);
         for line in mark.lines.iter().filter(|line| line.intersects(canvas)) {
@@ -4286,7 +4339,15 @@ fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, c
             painter.circle_stroke(center, 17.0 + beat * 4.0, Stroke::new(2.0, color.gamma_multiply(0.75 - beat * 0.5)));
         }
         face(painter, &st.faces, mark.avatar, center, 14.0, color, mark.quiet, false);
-        let mut tag = if mark.quiet { mark.name.clone() } else { format!("{} · {}", mark.name, mark.said) };
+        let near = pointer.is_some_and(|at| (at - center).length() <= 17.0);
+        let named = match (mark.followed || near) && !mark.model.is_empty() {
+            true => format!("{} · {}", mark.name, mark.model),
+            false => mark.name.clone(),
+        };
+        let mut tag = if mark.quiet { named } else { format!("{named} · {}", mark.said) };
+        if mark.followed {
+            follow_badge(painter, center + Vec2::new(13.0, -13.0), 6.5, false);
+        }
         if let Some((owner, of)) = &mark.owner {
             owner_badge(painter, center + Vec2::new(12.0, 12.0), 7.0, owner, c(*of));
             tag = format!("{tag} ({owner})");
@@ -4299,40 +4360,105 @@ fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, c
     }
 }
 
-fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
+fn following_detail(agent: &AgentView) -> String {
+    let mut parts = Vec::new();
+    if agent.role != agent.name {
+        parts.push(agent.role.clone());
+    }
+    if !agent.model.is_empty() {
+        parts.push(agent.model.clone());
+    }
+    if let Some((owner, _)) = &agent.owner {
+        parts.push(format!("of {owner}"));
+    }
+    parts.join(" · ")
+}
+
+fn stop_following_button(ui: &mut egui::Ui) -> bool {
+    let glyph = crate::codicons::glyph("eye-closed").unwrap_or(icons::X);
+    let font = FontId::proportional(12.5);
+    let galley = ui.painter().layout_no_wrap("Stop following".to_string(), font.clone(), pal().text);
+    let size = Vec2::new(galley.size().x + 40.0, 26.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let hot = resp.hovered();
+    let (fill, stroke) = if hot { (pal().hover, pal().border_strong) } else { (pal().raised, pal().border) };
+    ui.painter().rect_filled(rect, 7.0, fill);
+    ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    let icon_at = Pos2::new(rect.left() + 15.0, rect.center().y);
+    ui.painter().text(icon_at, Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), pal().text);
+    let text_at = Pos2::new(rect.left() + 28.0, rect.center().y - galley.size().y * 0.5);
+    ui.painter().galley(text_at, galley, pal().text);
+    resp.on_hover_text("Stop following (Esc, or move the canvas)").clicked()
+}
+
+fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, lower: bool, actions: &mut Vec<Action>) {
     let person = st.share.following.and_then(|id| st.share.people.iter().find(|person| person.id == id));
     let agent = st.agents.iter().find(|agent| agent.followed);
-    let (name, color, stop) = match (person, agent) {
-        (Some(person), _) => (person.name.clone(), person.color, Action::Share(ShareOp::Follow(None))),
+    let (name, detail, color, stop) = match (person, agent) {
+        (Some(person), _) => {
+            (person.name.clone(), "where they look".to_string(), person.color, Action::Share(ShareOp::Follow(None)))
+        }
         (None, Some(agent)) => {
-            let name = match &agent.owner {
-                Some((owner, _)) => format!("{} ({}, of {owner})", agent.name, agent.role),
-                None => format!("{} ({})", agent.name, agent.role),
-            };
-            (name, agent.color, Action::Agent(AgentOp::Follow(None)))
+            (agent.name.clone(), following_detail(agent), agent.color, Action::Agent(AgentOp::Follow(None)))
         }
         (None, None) => return,
     };
+    let face = match (person, agent) {
+        (None, Some(agent)) => Some((agent.avatar, !agent.quiet)),
+        _ => None,
+    };
+    let initial_of = person.map(|person| initial(&person.name));
+    let own = c(color);
+    let frame_painter =
+        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("following frame")));
+    frame_painter.rect_stroke(
+        canvas.shrink(1.0),
+        0.0,
+        Stroke::new(2.0, own.gamma_multiply(0.85)),
+        egui::StrokeKind::Inside,
+    );
+    let top = canvas.center_top() + Vec2::new(0.0, if lower { 58.0 } else { 10.0 });
     let area = egui::Area::new(egui::Id::unique("following"))
-        .pivot(Align2::LEFT_TOP)
-        .fixed_pos(canvas.left_top() + Vec2::new(12.0, 10.0))
+        .pivot(Align2::CENTER_TOP)
+        .fixed_pos(top)
         .order(egui::Order::Foreground);
     let resp = area.show(ctx, |ui| {
         let frame = Frame::NONE
             .fill(pal().card)
-            .stroke(Stroke::new(1.0, c(color)))
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(Margin::symmetric(10, 6));
+            .stroke(Stroke::new(1.5, own))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin { left: 8, right: 8, top: 6, bottom: 6 });
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 5.0, c(color));
-                ui.label(RichText::new(format!("Following {name}")).size(12.5).color(pal().text));
-                ui.label(RichText::new("Esc, or move the canvas, to stop").size(11.5).color(pal().text_faint));
-                if small_icon(ui, icons::X, "Stop following") {
+                let (spot, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+                let at = spot.center();
+                match (face, &initial_of) {
+                    (Some((avatar, working)), _) => {
+                        rail_face(ui.painter(), &st.faces, avatar, at, 11.0, own, (working, false));
+                    }
+                    (None, Some(letter)) => {
+                        ui.painter().circle_stroke(at, 12.0, Stroke::new(1.5, own));
+                        ui.painter().circle_filled(at, 10.0, own);
+                        let font = FontId::proportional(11.0);
+                        ui.painter().text(at, Align2::CENTER_CENTER, letter, font, readable_on(own));
+                    }
+                    (None, None) => {
+                        ui.painter().circle_filled(at, 10.0, own);
+                    }
+                }
+                follow_badge(ui.painter(), at + Vec2::new(10.0, -10.0), 5.5, false);
+                ui.add_space(2.0);
+                ui.label(RichText::new("Following").size(12.5).color(pal().text_dim));
+                ui.label(RichText::new(&name).size(13.0).strong().color(pal().text));
+                if !detail.is_empty() {
+                    ui.label(RichText::new(&detail).size(12.0).color(pal().text_dim));
+                }
+                ui.add_space(4.0);
+                if stop_following_button(ui) {
                     actions.push(stop);
                 }
+                ui.label(RichText::new("or Esc").size(11.5).color(pal().text_faint));
             });
         });
     });
@@ -5523,6 +5649,43 @@ mod tests {
         assert!(score("src/api.ts", "api") > score("src/rapid/x.ts", "api"), "name match beats path match");
         assert!(score("src/app/types.ts", "appts").is_some(), "subsequence");
         assert!(score("src/app/types.ts", "zzz").is_none());
+    }
+
+    #[test]
+    fn a_face_says_who_it_is_its_model_and_what_a_click_does() {
+        let agent = |name: &str, role: &str, model: &str, followed: bool| super::AgentView {
+            key: name.to_string(),
+            name: name.to_string(),
+            role: role.to_string(),
+            said: "reading main.rs".to_string(),
+            color: 0,
+            avatar: 0,
+            quiet: false,
+            followed,
+            owner: None,
+            model: model.to_string(),
+        };
+        let session = agent("Make the steps faster", "Claude Code", "Opus 5.5", true);
+        assert_eq!(
+            super::face_tip(&session, Some("Make the steps faster")),
+            "Make the steps faster · Claude Code · Opus 5.5\nreading main.rs\nYou are following Make the steps faster · click to stop"
+        );
+        let helper = agent("Explore", "Explore", "", false);
+        assert_eq!(
+            super::face_tip(&helper, Some("Make the steps faster")),
+            "Explore\nreading main.rs\nClick to follow Explore instead of Make the steps faster",
+            "a model not known yet is not guessed, and a role that is the name is said once"
+        );
+        assert_eq!(super::face_tip(&helper, None).lines().last(), Some("Click to follow Explore"));
+        assert_eq!(super::following_detail(&session), "Claude Code · Opus 5.5");
+        let mut theirs = agent("Codex", "Codex", "GPT-5", true);
+        theirs.owner = Some(("Ana".to_string(), 0));
+        assert_eq!(super::following_detail(&theirs), "GPT-5 · of Ana");
+        assert_eq!(super::about_agent(&theirs), "Codex · GPT-5, of Ana");
+        assert_eq!(
+            super::follow_how("what Ana looks at", true, Some("Ana")),
+            "You are following what Ana looks at · click to stop"
+        );
     }
 }
 

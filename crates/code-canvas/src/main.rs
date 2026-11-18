@@ -22,6 +22,7 @@ mod icons;
 mod keys;
 mod markdown;
 mod media;
+mod models;
 mod overlay;
 mod page;
 mod paths;

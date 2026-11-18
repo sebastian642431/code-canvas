@@ -88,6 +88,8 @@ pub struct Helper {
     pub ago: u32,
     pub moved: u64,
     pub trail: Vec<Track>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 impl Place {
