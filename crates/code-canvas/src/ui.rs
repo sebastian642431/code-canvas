@@ -249,6 +249,8 @@ pub struct CardPlace {
     pub pages: std::ops::Range<usize>,
     floating: usize,
     layer: egui::LayerId,
+    /// Where the card was painted last frame, back to front; `None` until egui has placed it.
+    depth: Option<usize>,
 }
 
 pub struct UiState {
@@ -1488,6 +1490,7 @@ fn cards(
             pages: first_page..st.page_places.len(),
             floating: st.floating.len(),
             layer: egui::LayerId::new(egui::Order::Middle, id),
+            depth: None,
         });
         st.floating.push(rect.expand(5.0));
         if shut {
@@ -4944,6 +4947,10 @@ pub fn note_covers(ctx: &egui::Context, st: &mut UiState) {
         above.filter_map(|layer| Some((layer, memory.area_rect(layer.id)?))).collect()
     });
     let drawn = |layer: egui::LayerId| ctx.graphics(|all| all.get(layer).is_some_and(|shapes| !shapes.is_empty()));
+    let order: Vec<egui::LayerId> = ctx.memory(|memory| memory.layer_ids().collect());
+    for card in &mut st.card_places {
+        card.depth = order.iter().position(|layer| *layer == card.layer);
+    }
     let cards = &st.card_places;
     let a_card = |layer: egui::LayerId| cards.iter().any(|card| card.layer == layer);
     let floating = st.floating.iter().enumerate().filter(|(at, _)| !cards.iter().any(|card| card.floating == *at));
@@ -4952,8 +4959,16 @@ pub fn note_covers(ctx: &egui::Context, st: &mut UiState) {
     st.covers = covers;
 }
 
+/// What is painted over a page: the floating bits, and every other card unless the page's own
+/// card is known to lie above it.
 pub fn covers_of(covers: &[Rect], cards: &[CardPlace], page: Option<usize>) -> Vec<Rect> {
-    let others = cards.iter().filter(|card| !page.is_some_and(|page| card.pages.contains(&page)));
+    let holds = |card: &CardPlace| page.is_some_and(|page| card.pages.contains(&page));
+    let own = cards.iter().find(|card| holds(card)).and_then(|card| card.depth);
+    let above = |card: &CardPlace| match (own, card.depth) {
+        (Some(own), Some(theirs)) => theirs > own,
+        _ => true,
+    };
+    let others = cards.iter().filter(|card| !holds(card) && above(card));
     covers.iter().copied().chain(others.map(|card| card.over)).collect()
 }
 
@@ -5022,19 +5037,43 @@ mod tests {
     fn a_card_does_not_cover_the_page_it_holds() {
         use super::{covers_of, CardPlace};
         use egui::{pos2, Rect};
-        let card = |left: f32, pages: std::ops::Range<usize>| CardPlace {
+        let card = |left: f32, pages: std::ops::Range<usize>, depth: Option<usize>| CardPlace {
             over: Rect::from_min_max(pos2(left, 40.0), pos2(left + 420.0, 800.0)),
             pages,
             floating: 0,
             layer: egui::LayerId::background(),
+            depth,
         };
         let menu = Rect::from_min_max(pos2(700.0, 100.0), pos2(900.0, 300.0));
-        let (assistant, console) = (card(1000.0, 0..1), card(560.0, 1..1));
+        let (assistant, console) = (card(1000.0, 0..1, None), card(560.0, 1..1, None));
         let cards = [assistant, console];
         let (theirs, others) = (cards[0].over, cards[1].over);
         assert_eq!(covers_of(&[menu], &cards, Some(0)), vec![menu, others], "its own card is not over it");
         assert_eq!(covers_of(&[menu], &cards, Some(1)), vec![menu, theirs, others], "a page of no card");
         assert_eq!(covers_of(&[menu], &cards, None), vec![menu, theirs, others], "what plays on the canvas");
+    }
+
+    #[test]
+    fn a_card_underneath_does_not_cut_into_the_page_on_top() {
+        use super::{covers_of, CardPlace};
+        use egui::{pos2, Rect};
+        let card = |left: f32, pages: std::ops::Range<usize>, depth: Option<usize>| CardPlace {
+            over: Rect::from_min_max(pos2(left, 40.0), pos2(left + 420.0, 800.0)),
+            pages,
+            floating: 0,
+            layer: egui::LayerId::background(),
+            depth,
+        };
+        let assistant = card(40.0, 0..1, Some(5));
+        let console = card(340.0, 1..1, Some(3));
+        let fresh = card(600.0, 1..1, None);
+        let cards = [assistant, console, fresh];
+        let (console, fresh) = (cards[1].over, cards[2].over);
+        assert_eq!(covers_of(&[], &cards[..2], Some(0)), vec![], "the console lies under the assistant");
+        assert_eq!(covers_of(&[], &cards, Some(0)), vec![fresh], "a card not placed yet still counts as over it");
+        let raised = [card(40.0, 0..1, Some(2)), card(340.0, 1..1, Some(3))];
+        assert_eq!(covers_of(&[], &raised, Some(0)), vec![console], "the console brought to the front cuts in");
+        assert_eq!(covers_of(&[], &cards, None), vec![cards[0].over, console, fresh], "what plays on the canvas");
     }
 
     #[test]
