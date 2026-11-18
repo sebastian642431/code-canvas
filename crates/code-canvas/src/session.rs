@@ -8,6 +8,8 @@ pub struct Session {
     pub pages: Vec<PageSession>,
     pub active: usize,
     pub left_open: bool,
+    pub dock: Option<String>,
+    pub beside: Option<String>,
     pub cards: Vec<String>,
     pub rails: crate::rails::Rails,
     pub window: Option<[f32; 2]>,

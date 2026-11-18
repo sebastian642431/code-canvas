@@ -33,7 +33,8 @@ pub struct Rails {
     pub cards: std::collections::BTreeMap<String, [f32; 4]>,
 }
 
-pub const HOMES: u32 = 2;
+pub const HOMES: u32 = 3;
+pub const TO_THE_OTHER_BAR: [&str; 3] = ["symbols", "deps", "console"];
 
 impl Rails {
     fn list(&self, side: Side) -> &Vec<String> {
@@ -52,6 +53,18 @@ impl Rails {
 
     pub fn at_home(&mut self, home: impl Fn(&str) -> Side) {
         if self.homes >= HOMES {
+            return;
+        }
+        if self.homes >= 2 {
+            self.homes = HOMES;
+            let moved: Vec<String> =
+                TO_THE_OTHER_BAR.iter().map(|key| key.to_string()).filter(|key| self.left.contains(key)).collect();
+            self.left.retain(|key| !moved.contains(key));
+            for (at, key) in moved.into_iter().enumerate() {
+                if !self.right.contains(&key) {
+                    self.right.insert(at.min(self.right.len()), key);
+                }
+            }
             return;
         }
         self.homes = HOMES;
@@ -176,6 +189,27 @@ mod tests {
         rails.place(&available(), "symbols", Side::Right, None);
         rails.at_home(home);
         assert_eq!(rails.side_of("symbols"), Some(Side::Right), "what is moved after that stays where it was put");
+    }
+
+    #[test]
+    fn symbols_dependencies_and_the_console_move_to_the_other_bar_once() {
+        let home = |key: &str| if key.starts_with("view:") { Side::Right } else { Side::Left };
+        let mut rails = Rails {
+            left: keys(&["files", "symbols", "search", "console", "deps"]),
+            right: keys(&["view:chat"]),
+            homes: 2,
+            ..Default::default()
+        };
+        rails.at_home(home);
+        assert_eq!(rails.left, keys(&["files", "search"]));
+        assert_eq!(rails.right, keys(&["symbols", "deps", "console", "view:chat"]));
+        assert_eq!(rails.homes, HOMES);
+        rails.place(&available(), "symbols", Side::Left, None);
+        rails.at_home(home);
+        assert_eq!(rails.side_of("symbols"), Some(Side::Left), "put back on the main bar, it stays there");
+        let mut untouched = Rails { homes: 2, ..Default::default() };
+        untouched.at_home(home);
+        assert_eq!(untouched, Rails { homes: HOMES, ..Default::default() }, "never arranged: the homes say it");
     }
 
     #[test]

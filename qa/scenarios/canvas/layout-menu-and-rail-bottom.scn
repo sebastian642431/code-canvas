@@ -12,9 +12,9 @@ ui click 1545 20
 wait 700
 mark b-layout-menu
 wait 400
-ui click 1500 145
+ui click 1500 116
 wait 400
-ui click 1500 174
+ui click 1500 145
 wait 700
 mark c-no-status-no-toolbar
 wait 400

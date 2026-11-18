@@ -12,7 +12,6 @@ use crate::page::{build_tree, Page, PageState, RelFilters};
 
 mod console;
 mod deps_panel;
-mod docked;
 mod ext_panels;
 mod git_panel;
 mod settings;
@@ -43,13 +42,11 @@ pub enum Panel {
     Webview(String),
     /// A container of an extension's tree views, by its id.
     Tree(String),
-    /// The views of extensions docked in the side panel, as tabs.
-    Views,
 }
 
 impl Panel {
     pub fn docks(&self) -> bool {
-        matches!(self, Panel::Files | Panel::Changes | Panel::Search | Panel::Extensions | Panel::Views)
+        matches!(self, Panel::Files | Panel::Changes | Panel::Search | Panel::Extensions)
     }
 
     pub fn of_extension(&self) -> bool {
@@ -68,7 +65,6 @@ impl Panel {
             Panel::Deps => "deps".to_string(),
             Panel::Media => "media".to_string(),
             Panel::Console => "console".to_string(),
-            Panel::Views => "views".to_string(),
             Panel::Consoles(card) => format!("console:{card}"),
             Panel::Webview(view) => format!("view:{view}"),
             Panel::Tree(id) => format!("{}{id}", crate::ext::TREE),
@@ -87,7 +83,6 @@ impl Panel {
             "deps" => Panel::Deps,
             "media" => Panel::Media,
             "console" => Panel::Console,
-            "views" => Panel::Views,
             card if card.starts_with("console:") => Panel::Consoles(card["console:".len()..].parse().ok()?),
             tree if tree.starts_with(crate::ext::TREE) => Panel::Tree(tree[crate::ext::TREE.len()..].to_string()),
             view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
@@ -104,7 +99,7 @@ impl Panel {
 
     fn home(&self) -> Side {
         match self {
-            Panel::Webview(_) | Panel::Tree(_) => Side::Right,
+            Panel::Webview(_) | Panel::Tree(_) | Panel::Symbols | Panel::Deps | Panel::Console => Side::Right,
             _ => Side::Left,
         }
     }
@@ -118,16 +113,17 @@ impl Panel {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
-enum DropAt {
-    Bar(Side, Option<String>),
-    Dock(Option<String>),
-}
-
 #[derive(Clone)]
 struct RailDrag {
     key: String,
-    target: Option<DropAt>,
+    target: Option<(Side, Option<String>)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Place {
+    Main,
+    Beside,
+    Card,
 }
 
 enum RailLook {
@@ -277,6 +273,9 @@ pub struct CardPlace {
 pub struct UiState {
     pub files: bool,
     pub dock: Panel,
+    pub beside: Option<Panel>,
+    on_bars: Vec<(String, Side)>,
+    beside_shown: bool,
     pub layout_open: bool,
     window_focused: bool,
     faces_stack: Option<Rect>,
@@ -351,10 +350,6 @@ pub struct UiState {
     file_icons: FileIcons,
     /// The views of a container's card that are folded away, by view id.
     tree_shut: std::collections::HashSet<String>,
-    /// The extensions' views docked in the side panel that are there this frame, in tab order.
-    docked_here: Vec<Panel>,
-    views_tab: Option<Panel>,
-    dock_tabs: Vec<(String, Rect)>,
 }
 
 impl Default for UiState {
@@ -362,6 +357,9 @@ impl Default for UiState {
         Self {
             files: true,
             dock: Panel::Files,
+            beside: None,
+            on_bars: Vec::new(),
+            beside_shown: false,
             layout_open: false,
             window_focused: false,
             faces_stack: None,
@@ -433,9 +431,6 @@ impl Default for UiState {
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
             tree_shut: Default::default(),
-            docked_here: Vec::new(),
-            views_tab: None,
-            dock_tabs: Vec::new(),
         }
     }
 }
@@ -452,38 +447,35 @@ impl UiState {
         self.rails.at_home(|key| Panel::from_key(key).map_or(Side::Left, |panel| panel.home()));
     }
 
-    pub fn docked(&self, panel: &Panel) -> bool {
-        panel.of_extension() && self.prefs.is_docked(&panel.key())
+    fn bar_of(&self, panel: &Panel) -> Option<Side> {
+        if matches!(panel, Panel::Extension | Panel::Media) {
+            return None;
+        }
+        let key = panel.key();
+        self.on_bars.iter().find(|(on, _)| *on == key).map(|(_, side)| *side)
     }
 
-    fn docks(&self, panel: &Panel) -> bool {
-        panel.docks() || self.docked(panel)
-    }
-
-    /// The icon of a bar that stands for what the dock shows: one for all the docked views.
-    fn dock_entry(&self) -> Panel {
-        match &self.dock {
-            panel if self.docked(panel) => Panel::Views,
-            panel => panel.clone(),
+    pub fn place_of(&self, panel: &Panel) -> Place {
+        match self.bar_of(panel) {
+            Some(Side::Left) => Place::Main,
+            Some(Side::Right) if self.prefs.other_panel => Place::Beside,
+            _ if panel.docks() => Place::Main,
+            _ => Place::Card,
         }
     }
 
-    fn views_choice(&self) -> Panel {
-        let here = |panel: &Panel| self.docked_here.contains(panel);
-        self.views_tab.clone().filter(here).or_else(|| self.docked_here.first().cloned()).unwrap_or(Panel::Views)
-    }
-
     pub fn is_open(&self, panel: &Panel) -> bool {
-        match panel {
-            Panel::Views => self.files && self.dock_entry() == Panel::Views,
-            panel if self.docks(panel) => self.files && self.dock == *panel,
-            card => self.cards.contains(card),
+        match self.place_of(panel) {
+            Place::Main => self.files && self.dock == *panel,
+            Place::Beside => self.beside.as_ref() == Some(panel),
+            Place::Card => self.cards.contains(panel),
         }
     }
 
     pub fn close(&mut self, side: Side) {
-        if side == Side::Left {
-            self.files = false;
+        match side {
+            Side::Left => self.files = false,
+            Side::Right => self.beside = None,
         }
         let kept: Vec<Panel> = self.cards.iter().filter(|card| self.side_of(card) != side).cloned().collect();
         self.cards = kept;
@@ -493,30 +485,36 @@ impl UiState {
         if let Panel::Consoles(number) = panel {
             self.console.fold(*number);
         }
-        if !self.docks(panel) {
-            self.cards.retain(|open| open != panel);
-        } else if self.dock == *panel || (*panel == Panel::Views && self.dock_entry() == Panel::Views) {
+        self.cards.retain(|open| open != panel);
+        if self.dock == *panel {
             self.files = false;
+        }
+        if self.beside.as_ref() == Some(panel) {
+            self.beside = None;
         }
     }
 
     pub fn show(&mut self, panel: Panel) {
-        if panel == Panel::Views {
-            (self.files, self.dock) = (true, self.views_choice());
-            return;
+        let place = self.place_of(&panel);
+        if place != Place::Card {
+            self.cards.retain(|card| *card != panel);
         }
-        if self.docks(&panel) {
-            if self.docked(&panel) {
-                self.views_tab = Some(panel.clone());
-                self.cards.retain(|card| *card != panel);
+        if place != Place::Main && self.dock == panel {
+            (self.files, self.dock) = (false, Panel::Files);
+        }
+        if place != Place::Beside && self.beside.as_ref() == Some(&panel) {
+            self.beside = None;
+        }
+        match place {
+            Place::Main => (self.files, self.dock) = (true, panel),
+            Place::Beside => self.beside = Some(panel),
+            Place::Card => {
+                let key = panel.key();
+                match self.cards.iter().position(|card| card.key() == key) {
+                    Some(at) => self.cards[at] = panel,
+                    None => self.cards.push(panel),
+                }
             }
-            (self.files, self.dock) = (true, panel);
-            return;
-        }
-        let key = panel.key();
-        match self.cards.iter().position(|card| card.key() == key) {
-            Some(at) => self.cards[at] = panel,
-            None => self.cards.push(panel),
         }
     }
 
@@ -528,56 +526,35 @@ impl UiState {
         }
     }
 
-    /// Keeps an extension's view in the side panel, as the tab before `before` (the last
-    /// without one), and shows it there. The page itself is the same one wherever it is.
-    pub fn dock_view(&mut self, panel: Panel, before: Option<&str>) -> bool {
-        if !panel.of_extension() {
-            return false;
+    fn settle(&mut self) {
+        let dock = self.dock.clone();
+        let known = self.bar_of(&dock).is_some();
+        if known && self.place_of(&dock) != Place::Main {
+            self.dock = Panel::Files;
+            if self.files {
+                self.show(dock);
+            }
+        } else if !known && !dock.docks() && !dock.of_extension() {
+            self.dock = Panel::Files;
         }
-        let key = panel.key();
-        if before == Some(key.as_str()) {
-            self.show(panel);
-            return false;
+        if let Some(beside) = self.beside.clone() {
+            let known = self.bar_of(&beside).is_some();
+            if known && self.place_of(&beside) != Place::Beside {
+                self.beside = None;
+                self.show(beside);
+            } else if !known && !beside.docks() && !beside.of_extension() {
+                self.beside = None;
+            }
         }
-        self.prefs.dock(&key, before);
-        if !self.docked_here.contains(&panel) {
-            self.docked_here.push(panel.clone());
-        }
-        self.show(panel);
-        true
-    }
-
-    /// Takes a view out of the side panel: its icon is on its bar again, and `open` shows it as a
-    /// card on the canvas.
-    pub fn float_view(&mut self, panel: &Panel, open: bool) -> bool {
-        if !self.prefs.float(&panel.key()) {
-            return false;
-        }
-        self.docked_here.retain(|docked| docked != panel);
-        if self.views_tab.as_ref() == Some(panel) {
-            self.views_tab = None;
-        }
-        if self.dock == *panel {
-            self.dock = self.docked_here.first().cloned().unwrap_or(Panel::Files);
-        }
-        if open {
-            self.show(panel.clone());
-        }
-        true
-    }
-
-    /// What is docked follows the preferences, which another computer can change: a docked view
-    /// is no card, and the dock never shows a view that floats.
-    fn settle_docked(&mut self, extensions: &[Panel]) {
-        let docked = |key: &String| extensions.iter().find(|panel| panel.key() == *key).cloned();
-        self.docked_here = self.prefs.docked.iter().filter_map(docked).collect();
-        let cards: Vec<Panel> = self.cards.iter().filter(|card| !self.docked(card)).cloned().collect();
-        self.cards = cards;
-        match &self.dock {
-            Panel::Views if !self.docked_here.is_empty() => self.dock = self.views_choice(),
-            Panel::Views if self.prefs.docked.is_empty() => self.dock = Panel::Files,
-            panel if panel.of_extension() && !self.docked(panel) => self.dock = Panel::Files,
-            _ => {}
+        let moved: Vec<Panel> = self
+            .cards
+            .iter()
+            .filter(|card| self.bar_of(card).is_some() && self.place_of(card) != Place::Card)
+            .cloned()
+            .collect();
+        for card in moved {
+            self.cards.retain(|open| *open != card);
+            self.show(card);
         }
     }
 
@@ -585,22 +562,34 @@ impl UiState {
         self.rail_move = Some((panel, side, before));
     }
 
-    fn move_panel(&mut self, available: &[(String, Side)], panel: &Panel, side: Side, before: Option<&str>) {
-        self.rails.place(available, &panel.key(), side, before);
+    fn arrange(&mut self, available: &[(String, Side)]) -> [Vec<String>; 2] {
+        let order = self.rails.arrange(available);
+        self.on_bars = Side::BOTH
+            .into_iter()
+            .flat_map(|side| order[side.index()].iter().map(move |key| (key.clone(), side)))
+            .collect();
+        self.settle();
+        order
     }
 
-    pub fn restore(&mut self, files: bool, cards: &[String]) {
+    fn move_panel(&mut self, available: &[(String, Side)], panel: &Panel, side: Side, before: Option<&str>) {
+        self.rails.place(available, &panel.key(), side, before);
+        self.arrange(available);
+    }
+
+    pub fn restore(&mut self, files: bool, dock: Option<&str>, beside: Option<&str>, cards: &[String]) {
         self.files = files;
         let open: Vec<Panel> = cards.iter().filter_map(|key| Panel::from_key(key)).collect();
-        self.dock = open.iter().find(|panel| self.docks(panel)).cloned().unwrap_or(Panel::Files);
-        if self.docked(&self.dock) {
-            self.views_tab = Some(self.dock.clone());
-        }
-        self.cards = open.into_iter().filter(|panel| !self.docks(panel) && !panel.is_page()).collect();
+        let old = open.iter().find(|panel| panel.docks()).cloned();
+        self.dock = dock.and_then(Panel::from_key).or(old).unwrap_or(Panel::Files);
+        self.beside = beside.and_then(Panel::from_key);
+        let elsewhere = |panel: &Panel| *panel == self.dock || self.beside.as_ref() == Some(panel);
+        let cards = open.iter().filter(|panel| !panel.docks() && !panel.is_page() && !elsewhere(panel));
+        self.cards = cards.cloned().collect();
     }
 
     pub fn open_keys(&self) -> Vec<String> {
-        let docked = (self.dock != Panel::Files).then(|| self.dock.key());
+        let docked = (self.dock.docks() && self.dock != Panel::Files).then(|| self.dock.key());
         docked.into_iter().chain(self.cards.iter().map(Panel::key)).collect()
     }
 }
@@ -746,6 +735,7 @@ const RAIL_W: f32 = 44.0;
 const EDGE: f32 = 4.0;
 const ROUND: f32 = 10.0;
 const CARD_X: &str = "the card's cross";
+const IN_PANEL: &str = "in a side panel";
 
 pub fn style(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
@@ -941,44 +931,31 @@ pub fn build(
     if !st.bare && st.prefs.status {
         status_bar(ui, st, ext, pages.get(active), info, actions);
     }
-    let mut entries = rail_entries(st, ext);
-    let of_extensions: Vec<Panel> =
-        entries.iter().map(|entry| entry.panel.clone()).filter(Panel::of_extension).collect();
-    st.settle_docked(&of_extensions);
-    if !st.prefs.docked.is_empty() {
-        let names: Vec<&str> = st
-            .docked_here
-            .iter()
-            .filter_map(|docked| entries.iter().find(|entry| entry.panel == *docked).map(|entry| entry.tip.as_str()))
-            .collect();
-        let tip = match names.is_empty() {
-            true => "Extensions docked in the side panel".to_string(),
-            false => format!("Docked in the side panel: {}", names.join(", ")),
-        };
-        let at = entries.iter().position(|entry| entry.panel == Panel::Extensions).map_or(entries.len(), |at| at + 1);
-        entries.insert(at, RailEntry { panel: Panel::Views, tip, look: RailLook::Glyph(icons::PANELS_TOP_LEFT) });
-    }
-    let on_a_bar = entries.iter().filter(|entry| !st.docked(&entry.panel));
-    let available: Vec<(String, Side)> = on_a_bar.map(|entry| (entry.panel.key(), entry.panel.home())).collect();
-    let order = st.rails.arrange(&available);
+    let entries = rail_entries(st, ext);
+    let available: Vec<(String, Side)> = entries.iter().map(|entry| (entry.panel.key(), entry.panel.home())).collect();
+    let order = st.arrange(&available);
     st.rail_order = order.clone().map(|keys| keys.iter().filter_map(|key| Panel::from_key(key)).collect());
     if let Some(drag) = st.rail_drag.as_mut() {
         drag.target = None;
     }
     let bare = st.bare;
+    st.beside_shown = !bare && st.prefs.other_panel && st.beside.is_some();
     let rails = !bare && st.prefs.rail;
     for side in Side::BOTH.into_iter().filter(|_| rails) {
         rail(ui, st, ext, pages.get(active), side, &entries, &order[side.index()], actions);
     }
     if st.files && !bare {
-        files_dock(ui, st, pages, active, ext, &entries, actions);
+        files_dock(ui, st, pages, active, ext, actions);
     }
-    let free = ui.available_rect_before_wrap();
-    finish_rail_drag(ui, st, ext, &entries, free, actions);
+    if st.beside_shown {
+        beside_dock(ui, st, pages, active, ext, actions);
+    }
+    finish_rail_drag(ui, st, ext, &entries);
     if let Some((panel, side, before)) = st.rail_move.take() {
         st.move_panel(&available, &panel, side, before.as_deref());
         actions.push(Action::RailsChanged);
     }
+    let free = ui.available_rect_before_wrap();
 
     let canvas = match bare {
         true => free,
@@ -1220,6 +1197,7 @@ fn layout_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
             };
             if head(ui, "Visible", true) {
                 (prefs.rail, prefs.status, prefs.toolbar, prefs.dock_right) = (true, true, true, false);
+                prefs.other_panel = false;
                 st.files = true;
             }
             let row = |ui: &mut egui::Ui, glyph: &str, label: &str, key: String, on: bool| {
@@ -1257,37 +1235,59 @@ fn layout_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     let font = FontId::proportional(11.5);
                     ui.painter().text(Pos2::new(right, mid), Align2::RIGHT_CENTER, key, font, pal().text_faint);
                 }
-                resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+                resp.on_hover_cursor(egui::CursorIcon::PointingHand)
             };
             let keys = &st.keys;
-            if row(ui, icons::LAYOUT_GRID, "Bar of icons", String::new(), prefs.rail) {
+            if row(ui, icons::LAYOUT_GRID, "Bar of icons", String::new(), prefs.rail).clicked() {
                 prefs.rail = !prefs.rail;
             }
-            if row(ui, icons::PANEL_LEFT, "Files and source control", keys.label(Command::ToggleLeftPanel), st.files) {
-                st.files = !st.files;
-            }
-            if row(ui, icons::PANEL_BOTTOM, "Status bar", String::new(), prefs.status) {
+            if row(ui, icons::PANEL_BOTTOM, "Status bar", String::new(), prefs.status).clicked() {
                 prefs.status = !prefs.status;
             }
-            if row(ui, icons::MOUSE_POINTER_2, "Toolbar of the canvas", String::new(), prefs.toolbar) {
+            if row(ui, icons::MOUSE_POINTER_2, "Toolbar of the canvas", String::new(), prefs.toolbar).clicked() {
                 prefs.toolbar = !prefs.toolbar;
             }
             ui.add_space(4.0);
             ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top() - 2.0, Stroke::new(1.0, pal().border));
-            head(ui, "Files and the bar of icons", false);
-            if row(ui, icons::PANEL_LEFT, "On the left", String::new(), !prefs.dock_right) {
-                prefs.dock_right = false;
+            head(ui, "Side panels", false);
+            for (glyph, label, on_right) in
+                [(icons::PANEL_LEFT, "On the left", false), (icons::PANEL_RIGHT, "On the right", true)]
+            {
+                let main = on_right == prefs.dock_right;
+                let (on, key, tip) = match main {
+                    true => (
+                        st.files,
+                        keys.label(Command::ToggleLeftPanel),
+                        "The panel of the bar with Files, Search and Source control: what its icons open shows in \
+                         it. Off, it is hidden.",
+                    ),
+                    false => (
+                        prefs.other_panel,
+                        String::new(),
+                        "The panel of the other bar, where the extensions are: what its icons open shows in it. \
+                         Off, they float on the canvas as cards.",
+                    ),
+                };
+                if row(ui, glyph, label, key, on).on_hover_text(tip).clicked() {
+                    match main {
+                        true => st.files = !st.files,
+                        false => prefs.other_panel = !prefs.other_panel,
+                    }
+                }
             }
-            if row(ui, icons::PANEL_RIGHT, "On the right", String::new(), prefs.dock_right) {
-                prefs.dock_right = true;
+            let swap = crate::codicons::glyph("arrow-swap").unwrap_or(icons::ARROW_UP_DOWN);
+            let tip =
+                "Put the bar with Files on the other side, and the other bar with it: each panel goes with its bar";
+            if row(ui, swap, "Swap sides", String::new(), false).on_hover_text(tip).clicked() {
+                prefs.dock_right = !prefs.dock_right;
             }
             ui.add_space(4.0);
             ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top() - 2.0, Stroke::new(1.0, pal().border));
             head(ui, "Modes", false);
-            if row(ui, icons::FULLSCREEN, "Full screen", keys.label(Command::FullScreen), st.full_screen) {
+            if row(ui, icons::FULLSCREEN, "Full screen", keys.label(Command::FullScreen), st.full_screen).clicked() {
                 actions.push(Action::ToggleFullScreen);
             }
-            if row(ui, icons::APP_WINDOW, "Only the canvas", keys.label(Command::ToggleUi), st.bare) {
+            if row(ui, icons::APP_WINDOW, "Only the canvas", keys.label(Command::ToggleUi), st.bare).clicked() {
                 actions.push(Action::ToggleUi);
                 close = true;
             }
@@ -1464,61 +1464,114 @@ fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect, toward_right: bool) 
 const RAIL_ICON: Vec2 = Vec2::splat(34.0);
 const RAIL_REACH: f32 = 56.0;
 
+fn side_panel(ui: &mut egui::Ui, on_right: bool, role: &str, wide: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let id = egui::Id::unique((role, on_right, wide));
+    let panel = match on_right {
+        false => egui::Panel::left(id),
+        true => egui::Panel::right(id),
+    };
+    let panel = match wide {
+        false => panel.resizable(true).default_size(290.0).size_range(230.0..=560.0),
+        true => panel.resizable(true).default_size(400.0).size_range(260.0..=960.0),
+    };
+    let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: EDGE as i8 });
+    let was = ui.style().visuals.widgets.clone();
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    (widgets.hovered.fg_stroke, widgets.active.fg_stroke) = (Stroke::NONE, Stroke::NONE);
+    panel.frame(frame).show_separator_line(false).show(ui, |ui| {
+        ui.style_mut().visuals.widgets = was.clone();
+        let all = ui.max_rect();
+        let round = match on_right {
+            false => CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 },
+            true => CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 },
+        };
+        ui.painter().rect(all, round, pal().row, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+        let by_bar = if on_right { all.right() - 1.0 } else { all.left() };
+        let seam = Rect::from_min_max(Pos2::new(by_bar, all.top() + 1.0), Pos2::new(by_bar + 1.0, all.bottom() - 1.0));
+        ui.painter().rect_filled(seam, 0.0, pal().row);
+        ui.set_min_height(ui.available_height());
+        ui.set_width(ui.available_width());
+        add(ui);
+    });
+    ui.style_mut().visuals.widgets = was;
+}
+
 fn files_dock(
     ui: &mut egui::Ui,
     st: &mut UiState,
     pages: &mut [Page],
     active: usize,
     ext: &mut Extensions,
-    entries: &[RailEntry],
     actions: &mut Vec<Action>,
 ) {
-    let right = st.prefs.dock_right;
-    let views = st.dock_entry() == Panel::Views;
-    let dock = match (right, views) {
-        (false, false) => egui::Panel::left("left"),
-        (true, false) => egui::Panel::right("left on the right"),
-        (false, true) => egui::Panel::left("views"),
-        (true, true) => egui::Panel::right("views on the right"),
-    };
-    let dock = match views {
-        false => dock.resizable(true).default_size(290.0).size_range(230.0..=560.0),
-        true => dock.resizable(true).default_size(400.0).size_range(260.0..=960.0),
-    };
-    let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: EDGE as i8 });
-    let was = ui.style().visuals.widgets.clone();
-    let widgets = &mut ui.style_mut().visuals.widgets;
-    (widgets.hovered.fg_stroke, widgets.active.fg_stroke) = (Stroke::NONE, Stroke::NONE);
-    let shown = dock.frame(frame).show_separator_line(false).show(ui, |ui| {
-        ui.style_mut().visuals.widgets = was.clone();
-        let all = ui.max_rect();
-        let round = match right {
-            false => CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 },
-            true => CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 },
-        };
-        ui.painter().rect(all, round, pal().row, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
-        let by_bar = if right { all.right() - 1.0 } else { all.left() };
-        let seam = Rect::from_min_max(Pos2::new(by_bar, all.top() + 1.0), Pos2::new(by_bar + 1.0, all.bottom() - 1.0));
-        ui.painter().rect_filled(seam, 0.0, pal().row);
-        ui.set_min_height(ui.available_height());
-        ui.set_width(ui.available_width());
-        match st.dock {
-            _ if views => docked::views_dock(ui, st, ext, entries, actions),
-            Panel::Changes => {
-                folder_row(ui, st, pages, active, actions, false);
-                workspace_list(ui, st, actions);
-                git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions);
-            }
-            Panel::Search => {
-                folder_row(ui, st, pages, active, actions, false);
-                search_panel(ui, st, pages.get(active), actions);
-            }
-            Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
-            _ => files_panel(ui, st, pages, active, actions),
-        }
+    let panel = st.dock.clone();
+    side_panel(ui, st.prefs.dock_right, "main panel", !panel.docks(), |ui| {
+        panel_content(ui, st, pages, active, ext, actions, &panel)
     });
-    ui.style_mut().visuals.widgets = was;
-    docked::drop_on_dock(ui.ctx(), st, entries, shown.response.rect);
+}
+
+fn beside_dock(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    pages: &mut [Page],
+    active: usize,
+    ext: &mut Extensions,
+    actions: &mut Vec<Action>,
+) {
+    let Some(panel) = st.beside.clone() else { return };
+    side_panel(ui, !st.prefs.dock_right, "other panel", !panel.docks(), |ui| {
+        panel_content(ui, st, pages, active, ext, actions, &panel)
+    });
+}
+
+fn panel_content(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    pages: &mut [Page],
+    active: usize,
+    ext: &mut Extensions,
+    actions: &mut Vec<Action>,
+    panel: &Panel,
+) {
+    match panel {
+        Panel::Changes => {
+            folder_row(ui, st, pages, active, actions, false);
+            workspace_list(ui, st, actions);
+            git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions);
+        }
+        Panel::Search => {
+            folder_row(ui, st, pages, active, actions, false);
+            search_panel(ui, st, pages.get(active), actions);
+        }
+        Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
+        Panel::Files => files_panel(ui, st, pages, active, actions),
+        panel => {
+            let all = ui.max_rect();
+            let marks = |ui: &egui::Ui, on: bool| {
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::unique(CARD_X), on);
+                    data.insert_temp(egui::Id::unique(IN_PANEL), on);
+                })
+            };
+            marks(ui, true);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(all.shrink(1.0)), |ui| {
+                ui.set_clip_rect(all.shrink(1.0).intersect(ui.clip_rect()));
+                card_of(ui, st, pages, active, ext, actions, panel);
+            });
+            marks(ui, false);
+            let cross = Rect::from_min_size(Pos2::new(all.right() - 33.0, all.top() + 11.0), Vec2::splat(24.0));
+            let resp = ui.interact(cross, egui::Id::unique(("panel cross", panel.key())), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(cross, 6.0, pal().hover);
+            }
+            let color = if resp.hovered() { pal().text } else { pal().text_dim };
+            ui.painter().text(cross.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(14.0), color);
+            if resp.on_hover_text("Close").clicked() {
+                st.close_panel(panel);
+                actions.push(Action::RailsChanged);
+            }
+        }
+    }
 }
 
 fn card_of(
@@ -1532,7 +1585,7 @@ fn card_of(
 ) {
     match panel {
         Panel::Files => {}
-        Panel::Search | Panel::Extensions | Panel::Views => {}
+        Panel::Search | Panel::Extensions => {}
         Panel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
         Panel::Changes => {}
         Panel::Extension => ext_panels::extension_view(ui, st, ext),
@@ -1541,15 +1594,10 @@ fn card_of(
         Panel::Deps => deps_panel::deps_panel(ui, st, pages.get(active), actions),
         Panel::Webview(view) => {
             let title = ext.shown(view).map(|shown| shown.title.clone()).unwrap_or_default();
-            let mut dock = false;
-            let side = if st.prefs.dock_right { icons::PANEL_RIGHT } else { icons::PANEL_LEFT };
             Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 4 }).show(ui, |ui| {
-                panel_title(ui, &title, |ui| dock = small_icon(ui, side, "Dock in the side panel"));
+                panel_title(ui, &title, |_| {});
             });
-            ext_panels::webview_panel(ui, st, ext, view);
-            if dock && st.dock_view(panel.clone(), None) {
-                actions.extend([Action::SetPrefs(st.prefs.clone()), Action::RailsChanged]);
-            }
+            ext_panels::webview_panel(ui, st, ext, view)
         }
         Panel::Media => ext_panels::media_panel(ui, st, actions),
         Panel::Console => console::console_panel(ui, st, actions, crate::consoles::MAIN),
@@ -1762,6 +1810,7 @@ fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
     entries
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_rail_icon(
     ui: &egui::Ui,
     st: &mut UiState,
@@ -1769,17 +1818,18 @@ fn paint_rail_icon(
     entry: &RailEntry,
     rect: Rect,
     active: Option<Rect>,
+    tab: Option<bool>,
     hovered: bool,
 ) {
-    match active {
-        Some(bar) if entry.panel == st.dock_entry() => rail_tab(ui.painter(), rect, bar, !st.prefs.dock_right),
-        Some(_) => {
+    match (active, tab) {
+        (Some(bar), Some(toward_right)) => rail_tab(ui.painter(), rect, bar, toward_right),
+        (Some(_), None) => {
             ui.painter().rect_filled(rect.shrink(3.0), 8.0, pal().selection.gamma_multiply(0.7));
         }
-        None if hovered => {
+        (None, _) if hovered => {
             ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
         }
-        None => {}
+        (None, _) => {}
     }
     let active = active.is_some();
     let color = if active || hovered { pal().text } else { pal().text_dim };
@@ -1851,7 +1901,10 @@ fn rail(
         (Side::Right, true) => egui::Panel::right("rail_right"),
         (Side::Right, false) => egui::Panel::left("rail_right"),
     };
-    let joined = side == Side::Left && st.files;
+    let joined = match side {
+        Side::Left => st.files && !st.bare,
+        Side::Right => st.beside_shown,
+    };
     bar.frame(rail_frame(on_right)).exact_size(RAIL_W + EDGE).resizable(false).show_separator_line(false).show(
         ui,
         |ui| {
@@ -1882,7 +1935,12 @@ fn rail(
                 let lifted = st.rail_drag.as_ref().is_some_and(|drag| drag.key == key);
                 if !lifted {
                     let active = st.is_open(&entry.panel).then_some(zone);
-                    paint_rail_icon(ui, st, ext, entry, rect, active, resp.hovered());
+                    let beside = match side {
+                        Side::Left => joined && st.dock == entry.panel,
+                        Side::Right => joined && st.beside.as_ref() == Some(&entry.panel),
+                    };
+                    let tab = beside.then_some(!on_right);
+                    paint_rail_icon(ui, st, ext, entry, rect, active, tab, resp.hovered());
                     rail_badge(ui, ext, page, &entry.panel, rect);
                 }
                 if resp.drag_started_by(egui::PointerButton::Primary) {
@@ -1897,12 +1955,6 @@ fn rail(
                     ui.set_width(200.0);
                     if menu_row(ui, icons::PANEL_LEFT, offer) {
                         st.rail_move = Some((entry.panel.clone(), other, None));
-                        ui.close();
-                    }
-                    let side = if st.prefs.dock_right { icons::PANEL_RIGHT } else { icons::PANEL_LEFT };
-                    if entry.panel.of_extension() && menu_row(ui, side, "Dock in the side panel") {
-                        st.dock_view(entry.panel.clone(), None);
-                        actions.extend([Action::SetPrefs(st.prefs.clone()), Action::RailsChanged]);
                         ui.close();
                     }
                 });
@@ -2090,17 +2142,10 @@ fn rail_drop_target(ui: &egui::Ui, st: &mut UiState, side: Side, zone: Rect, slo
         (None, None) => zone.top() + 2.0,
     };
     ui.painter().hline(zone.x_range(), line, Stroke::new(2.0, pal().accent));
-    drag.target = Some(DropAt::Bar(side, next.map(|(key, _)| key.clone())));
+    drag.target = Some((side, next.map(|(key, _)| key.clone())));
 }
 
-fn finish_rail_drag(
-    ui: &egui::Ui,
-    st: &mut UiState,
-    ext: &Extensions,
-    entries: &[RailEntry],
-    free: Rect,
-    actions: &mut Vec<Action>,
-) {
+fn finish_rail_drag(ui: &egui::Ui, st: &mut UiState, ext: &Extensions, entries: &[RailEntry]) {
     let Some(drag) = st.rail_drag.clone() else { return };
     let Some(entry) = entries.iter().find(|entry| entry.panel.key() == drag.key) else {
         st.rail_drag = None;
@@ -2111,31 +2156,8 @@ fn finish_rail_drag(
     });
     if cancelled || !held {
         st.rail_drag = None;
-        let panel = entry.panel.clone();
-        match drag.target.filter(|_| !cancelled) {
-            Some(DropAt::Bar(side, before)) => {
-                if st.float_view(&panel, false) {
-                    actions.push(Action::SetPrefs(st.prefs.clone()));
-                }
-                st.rail_move = Some((panel, side, before));
-            }
-            Some(DropAt::Dock(before)) => {
-                if st.dock_view(panel, before.as_deref()) {
-                    actions.extend([Action::SetPrefs(st.prefs.clone()), Action::RailsChanged]);
-                }
-            }
-            None => {
-                let canvas = Rect::from_min_max(free.min + Vec2::new(EDGE, 0.0), free.max - Vec2::splat(EDGE));
-                let dropped = pointer.filter(|at| canvas.contains(*at) && !cancelled);
-                if let Some(at) = dropped.filter(|_| st.docked(&panel)) {
-                    let place = docked::card_at(canvas, at);
-                    st.float_view(&panel, false);
-                    st.rails.cards.insert(panel.key(), place);
-                    st.show(panel);
-                    actions.push(Action::SetPrefs(st.prefs.clone()));
-                    actions.push(Action::RailsChanged);
-                }
-            }
+        if let Some((side, before)) = drag.target.filter(|_| !cancelled) {
+            st.rail_move = Some((entry.panel.clone(), side, before));
         }
         return;
     }
@@ -2148,7 +2170,7 @@ fn finish_rail_drag(
         .show(ui.ctx(), |ui| {
             let (rect, _) = ui.allocate_exact_size(RAIL_ICON, Sense::hover());
             ui.painter().rect_filled(rect.shrink(2.0), 9.0, pal().raised);
-            paint_rail_icon(ui, st, ext, entry, rect, None, false);
+            paint_rail_icon(ui, st, ext, entry, rect, None, None, false);
         });
 }
 
@@ -5430,5 +5452,152 @@ mod tests {
         assert!(score("src/api.ts", "api") > score("src/rapid/x.ts", "api"), "name match beats path match");
         assert!(score("src/app/types.ts", "appts").is_some(), "subsequence");
         assert!(score("src/app/types.ts", "zzz").is_none());
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    fn chat() -> Panel {
+        Panel::Webview("chat".to_string())
+    }
+
+    fn available() -> Vec<(String, Side)> {
+        [Panel::Files, Panel::Search, Panel::Symbols, Panel::Console, chat()]
+            .iter()
+            .map(|panel| (panel.key(), panel.home()))
+            .collect()
+    }
+
+    fn state(other_panel: bool) -> UiState {
+        let mut st = UiState::default();
+        st.prefs.other_panel = other_panel;
+        st.arrange(&available());
+        st
+    }
+
+    #[test]
+    fn the_console_symbols_and_extensions_sit_on_the_other_bar() {
+        let st = state(false);
+        assert_eq!(st.bar_of(&Panel::Files), Some(Side::Left));
+        for panel in [Panel::Symbols, Panel::Console, Panel::Deps, chat()] {
+            assert_eq!(panel.home(), Side::Right);
+        }
+        assert_eq!(st.bar_of(&chat()), Some(Side::Right));
+    }
+
+    #[test]
+    fn the_other_bar_floats_its_views_while_its_panel_is_off() {
+        let mut st = state(false);
+        st.show(chat());
+        assert_eq!(st.cards, [chat()]);
+        assert_eq!(st.beside, None);
+        assert!(st.is_open(&chat()));
+        st.toggle(chat());
+        assert!(st.cards.is_empty());
+    }
+
+    #[test]
+    fn with_its_panel_on_a_view_opens_beside_the_bar_of_its_icon() {
+        let mut st = state(true);
+        st.toggle(chat());
+        assert_eq!(st.beside, Some(chat()));
+        assert!(st.cards.is_empty() && st.files && st.dock == Panel::Files, "the main panel is left alone");
+        assert!(st.is_open(&chat()));
+        st.toggle(Panel::Console);
+        assert_eq!(st.beside, Some(Panel::Console), "another icon of the same bar takes the panel");
+        st.toggle(Panel::Console);
+        assert_eq!(st.beside, None, "a second click hides it");
+        assert!(!st.is_open(&chat()));
+    }
+
+    #[test]
+    fn what_the_main_bar_opens_never_floats() {
+        let mut st = state(false);
+        st.move_panel(&available(), &chat(), Side::Left, None);
+        st.show(chat());
+        assert_eq!((st.files, st.dock.clone()), (true, chat()));
+        assert!(st.cards.is_empty());
+        st.toggle(chat());
+        assert!(!st.files && st.cards.is_empty(), "hidden with the panel, not a card");
+        st.show(Panel::Search);
+        assert_eq!(st.dock, Panel::Search);
+    }
+
+    #[test]
+    fn an_icon_moved_to_the_other_bar_takes_its_view_with_it() {
+        let mut st = state(true);
+        st.show(chat());
+        st.move_panel(&available(), &chat(), Side::Left, None);
+        assert_eq!((st.files, st.dock.clone(), st.beside.clone()), (true, chat(), None));
+        st.move_panel(&available(), &chat(), Side::Right, None);
+        assert_eq!(
+            (st.files, st.dock.clone(), st.beside.clone()),
+            (true, Panel::Files, Some(chat())),
+            "the files take its place"
+        );
+        st.prefs.other_panel = false;
+        st.arrange(&available());
+        assert_eq!((st.beside.clone(), st.cards.clone()), (None, vec![chat()]), "its panel off: it floats");
+        st.prefs.other_panel = true;
+        st.arrange(&available());
+        assert_eq!((st.beside.clone(), st.cards.clone()), (Some(chat()), vec![]), "and back into the panel");
+    }
+
+    #[test]
+    fn swapping_the_sides_keeps_each_panel_with_its_bar() {
+        let mut st = state(true);
+        st.show(chat());
+        st.prefs.dock_right = true;
+        st.arrange(&available());
+        assert_eq!((st.place_of(&chat()), st.beside.clone()), (Place::Beside, Some(chat())));
+        assert_eq!(st.place_of(&Panel::Files), Place::Main);
+    }
+
+    #[test]
+    fn a_view_without_an_icon_or_a_page_still_floats() {
+        let mut st = state(true);
+        let lonely = Panel::Webview("lonely".to_string());
+        st.show(lonely.clone());
+        assert_eq!(st.cards, [lonely]);
+        st.media = Some("readme.md".into());
+        assert_eq!(st.place_of(&Panel::Media), Place::Card);
+        assert_eq!(st.place_of(&Panel::Help), Place::Card);
+    }
+
+    #[test]
+    fn the_panels_come_back_after_a_restart() {
+        let mut st = state(true);
+        st.show(Panel::Console);
+        st.move_panel(&available(), &Panel::Symbols, Side::Left, None);
+        st.show(Panel::Symbols);
+        let (dock, beside) = (st.dock.key(), st.beside.as_ref().map(Panel::key));
+        let mut again = UiState::default();
+        again.prefs.other_panel = true;
+        again.restore(st.files, Some(&dock), beside.as_deref(), &st.open_keys());
+        again.rails = st.rails.clone();
+        again.arrange(&available());
+        assert_eq!((again.dock, again.beside, again.files), (Panel::Symbols, Some(Panel::Console), true));
+        assert!(again.cards.is_empty());
+    }
+
+    #[test]
+    fn a_view_whose_extension_has_not_started_keeps_its_panel() {
+        let mut st = UiState::default();
+        st.prefs.other_panel = true;
+        st.restore(true, Some("files"), Some("view:chat"), &[]);
+        st.arrange(&[(Panel::Files.key(), Side::Left)]);
+        assert_eq!(st.beside, Some(chat()));
+        st.arrange(&available());
+        assert_eq!(st.beside, Some(chat()));
+    }
+
+    #[test]
+    fn a_session_of_before_still_opens_its_dock() {
+        let mut st = state(false);
+        st.restore(true, None, None, &["search".to_string(), "symbols".to_string(), "view:chat".to_string()]);
+        assert_eq!(st.dock, Panel::Search);
+        assert_eq!(st.cards, [Panel::Symbols]);
     }
 }

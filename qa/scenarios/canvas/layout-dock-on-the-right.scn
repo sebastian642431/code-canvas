@@ -1,4 +1,4 @@
-title: The files and the bar of icons move to the right side from the layout menu, and back
+title: Swap sides in the layout menu puts the files and their bar of icons on the right, the other bar on the left, and back
 folders: rust-small
 forbid-log: WARN.*script
 expect-file: ..\data\prefs.json :: "dock_right": false
@@ -16,7 +16,7 @@ left changes
 wait 800
 mark c-source-control-on-the-right
 wait 400
-ui click 1500 226
+ui click 1500 256
 wait 900
 mark d-back-on-the-left
 wait 400

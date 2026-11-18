@@ -534,6 +534,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: 
     let filled = st.console.filled == Some(card);
     let keys = st.keys.label(Command::SplitConsole);
     let crossed = ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::unique(super::CARD_X))).unwrap_or(false);
+    let in_panel = ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::unique(super::IN_PANEL))).unwrap_or(false);
     let place = Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.add(egui::Label::new(RichText::new("Console").size(14.0).color(pal().text)).selectable(false));
@@ -546,7 +547,7 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: 
                     true => ("screen-normal", "Restore the card"),
                     false => ("screen-full", "Fill the canvas with the card"),
                 };
-                if head_button(ui, codicon(glyph), tip, 24.0, false).0 {
+                if !in_panel && head_button(ui, codicon(glyph), tip, 24.0, false).0 {
                     actions.push(Action::Console(ConsoleOp::Fill(Some(card))));
                 }
                 let more =

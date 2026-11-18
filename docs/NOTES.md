@@ -2461,7 +2461,7 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
 | `wrap` | Wrap lines wider than their card into the rows under them instead of cutting them (`canvas_core::layout::set_wrap`, off by default). |
 | `codex`, `asked_codex` | Follow Codex from the session files it writes (`codex.rs`), and whether the app already offered it. |
 | `grammars_everywhere` | Let a grammar of an extension colour the languages the app's own tokenizer knows too (off by default: only the ones it does not know, see `grammars.rs`). |
-| `docked` | The extensions' views kept in the side panel instead of floating, by `Panel::key` (`view:<id>`, `tree:<container>`), in the order of their tabs. Absent or empty: every view floats, as before there was a choice. Synced with the rest of the file. |
+| `other_panel` | The panel of the other bar (the one where the extensions' icons are) is on: what its icons open shows in a panel beside it, not as cards (`UiState::place_of`). Off by default: they float, as they always did. A file of 0.4.5 with a non-empty `docked` (views docked one by one in the main panel) is read as on (`Prefs::settled`); `docked` is never written again. |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
 ### qa
@@ -2491,13 +2491,13 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `goto` | `goto <path>` | Select a file or folder and fly to it. |
 | `select` | `select <name>` | Select the first symbol with that name. |
 | `search` | `search <text>` | Search in files. |
-| `left` | `left files\|search\|extensions\|problems\|changes\|help\|views` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
+| `left` | `left files\|search\|extensions\|problems\|changes\|help` or `left <publisher.name>`; `left none` | Open that panel where it goes (`UiState::show`), or that extension's own panel. `none` hides the main bar's panel and closes the cards of its side. |
 | `left settings` | `left settings`, `left settings:general\|appearance\|colours\|keyboard\|commits`, `left settings:<text>`, `left settings:close` | Open Settings, on a category, or searching for the text; close it. |
 | `right` | `right symbols\|deps` or `right <view id or extension id>`; `right none` | Open that panel, or that extension's webview, on the side its icon is on. `none` closes the right side. |
 | `preview` | `preview <path>` | Show a Markdown file of the folder rendered, or close it if it is the one shown. `open <path>` shows one from anywhere. |
 | `drop` | `drop <path>` | What dropping that file on the window does: a copy in the selected folder. |
 | `mark` | `mark <name>` | Leave an empty file `marks/<name>` in the data directory. `scripts/screenshot.ps1 -Marks` takes a picture at each. |
-| `move` | `move <panel> left\|right [panel to sit before]`, `move <panel> dock [tab to sit before]`, `move <panel> float` | Move an icon to a bar (a docked view floats again), dock an extension's view in the side panel as a tab, or float it as a card. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
+| `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar: `left` is the main bar (Files, Search...) and `right` the other one, whichever side of the window each is on. What it shows moves with it. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
 | `click` | `click <x> <y>`, `click <path> <line> <column>` | A click on the canvas, in physical pixels of the window, or in the middle of a cell of a card (1-based, as `hover`): on a wrapped card that is the row the column is on. |
 | `hover` | `hover <x> <y>`, `hover <path> <line> <column>` | The pointer resting on the canvas, in physical pixels or on a cell of a card (1-based; a column past the card's edge is where it would be if the card went on): what is under it reacts (the rest of a long line). |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
@@ -3093,43 +3093,58 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     folder switcher and the workspace above it (`folder_row`), so choosing
     another folder shows that repository's changes. Which one is docked is
     saved with the open cards (`UiState::open_keys`).
-  - **An extension's view floats or is docked, as each person likes**
-    (`Prefs::docked`, `ui/docked.rs`). Floating is what it always was: its
-    icon on a bar, a card on the canvas. Docked, its icon leaves the bar and
-    it becomes a tab of `Panel::Views`, the fifth tab of the dock, whose icon
-    (`PANELS_TOP_LEFT`, after Extensions) is on the bar while anything is
-    docked: a row of tabs across the top (icon and title, only icons when the
-    titles do not fit, `tab_widths`) and the view under them. `UiState::dock`
-    is then the view itself (`Panel::Webview`, `Panel::Tree`), so the docked
-    view shown is saved and opened again like Files or Search, and
-    `UiState::show` of a docked view (its icon, a script, an extension
-    revealing it) opens the panel on its tab. `dock_entry` is what the bar
-    lights for it. The dock remembers a width for the views apart from the
-    files (another `egui::Panel` id, wider by default and up to 960).
-  - Docking: the icon dragged from a bar and dropped on the side panel
-    (`drop_on_dock`: over the tabs it goes before the one under the pointer,
-    elsewhere at the end, with the whole panel lit while it would take it), "Dock
-    in the side panel" in the icon's menu, or the button in the title of a
-    floating web page. Floating: a tab dragged onto the canvas (a free card
-    under the pointer, `card_at`) or onto a bar (its icon is put there), or
-    "Float on the canvas" in the tab's menu. A tab dragged along the row is
-    reordered. The drag is the bars' (`RailDrag`, `DropAt`); the target of the
-    dock is set after both bars are drawn, so `finish_rail_drag` runs after
-    `files_dock`.
-  - The preferences can change under the dock (sync from GitHub):
-    `settle_docked` runs every frame, takes a docked view out of the cards and
-    sends the dock back to the files when what it shows floats now. A docked
-    view whose extension has not shown it yet (its `when` is false for now)
-    keeps its tab and stays selected, so a restart does not lose it.
+  - **Each bar has a panel beside it; what an icon opens goes to the panel of
+    its bar** (`UiState::place_of`, `Place`). The main bar (logically
+    `Side::Left`: Files, Search, Source Control, Extensions) always opens into
+    its panel, the dock (`UiState::dock`, shown while `UiState::files`); off,
+    it is hidden and nothing of it floats. The other bar (`Side::Right`: the
+    extensions' views, Selected symbols, Dependencies, the console) opens into
+    a panel of its own (`UiState::beside`, `beside_dock`) when
+    `Prefs::other_panel` is on, and as cards on the canvas when it is off, as
+    everything did before. A view never opens on a side where its icon is not:
+    the icon's bar is `UiState::bar_of`, from the arrangement of this frame
+    (`UiState::arrange`, `on_bars`). Exceptions: what has no icon (Help,
+    Problems, an extension's page, the consoles moved to a card of their own,
+    a view an extension shows that has no icon) floats; Files, Search, Source
+    Control and Extensions have no card, so on the other bar with its panel off
+    they still open in the main panel; the media viewer is always a card (what
+    is looked at goes on the canvas).
+  - The layout menu's "Side panels" are two toggles, "On the left" and "On
+    the right": the one of the main bar's side is `UiState::files` (with
+    Ctrl+B), the other is `Prefs::other_panel`. "Swap sides" swaps the bars
+    (`Prefs::dock_right`) and each panel goes with its bar, its toggle too.
+  - `UiState::settle` runs every frame (in `arrange`) and after an icon moves:
+    what the dock or the other panel shows whose icon is now elsewhere, or
+    whose panel was turned off, goes where it belongs now (the dock shows the
+    files instead), and a card whose icon's bar has its panel on goes into
+    that panel. A view whose extension has not said yet whether it shows it
+    (a restart, a `when` false for now) is left where it is: it has no icon to
+    tell. Both panels are saved in the session (`Session::dock`,
+    `Session::beside`; a session of before has the dock as the first of its
+    cards).
+  - A panel that is not Files, Search, Source Control or Extensions is drawn
+    with what its card shows (`card_of`) and a cross of its own drawn after it
+    (`panel_content`, with `CARD_X` so the title leaves room for it, and
+    `IN_PANEL`, which takes away the console's button that fills the canvas).
+    Both panels are `side_panel`: resizable, with a width of their own while
+    the app runs (an `egui::Panel` id per role, side and kind: the files
+    290 by default, anything else 400, up to 960).
+  - Symbols, Dependencies and the console are on the other bar
+    (`Panel::home`). An arrangement of 0.4.5 or before moves them there once
+    (`Rails::homes` 3, `TO_THE_OTHER_BAR`), before the extensions' icons; put
+    back on the main bar afterwards, they stay.
+  - 0.4.5 docked views one by one in the main panel, with an icon of its own
+    for them and a row of tabs; the person wanted the view on the side of its
+    icon instead, and the choice in the layout menu. That model is gone.
   - **The page is the same wherever it is**: a webview belongs to its handle,
-    not to a card, so docking, floating, switching tabs, hiding the panel
-    (Ctrl+B, the title bar, only the canvas) and moving the dock to the other
-    side only move it, hide it or show it (`set_bounds`, `set_visible`). It is
-    never loaded again: an assistant's conversation goes on where it was.
-    What floats over the dock (menus, tooltips, the dragged icon, the lit
-    panel while dropping) is cut out of it like over a card (`covers_of`: a
-    page of no card has every card counted above it, and none reaches the
-    dock).
+    not to a card, so opening it in a panel or as a card, moving its icon to
+    the other bar, swapping the sides, turning a panel off or on, hiding the
+    panel (its icon, Ctrl+B, only the canvas) and resizing it only move it,
+    hide it or show it (`set_bounds`, `set_visible`). It is never loaded
+    again: an assistant's conversation goes on where it was. What floats over
+    a panel (menus, tooltips, the dragged icon) is cut out of it like over a
+    card (`covers_of`: a page of no card has every card counted above it, and
+    none reaches the panels).
   - **Each folder of the workspace shows its branch** where its count of files
     was (`WorkspaceRow::branch`; the count is in its hint): from the folder's
     git when it is open (with `*` when something changed), else read from
@@ -3199,14 +3214,16 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     `CODE_CANVAS_GITHUB_SITE`, `CODE_CANVAS_GITHUB_API` and
     `CODE_CANVAS_GITHUB_CLIENT`.
   - **Customize the layout** (the button left of the window's buttons,
-    `layout_menu`): the bar of icons, the dock, the status bar and the toolbar
-    of the canvas are shown or hidden (`Prefs::rail`, `status`, `toolbar`;
-    the dock is `UiState::files`), a button puts every part back, and two
-    modes: full screen (`Action::ToggleFullScreen`, borderless) and only the
-    canvas (`Action::ToggleUi`). The dock and its bar of icons go to either
-    side (`Prefs::dock_right`): the bars swap sides, the dock becomes a right
-    panel, and the rounded corners, the seam and the tab of the docked icon
-    follow (`rail_frame`, `rail_tab`).
+    `layout_menu`): the bar of icons, the status bar and the toolbar of the
+    canvas are shown or hidden (`Prefs::rail`, `status`, `toolbar`), the side
+    panels are turned on or off one per side, a button puts every part back
+    (the other bar's panel off too), and two modes: full screen
+    (`Action::ToggleFullScreen`, borderless) and only the canvas
+    (`Action::ToggleUi`). "Swap sides" puts the main bar and its dock on the
+    right (`Prefs::dock_right`): the bars swap sides, each panel with its bar,
+    and the rounded corners, the seam and the tab of the icon whose panel is
+    open follow (`rail_frame`, `rail_tab`, which the other bar draws for its
+    own panel too).
   - The Timeline under the files folds away by its title (`Prefs::timeline`):
     closed, it is a row of its own height that cannot be dragged taller.
   - **The question before deleting shows what is about to go** (`ui::Preview`,
@@ -3224,9 +3241,11 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     while it has no icon, unless one is being dragged.
   - The icon of the files is a tab of them (`rail_tab`); the icon of an open
     card is lit.
-  - The homes changed once (symbols and dependencies were on the right). An
-    arrangement saved before that is taken home one time (`Rails::at_home`,
-    `Rails::homes`); what is moved afterwards stays where it was put. For one
+  - The homes changed twice: symbols and dependencies were on the right, came
+    to the left (`homes` 2), and went back to the other bar with the console
+    (`homes` 3, only those three). An arrangement saved before each change is
+    taken home one time (`Rails::at_home`, `Rails::homes`); what is moved
+    afterwards stays where it was put. For one
     version (0.3.3) the sides were fixed and a drop on the other bar did
     nothing: people arrange the bars as they like, so that went.
   - `rail_entries` lists the icons there are this frame; `Rails::arrange` puts
@@ -3597,8 +3616,8 @@ Messages and lifetime
 - **A page is not made within `HIDE_SETTLES` (400 ms) of hiding another.**
   Making a WebView2 right after `set_visible(false)` of another one never
   returned: `build_as_child` waited for ever for its controller, pumping
-  messages at one core, and the window stayed white. Switching between two docked
-  views did exactly that (the second page is asked for as the first hides). The
+  messages at one core, and the window stayed white. Switching a panel from one
+  view to another did exactly that (the second page is asked for as the first hides). The
   page waits a few frames instead (`show` returns that it is waiting, and the app
   draws again).
 - `WebViews::retheme` gives the theme to pages that have not had the current one.

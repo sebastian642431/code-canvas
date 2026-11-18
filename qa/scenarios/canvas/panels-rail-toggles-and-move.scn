@@ -1,5 +1,5 @@
-title: The button at the top hides and shows the files; a click on an icon opens its card and the same click closes it; an icon goes to the top of its bar and then to the other bar while its card stays open
-expect-file: {WORK}\data\session.json :: "right": \[\s*"deps"
+title: The button at the top hides and shows the files; a click on an icon opens it and the same click closes it; an icon goes to the top of the main bar and opens in its panel, then to the other bar, whose panel is off, and floats as a card
+expect-file: {WORK}\data\session.json :: "right": \[[^\]]*"deps"
 expect-file: {WORK}\data\session.json :: "cards": \[[^\]]*"deps"
 folders: git-changes
 forbid-log: WARN.*script
@@ -17,7 +17,7 @@ mark c-files-back
 wait 400
 ui click 26 98
 wait 700
-mark d-search-card-by-a-click-on-its-icon
+mark d-search-by-a-click-on-its-icon
 wait 400
 ui click 26 98
 wait 600
@@ -29,10 +29,10 @@ mark f-deps-first-on-the-bar
 wait 400
 right deps
 wait 700
-mark g-deps-card-open
+mark g-deps-in-the-main-panel
 wait 400
 move deps right
 wait 800
-mark h-deps-icon-on-the-right-bar-its-card-still-open
+mark h-deps-icon-on-the-other-bar-floats-as-a-card
 wait 400
 quit

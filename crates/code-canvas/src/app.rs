@@ -331,7 +331,7 @@ impl App {
         ui.keys = Keymap::new(&ui.key_file);
         ui.rails = saved.rails.clone();
         ui.rails_at_home();
-        ui.restore(saved.left_open, &saved.cards);
+        ui.restore(saved.left_open, saved.dock.as_deref(), saved.beside.as_deref(), &saved.cards);
         ui.console.scripts = session::data_dir().join("console");
         ui.console.restore(&saved.consoles);
         ui.single = saved.single;
@@ -589,6 +589,8 @@ impl App {
                 .collect(),
             active: self.pages.iter().take(self.active).filter(|p| !p.only && p.shared.is_none()).count(),
             left_open: self.ui.files,
+            dock: Some(self.ui.dock.key()),
+            beside: self.ui.beside.as_ref().map(Panel::key),
             cards: self.ui.open_keys(),
             rails: self.ui.rails.clone(),
             workspace: self.workspace.clone(),
@@ -3018,6 +3020,7 @@ impl App {
             .cards
             .iter()
             .chain(Some(&self.ui.dock).filter(|_| self.ui.files))
+            .chain(self.ui.beside.as_ref())
             .filter_map(|c| if let Panel::Tree(id) = c { Some(id.clone()) } else { None })
             .collect();
         let mut views: Vec<(String, String)> = Vec::new();
@@ -3970,7 +3973,6 @@ impl App {
                 "extensions" => self.ui.show(Panel::Extensions),
                 "problems" => self.ui.show(Panel::Problems),
                 "changes" => self.ui.show(Panel::Changes),
-                "views" => self.ui.show(Panel::Views),
                 "settings" => self.ui.settings.show(None),
                 "settings:close" => self.ui.settings.open = false,
                 id if id.starts_with("settings:") => match ui::SettingsTab::from_key(&id[9..]) {
@@ -4513,8 +4515,7 @@ impl App {
                     let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
                     view.map(|w| Panel::of_rail(w.view)).or_else(|| Panel::from_key(name))
                 });
-                let place = parts.next();
-                let side = match place {
+                let side = match parts.next() {
                     Some("left") => Some(Side::Left),
                     Some("right") => Some(Side::Right),
                     _ => None,
@@ -4523,26 +4524,9 @@ impl App {
                     let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
                     view.map_or_else(|| name.to_string(), |w| Panel::of_rail(w.view).key())
                 });
-                match (panel, side, place) {
-                    (Some(panel), Some(side), _) => {
-                        if self.ui.float_view(&panel, false) {
-                            self.apply(Action::SetPrefs(self.ui.prefs.clone()));
-                        }
-                        self.ui.request_move(panel, side, before)
-                    }
-                    (Some(panel), None, Some("dock")) => {
-                        if self.ui.dock_view(panel, before.as_deref()) {
-                            self.apply(Action::SetPrefs(self.ui.prefs.clone()));
-                        }
-                    }
-                    (Some(panel), None, Some("float")) => {
-                        if self.ui.float_view(&panel, true) {
-                            self.apply(Action::SetPrefs(self.ui.prefs.clone()));
-                        }
-                    }
-                    _ => {
-                        log::warn!("script: move needs <panel> left|right|dock [panel to sit before], or <panel> float")
-                    }
+                match (panel, side) {
+                    (Some(panel), Some(side)) => self.ui.request_move(panel, side, before),
+                    _ => log::warn!("script: move needs <panel> left|right [panel to sit before]"),
                 }
             }
             Step::Find(what) => {

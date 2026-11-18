@@ -32,6 +32,8 @@ pub struct Prefs {
     pub grammars_everywhere: bool,
     pub share_relay: bool,
     pub relay: String,
+    pub other_panel: bool,
+    #[serde(skip_serializing)]
     pub docked: Vec<String>,
     pub console_profile: String,
 }
@@ -68,6 +70,7 @@ impl Default for Prefs {
             grammars_everywhere: false,
             share_relay: false,
             relay: String::new(),
+            other_panel: false,
             docked: Vec::new(),
             console_profile: String::new(),
         }
@@ -75,20 +78,11 @@ impl Default for Prefs {
 }
 
 impl Prefs {
-    pub fn is_docked(&self, key: &str) -> bool {
-        self.docked.iter().any(|docked| docked == key)
-    }
-
-    pub fn dock(&mut self, key: &str, before: Option<&str>) {
-        self.docked.retain(|docked| docked != key);
-        let at = before.and_then(|next| self.docked.iter().position(|docked| docked == next));
-        self.docked.insert(at.unwrap_or(self.docked.len()), key.to_string());
-    }
-
-    pub fn float(&mut self, key: &str) -> bool {
-        let before = self.docked.len();
-        self.docked.retain(|docked| docked != key);
-        self.docked.len() != before
+    pub fn settled(mut self) -> Prefs {
+        if !std::mem::take(&mut self.docked).is_empty() {
+            self.other_panel = true;
+        }
+        self
     }
 }
 
@@ -97,7 +91,8 @@ fn path() -> std::path::PathBuf {
 }
 
 pub fn load() -> Prefs {
-    std::fs::read_to_string(path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    let read = std::fs::read_to_string(path()).ok().and_then(|text| serde_json::from_str::<Prefs>(&text).ok());
+    read.unwrap_or_default().settled()
 }
 
 pub fn save(prefs: &Prefs) {
@@ -113,46 +108,28 @@ pub fn save(prefs: &Prefs) {
 mod tests {
     use super::Prefs;
 
-    #[test]
-    fn every_view_floats_until_it_is_docked() {
-        let prefs = Prefs::default();
-        assert!(prefs.docked.is_empty());
-        assert!(!prefs.is_docked("view:claudeVSCodeSidebar"));
+    fn read(json: &str) -> Prefs {
+        serde_json::from_str::<Prefs>(json).unwrap().settled()
     }
 
     #[test]
-    fn preferences_of_before_docking_still_load() {
-        let old = r#"{"edit": true, "dock_right": true, "relay": "example.org"}"#;
-        let prefs: Prefs = serde_json::from_str(old).unwrap();
-        assert!(prefs.edit && prefs.dock_right);
-        assert!(prefs.docked.is_empty(), "nothing docked: every extension floats as before");
+    fn the_other_bar_floats_its_views_until_its_panel_is_on() {
+        assert!(!Prefs::default().other_panel);
+        let old = read(r#"{"edit": true, "dock_right": true, "relay": "example.org"}"#);
+        assert!(old.edit && old.dock_right);
+        assert!(!old.other_panel, "a file of before: everything of the other bar floats as it did");
     }
 
     #[test]
-    fn docked_views_keep_their_order_through_a_save() {
-        let mut prefs = Prefs::default();
-        prefs.dock("view:chat", None);
-        prefs.dock("tree:shelf", None);
-        prefs.dock("view:codex", Some("tree:shelf"));
-        assert_eq!(prefs.docked, ["view:chat", "view:codex", "tree:shelf"]);
-        let again: Prefs = serde_json::from_str(&serde_json::to_string_pretty(&prefs).unwrap()).unwrap();
-        assert_eq!(again, prefs);
-        assert!(again.is_docked("view:codex"));
-    }
-
-    #[test]
-    fn a_tab_is_reordered_and_floated_again() {
-        let mut prefs = Prefs::default();
-        for key in ["view:a", "view:b", "view:c"] {
-            prefs.dock(key, None);
-        }
-        prefs.dock("view:c", Some("view:a"));
-        assert_eq!(prefs.docked, ["view:c", "view:a", "view:b"]);
-        prefs.dock("view:c", Some("view:gone"));
-        assert_eq!(prefs.docked, ["view:a", "view:b", "view:c"], "a place before a tab not there is the end");
-        assert!(prefs.float("view:a"));
-        assert!(!prefs.float("view:a"), "floating twice changes nothing");
-        assert_eq!(prefs.docked, ["view:b", "view:c"]);
-        assert!(!prefs.is_docked("view:a"));
+    fn views_docked_by_an_older_version_turn_the_panel_of_the_other_bar_on() {
+        let docked = read(r#"{"dock_right": true, "docked": ["view:claudeVSCodeSidebar"]}"#);
+        assert!(docked.other_panel && docked.dock_right);
+        assert!(docked.docked.is_empty());
+        assert!(!read(r#"{"docked": []}"#).other_panel, "nothing docked: floating, as before");
+        let saved = serde_json::to_string_pretty(&docked).unwrap();
+        assert!(!saved.contains("docked"), "the old list is not written again");
+        assert_eq!(read(&saved), docked);
+        let off = read(r#"{"other_panel": false}"#);
+        assert_eq!(read(&serde_json::to_string(&off).unwrap()), off);
     }
 }

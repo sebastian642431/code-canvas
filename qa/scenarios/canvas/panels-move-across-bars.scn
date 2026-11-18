@@ -1,6 +1,6 @@
-title: An icon goes to the other bar, its open panel goes with it, and it is still there after a restart of the arrangement
-expect-file: {WORK}\data\session.json :: "right": \[\s*"deps"
-expect-file: {WORK}\data\session.json :: "homes": 2
+title: An icon goes to the other bar and what it opens goes with it: into the panel of the main bar there, as a card on the other bar while its panel is off; the arrangement is saved
+expect-file: {WORK}\data\session.json :: "left": \[[^\]]*"deps"
+expect-file: {WORK}\data\session.json :: "homes": 3
 folders: git-changes
 forbid-log: WARN.*script
 
@@ -9,13 +9,13 @@ left files
 wait 600
 mark a-everything-at-home
 wait 400
-move deps right
-wait 800
-mark b-deps-on-the-right-bar
-wait 400
 right deps
 wait 800
-mark c-deps-open-on-the-right
+mark b-deps-card-from-the-other-bar
+wait 400
+move deps left
+wait 800
+mark c-deps-in-the-main-panel-with-its-icon
 wait 400
 move files right deps
 wait 800
