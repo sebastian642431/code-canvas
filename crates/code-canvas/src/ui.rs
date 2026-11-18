@@ -237,6 +237,7 @@ pub struct CardPlace {
 
 pub struct UiState {
     pub files: bool,
+    pub dock: Panel,
     pub cards: Vec<Panel>,
     pub cards_reach: f32,
     pub card_places: Vec<CardPlace>,
@@ -301,6 +302,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             files: true,
+            dock: Panel::Files,
             cards: Vec::new(),
             cards_reach: 0.0,
             card_places: Vec::new(),
@@ -377,7 +379,7 @@ impl UiState {
 
     pub fn is_open(&self, panel: &Panel) -> bool {
         match panel {
-            Panel::Files => self.files,
+            Panel::Files | Panel::Changes => self.files && self.dock == *panel,
             card => self.cards.contains(card),
         }
     }
@@ -392,14 +394,18 @@ impl UiState {
 
     pub fn close_panel(&mut self, panel: &Panel) {
         match panel {
-            Panel::Files => self.files = false,
+            Panel::Files | Panel::Changes => {
+                if self.dock == *panel {
+                    self.files = false;
+                }
+            }
             card => self.cards.retain(|open| open != card),
         }
     }
 
     pub fn show(&mut self, panel: Panel) {
-        if panel == Panel::Files {
-            self.files = true;
+        if matches!(panel, Panel::Files | Panel::Changes) {
+            (self.files, self.dock) = (true, panel);
             return;
         }
         let key = panel.key();
@@ -427,8 +433,15 @@ impl UiState {
 
     pub fn restore(&mut self, files: bool, cards: &[String]) {
         self.files = files;
-        let open = cards.iter().filter_map(|key| Panel::from_key(key));
-        self.cards = open.filter(|panel| *panel != Panel::Files && !panel.is_page()).collect();
+        let docked = |panel: &Panel| matches!(panel, Panel::Files | Panel::Changes);
+        let open: Vec<Panel> = cards.iter().filter_map(|key| Panel::from_key(key)).collect();
+        self.dock = if open.contains(&Panel::Changes) { Panel::Changes } else { Panel::Files };
+        self.cards = open.into_iter().filter(|panel| !docked(panel) && !panel.is_page()).collect();
+    }
+
+    pub fn open_keys(&self) -> Vec<String> {
+        let docked = (self.dock == Panel::Changes).then(|| Panel::Changes.key());
+        docked.into_iter().chain(self.cards.iter().map(Panel::key)).collect()
     }
 }
 
@@ -807,7 +820,8 @@ pub fn build(
 }
 
 fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
-    egui::Panel::top("header").frame(Frame::NONE.fill(pal().chrome)).exact_size(HEADER_H).show(ui, |ui| {
+    let top = egui::Panel::top("header").frame(Frame::NONE.fill(pal().chrome)).exact_size(HEADER_H);
+    top.show_separator_line(false).show(ui, |ui| {
         let bar = ui.max_rect();
         let drag = ui.interact(bar, egui::Id::unique("titlebar"), Sense::click_and_drag());
         if drag.drag_started_by(egui::PointerButton::Primary) {
@@ -1018,6 +1032,12 @@ fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect) {
     let tab = Rect::from_min_max(icon.left_top() + Vec2::new(3.0, 0.0), Pos2::new(bar.right(), icon.bottom()));
     let round = CornerRadius { nw: 9, sw: 9, ne: 0, se: 0 };
     painter.rect_filled(tab, round, pal().row);
+    const FLARE: f32 = 7.0;
+    for (edge, away) in [(tab.top(), -FLARE), (tab.bottom(), FLARE)] {
+        let square = Rect::from_two_pos(Pos2::new(tab.right() - FLARE, edge), Pos2::new(tab.right(), edge + away));
+        painter.rect_filled(square, 0.0, pal().row);
+        painter.circle_filled(Pos2::new(tab.right() - FLARE, edge + away), FLARE, pal().well);
+    }
 }
 
 const RAIL_ICON: Vec2 = Vec2::splat(34.0);
@@ -1026,14 +1046,29 @@ const RAIL_REACH: f32 = 56.0;
 fn files_dock(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
     let dock = egui::Panel::left("left").resizable(true).default_size(290.0).size_range(230.0..=560.0);
     let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: EDGE as i8 });
+    let was = ui.style().visuals.widgets.clone();
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    (widgets.hovered.fg_stroke, widgets.active.fg_stroke) = (Stroke::NONE, Stroke::NONE);
     dock.frame(frame).show_separator_line(false).show(ui, |ui| {
+        ui.style_mut().visuals.widgets = was.clone();
         let all = ui.max_rect();
         let round = CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 };
         ui.painter().rect(all, round, pal().row, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+        let seam =
+            Rect::from_min_max(Pos2::new(all.left(), all.top() + 1.0), Pos2::new(all.left() + 1.0, all.bottom() - 1.0));
+        ui.painter().rect_filled(seam, 0.0, pal().row);
         ui.set_min_height(ui.available_height());
         ui.set_width(ui.available_width());
-        files_panel(ui, st, pages, active, actions);
+        match st.dock {
+            Panel::Changes => {
+                folder_row(ui, st, pages, active, actions, false);
+                workspace_list(ui, st, actions);
+                git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions);
+            }
+            _ => files_panel(ui, st, pages, active, actions),
+        }
     });
+    ui.style_mut().visuals.widgets = was;
 }
 
 fn card_of(
@@ -1050,7 +1085,7 @@ fn card_of(
         Panel::Search => search_panel(ui, st, pages.get(active), actions),
         Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
         Panel::Problems => ext_panels::problems_panel(ui, pages.get(active), ext, actions),
-        Panel::Changes => git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions),
+        Panel::Changes => {}
         Panel::Extension => ext_panels::extension_view(ui, st, ext),
         Panel::Help => help_panel(ui, &st.keys),
         Panel::Symbols => symbols_panel(ui, st, pages.get(active), actions),
@@ -1274,7 +1309,7 @@ fn paint_rail_icon(
     hovered: bool,
 ) {
     match active {
-        Some(bar) if entry.panel == Panel::Files => rail_tab(ui.painter(), rect, bar),
+        Some(bar) if entry.panel == st.dock => rail_tab(ui.painter(), rect, bar),
         Some(_) => {
             ui.painter().rect_filled(rect.shrink(3.0), 8.0, pal().selection.gamma_multiply(0.7));
         }
@@ -1352,6 +1387,13 @@ fn rail(
             false => CornerRadius::same(ROUND as u8),
         };
         ui.painter().rect(zone, round, pal().well, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+        if joined {
+            let seam = Rect::from_min_max(
+                Pos2::new(zone.right() - 1.0, zone.top() + 1.0),
+                Pos2::new(zone.right(), zone.bottom() - 1.0),
+            );
+            ui.painter().rect_filled(seam, 0.0, pal().well);
+        }
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.add_space(5.0);
         let mut slots: Vec<(String, Rect)> = Vec::new();
@@ -1634,10 +1676,30 @@ fn folder_switcher(
 }
 
 fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: usize, actions: &mut Vec<Action>) {
+    folder_row(ui, st, pages, active, actions, true);
+    workspace_list(ui, st, actions);
+    git_panel::timeline(ui, pages.get(active), &st.prefs, actions);
+    explorer(ui, st, pages.get_mut(active), actions);
+}
+
+fn folder_row(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    pages: &mut [Page],
+    active: usize,
+    actions: &mut Vec<Action>,
+    tools: bool,
+) {
     Frame::NONE.inner_margin(Margin { left: 6, right: 8, top: 8, bottom: 0 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
+                if !tools {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        folder_switcher(ui, &mut st.open_folder_menu, &st.keys, pages, active, actions)
+                    });
+                    return;
+                }
                 if small_icon(ui, icons::PLUS, &st.keys.hint("Open another folder", Command::OpenFolder)) {
                     actions.push(Action::OpenFolder);
                 }
@@ -1663,9 +1725,6 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
             });
         });
     });
-    workspace_list(ui, st, actions);
-    git_panel::timeline(ui, pages.get(active), &st.prefs, actions);
-    explorer(ui, st, pages.get_mut(active), actions);
 }
 
 pub struct WorkspaceRow {

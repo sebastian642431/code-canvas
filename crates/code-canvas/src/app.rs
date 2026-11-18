@@ -522,7 +522,7 @@ impl App {
                 .collect(),
             active: self.pages.iter().take(self.active).filter(|p| !p.only && p.shared.is_none()).count(),
             left_open: self.ui.files,
-            cards: self.ui.cards.iter().map(|card| card.key()).collect(),
+            cards: self.ui.open_keys(),
             rails: self.ui.rails.clone(),
             workspace: self.workspace.clone(),
             window,

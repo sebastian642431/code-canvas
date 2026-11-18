@@ -2067,6 +2067,17 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     side too. A double click on its title docks it again. A free card is kept
     inside the canvas when the window shrinks, and it is not counted in the
     room the docked ones take (`cards_reach`).
+  - **Source Control is docked where the files are**, not a card
+    (`UiState::dock`: `Panel::Files` or `Panel::Changes`; `files` says whether
+    the dock is open). Its icon on the bar swaps the dock to it, with the
+    folder switcher and the workspace above it (`folder_row`), so choosing
+    another folder shows that repository's changes. Which one is docked is
+    saved with the open cards (`UiState::open_keys`).
+  - Nothing draws a line between the bar of icons, the dock and the header:
+    the seam of their outlines is painted over in their own fill, the header
+    has no separator, and the dock's resize line is drawn with no stroke (the
+    pointer still turns into the resize arrows there). The tab of the icon
+    whose panel is docked flares into the dock at both ends (`rail_tab`).
   - The Timeline under the files folds away by its title (`Prefs::timeline`):
     closed, it is a row of its own height that cannot be dragged taller.
   - **The question before deleting shows what is about to go** (`ui::Preview`,

@@ -1,0 +1,20 @@
+title: Source control opens where the files are, follows the folder chosen in the workspace, and the files come back by their icon
+folders: git-changes, rust-small
+forbid-log: WARN.*script
+
+wait 3500
+left changes
+wait 900
+mark a-source-control-docked
+wait 400
+tab 2
+wait 1500
+mark b-other-repository
+wait 400
+tab 1
+wait 1200
+left files
+wait 900
+mark c-files-again
+wait 400
+quit
