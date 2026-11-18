@@ -288,6 +288,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     Status::Failed => ("failed to start".to_string(), c(theme::get().problem_error)),
                     Status::Declarative => (String::new(), pal().text_faint),
                     Status::Disabled => ("disabled".to_string(), pal().text_faint),
+                    Status::Restricted => ("restricted".to_string(), pal().text_dim),
                     Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => ("needs Node.js".to_string(), c(theme::get().problem_warning)),
                     Status::Idle => (String::new(), pal().text_faint),
                 };
@@ -801,6 +802,10 @@ fn runtime_status(ui: &mut egui::Ui, ext: &mut Extensions, at: usize) {
                 Status::Failed => (format!("It failed to start: {}", e.error), c(theme::get().problem_error)),
                 Status::Declarative => ("It has no code to start: what it brings is in use.".to_string(), pal().text),
                 Status::Disabled => ("Disabled".to_string(), pal().text_dim),
+                Status::Restricted => (
+                    "Off: a folder open here is not trusted, and it says it cannot run in one. Restricted mode in the status bar trusts it.".to_string(),
+                    pal().text_dim,
+                ),
                 Status::Idle if matches!(ext.node, NodeStatus::Missing(_)) => {
                     ("Not started: it needs Node.js".to_string(), c(theme::get().problem_warning))
                 }

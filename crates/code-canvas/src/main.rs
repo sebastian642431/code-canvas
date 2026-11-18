@@ -34,6 +34,7 @@ mod share;
 mod sync;
 mod term;
 mod themes;
+mod trust;
 mod ui;
 mod update;
 mod versions;

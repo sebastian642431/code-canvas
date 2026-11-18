@@ -1,0 +1,33 @@
+title: A folder not trusted keeps the extension that runs its code off and the one with limits away from its settings, with restricted mode in the status bar, until it is trusted
+folders: trust-repo
+extensions: trust-extension, limited-extension
+expect-log: asking whether to trust .*trust-repo
+expect-log: extensions run in restricted mode
+expect-log: kept in restricted mode
+expect-log: the status bar shows restricted mode
+expect-log: trust-repo is trusted
+expect-log: the status bar no longer shows restricted mode
+expect-log: extension qa\.fake-trust started
+expect-file: trust-repo/qa-trust.txt :: \Aruns-code trusted=true\r?\n\z
+expect-file: trust-repo/qa-limited.txt :: \Alimited trusted=false path=none\r?\nlimited trusted=true path=evil/path\r?\n\z
+
+wait 3500
+mark asked
+wait 600
+answer Stay in restricted mode
+wait 2500
+mark restricted
+wait 600
+left extensions
+wait 1200
+mark restricted-extensions
+wait 600
+trust
+wait 800
+mark asked-again
+wait 600
+answer Trust the folder
+wait 4000
+mark trusted
+wait 600
+quit

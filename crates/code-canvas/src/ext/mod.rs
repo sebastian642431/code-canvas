@@ -51,6 +51,72 @@ pub enum Status {
     Failed,
     Declarative,
     Disabled,
+    Restricted,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Untrusted {
+    Supported,
+    Limited(Vec<String>),
+    Unsupported,
+}
+
+const UNTRUSTED_KNOWN: &[&str] = &["usernamehw.errorlens", "yoavbls.pretty-ts-errors"];
+
+pub const ALWAYS_RESTRICTED: &[&str] = &[
+    "typescript.tsdk",
+    "typescript.tsserver.pluginPaths",
+    "typescript.tsserver.nodePath",
+    "typescript.npm",
+    "js/ts.tsdk.path",
+    "eslint",
+    "prettier.prettierPath",
+    "prettier.configPath",
+    "prettier.ignorePath",
+    "prettier.resolveGlobalModules",
+    "prettier.withNodeModules",
+    "prettier.documentSelectors",
+    "git.path",
+    "npm.packageManager",
+    "terminal.integrated",
+];
+
+fn manifest_untrusted(v: &Value, id: &str, has_code: bool) -> Untrusted {
+    if !has_code {
+        return Untrusted::Supported;
+    }
+    let Some(declared) = v.pointer("/capabilities/untrustedWorkspaces") else {
+        return match UNTRUSTED_KNOWN.contains(&id) {
+            true => Untrusted::Supported,
+            false => Untrusted::Unsupported,
+        };
+    };
+    match declared.get("supported") {
+        Some(Value::Bool(true)) => Untrusted::Supported,
+        Some(Value::String(s)) if s == "limited" => {
+            Untrusted::Limited(strings(declared.get("restrictedConfigurations")))
+        }
+        Some(Value::String(s)) if s == "true" => Untrusted::Supported,
+        _ => Untrusted::Unsupported,
+    }
+}
+
+pub fn runs_in(e: &Installed, trusted: bool) -> bool {
+    e.enabled && (trusted || !e.has_code || e.untrusted != Untrusted::Unsupported)
+}
+
+pub fn restricted_keys(installed: &[Installed]) -> Vec<String> {
+    let mut keys: BTreeSet<String> = ALWAYS_RESTRICTED.iter().map(|k| k.to_string()).collect();
+    for e in installed.iter().filter(|e| e.enabled) {
+        if let Untrusted::Limited(list) = &e.untrusted {
+            keys.extend(list.iter().filter(|k| !k.trim().is_empty()).cloned());
+        }
+    }
+    keys.into_iter().collect()
+}
+
+pub fn held_back(installed: &[Installed]) -> impl Iterator<Item = &Installed> {
+    installed.iter().filter(|e| e.enabled && e.has_code && e.untrusted != Untrusted::Supported)
 }
 
 pub const DEFAULTS: &[(&str, &str)] = &[
@@ -96,6 +162,7 @@ pub struct Installed {
     pub unsupported: Vec<String>,
     /// Its package.json, and what of it does not work in Code Canvas (`compat::gaps`).
     pub manifest: Arc<gallery::Manifest>,
+    pub untrusted: Untrusted,
     pub icon: Option<PathBuf>,
     pub commands: Vec<(String, String)>,
     pub views: Vec<String>,
@@ -563,6 +630,7 @@ pub struct Extensions {
     disabled: HashSet<String>,
     host: Option<Host>,
     folders: Vec<PathBuf>,
+    trusted: bool,
     open: Vec<PathBuf>,
     focused: Option<PathBuf>,
     pending: HashMap<u64, Pending>,
@@ -781,6 +849,7 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
     let enabled = !disabled.contains(&id);
     let has_code = v.get("main").and_then(Value::as_str).is_some_and(|m| !m.is_empty());
     let theme_key = format!("{}{id}:", crate::themes::FROM_EXTENSION);
+    let untrusted = manifest_untrusted(&v, &id, has_code);
     Some(Installed {
         id,
         display_name,
@@ -799,6 +868,7 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         activation_ms: 0,
         unsupported: Vec::new(),
         manifest: Arc::new(gallery::Manifest::new(v.clone())),
+        untrusted,
         icon: v.get("icon").and_then(Value::as_str).map(|i| dir.join(i)).filter(|p| p.is_file()),
         commands: manifest_commands(&v, &nls),
         views: manifest_views(&v, &nls),
@@ -936,6 +1006,7 @@ impl Extensions {
             disabled,
             host: None,
             folders: Vec::new(),
+            trusted: true,
             open: Vec::new(),
             focused: None,
             pending: HashMap::new(),
@@ -1193,7 +1264,26 @@ impl Extensions {
     fn wants_host(&self) -> bool {
         matches!(self.node, NodeStatus::Ready(_))
             && !self.folders.is_empty()
-            && self.installed.iter().any(|e| e.enabled && e.has_code)
+            && self.installed.iter().any(|e| e.has_code && runs_in(e, self.trusted))
+    }
+
+    pub fn restricted_mode(&self) -> bool {
+        !self.trusted && !self.folders.is_empty()
+    }
+
+    pub fn held_back(&self) -> Vec<String> {
+        held_back(&self.installed).map(|e| e.display_name.clone()).collect()
+    }
+
+    fn mark_restricted(&mut self) {
+        let trusted = self.trusted || self.folders.is_empty();
+        for e in &mut self.installed {
+            match (runs_in(e, trusted), e.status) {
+                (false, Status::Idle) => e.status = Status::Restricted,
+                (true, Status::Restricted) => e.status = Status::Idle,
+                _ => {}
+            }
+        }
     }
 
     fn stop_host(&mut self) {
@@ -1214,13 +1304,23 @@ impl Extensions {
     }
 
     fn start_host(&mut self) {
+        self.mark_restricted();
         if self.host.is_some() || !self.wants_host() {
             return;
         }
         match Host::start(&self.data_dir.join("exthost"), self.waker.clone()) {
             Ok(mut host) => {
-                let extensions: Vec<Value> =
-                    self.installed.iter().filter(|e| e.enabled).map(|e| json!({ "id": e.id, "dir": e.dir })).collect();
+                let trusted = self.trusted;
+                let extensions: Vec<Value> = self
+                    .installed
+                    .iter()
+                    .filter(|e| runs_in(e, trusted))
+                    .map(|e| json!({ "id": e.id, "dir": e.dir }))
+                    .collect();
+                let restricted = if trusted { Vec::new() } else { restricted_keys(&self.installed) };
+                if !trusted {
+                    log::info!("extensions run in restricted mode: the folders are not trusted");
+                }
                 host.send(&json!({
                     "type": "init",
                     "tabWidth": canvas_core::TAB_WIDTH,
@@ -1228,6 +1328,8 @@ impl Extensions {
                     "settingsFile": self.data_dir.join("settings.json"),
                     "folders": self.folders,
                     "extensions": extensions,
+                    "trusted": trusted,
+                    "restricted": restricted,
                 }));
                 for path in &self.open {
                     host.send(&json!({ "type": "open", "path": path, "focus": self.focused.as_ref() == Some(path) }));
@@ -1251,8 +1353,16 @@ impl Extensions {
         }
     }
 
-    pub fn set_folders(&mut self, folders: Vec<PathBuf>) {
-        if folders == self.folders {
+    pub fn set_folders(&mut self, folders: Vec<PathBuf>, trusted: bool) {
+        let trusted = trusted || folders.is_empty();
+        if folders == self.folders && trusted == self.trusted {
+            return;
+        }
+        if trusted != self.trusted {
+            log::info!("the open folders are {}", if trusted { "trusted" } else { "not trusted" });
+            self.trusted = trusted;
+            self.folders = folders;
+            self.restart_host();
             return;
         }
         self.folders = folders;
@@ -2331,5 +2441,58 @@ mod tests {
         assert_eq!(ext.status_items, vec![("p".to_string(), format!("{check} Prettier"))]);
         ext.on_message(&json!({ "type": "status", "id": "p", "visible": false, "text": "" }), &mut events);
         assert!(ext.status_items.is_empty());
+    }
+
+    #[test]
+    fn what_runs_in_a_folder_that_is_not_trusted_follows_each_manifest() {
+        let no = installed_with("no", json!({ "capabilities": { "untrustedWorkspaces": { "supported": false } } }));
+        let yes = installed_with("yes", json!({ "capabilities": { "untrustedWorkspaces": { "supported": true } } }));
+        let limited = installed_with(
+            "limited",
+            json!({ "capabilities": { "untrustedWorkspaces": {
+                "supported": "limited", "restrictedConfigurations": ["limited.path", "limited.path", ""]
+            } } }),
+        );
+        let silent = installed_with("silent", json!({}));
+        assert_eq!(no.untrusted, Untrusted::Unsupported);
+        assert_eq!(yes.untrusted, Untrusted::Supported);
+        assert_eq!(
+            limited.untrusted,
+            Untrusted::Limited(vec!["limited.path".into(), "limited.path".into(), "".into()])
+        );
+        assert_eq!(silent.untrusted, Untrusted::Unsupported, "saying nothing is as VS Code takes it: not supported");
+        assert!(!runs_in(&no, false) && runs_in(&no, true));
+        assert!(runs_in(&yes, false) && runs_in(&limited, false));
+        assert!(!runs_in(&silent, false));
+        let mut off = installed_with("off", json!({}));
+        off.enabled = false;
+        assert!(!runs_in(&off, true), "a disabled one never runs");
+
+        let known = manifest_untrusted(&json!({}), "usernamehw.errorlens", true);
+        assert_eq!(known, Untrusted::Supported, "one that only shows what others report");
+        assert_eq!(manifest_untrusted(&json!({}), "x.themes", false), Untrusted::Supported, "no code to run");
+
+        let all = [no, yes, limited, silent];
+        let keys = restricted_keys(&all);
+        assert!(keys.contains(&"limited.path".to_string()) && keys.contains(&"typescript.tsdk".to_string()));
+        assert_eq!(keys.iter().filter(|k| *k == "limited.path").count(), 1);
+        assert!(!keys.iter().any(String::is_empty));
+        let held: Vec<&str> = held_back(&all).map(|e| e.id.as_str()).collect();
+        assert_eq!(held, vec!["test.no", "test.limited", "test.silent"]);
+    }
+
+    #[test]
+    fn a_folder_that_is_not_trusted_marks_what_is_held_back() {
+        let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
+        ext.installed = vec![installed_with("held", json!({}))];
+        ext.folders = vec![PathBuf::from("/a")];
+        ext.trusted = false;
+        ext.mark_restricted();
+        assert_eq!(ext.installed[0].status, Status::Restricted);
+        assert!(ext.restricted_mode());
+        ext.trusted = true;
+        ext.mark_restricted();
+        assert_eq!(ext.installed[0].status, Status::Idle);
+        assert!(!ext.restricted_mode());
     }
 }

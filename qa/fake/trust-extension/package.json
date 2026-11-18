@@ -1,0 +1,11 @@
+{
+  "name": "fake-trust",
+  "publisher": "qa",
+  "displayName": "QA runs the folder's code",
+  "description": "Plays ESLint: it would run what the folder brings, so it says it cannot run in a folder that is not trusted. Each time it starts it appends a line to qa-trust.txt in the first folder.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "engines": { "vscode": "^1.80.0" },
+  "capabilities": { "untrustedWorkspaces": { "supported": false, "description": "It runs the folder's code." } }
+}

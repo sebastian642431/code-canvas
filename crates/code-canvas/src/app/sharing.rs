@@ -698,6 +698,8 @@ impl App {
             Event::FolderGone(id) => {
                 if let Some(index) = self.share_page(id) {
                     let root = self.pages[index].root.clone();
+                    self.trust.forget_shared(&root);
+                    self.trust_asked.remove(&root);
                     self.pages[index].shared = None;
                     crate::page::forget_scan(&root);
                     self.close_page(index);

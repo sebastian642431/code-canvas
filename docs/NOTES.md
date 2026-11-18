@@ -114,6 +114,7 @@ on Linux and `~/Library/Application Support/code-canvas` on macOS, unless
 | `prefs.json` | `prefs.rs` | Preferences that are neither looks nor keys. |
 | `commit.json` | `commit_ai.rs` | Who writes commit messages. |
 | `defaults.json` | `ext/mod.rs` | The default extensions this installation already got. |
+| `trust.json` | `trust.rs` | Folders trusted (`true`) or kept in restricted mode (`false`), by `path_key` of the folder. |
 | `settings.json` | extension host | VS Code-style settings, see [EXTENSIONS.md](EXTENSIONS.md). |
 | `extensions/` | `ext/market.rs` | Installed extensions, unpacked. |
 | `scans/<hash of the folder's path>.bin` | `canvas-core/store.rs`, `page.rs` | What the last scan of that folder found. Safe to delete: the folder is read whole the next time. One not used for 30 days is removed at start. |
@@ -1773,6 +1774,37 @@ Notices
   replaces the notice; answers arrive through `Extensions::take_answers`.
 - Status bar texts go through `codicons::render` (`$(check) Prettier`).
 
+Workspace trust
+
+- `Untrusted` is read from `capabilities.untrustedWorkspaces`; saying nothing is
+  `Unsupported`, as VS Code takes it, except for the few in `UNTRUSTED_KNOWN` that only
+  show what others report (Error Lens, Pretty TypeScript Errors). An extension with
+  no code is always `Supported`.
+- One host runs every extension, so trust is the whole host's: `set_folders` takes
+  whether every folder given to it is trusted, and a change restarts the host
+  (extensions that read `isTrusted` once at start, such as Prettier's choice of
+  module, see the new value). `runs_in` decides who is sent in `init`; the others get
+  `Status::Restricted`. `restricted_keys` (`ALWAYS_RESTRICTED` plus every `limited`
+  extension's list) goes in `init` as `restricted`; the host leaves them out of every
+  folder's settings, flat, nested (`{"typescript": {"tsdk": …}}`) or inside a
+  `"[language]"` block (`withoutRestricted` in host.js).
+- `config.update` to a folder reads the file again before writing, so the keys left
+  out in memory are not lost from the file.
+- The question and the status bar are `app/trust.rs`: `host_folders` leaves out a
+  shared folder until it is trusted and calls the host trusted only when every
+  folder it gets is; `to_ask` asks about each undecided folder once per run, only
+  when `ext::held_back` is not empty. "Stay in restricted mode" is kept; Escape is
+  for this run only.
+
+### crates/code-canvas/src/trust.rs
+
+- Kept in `trust.json` by `path_key` of the canonical path, so the same folder
+  spelled another way is the same. A shared folder's answer is never written
+  (`for_now`, keyed `shared:<path>`) and is forgotten when the folder goes
+  (`FolderGone`): the same mirror folder can hold another person's files later.
+- The first start with no `trust.json` trusts the folders of `session.json` (open
+  and in the workspace list): they had run with every extension already.
+
 ### crates/code-canvas/src/ext/views.rs
 
 Code lenses and tree views on the app's side; the host's half is in host.js above.
@@ -2445,6 +2477,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `updates` | `updates` | Look for a newer version of the app now. |
 | `resize` | `resize <width> <height>` | Resize the window, in physical pixels. |
 | `maximize` | `maximize` | Maximize the window. |
+| `trust` | `trust` | What a click on *Restricted mode* in the status bar does: ask about the first folder not trusted. |
 | `quit` | `quit` | Leave. |
 
 `UiState::open_folder_menu` exists for `folders`: a script has no click to open

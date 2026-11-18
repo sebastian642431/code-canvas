@@ -929,6 +929,23 @@ function readSettings(file) {
   }
 }
 const isPlain = (v) => v && typeof v === 'object' && !Array.isArray(v);
+// In a folder that is not trusted, the settings that make an extension run what the folder
+// brings (a TypeScript of its own, a Prettier or ESLint of its own) are not read from it.
+const underRestricted = (key) => state.restricted.some((r) => key === r || key.startsWith(r + '.'));
+function withoutRestricted(flat, prefix) {
+  const out = {};
+  for (const [k, v] of Object.entries(flat)) {
+    if (!prefix && k.startsWith('[') && isPlain(v)) {
+      out[k] = withoutRestricted(v, '');
+      continue;
+    }
+    const full = prefix ? prefix + '.' + k : k;
+    if (underRestricted(full)) continue;
+    out[k] = isPlain(v) && state.restricted.some((r) => r.startsWith(full + '.')) ? withoutRestricted(v, full) : v;
+  }
+  return out;
+}
+const folderSettings = (flat) => (state.trusted ? flat : withoutRestricted(flat, ''));
 function setDotted(tree, key, value) {
   const parts = key.split('.');
   let node = tree;
@@ -1039,11 +1056,11 @@ function getConfiguration(section, scopeArg) {
       const full = [section, key].filter(Boolean).join('.');
       const toFolder = target === 2 || target === 3 || target === false;
       const folder = uri ? workspace.getWorkspaceFolder(uri) : workspace.workspaceFolders[0];
-      const flat = toFolder && folder ? config.folders.get(folder.uri.fsPath) || {} : config.user;
+      const file = toFolder && folder ? path.join(folder.uri.fsPath, '.vscode', 'settings.json') : config.userFile;
+      const flat = toFolder && folder ? readSettings(file) : config.user;
       if (value === undefined) delete flat[full];
       else flat[full] = value;
-      const file = toFolder && folder ? path.join(folder.uri.fsPath, '.vscode', 'settings.json') : config.userFile;
-      if (toFolder && folder) config.folders.set(folder.uri.fsPath, flat);
+      if (toFolder && folder) config.folders.set(folder.uri.fsPath, folderSettings(flat));
       try {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, JSON.stringify(flat, null, 2) + '\n');
@@ -1289,6 +1306,8 @@ function createDiagnosticCollection(name) {
 
 const state = {
   tabWidth: 4,
+  trusted: true,
+  restricted: [],
   folders: [],
   extensions: new Map(),
   commands: new Map(),
@@ -1780,7 +1799,12 @@ const workspace = permissive('workspace', {
     return state.folders[0] ? state.folders[0].uri.fsPath : undefined;
   },
   workspaceFile: undefined,
-  isTrusted: true,
+  get isTrusted() {
+    return state.trusted;
+  },
+  requestWorkspaceTrust() {
+    return Promise.resolve(state.trusted);
+  },
   get textDocuments() {
     return [...documents.values()];
   },
@@ -2736,6 +2760,8 @@ async function handle(msg) {
   switch (msg.type) {
     case 'init': {
       state.tabWidth = msg.tabWidth || 4;
+      state.trusted = msg.trusted !== false;
+      state.restricted = Array.isArray(msg.restricted) ? msg.restricted.filter((k) => typeof k === 'string' && k) : [];
       state.storageDir = msg.storageDir;
       config.userFile = msg.settingsFile || '';
       config.user = config.userFile ? readSettings(config.userFile) : {};
@@ -2817,7 +2843,7 @@ function setFolders(list) {
   const before = state.folders;
   state.folders = list.map((p, index) => ({ uri: Uri.file(p), name: path.basename(p), index }));
   config.folders.clear();
-  for (const f of state.folders) config.folders.set(f.uri.fsPath, readSettings(path.join(f.uri.fsPath, '.vscode', 'settings.json')));
+  for (const f of state.folders) config.folders.set(f.uri.fsPath, folderSettings(readSettings(path.join(f.uri.fsPath, '.vscode', 'settings.json'))));
   const key = (f) => fileKey(f.uri.fsPath);
   const added = state.folders.filter((f) => !before.some((b) => key(b) === key(f)));
   const removed = before.filter((b) => !state.folders.some((f) => key(b) === key(f)));

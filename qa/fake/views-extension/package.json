@@ -7,6 +7,7 @@
   "main": "./extension.js",
   "activationEvents": ["onLanguage:rust"],
   "engines": { "vscode": "^1.80.0" },
+  "capabilities": { "untrustedWorkspaces": { "supported": true } },
   "contributes": {
     "viewsContainers": {
       "activitybar": [{ "id": "qaShelf", "title": "QA shelf", "icon": "$(beaker)" }]

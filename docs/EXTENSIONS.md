@@ -39,6 +39,22 @@ it works, what works today, and what does not yet.
 Extensions with code need **Node.js** on the `PATH`. Extensions run with your
 permissions, exactly as in VS Code: install the ones you trust.
 
+**Workspace trust.** A folder opened for the first time is not trusted, and a
+folder received from someone sharing a session never is until you say so. While a
+folder open here is not trusted, extensions run in *restricted mode*, as in
+VS Code: those whose manifest says they cannot run in an untrusted folder
+(`capabilities.untrustedWorkspaces.supported: false`, or nothing said, as for most)
+stay off; those that say `limited` run, but the settings they list in
+`restrictedConfigurations` (and a few the app always holds back, such as
+`typescript.tsdk`, `eslint.*`, `prettier.prettierPath`) are not read from the
+folder's `.vscode/settings.json`; and `workspace.isTrusted` is false. So ESLint stays
+off, TypeScript uses the tsserver it brings and Prettier the prettier it brings,
+ignoring the folder's plugins and configuration files. Opening such a folder asks
+whether to trust it (only when an extension would be held back); the answer is
+kept per folder, and *Restricted mode* in the status bar asks again. Folders that
+were open before this existed count as trusted. A shared folder is not given to
+the extensions at all until trusted, and that trust lasts for the session.
+
 A new installation gets four by itself, once (`ext::DEFAULTS`): Claude Code,
 Prettier, ESLint and the Symbols file icons. Removing one is respected: it does
 not come back.

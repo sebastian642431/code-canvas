@@ -78,6 +78,7 @@ pub enum Step {
     Colours(String),
     Bars(String),
     Count,
+    Trust,
     Quit,
 }
 
@@ -185,6 +186,7 @@ fn parse_step(text: &str) -> Option<Step> {
             _ => return None,
         },
         "hover" => Step::Hover(arg.into()),
+        "trust" => Step::Trust,
         "quit" => Step::Quit,
         _ => return None,
     })

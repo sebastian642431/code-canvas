@@ -27,6 +27,7 @@ mod assistants;
 mod github_sync;
 mod sharing;
 mod term_steps;
+mod trust;
 mod version_hints;
 
 struct Gfx {
@@ -271,6 +272,8 @@ pub struct App {
     claude_checked: Option<Instant>,
     claude_offer_due: Option<Instant>,
     last_move_by_itself: bool,
+    trust: crate::trust::Trust,
+    trust_asked: HashSet<PathBuf>,
 }
 
 impl App {
@@ -316,6 +319,10 @@ impl App {
         ui.rails_at_home();
         ui.restore(saved.left_open, &saved.cards);
         ui.single = saved.single;
+        let trust = crate::trust::Trust::load(&session::data_dir(), || {
+            let open = saved.pages.iter().map(|p| p.path.clone());
+            open.chain(saved.workspace.iter().map(|k| k.path.clone())).collect()
+        });
         let mut app = Self {
             gfx: None,
             pages: Vec::new(),
@@ -409,6 +416,8 @@ impl App {
             commit_from: None,
             sharing: Default::default(),
             workspace: saved.workspace.clone(),
+            trust,
+            trust_asked: HashSet::new(),
             frame_all_when_read: false,
             agents: crate::agents::Agents::listen(),
             agent_followed: None,
@@ -2237,6 +2246,7 @@ impl App {
             (ui::Asked::Exit, ui::Answer::Cancel) => self.restart_as = None,
             (ui::Asked::Sync, ui::Answer::Yes) => self.sync_answered(true),
             (ui::Asked::Sync, ui::Answer::Other) => self.sync_answered(false),
+            (ui::Asked::Trust { folder, shared }, answer) => self.trust_answered(&folder, shared, answer),
             _ => {}
         }
         self.request_redraw();
@@ -3642,6 +3652,7 @@ impl App {
             }
             Action::Versions(op) => self.versions_op(op),
             Action::Answered(about, answer) => self.answered(about, answer),
+            Action::TrustFolders => self.trust_from_status(),
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
             Action::Agent(op) => self.agent_op(op),
@@ -4577,6 +4588,7 @@ impl App {
                 }
                 None => log::warn!("script: no canvas is shown yet"),
             },
+            Step::Trust => self.apply(Action::TrustFolders),
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -4740,9 +4752,10 @@ impl App {
             changed = true;
         }
         busy |= self.watcher.busy();
-        let worked_in = self.pages.iter().filter(|p| !p.is_waiting() && !p.only);
-        self.ext.set_folders(worked_in.map(|p| p.root.clone()).collect());
+        let (folders, trusted) = self.host_folders();
+        self.ext.set_folders(folders, trusted);
         let (events, ext_changed) = self.ext.poll();
+        self.ask_trust();
         changed |= ext_changed;
         for event in events {
             match event {

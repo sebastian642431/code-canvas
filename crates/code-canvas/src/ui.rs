@@ -311,6 +311,7 @@ pub struct UiState {
     pub agent_marks: Vec<AgentMark>,
     pub agent_trails: Vec<AgentTrail>,
     pub claude_connected: bool,
+    pub restricted: bool,
     faces: Vec<egui::TextureHandle>,
     pub workspace_shut: bool,
     workspace_drag: Option<(std::path::PathBuf, String)>,
@@ -388,6 +389,7 @@ impl Default for UiState {
             agent_marks: Vec::new(),
             agent_trails: Vec::new(),
             claude_connected: false,
+            restricted: false,
             faces: Vec::new(),
             workspace_shut: false,
             workspace_drag: None,
@@ -490,6 +492,7 @@ impl UiState {
 }
 
 pub enum Action {
+    TrustFolders,
     SwitchTab(usize),
     CloseTab(usize),
     OpenFolder,
@@ -1196,6 +1199,15 @@ fn status_bar(
             }
             for (_, text) in ext.status_items.iter().rev() {
                 ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
+            }
+            if st.restricted {
+                let shield = crate::codicons::glyph("shield").unwrap_or(icons::CIRCLE_ALERT);
+                let text = RichText::new(format!("{shield} Restricted mode")).size(12.0).color(pal().text_dim);
+                let label = ui.add(egui::Label::new(text).sense(Sense::click()));
+                let tip = "A folder open here is not trusted: extensions that could run what it brings are off or limited. Click to trust it.";
+                if label.on_hover_text(tip).clicked() {
+                    actions.push(Action::TrustFolders);
+                }
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let said = RichText::new(&info.status).size(12.0).color(pal().text_dim);
@@ -4140,6 +4152,7 @@ pub enum Asked {
     Overwrite { folder: std::path::PathBuf, path: String },
     Share { join: bool },
     Sync,
+    Trust { folder: std::path::PathBuf, shared: bool },
     Exit,
 }
 

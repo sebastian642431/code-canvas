@@ -52,8 +52,8 @@ quit
 | `github` | `empty`, or a file of `qa/fake` with the files of a gist: the run gets a GitHub of its own on this computer (`qa/fake/github.py`) to sign in to. |
 | `openvsx` | `on`: an Open VSX of its own for the run (`qa/fake/openvsx.py`, three made-up extensions with icons, READMEs, changelogs and manifests, one of each kind: things that do not work in Code Canvas, all that works, code only for the browser); the app is pointed at it with `CODE_CANVAS_OPEN_VSX`. What it was asked is in `openvsx.log` of the run. |
 | `codex` | A fixture that is Codex's folder (`CODEX_HOME`) for the run, such as `codex-home`; without it, an empty folder of the run. |
-| `extensions` | Folders of `qa/fake` put in the run's extensions folder before it starts: `relations-extension` plays a language server, `views-extension` gives code lenses and tree views, `grammar-extension` brings only grammars (made-up languages, one in a property list, an injection, and one for Rust). |
 | `registry` | `on`: package registries of its own for the run (`qa/fake/registry.py`, `CODE_CANVAS_REGISTRY` points the app at them) and `QA_NPM_TOKEN` set for the fixture's `.npmrc`; `no-token`: the same without the token. Each request is written to `registry.log` of the run; a private package asked where it must not be writes `leak.txt` there. |
+| `extensions` | Folders of `qa/fake` put in the run's extensions folder before it starts: `relations-extension` plays a language server, `views-extension` gives code lenses and tree views, `grammar-extension` brings only grammars (made-up languages, one in a property list, an injection, and one for Rust); `trust-extension` plays ESLint (cannot run in a folder not trusted) and `limited-extension` plays TypeScript (runs, without `qa.limited.path` from the folder): each writes a line to a file of the first folder when it starts. |
 | `relay` | `on`: a relay of its own for the run (`canvas-relay.exe` next to the program, listening on `127.0.0.1` at a random port, stopped at the end); `{RELAY}` in the steps is its address, so `share relay {RELAY}` before `share start` shares through it. What it printed is in `relay.log` of the run. |
 | `relay-expect-log` | As `expect-log`, for what the relay printed. May repeat. |
 
@@ -93,6 +93,7 @@ the invitation. Its pictures are `guest-<name>.png`.
 | `big-folder` | 30,720 TypeScript files in 6 × 8 × 8 folders of 80, each importing two of its folder, and a `package.json`; no git. Takes about 20 s to make and 30 s for the app to read the first time. |
 | `empty` | An empty folder. |
 | `versions-manifests` | One manifest of each kind whose versions the app shows (`package.json` with a `.npmrc` that sends `@latin-securities` to a private registry, `Cargo.toml`, `requirements.txt`, `go.mod`, a `.csproj`), with dependencies the fake registries know (`fixtures_versions.py`). |
+| `trust-repo` | A folder whose `.vscode/settings.json` points an extension at a program of its own (`qa.limited.path`), and a TypeScript file (`fixtures_trust.py`). |
 | `codex-home` | Codex's folder with one session at work a few minutes ago on `rust-small` (`fixtures_agents.py`), for `codex: codex-home`. |
 
 More fixtures go in a `fixtures_<area>.py` beside it with its own `FIXTURES`

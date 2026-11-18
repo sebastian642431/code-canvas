@@ -1,0 +1,16 @@
+{
+  "name": "fake-limited",
+  "publisher": "qa",
+  "displayName": "QA limited",
+  "description": "Plays TypeScript: it runs in a folder that is not trusted without reading qa.limited.path from it. Each time it starts it appends what it sees to qa-limited.txt in the first folder.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "engines": { "vscode": "^1.80.0" },
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": "limited", "description": "Its own path is not read.", "restrictedConfigurations": ["qa.limited.path"] }
+  },
+  "contributes": {
+    "configuration": { "properties": { "qa.limited.path": { "type": "string" } } }
+  }
+}
