@@ -12,12 +12,58 @@ impl Pos {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Caret {
+    pub at: Pos,
+    pub anchor: Option<Pos>,
+    goal: Option<usize>,
+}
+
+impl Caret {
+    fn new(at: Pos) -> Caret {
+        Caret { at, anchor: None, goal: None }
+    }
+
+    pub fn selection(&self) -> Option<(Pos, Pos)> {
+        let a = self.anchor?;
+        (a != self.at).then(|| (a.min(self.at), a.max(self.at)))
+    }
+
+    fn span(&self) -> (Pos, Pos) {
+        self.selection().unwrap_or((self.at, self.at))
+    }
+}
+
+#[derive(Default)]
+struct Shift {
+    lines: isize,
+    line: Option<usize>,
+    cols: isize,
+}
+
+impl Shift {
+    fn map(&self, p: Pos) -> Pos {
+        let col = if Some(p.line) == self.line { (p.col as isize + self.cols).max(0) as usize } else { p.col };
+        Pos::new((p.line as isize + self.lines).max(0) as usize, col)
+    }
+
+    fn after(&mut self, old_end: Pos, mapped_end: Pos, new_end: Pos) {
+        self.lines += new_end.line as isize - mapped_end.line as isize;
+        self.line = Some(old_end.line);
+        self.cols = new_end.col as isize - old_end.col as isize;
+    }
+}
+
+pub const MOST_CARETS: usize = 5000;
+
 struct Change {
     at: Pos,
     removed: String,
     inserted: String,
     caret_before: Pos,
     anchor_before: Option<Pos>,
+    others_before: Vec<Caret>,
+    joined: bool,
 }
 
 pub struct Editor {
@@ -30,6 +76,8 @@ pub struct Editor {
     pub caret: Pos,
     pub anchor: Option<Pos>,
     goal: Option<usize>,
+    others: Vec<Caret>,
+    whole_words: bool,
     undo: Vec<Change>,
     redo: Vec<Change>,
     saved_at: Option<usize>,
@@ -72,6 +120,8 @@ impl Editor {
             caret: Pos::default(),
             anchor: None,
             goal: None,
+            others: Vec::new(),
+            whole_words: false,
             undo: Vec::new(),
             redo: Vec::new(),
             saved_at: Some(0),
@@ -152,7 +202,140 @@ impl Editor {
     }
 
     pub fn selected_text(&self) -> String {
-        self.selection().map(|(a, b)| self.range_text(a, b)).unwrap_or_default()
+        let mut all = self.carets();
+        all.sort_by_key(Caret::span);
+        let parts: Vec<String> = all.iter().filter_map(Caret::selection).map(|(a, b)| self.range_text(a, b)).collect();
+        parts.join("\n")
+    }
+
+    fn primary(&self) -> Caret {
+        Caret { at: self.caret, anchor: self.anchor, goal: self.goal }
+    }
+
+    fn set_primary(&mut self, c: Caret) {
+        (self.caret, self.anchor, self.goal) = (c.at, c.anchor, c.goal);
+    }
+
+    pub fn carets(&self) -> Vec<Caret> {
+        let mut all = Vec::with_capacity(1 + self.others.len());
+        all.push(self.primary());
+        all.extend(self.others.iter().copied());
+        all
+    }
+
+    pub fn caret_count(&self) -> usize {
+        1 + self.others.len()
+    }
+
+    pub fn single(&mut self) -> bool {
+        self.whole_words = false;
+        !std::mem::take(&mut self.others).is_empty()
+    }
+
+    fn clamp_caret(&self, c: Caret) -> Caret {
+        Caret { at: self.clamp(c.at), anchor: c.anchor.map(|a| self.clamp(a)), goal: c.goal }
+    }
+
+    fn settle(&mut self, primary: Caret, others: Vec<Caret>) {
+        let mut all: Vec<(Caret, bool)> = others.into_iter().map(|c| (self.clamp_caret(c), false)).collect();
+        all.push((self.clamp_caret(primary), true));
+        all.sort_by_key(|(c, _)| c.span());
+        let mut kept: Vec<(Caret, bool)> = Vec::with_capacity(all.len());
+        for (c, main) in all {
+            if let Some((last, last_main)) = kept.last_mut() {
+                let ((a, b), (c0, c1)) = (last.span(), c.span());
+                if c0 < b || (c0 == b && (a == b || c0 == c1)) {
+                    let (start, end) = (a.min(c0), b.max(c1));
+                    let leader = if main { c } else { *last };
+                    let backward = leader.anchor.is_some_and(|x| x > leader.at);
+                    *last = match (start == end, backward) {
+                        (true, _) => Caret { at: end, anchor: None, goal: leader.goal },
+                        (false, true) => Caret { at: start, anchor: Some(end), goal: None },
+                        (false, false) => Caret { at: end, anchor: Some(start), goal: None },
+                    };
+                    *last_main |= main;
+                    continue;
+                }
+            }
+            kept.push((c, main));
+        }
+        let main = kept.iter().position(|(_, main)| *main).unwrap_or(0);
+        let (p, _) = kept.remove(main);
+        self.set_primary(p);
+        self.others = kept.into_iter().map(|(c, _)| c).collect();
+    }
+
+    fn each(&mut self, step: impl Fn(&mut Editor)) {
+        if self.others.is_empty() {
+            return step(self);
+        }
+        let (primary, others) = (self.primary(), std::mem::take(&mut self.others));
+        let mut moved = Vec::with_capacity(others.len());
+        for c in others {
+            self.set_primary(c);
+            step(self);
+            moved.push(self.primary());
+        }
+        self.set_primary(primary);
+        step(self);
+        let p = self.primary();
+        self.settle(p, moved);
+    }
+
+    fn edit_each(&mut self, what: impl Fn(&Editor, &Caret) -> Option<(Pos, Pos, String)>) {
+        if self.others.is_empty() {
+            if let Some((a, b, text)) = what(self, &self.primary()) {
+                self.replace(a, b, &text);
+            }
+            return;
+        }
+        let primary = self.primary();
+        let mut all: Vec<(Caret, bool)> = self.others.iter().map(|c| (*c, false)).collect();
+        all.push((primary, true));
+        all.sort_by_key(|(c, _)| c.span());
+        let edits: Vec<_> = all.iter().map(|(c, _)| what(&*self, c)).collect();
+        let (mut shift, mut floor, mut done) = (Shift::default(), Pos::default(), 0);
+        let mut placed: Vec<(Caret, bool)> = Vec::with_capacity(all.len());
+        for ((c, main), edit) in all.into_iter().zip(edits) {
+            let edit =
+                edit.map(|(a, b, text)| (a.max(floor), b.max(floor), text.replace("\r\n", "\n").replace('\r', "\n")));
+            match edit {
+                Some((a, b, text)) if a < b || !text.is_empty() => {
+                    let (from, to) = (shift.map(a), shift.map(b));
+                    let removed = self.range_text(from, to);
+                    let end = self.splice(from, to, &text);
+                    if self.saved_at.is_some_and(|depth| depth > self.undo.len()) {
+                        self.saved_at = None;
+                    }
+                    let others_before = if done == 0 { self.others.clone() } else { Vec::new() };
+                    self.undo.push(Change {
+                        at: from,
+                        removed,
+                        inserted: text,
+                        caret_before: primary.at,
+                        anchor_before: primary.anchor,
+                        others_before,
+                        joined: done > 0,
+                    });
+                    shift.after(b, to, end);
+                    (floor, done) = (b, done + 1);
+                    placed.push((Caret::new(end), main));
+                }
+                _ => {
+                    let at = |p: Pos| shift.map(p.max(floor));
+                    placed.push((Caret { at: at(c.at), anchor: c.anchor.map(at), goal: c.goal }, main));
+                }
+            }
+        }
+        if done == 0 {
+            return;
+        }
+        self.redo.clear();
+        self.whole_words = false;
+        let main = placed.iter().position(|(_, main)| *main).unwrap_or(0);
+        let (p, _) = placed.remove(main);
+        self.settle(p, placed.into_iter().map(|(c, _)| c).collect());
+        self.touch();
     }
 
     fn splice(&mut self, start: Pos, end: Pos, text: &str) -> Pos {
@@ -182,11 +365,19 @@ impl Editor {
         if removed.is_empty() && text.is_empty() {
             return;
         }
-        let change =
-            Change { at: start, removed, inserted: text, caret_before: self.caret, anchor_before: self.anchor };
+        let change = Change {
+            at: start,
+            removed,
+            inserted: text,
+            caret_before: self.caret,
+            anchor_before: self.anchor,
+            others_before: std::mem::take(&mut self.others),
+            joined: false,
+        };
         self.caret = self.splice(start, end, &change.inserted);
         self.anchor = None;
         self.goal = None;
+        self.whole_words = false;
         if self.saved_at.is_some_and(|depth| depth > self.undo.len()) {
             self.saved_at = None;
         }
@@ -225,6 +416,8 @@ impl Editor {
             return Some((self.caret.line as u32, 0));
         }
         let (caret, anchor, goal) = (self.offset_of(self.caret), self.anchor.map(|a| self.offset_of(a)), self.goal);
+        let others: Vec<(usize, Option<usize>, Option<usize>)> =
+            self.others.iter().map(|c| (self.offset_of(c.at), c.anchor.map(|a| self.offset_of(a)), c.goal)).collect();
         let mut places = op.splices();
         if places.len() > ONE_BY_ONE {
             let (was, is): (Vec<char>, Vec<char>) = (was.chars().collect(), is.chars().collect());
@@ -247,6 +440,18 @@ impl Editor {
         self.caret = self.pos_of(op.place(caret));
         self.anchor = anchor.map(|a| self.pos_of(op.place(a)));
         self.goal = goal;
+        if !others.is_empty() {
+            let place = |e: &Editor, at: usize| e.pos_of(op.place(at));
+            let others: Vec<Caret> = others
+                .into_iter()
+                .map(|(at, anchor, goal)| Caret {
+                    at: place(&*self, at),
+                    anchor: anchor.map(|a| place(&*self, a)),
+                    goal,
+                })
+                .collect();
+            self.settle(self.primary(), others);
+        }
         Some((first as u32, (last.max(first) - first + 1) as u32))
     }
 
@@ -273,6 +478,9 @@ impl Editor {
             }
         }
         self.undo.drain(..lost);
+        if let Some(first) = self.undo.first_mut() {
+            first.joined = false;
+        }
     }
 
     pub fn take_in(&mut self, disk: &str) -> Option<(u32, u32)> {
@@ -305,22 +513,48 @@ impl Editor {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(change) = self.undo.pop() else { return false };
-        self.splice(change.at, Self::end_of(change.at, &change.inserted), &change.removed);
-        self.caret = self.clamp(change.caret_before);
-        self.anchor = change.anchor_before.map(|anchor| self.clamp(anchor));
+        if self.undo.is_empty() {
+            return false;
+        }
+        while let Some(change) = self.undo.pop() {
+            self.splice(change.at, Self::end_of(change.at, &change.inserted), &change.removed);
+            let head = !change.joined;
+            if head {
+                self.caret = self.clamp(change.caret_before);
+                self.anchor = change.anchor_before.map(|anchor| self.clamp(anchor));
+                self.others = change.others_before.iter().map(|c| self.clamp_caret(*c)).collect();
+            }
+            self.redo.push(change);
+            if head {
+                break;
+            }
+        }
         self.goal = None;
-        self.redo.push(change);
+        self.whole_words = false;
         self.touch();
         true
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(change) = self.redo.pop() else { return false };
-        self.caret = self.splice(change.at, Self::end_of(change.at, &change.removed), &change.inserted);
+        let Some(mut change) = self.redo.pop() else { return false };
+        let mut ends = Vec::new();
+        loop {
+            ends.push(self.splice(change.at, Self::end_of(change.at, &change.removed), &change.inserted));
+            self.undo.push(change);
+            match self.redo.pop() {
+                Some(next) if next.joined => change = next,
+                Some(next) => {
+                    self.redo.push(next);
+                    break;
+                }
+                None => break,
+            }
+        }
+        self.caret = ends.pop().unwrap_or(self.caret);
         self.anchor = None;
         self.goal = None;
-        self.undo.push(change);
+        self.others = ends.into_iter().map(Caret::new).collect();
+        self.whole_words = false;
         self.touch();
         true
     }
@@ -363,14 +597,38 @@ impl Editor {
     }
 
     pub fn insert(&mut self, text: &str) {
-        let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
-        self.replace(start, end, text);
+        self.edit_each(|_, c| {
+            let (start, end) = c.span();
+            Some((start, end, text.to_string()))
+        });
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n");
+        let lines: Vec<&str> = text.strip_suffix('\n').unwrap_or(&text).split('\n').collect();
+        if self.others.is_empty() || lines.len() != self.caret_count() {
+            return self.insert(&text);
+        }
+        let mut order: Vec<Pos> = self.carets().iter().map(|c| c.span().0).collect();
+        order.sort();
+        self.edit_each(|_, c| {
+            let (start, end) = c.span();
+            let nth = order.binary_search(&start).unwrap_or(0);
+            Some((start, end, lines[nth].to_string()))
+        });
+    }
+
+    pub fn delete_selected(&mut self) {
+        self.edit_each(|_, c| c.selection().map(|(a, b)| (a, b, String::new())));
     }
 
     pub fn newline(&mut self) {
-        let line = &self.lines[self.caret.line];
-        let indent: String = line.chars().take(self.caret.col).take_while(|c| *c == ' ' || *c == '\t').collect();
-        self.insert(&format!("\n{indent}"));
+        self.edit_each(|e, c| {
+            let line = &e.lines[c.at.line];
+            let indent: String = line.chars().take(c.at.col).take_while(|c| *c == ' ' || *c == '\t').collect();
+            let (start, end) = c.span();
+            Some((start, end, format!("\n{indent}")))
+        });
     }
 
     pub fn tab(&mut self) {
@@ -385,32 +643,43 @@ impl Editor {
             .filter(|n| *n > 0 && *n <= 8)
             .min()
             .unwrap_or(TAB_WIDTH);
-        let col = self.display_col(self.selection().map_or(self.caret, |(a, _)| a));
-        self.insert(&" ".repeat(step - col % step));
+        self.edit_each(|e, c| {
+            let (start, end) = c.span();
+            let col = e.display_col(start);
+            Some((start, end, " ".repeat(step - col % step)))
+        });
     }
 
     pub fn backspace(&mut self) {
-        if let Some((a, b)) = self.selection() {
-            return self.replace(a, b, "");
-        }
-        let c = self.caret;
-        if c.col > 0 {
-            self.replace(Pos::new(c.line, c.col - 1), c, "");
-        } else if c.line > 0 {
-            self.replace(Pos::new(c.line - 1, self.line_len(c.line - 1)), c, "");
-        }
+        self.edit_each(|e, c| {
+            if let Some((a, b)) = c.selection() {
+                return Some((a, b, String::new()));
+            }
+            let c = c.at;
+            if c.col > 0 {
+                Some((Pos::new(c.line, c.col - 1), c, String::new()))
+            } else if c.line > 0 {
+                Some((Pos::new(c.line - 1, e.line_len(c.line - 1)), c, String::new()))
+            } else {
+                None
+            }
+        });
     }
 
     pub fn delete(&mut self) {
-        if let Some((a, b)) = self.selection() {
-            return self.replace(a, b, "");
-        }
-        let c = self.caret;
-        if c.col < self.line_len(c.line) {
-            self.replace(c, Pos::new(c.line, c.col + 1), "");
-        } else if c.line + 1 < self.lines.len() {
-            self.replace(c, Pos::new(c.line + 1, 0), "");
-        }
+        self.edit_each(|e, c| {
+            if let Some((a, b)) = c.selection() {
+                return Some((a, b, String::new()));
+            }
+            let c = c.at;
+            if c.col < e.line_len(c.line) {
+                Some((c, Pos::new(c.line, c.col + 1), String::new()))
+            } else if c.line + 1 < e.lines.len() {
+                Some((c, Pos::new(c.line + 1, 0), String::new()))
+            } else {
+                None
+            }
+        });
     }
 
     pub fn move_to(&mut self, p: Pos, select: bool) {
@@ -422,9 +691,14 @@ impl Editor {
         };
         self.caret = p;
         self.goal = None;
+        self.single();
     }
 
     pub fn left(&mut self, select: bool) {
+        self.each(|e| e.left_one(select));
+    }
+
+    fn left_one(&mut self, select: bool) {
         if let (false, Some((a, _))) = (select, self.selection()) {
             return self.move_to(a, false);
         }
@@ -440,6 +714,10 @@ impl Editor {
     }
 
     pub fn right(&mut self, select: bool) {
+        self.each(|e| e.right_one(select));
+    }
+
+    fn right_one(&mut self, select: bool) {
         if let (false, Some((_, b))) = (select, self.selection()) {
             return self.move_to(b, false);
         }
@@ -455,30 +733,38 @@ impl Editor {
     }
 
     pub fn vertical(&mut self, delta: isize, select: bool) {
-        let goal = self.goal.unwrap_or_else(|| self.display_col(self.caret));
-        let line = (self.caret.line as isize + delta).clamp(0, self.lines.len() as isize - 1) as usize;
-        let p = self.pos_at_display(line, goal);
-        self.move_to(p, select);
-        self.goal = Some(goal);
+        self.each(|e| {
+            let goal = e.goal.unwrap_or_else(|| e.display_col(e.caret));
+            let line = (e.caret.line as isize + delta).clamp(0, e.lines.len() as isize - 1) as usize;
+            let p = e.pos_at_display(line, goal);
+            e.move_to(p, select);
+            e.goal = Some(goal);
+        });
     }
 
     pub fn home(&mut self, select: bool) {
-        let line = &self.lines[self.caret.line];
-        let first = line.chars().take_while(|c| c.is_whitespace()).count();
-        let col = if self.caret.col == first { 0 } else { first };
-        self.move_to(Pos::new(self.caret.line, col), select);
+        self.each(|e| {
+            let line = &e.lines[e.caret.line];
+            let first = line.chars().take_while(|c| c.is_whitespace()).count();
+            let col = if e.caret.col == first { 0 } else { first };
+            e.move_to(Pos::new(e.caret.line, col), select);
+        });
     }
 
     pub fn end(&mut self, select: bool) {
-        self.move_to(Pos::new(self.caret.line, self.line_len(self.caret.line)), select);
+        self.each(|e| e.move_to(Pos::new(e.caret.line, e.line_len(e.caret.line)), select));
     }
 
     pub fn word(&mut self, forward: bool, select: bool) {
+        self.each(|e| e.word_one(forward, select));
+    }
+
+    fn word_one(&mut self, forward: bool, select: bool) {
         let chars: Vec<char> = self.lines[self.caret.line].chars().collect();
         let mut col = self.caret.col;
         if forward {
             if col >= chars.len() {
-                return self.right(select);
+                return self.right_one(select);
             }
             while col < chars.len() && !is_word(chars[col]) {
                 col += 1;
@@ -488,7 +774,7 @@ impl Editor {
             }
         } else {
             if col == 0 {
-                return self.left(select);
+                return self.left_one(select);
             }
             while col > 0 && !is_word(chars[col - 1]) {
                 col -= 1;
@@ -502,11 +788,12 @@ impl Editor {
 
     pub fn select_all(&mut self) {
         let last = self.lines.len() - 1;
+        self.single();
         self.anchor = Some(Pos::default());
         self.caret = Pos::new(last, self.line_len(last));
     }
 
-    pub fn select_word(&mut self, p: Pos) {
+    fn word_around(&self, p: Pos) -> (Pos, Pos) {
         let p = self.clamp(p);
         let chars: Vec<char> = self.lines[p.line].chars().collect();
         let (mut a, mut b) = (p.col.min(chars.len()), p.col.min(chars.len()));
@@ -516,8 +803,128 @@ impl Editor {
         while b < chars.len() && is_word(chars[b]) {
             b += 1;
         }
-        self.anchor = Some(Pos::new(p.line, a));
-        self.caret = Pos::new(p.line, b);
+        (Pos::new(p.line, a), Pos::new(p.line, b))
+    }
+
+    pub fn select_word(&mut self, p: Pos) {
+        let (a, b) = self.word_around(p);
+        self.single();
+        self.anchor = Some(a);
+        self.caret = b;
+    }
+
+    pub fn toggle_caret(&mut self, p: Pos) {
+        let p = self.clamp(p);
+        let mut all = self.carets();
+        self.whole_words = false;
+        let hit = all.iter().position(|c| c.at == p || c.selection().is_some_and(|(a, b)| (a..=b).contains(&p)));
+        match hit {
+            Some(_) if all.len() == 1 => {}
+            Some(i) => {
+                all.remove(i);
+                let primary = if i == 0 { all.pop() } else { Some(all.remove(0)) };
+                if let Some(primary) = primary {
+                    self.settle(primary, all);
+                }
+            }
+            None if all.len() < MOST_CARETS => self.settle(Caret::new(p), all),
+            None => {}
+        }
+    }
+
+    pub fn add_caret_vertical(&mut self, delta: isize) -> bool {
+        let p = self.primary();
+        let goal = p.goal.unwrap_or_else(|| self.display_col(p.at));
+        let line = p.at.line as isize + delta;
+        if line < 0 || line >= self.lines.len() as isize || self.caret_count() >= MOST_CARETS {
+            return false;
+        }
+        let at = self.pos_at_display(line as usize, goal);
+        let others = self.carets();
+        self.settle(Caret { at, anchor: None, goal: Some(goal) }, others);
+        self.whole_words = false;
+        true
+    }
+
+    fn occurrences(&self, needle: &str, whole: bool) -> Vec<(Pos, Pos)> {
+        let mut found = Vec::new();
+        if needle.is_empty() {
+            return found;
+        }
+        let text = self.display_source();
+        let mut starts = Vec::with_capacity(self.lines.len());
+        let mut byte = 0;
+        for line in &self.lines {
+            starts.push(byte);
+            byte += line.len() + 1;
+        }
+        let pos = |byte: usize| {
+            let line = starts.partition_point(|s| *s <= byte) - 1;
+            Pos::new(line, text[starts[line]..byte].chars().count())
+        };
+        let mut from = 0;
+        while let Some(i) = text[from..].find(needle) {
+            let (s, e) = (from + i, from + i + needle.len());
+            let alone =
+                !text[..s].chars().next_back().is_some_and(is_word) && !text[e..].chars().next().is_some_and(is_word);
+            if alone || !whole {
+                found.push((pos(s), pos(e)));
+                from = e;
+            } else {
+                from = s + needle.chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        found
+    }
+
+    fn select_words(&mut self) -> bool {
+        let primary = self.primary();
+        let others = std::mem::take(&mut self.others);
+        let word = |e: &Editor, c: Caret| match c.selection() {
+            Some(_) => c,
+            None => match e.word_around(c.at) {
+                (a, b) if a == b => c,
+                (a, b) => Caret { at: b, anchor: Some(a), goal: None },
+            },
+        };
+        let others: Vec<Caret> = others.into_iter().map(|c| word(&*self, c)).collect();
+        let primary = word(self, primary);
+        self.settle(primary, others);
+        self.whole_words = true;
+        self.selection().is_some()
+    }
+
+    pub fn add_next_occurrence(&mut self) -> bool {
+        let Some((a, b)) = self.selection() else { return self.select_words() };
+        let whole = self.whole_words;
+        let taken: Vec<(Pos, Pos)> = self.carets().iter().filter_map(Caret::selection).collect();
+        let found = self.occurrences(&self.range_text(a, b), whole);
+        let free = |range: &&(Pos, Pos)| !taken.contains(range);
+        let next = found.iter().filter(free).find(|(start, _)| *start >= b).or_else(|| found.iter().find(free));
+        let Some(&(start, end)) = next.filter(|_| self.caret_count() < MOST_CARETS) else { return false };
+        let others = self.carets();
+        self.settle(Caret { at: end, anchor: Some(start), goal: None }, others);
+        self.whole_words = whole;
+        true
+    }
+
+    pub fn select_all_occurrences(&mut self) -> bool {
+        if self.selection().is_none() && !self.select_words() {
+            return false;
+        }
+        let Some((a, b)) = self.selection() else { return false };
+        let whole = self.whole_words;
+        let found = self.occurrences(&self.range_text(a, b), whole);
+        let mut all: Vec<Caret> =
+            found.into_iter().take(MOST_CARETS).map(|(s, e)| Caret { at: e, anchor: Some(s), goal: None }).collect();
+        let main = all.iter().position(|c| c.span() == (a, b));
+        let primary = match main {
+            Some(i) => all.remove(i),
+            None => self.primary(),
+        };
+        self.settle(primary, all);
+        self.whole_words = whole;
+        true
     }
 
     pub fn mark_saved(&mut self) {
@@ -648,6 +1055,137 @@ four",
         assert_eq!(e.caret, Pos::new(3, 19));
         assert!(e.undo() && e.undo());
         assert_eq!(e.text(), "mod util;\n\nfn main() {\n    let m = HashMap\n}\n");
+    }
+
+    fn places(e: &Editor) -> Vec<(usize, usize)> {
+        let mut all: Vec<(usize, usize)> = e.carets().iter().map(|c| (c.at.line, c.at.col)).collect();
+        all.sort();
+        all
+    }
+
+    #[test]
+    fn carets_added_below_type_together_and_undo_as_one_step() {
+        let mut e = Editor::open("a.rs".into(), "let a = 1;\nlet b = 2;\nlet c = 3;\n");
+        at(&mut e, 0, 4);
+        assert!(e.add_caret_vertical(1) && e.add_caret_vertical(1));
+        assert!(!e.add_caret_vertical(1), "no line below the last one");
+        assert_eq!(e.caret, Pos::new(2, 4), "the newest caret is the main one");
+        assert_eq!(places(&e), vec![(0, 4), (1, 4), (2, 4)]);
+        e.insert("my_");
+        assert_eq!(e.display_source(), "let my_a = 1;\nlet my_b = 2;\nlet my_c = 3;");
+        assert_eq!(places(&e), vec![(0, 7), (1, 7), (2, 7)]);
+        e.backspace();
+        e.newline();
+        assert_eq!(e.display_source(), "let my\na = 1;\nlet my\nb = 2;\nlet my\nc = 3;");
+        assert_eq!(places(&e), vec![(1, 0), (3, 0), (5, 0)]);
+        assert!(e.undo());
+        assert_eq!(e.display_source(), "let mya = 1;\nlet myb = 2;\nlet myc = 3;");
+        assert_eq!(places(&e), vec![(0, 6), (1, 6), (2, 6)], "the carets come back with the text");
+        assert!(e.undo() && e.undo());
+        assert_eq!(e.display_source(), "let a = 1;\nlet b = 2;\nlet c = 3;");
+        assert!(!e.dirty);
+        assert!(!e.undo());
+        assert!(e.redo());
+        assert_eq!(e.display_source(), "let my_a = 1;\nlet my_b = 2;\nlet my_c = 3;");
+        assert_eq!(places(&e), vec![(0, 7), (1, 7), (2, 7)]);
+        assert!(e.single());
+        assert_eq!(e.caret_count(), 1);
+        assert!(!e.single(), "already one caret");
+    }
+
+    #[test]
+    fn carets_on_one_line_keep_their_places_while_typing() {
+        let mut e = Editor::open("a.txt".into(), "ab ab ab\n");
+        at(&mut e, 0, 2);
+        e.toggle_caret(Pos::new(0, 5));
+        e.toggle_caret(Pos::new(0, 8));
+        e.insert("é");
+        assert_eq!(e.display_source(), "abé abé abé");
+        assert_eq!(places(&e), vec![(0, 3), (0, 7), (0, 11)]);
+        e.left(true);
+        e.left(true);
+        assert_eq!(e.selected_text(), "bé\nbé\nbé");
+        e.delete_selected();
+        assert_eq!(e.display_source(), "a a a");
+        e.paste("1\n2\n3\n");
+        assert_eq!(e.display_source(), "a1 a2 a3", "one line of what was copied for each caret");
+        e.paste("xy");
+        assert_eq!(e.display_source(), "a1xy a2xy a3xy");
+        e.end(false);
+        assert_eq!(places(&e), vec![(0, 14)], "carets that meet become one");
+    }
+
+    #[test]
+    fn alt_click_adds_and_takes_away_carets() {
+        let mut e = Editor::open("a.txt".into(), "one\ntwo\nthree\n");
+        at(&mut e, 0, 1);
+        e.toggle_caret(Pos::new(0, 1));
+        assert_eq!(e.caret_count(), 1, "the only caret stays");
+        e.toggle_caret(Pos::new(2, 3));
+        assert_eq!(e.caret, Pos::new(2, 3));
+        e.toggle_caret(Pos::new(1, 0));
+        assert_eq!(places(&e), vec![(0, 1), (1, 0), (2, 3)]);
+        e.toggle_caret(Pos::new(1, 0));
+        assert_eq!(places(&e), vec![(0, 1), (2, 3)]);
+        e.right(true);
+        assert_eq!(e.selected_text(), "n\ne");
+        e.toggle_caret(Pos::new(0, 2));
+        assert_eq!(places(&e), vec![(2, 4)], "a click inside a selection takes its caret away");
+        e.vertical(-1, false);
+        e.toggle_caret(Pos::new(2, 0));
+        e.backspace();
+        assert_eq!(e.display_source(), "one\ntwthree");
+        assert_eq!(places(&e), vec![(1, 2)], "two carets that meet become one");
+        e.move_to(Pos::new(0, 0), false);
+        e.toggle_caret(Pos::new(1, 0));
+        e.vertical(1, true);
+        assert_eq!(places(&e), vec![(1, 0)], "a selection that reaches another caret takes it in");
+        e.insert("_");
+        assert_eq!(e.display_source(), "_twthree");
+    }
+
+    #[test]
+    fn next_occurrence_selects_the_word_then_finds_it_again() {
+        let mut e = Editor::open("a.rs".into(), "let value = values(value);\nprint(value);\n");
+        at(&mut e, 1, 8);
+        assert!(e.add_next_occurrence());
+        assert_eq!(e.selected_text(), "value");
+        assert_eq!(e.caret_count(), 1);
+        assert!(e.add_next_occurrence());
+        assert_eq!(e.caret_count(), 2, "after the end of the file it starts again at the top");
+        assert_eq!(e.selection(), Some((Pos::new(0, 4), Pos::new(0, 9))));
+        assert!(e.add_next_occurrence());
+        assert_eq!(e.selection(), Some((Pos::new(0, 19), Pos::new(0, 24))), "values is another word");
+        assert!(!e.add_next_occurrence(), "every one is taken");
+        e.insert("v");
+        assert_eq!(e.display_source(), "let v = values(v);\nprint(v);");
+        assert!(e.undo());
+        assert_eq!(e.caret_count(), 3);
+        e.single();
+        at(&mut e, 0, 4);
+        e.move_to(Pos::new(0, 7), true);
+        assert!(e.select_all_occurrences());
+        assert_eq!(e.caret_count(), 4, "a selection made by hand is found inside other words too");
+        assert_eq!(e.selection(), Some((Pos::new(0, 4), Pos::new(0, 7))), "the main caret stays where it was");
+        e.insert("V");
+        assert_eq!(e.display_source(), "let Vue = Vues(Vue);\nprint(Vue);");
+        let mut words = Editor::open("b.txt".into(), "x xx x\n");
+        assert!(words.select_all_occurrences());
+        assert_eq!(words.caret_count(), 2);
+    }
+
+    #[test]
+    fn someone_elses_edit_moves_every_caret() {
+        use crate::share::ot::TextOp;
+        let before = "a\nb\nc";
+        let mut e = Editor::open("a.txt".into(), before);
+        at(&mut e, 0, 1);
+        e.add_caret_vertical(1);
+        e.add_caret_vertical(1);
+        e.apply_remote(&TextOp::between(before, "zz\na\nb\nc"));
+        assert_eq!(places(&e), vec![(1, 1), (2, 1), (3, 1)]);
+        e.insert("!");
+        assert_eq!(e.display_source(), "zz\na!\nb!\nc!");
     }
 
     #[test]

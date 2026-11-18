@@ -1225,6 +1225,34 @@ Camera
 - `Editor::dirty` is exact: `saved_at` is how deep the undo history was when the
   text was read or saved, so undoing back to it is "no changes" again. Typing
   after undoing past that point makes the saved text unreachable (`None`).
+- **Several carets.** `caret`/`anchor`/`goal` are the main caret (the one the
+  camera follows, completions and the status bar use, and the others see in a
+  shared session); `others` are the rest. The newest caret is the main one.
+  - `edit_each` asks every caret for the range it replaces and the text, all
+    against the text as it is, then applies them from the top down, moving
+    each next range by what the ones before it did (`Shift`). Each is one
+    `Change`; all but the first are `joined`, so `undo` and `redo` take the
+    whole group, and the first remembers every caret as it was
+    (`others_before`). Ranges that would overlap are cut at the end of the one
+    before. With one caret it is plain `replace`.
+  - Movements run the one-caret code once per caret (`each`), then `settle`
+    sorts the carets and merges those that overlap or meet (a caret at the edge
+    of a selection joins it). A click, Ctrl+Home/End, select all, a double
+    click and any single-range edit (`replace`: completion, Replace all,
+    imports, another program's text) go back to one caret.
+  - Ctrl+D (`add_next_occurrence`): with no selection it selects the word at
+    every caret, and from then on it looks for whole words only
+    (`whole_words`), as VS Code does; a selection made by hand is found inside
+    other words too. The next one is the first free one after the main caret,
+    starting again at the top. Ctrl+Shift+L takes every one at once.
+    `MOST_CARETS` (5000) is the most carets there can be.
+  - Paste with as many lines as carets gives each caret its line; copy joins
+    the selections with line breaks.
+  - An edit from elsewhere (`apply_remote`) moves every caret, not only the
+    main one.
+  - Completions are offered only with one caret (`App::update_completion`,
+    `ask_completion`, `offer_code`, `paths_offered`). Saving, autosave and a
+    shared session need nothing: they look at the text, not at the carets.
 
 ### crates/code-canvas/src/ext/host.rs
 
@@ -1461,7 +1489,11 @@ Details:
   ```
 
 - The keys of the text editor itself (arrows, Ctrl+C, Ctrl+Z, Ctrl+S…) are not in
-  the table.
+  the table. The carets ones are (`Command::is_caret`: Ctrl+D, Ctrl+Shift+L,
+  Ctrl+Alt+Up/Down): they are run before the editor sees the key, whatever
+  chord they are given, because the editor would take Ctrl+Alt+Up as Up.
+  Alt+click (add or take away a caret) and Esc (back to one caret, then stop
+  typing) are fixed.
 - `Scope`: `Anywhere` (also in a text field or an extension's web page), `Window`
   (not while typing in one of the app's text fields), `Canvas` (keys nothing else
   wanted, plain letters among them).
@@ -1543,7 +1575,8 @@ Details:
 - Decorations from extensions are drawn only at the text level of detail. Several
   texts on one line (two problems) follow each other.
 - The selection of the file being edited reaches one cell past the end of a line,
-  for the line break.
+  for the line break. Every caret is drawn the same, with its line lit and its
+  selection; only those on screen are drawn.
 - `long_line` / `LongLine::draw`: the rest of a line cut at the card's edge, only
   at the text level of detail. Its background is the card's colour made opaque
   over the canvas, with the card's border, as the last chip; the line in the
@@ -1783,7 +1816,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `palette` | `palette <text>` | Open the command palette with a filter typed in. |
 | `edit` | `edit <path> <line> <column>` | Put the caret in a file; line and column are 1-based. |
 | `type` | `type <text>` | Type at the caret. |
-| `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
+| `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. `escape` with several carets leaves one. |
+| `caret` | `caret <line> <column>` | What Alt+click does there in the file being edited (1-based): adds a caret, or takes away the one that is there. Ctrl+D and the others are `press ctrl+d`. |
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
 | `account` | `account signin\|cancel\|sync\|signout\|menu` | The GitHub account: start signing in, give up, sync now, sign out, open its menu. |
 | `tool` | `tool move\|edit\|draw\|rub\|clear\|colour <n>\|width <n>` | The pointer (`edit`), the hand (`move`) or the pencil (`draw`) of the toolbar; `rub` is the pencil rubbing out, `clear` takes away everything drawn, `colour` and `width` pick one of the pencil's by its place. `edit <path>` puts a caret whatever the tool is. |
@@ -1940,7 +1974,10 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   `TextOp::between` makes the edit: what is between the common start and end,
   or, when that spans lines on both sides, a diff by lines, so a formatter that
   touches the top and the bottom of a file does not replace its middle under
-  someone's caret. Nothing in the editor knows it is shared. `share_look_over`
+  someone's caret. Inside a line (or the one changed place) what is left is
+  diffed by letters when it is small (`TextOp::middle`, up to 4096 letters):
+  typing at several carets of one line is one insertion per caret, and what
+  someone else typed between them at the same time is not removed and put back. Nothing in the editor knows it is shared. `share_look_over`
   compares the files of the page with the ones shared every two seconds: that is
   how a new file, or a deleted one, is noticed.
 - **Two edits made at once** end the same on both sides by the usual transform

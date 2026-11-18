@@ -2921,9 +2921,16 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                 ("Move around without editing (the hand)", key(Command::MoveTool)),
                 ("Edit: a click puts the caret (the pointer)", key(Command::EditTool)),
                 ("Select code", fixed("Drag over it with the pointer")),
+                ("Add or take away a caret", fixed("Alt+click")),
+                ("Select the word, then its next occurrence", key(Command::NextOccurrence)),
+                ("A caret at every occurrence", key(Command::AllOccurrences)),
+                (
+                    "A caret on the line above / below",
+                    format!("{} / {}", keys.label(Command::CaretAbove), keys.label(Command::CaretBelow)),
+                ),
                 ("Draw over the canvas (the pencil)", key(Command::DrawTool)),
                 ("Save", key(Command::Save)),
-                ("Stop typing in a file", fixed("Esc")),
+                ("Back to one caret, then stop typing in the file", fixed("Esc")),
             ],
         ),
         (

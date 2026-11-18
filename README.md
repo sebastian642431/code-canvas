@@ -99,6 +99,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   line, the rest of it is shown beside the card, in the same size and colours, in
   several rows when it does not fit; a click on it puts the caret there, and typing
   beyond the edge shows it too, so the caret stays in view.
+- **Several carets**: `Alt+click` adds one (or takes away the one there), `Ctrl+D`
+  selects the word and then adds its next occurrence, `Ctrl+Shift+L` takes every
+  one, `Ctrl+Alt+Up` / `Ctrl+Alt+Down` add one on the line above or below. Typing,
+  deleting and pasting happen at all of them and undo as one step; `Esc` leaves one.
 - **Pictures and videos are on the canvas too**: a picture is drawn inside its
   card, and a video, a sound or a PDF plays inside its card when it is clicked
   (`Esc`, or a click somewhere else, stops it).
@@ -349,7 +353,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] The canvas travels to what an assistant or another program changes; any path
       opens on the canvas, also outside the open folders; back and forward.
 - [x] Completions from language servers while typing, with the imports they need.
-- [ ] Editing: multiple cursors.
+- [x] Editing: multiple cursors.
 - [x] **VS Code extensions**: an extension host that runs real `.vsix` extensions;
       diagnostics, formatting, decorations and commands. See
       [docs/EXTENSIONS.md](docs/EXTENSIONS.md).

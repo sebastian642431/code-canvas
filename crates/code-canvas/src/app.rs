@@ -1724,7 +1724,7 @@ impl App {
     fn update_completion(&mut self) {
         let before = self.completion.take();
         let Some(page) = self.pages.get(self.active) else { return };
-        let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
+        let Some(editor) = page.editor().filter(|e| e.selection().is_none() && e.caret_count() == 1) else { return };
         let caret = editor.caret;
         self.completion = self.paths_offered().or_else(|| {
             let Completion { start, items: Offered::Code { serial, line, items }, selected } = before? else {
@@ -1744,7 +1744,7 @@ impl App {
 
     fn paths_offered(&self) -> Option<Completion> {
         let page = self.pages.get(self.active).filter(|_| self.ui.prefs.complete_paths)?;
-        let editor = page.editor()?;
+        let editor = page.editor().filter(|e| e.caret_count() == 1)?;
         let caret = editor.caret;
         let typed = crate::paths::partial(editor.line(caret.line), caret.col)?;
         let folder = crate::paths::folder(&page.root, &editor.rel_path, &typed.dir)?;
@@ -1760,7 +1760,7 @@ impl App {
             return;
         }
         let Some(page) = self.pages.get(self.active) else { return };
-        let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
+        let Some(editor) = page.editor().filter(|e| e.selection().is_none() && e.caret_count() == 1) else { return };
         let caret = editor.caret;
         let Some(last) = editor.line(caret.line).chars().take(caret.col).last() else { return };
         if !word_char(last) && (last.is_whitespace() || ")]};,".contains(last)) {
@@ -1778,7 +1778,7 @@ impl App {
             return;
         }
         let Some(page) = self.pages.get(self.active) else { return };
-        let Some(editor) = page.editor().filter(|e| e.selection().is_none()) else { return };
+        let Some(editor) = page.editor().filter(|e| e.selection().is_none() && e.caret_count() == 1) else { return };
         let caret = editor.caret;
         let here = page.root.join(&editor.rel_path) == found.path
             && caret.line as u32 == found.line
@@ -2191,6 +2191,23 @@ impl App {
         self.request_redraw();
     }
 
+    fn caret_command(&mut self, command: Command) {
+        let Some(editor) = self.pages.get_mut(self.active).and_then(|page| page.editor_mut()) else { return };
+        let changed = match command {
+            Command::NextOccurrence => editor.add_next_occurrence(),
+            Command::AllOccurrences => editor.select_all_occurrences(),
+            Command::CaretAbove => editor.add_caret_vertical(-1),
+            Command::CaretBelow => editor.add_caret_vertical(1),
+            _ => false,
+        };
+        if changed {
+            log::info!("editing with {} carets", editor.caret_count());
+            self.completion = None;
+            self.keep_caret_visible();
+        }
+        self.request_redraw();
+    }
+
     fn edit_key(&mut self, event: &KeyEvent) -> bool {
         let cmd = (self.mods.control_key() && !self.mods.alt_key()) || self.mods.super_key();
         let shift = self.mods.shift_key();
@@ -2234,7 +2251,9 @@ impl App {
         let mut changed = false;
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => {
-                page.editing = None;
+                if !editor.single() {
+                    page.editing = None;
+                }
                 self.completion = None;
                 self.request_redraw();
                 return true;
@@ -2283,14 +2302,14 @@ impl App {
                             let _ = clipboard.set_text(text);
                         }
                         if c.eq_ignore_ascii_case("x") {
-                            editor.backspace();
+                            editor.delete_selected();
                             changed = true;
                         }
                     }
                 }
                 "v" => {
                     if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
-                        editor.insert(&text);
+                        editor.paste(&text);
                         changed = true;
                     }
                 }
@@ -2898,6 +2917,7 @@ impl App {
 
         let vp = self.viewport();
         let (ctrl, shift) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
+        let alt = self.mods.alt_key();
         let can_edit = self.ui.prefs.edit;
         let in_strip = self.long_line.filter(|(.., frame)| frame.contains(pos)).and_then(|(id, file, line, _)| {
             let page = self.pages.get(self.active).filter(|page| page.id == id)?;
@@ -2949,10 +2969,13 @@ impl App {
         page.selected = hit;
         if let Some((rel, line, col)) = caret_at {
             let line = page.rows(&rel).and_then(|rows| rows.get(line)).map_or(line, |row| row.line as usize);
+            let adding = alt && !shift && page.editing.as_deref() == Some(rel.as_str());
             if page.begin_edit(&rel) {
                 if let Some(editor) = page.editor_mut() {
                     let at = editor.pos_at_display(line, col);
-                    if double {
+                    if adding {
+                        editor.toggle_caret(at);
+                    } else if double {
                         editor.select_word(at);
                     } else {
                         editor.move_to(at, shift);
@@ -3031,7 +3054,7 @@ impl App {
         if typing || self.ui.quick.is_some() {
             return;
         }
-        let before_editor = bound.is_some() && alt && !cmd;
+        let before_editor = bound.is_some_and(|i| i.command.is_caret()) || (bound.is_some() && alt && !cmd);
         if !before_editor && self.edit_key(event) {
             return;
         }
@@ -3089,6 +3112,9 @@ impl App {
             Command::DrawTool => {
                 self.ui.pen.on = true;
                 self.request_redraw();
+            }
+            Command::NextOccurrence | Command::AllOccurrences | Command::CaretAbove | Command::CaretBelow => {
+                self.caret_command(command)
             }
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
@@ -3694,7 +3720,9 @@ impl App {
                 let mut save = false;
                 if let Some(page) = self.pages.get_mut(self.active) {
                     if name == "escape" {
-                        page.editing = None;
+                        if !page.editor_mut().is_some_and(|e| e.single()) {
+                            page.editing = None;
+                        }
                     } else if name == "save" {
                         save = true;
                     } else if let Some(e) = page.editor_mut() {
@@ -3724,6 +3752,16 @@ impl App {
                 } else {
                     self.after_edit();
                 }
+            }
+            Step::Caret(line, col) => {
+                let Some(editor) = self.pages.get_mut(self.active).and_then(|page| page.editor_mut()) else {
+                    log::warn!("script: no file is being edited");
+                    return true;
+                };
+                editor.toggle_caret(crate::editor::Pos::new(line.saturating_sub(1), col.saturating_sub(1)));
+                log::info!("editing with {} carets", editor.caret_count());
+                self.completion = None;
+                self.request_redraw();
             }
             Step::Press(keys) => {
                 let chord = Chord::parse(&keys);
@@ -5405,7 +5443,10 @@ impl ApplicationHandler for App {
                         self.ui.card_menu = None;
                         self.ink(self.cursor, true);
                     } else if self.drag.is_none() && !self.over_ui(self.cursor) {
-                        let plain = button == MouseButton::Left && !self.mods.control_key() && !self.mods.shift_key();
+                        let plain = button == MouseButton::Left
+                            && !self.mods.control_key()
+                            && !self.mods.shift_key()
+                            && !self.mods.alt_key();
                         let select = if plain && self.ui.prefs.edit { self.code_under(self.cursor) } else { None };
                         self.drag = Some(Drag {
                             last: self.cursor,

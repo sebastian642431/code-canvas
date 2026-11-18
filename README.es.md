@@ -72,6 +72,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   línea más larga, el resto aparece al lado de la tarjeta, del mismo tamaño y con los
   mismos colores, en varias filas si no entra. Un clic ahí pone el cursor en ese lugar,
   y si escribís más allá del borde también aparece, así el cursor no se pierde de vista.
+- **Varios cursores**: `Alt+clic` pone otro cursor (o saca el que está ahí), `Ctrl+D`
+  selecciona la palabra y después suma la siguiente igual, `Ctrl+Shift+L` las agarra todas
+  y `Ctrl+Alt+↑` / `Ctrl+Alt+↓` suman uno en la línea de arriba o de abajo. Lo que
+  escribís, borrás o pegás va a todos a la vez y se deshace de una; `Esc` te deja con uno.
 - **Imágenes y videos dentro del lienzo**: la imagen se dibuja en su tarjeta, y un video,
   un audio o un PDF se reproduce dentro de su tarjeta al tocarlo.
 - **Cualquier ruta se abre en el lienzo**: la que nombra un asistente, una definición, un

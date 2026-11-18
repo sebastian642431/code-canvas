@@ -23,6 +23,7 @@ pub enum Step {
     Edit(String),
     Type(String),
     Key(String),
+    Caret(usize, usize),
     Press(String),
     Git(String),
     OnlyChanged(bool),
@@ -104,6 +105,10 @@ fn parse_step(text: &str) -> Option<Step> {
         "type" => Step::Type(arg.into()),
         "key" => Step::Key(arg.into()),
         "press" => Step::Press(arg.into()),
+        "caret" => {
+            let mut parts = arg.split_whitespace().map(|n| n.parse::<usize>());
+            Step::Caret(parts.next()?.ok()?, parts.next()?.ok()?)
+        }
         "git" => Step::Git(arg.into()),
         "changed" => Step::OnlyChanged(arg == "on"),
         "right" => Step::Right(arg.into()),
@@ -207,8 +212,9 @@ mod tests {
 
     #[test]
     fn parses_steps() {
-        let s =
-            Script::parse("goto src/a b.rs; wait 500 ;select main;connected on; bogus; zoom 1.5;hover 10 20.5;quit");
+        let s = Script::parse(
+            "goto src/a b.rs; wait 500 ;select main;connected on; bogus; zoom 1.5;hover 10 20.5;caret 3 7;quit",
+        );
         assert_eq!(
             s.steps,
             vec![
@@ -218,6 +224,7 @@ mod tests {
                 Step::Connected(true),
                 Step::Zoom(1.5),
                 Step::Hover("10 20.5".into()),
+                Step::Caret(3, 7),
                 Step::Quit,
             ]
         );
