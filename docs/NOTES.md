@@ -1834,6 +1834,19 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   follows the one whose name or kind it is.
 - Following one sets `App::following`, the same travel a change on disk causes,
   each time it moves (`Agent::moved`) or its line is found.
+- **A trail of where it has been** (`Agent::trail`, `Step`): each place read,
+  edited or searched is a step, the last `TRAIL` (12) kept, each dropped by
+  `poll` after `TRAIL_LASTS` (10 minutes). The same place again is the same step;
+  a `PostToolUse` joins the step its `PreToolUse` made (`Agent::stepped`), and the
+  line an edit is found on later goes to its step too (`Agent::found`, only while
+  the step is the agent's latest move). It goes with the assistant: one that leaves
+  takes its trail. `trails_view` puts on screen only the steps whose file is on a
+  card shown (one lookup per file a frame, not per step); `agent_trails` in
+  `ui.rs` draws a ring (read, searched) or a dot (edited) left of the first line,
+  the lines barely washed, a dotted curve from each step to the next, all fading
+  with `Step::left`, and the tip of the one under the pointer. With trails on
+  screen it asks for a frame every 20 s, so they fade with nothing else happening.
+  `Prefs::trails` turns it off.
 
 ### crates/code-canvas/src/share
 

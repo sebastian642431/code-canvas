@@ -1,16 +1,46 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::agents::{Agent, Doing};
-use crate::ui::{AgentMark, AgentOp, AgentView};
+use crate::agents::{Agent, Doing, Step};
+use crate::ui::{AgentMark, AgentOp, AgentTrail, AgentView, TrailStep};
 
 const LOOKED_FOR: Duration = Duration::from_secs(5);
 const CONNECT: &str = "Connect";
 pub(super) const CLAUDE_OFFER: &str = "claude on the canvas";
 
+struct Place {
+    card: egui::Rect,
+    lines: Vec<egui::Rect>,
+    line_h: f32,
+}
+
+fn step_said(step: &Step) -> String {
+    let name = step.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let did = match step.doing {
+        Doing::Editing => "edited",
+        Doing::Searching => "searched",
+        _ => "read",
+    };
+    let mut said = format!("{did} {name}");
+    match step.lines {
+        Some((first, 1)) => said = format!("{said}, line {}", first + 1),
+        Some((first, count)) => said = format!("{said}, lines {}–{}", first + 1, first + count),
+        None => {}
+    }
+    match (step.note.is_empty(), step.doing) {
+        (true, _) => {}
+        (false, Doing::Searching) => said = format!("{said} {}", step.note),
+        (false, _) => said = format!("{said} · {}", step.note),
+    }
+    said
+}
+
 impl App {
     fn agent_file(&self, agent: &Agent) -> Option<(usize, String)> {
-        let path = agent.path.as_deref()?;
+        self.file_on_canvas(agent.path.as_deref()?)
+    }
+
+    fn file_on_canvas(&self, path: &Path) -> Option<(usize, String)> {
         let key = |path: &Path| ext::path_key(path.to_string_lossy().trim_end_matches(['/', '\\']));
         let wanted = key(path);
         if let Some(index) = self.pages.iter().position(|page| page.ready().is_some() && key(&page.root) == wanted) {
@@ -77,7 +107,7 @@ impl App {
             };
             let Some((index, rel)) = self.agent_file(agent) else { continue };
             if let Some(line) = self.agent_line(index, &rel, wanted) {
-                self.agents.list[at].lines = Some((line, 1));
+                self.agents.list[at].found(line);
                 changed = true;
             }
         }
@@ -142,12 +172,68 @@ impl App {
         said
     }
 
+    fn place(&self, (index, rel): (usize, &str), lines: Option<(u32, u32)>) -> Option<Place> {
+        let (s, vp) = (self.scale(), self.viewport());
+        let page = &self.pages[index];
+        let r = page.ready()?;
+        let node = if rel.is_empty() { Some(0) } else { r.layout.node_for_path(&r.repo, rel) }?;
+        let node = &r.layout.nodes[node];
+        let view = page.camera.view(vp);
+        let on_screen = |rect: canvas_core::Rect| {
+            let (a, b) = (view.to_screen([rect.x, rect.y]), view.to_screen([rect.right(), rect.bottom()]));
+            egui::Rect::from_min_max(egui::pos2(a[0] / s, a[1] / s), egui::pos2(b[0] / s, b[1] / s))
+        };
+        let (mut shown, mut line_h) = (Vec::new(), 0.0);
+        if let (Some(file), Some((first, count))) = (r.repo.file_index(rel), lines) {
+            let all = r.repo.files[file].line_count() as u32;
+            let first = page.row_of(rel, first).min(all.saturating_sub(1));
+            shown = node.line_rects(first..first.saturating_add(count).min(all)).into_iter().map(on_screen).collect();
+            let one = node.line_rects(first..first.saturating_add(1).min(all));
+            line_h = one.first().map_or(0.0, |line| on_screen(*line).height());
+        }
+        Some(Place { card: on_screen(node.rect), lines: shown, line_h })
+    }
+
+    fn trails_view(&self, shown: &[usize]) -> Vec<AgentTrail> {
+        if !self.ui.prefs.trails {
+            return Vec::new();
+        }
+        let mut files: std::collections::HashMap<&Path, Option<(usize, String)>> = Default::default();
+        let mut trails = Vec::new();
+        for agent in self.agents.list.iter().filter(|agent| !agent.trail.is_empty()) {
+            let mut steps = Vec::new();
+            for step in &agent.trail {
+                let file = files
+                    .entry(step.path.as_path())
+                    .or_insert_with(|| self.file_on_canvas(&step.path).filter(|(index, _)| shown.contains(index)));
+                let Some((index, rel)) = file.as_ref() else { continue };
+                let Some(place) = self.place((*index, rel), step.lines) else { continue };
+                let at = match place.lines.first() {
+                    Some(line) => egui::pos2(line.left() - 7.0, line.top() + place.line_h * 0.5),
+                    None => place.card.left_top() + egui::vec2(9.0, 9.0),
+                };
+                steps.push(TrailStep {
+                    at,
+                    line_h: place.line_h,
+                    lines: place.lines,
+                    edited: step.doing == Doing::Editing,
+                    did: step_said(step),
+                    age: step.at.elapsed(),
+                    left: step.left(),
+                });
+            }
+            if !steps.is_empty() {
+                trails.push(AgentTrail { color: agent.color(), name: agent.name(), steps });
+            }
+        }
+        trails
+    }
+
     pub(super) fn agents_view(&mut self) {
         if self.ui.settings.open && self.claude_checked.is_none_or(|at| at.elapsed() > Duration::from_secs(2)) {
             self.claude_checked = Some(Instant::now());
             self.ui.claude_connected = crate::agents::claude_connected();
         }
-        let (s, vp) = (self.scale(), self.viewport());
         let shown = self.shown();
         let (mut views, mut marks) = (Vec::new(), Vec::new());
         for agent in &self.agents.list {
@@ -165,27 +251,8 @@ impl App {
             let Some((index, rel)) = self.agent_file(agent).filter(|(index, _)| shown.contains(index)) else {
                 continue;
             };
-            let page = &self.pages[index];
-            let Some(r) = page.ready() else { continue };
-            let Some(node) = (if rel.is_empty() { Some(0) } else { r.layout.node_for_path(&r.repo, &rel) }) else {
-                continue;
-            };
-            let node = &r.layout.nodes[node];
-            let view = page.camera.view(vp);
-            let on_screen = |rect: canvas_core::Rect| {
-                let (a, b) = (view.to_screen([rect.x, rect.y]), view.to_screen([rect.right(), rect.bottom()]));
-                egui::Rect::from_min_max(egui::pos2(a[0] / s, a[1] / s), egui::pos2(b[0] / s, b[1] / s))
-            };
-            let file = r.repo.file_index(&rel);
-            let lines: Vec<egui::Rect> = match (file, agent.lines) {
-                (Some(file), Some((first, count))) => {
-                    let all = r.repo.files[file].line_count() as u32;
-                    let first = page.row_of(&rel, first).min(all.saturating_sub(1));
-                    node.line_rects(first..first.saturating_add(count).min(all)).into_iter().map(on_screen).collect()
-                }
-                _ => Vec::new(),
-            };
-            let card = on_screen(node.rect);
+            let Some(place) = self.place((index, &rel), agent.lines) else { continue };
+            let (card, lines) = (place.card, place.lines);
             let at = lines.first().map_or(card.left_top(), |line| egui::pos2(card.left(), line.top()));
             let beside = marks.iter().filter(|mark: &&AgentMark| (mark.at - at).length() < 4.0).count() as f32;
             marks.push(AgentMark {
@@ -199,6 +266,7 @@ impl App {
                 quiet: agent.quiet(),
             });
         }
+        self.ui.agent_trails = self.trails_view(&shown);
         self.ui.agents = views;
         self.ui.agent_marks = marks;
     }

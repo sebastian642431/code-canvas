@@ -12,6 +12,8 @@ const KEPT_OF_A_TEXT: usize = 600;
 const QUIET_AFTER: Duration = Duration::from_secs(45);
 const GONE_AFTER: Duration = Duration::from_secs(15 * 60);
 const LEAVING: Duration = Duration::from_secs(6);
+pub const TRAIL: usize = 12;
+pub const TRAIL_LASTS: Duration = Duration::from_secs(10 * 60);
 
 pub const FACES: usize = 50;
 const REMEMBERED: usize = 600;
@@ -115,6 +117,23 @@ pub struct Agent {
     pub find: Option<String>,
     pub at: Instant,
     pub moved: u64,
+    pub trail: Vec<Step>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Step {
+    pub doing: Doing,
+    pub path: PathBuf,
+    pub lines: Option<(u32, u32)>,
+    pub note: String,
+    pub at: Instant,
+    pub moved: u64,
+}
+
+impl Step {
+    pub fn left(&self) -> f32 {
+        1.0 - (self.at.elapsed().as_secs_f32() / TRAIL_LASTS.as_secs_f32()).min(1.0)
+    }
 }
 
 impl Agent {
@@ -135,6 +154,39 @@ impl Agent {
 
     pub fn busy(&self) -> bool {
         self.at.elapsed() < Duration::from_millis(1600) && !matches!(self.doing, Doing::Waiting | Doing::Leaving)
+    }
+
+    fn stepped(&mut self, again: bool) {
+        let Some(path) = self.path.clone() else { return };
+        if !matches!(self.doing, Doing::Reading | Doing::Editing | Doing::Searching) {
+            return;
+        }
+        let (lines, note, at, moved) = (self.lines, self.note.clone(), Instant::now(), self.moved);
+        let step = Step { doing: self.doing, path, lines, note, at, moved };
+        let same =
+            |last: &Step| last.path == step.path && last.doing == step.doing && (again || last.lines == step.lines);
+        if let Some(last) = self.trail.last_mut().filter(|last| same(last)) {
+            last.lines = step.lines.or(last.lines);
+            (last.note, last.at, last.moved) = (step.note, step.at, step.moved);
+            return;
+        }
+        self.trail.push(step);
+        if self.trail.len() > TRAIL {
+            self.trail.remove(0);
+        }
+    }
+
+    pub fn found(&mut self, line: u32) {
+        self.lines = Some((line, 1));
+        if let Some(last) = self.trail.last_mut().filter(|last| last.moved == self.moved) {
+            last.lines = self.lines;
+        }
+    }
+
+    fn forget_old_steps(&mut self) -> bool {
+        let before = self.trail.len();
+        self.trail.retain(|step| step.at.elapsed() < TRAIL_LASTS);
+        before != self.trail.len()
     }
 }
 
@@ -468,6 +520,7 @@ impl Agents {
             find: None,
             at: Instant::now(),
             moved: 0,
+            trail: Vec::new(),
         });
         self.list.last_mut().unwrap()
     }
@@ -484,6 +537,9 @@ impl Agents {
             _ => agent.at.elapsed() < GONE_AFTER,
         });
         changed |= before != self.list.len();
+        for agent in &mut self.list {
+            changed |= agent.forget_old_steps();
+        }
         self.save_faces();
         if self.following.as_ref().is_some_and(|key| self.find(key).is_none()) {
             self.following = None;
@@ -530,6 +586,7 @@ impl Agents {
             agent.lines = line.map(|line| (line.min(u32::MAX / 2), lines));
             agent.find = None;
             agent.moved = moves;
+            agent.stepped(false);
         }
     }
 
@@ -641,6 +698,9 @@ impl Agents {
                 }
             }
             _ => {}
+        }
+        if agent.moved == moves {
+            agent.stepped(event == "PostToolUse");
         }
     }
 }
@@ -754,6 +814,71 @@ mod tests {
         assert_eq!((agent.role.as_str(), agent.doing, agent.lines), ("Codex", Doing::Editing, Some((11, 3))));
         assert_eq!(agent.note, "fixing the parser");
         assert!(heard(&[json!({ "note": "nobody" })]).list.is_empty());
+    }
+
+    #[test]
+    fn an_assistant_leaves_a_trail_of_the_places_it_read_edited_and_searched() {
+        let plain = |action: &str, path: &str, line: Option<u64>| {
+            let mut event = json!({ "agent": "c1", "name": "Codex", "action": action, "path": path, "lines": 4 });
+            if let Some(line) = line {
+                event["line"] = json!(line);
+            }
+            event
+        };
+        let mut agents = heard(&[
+            plain("read", "C:/a.rs", Some(10)),
+            plain("read", "C:/a.rs", Some(10)),
+            plain("read", "C:/b.rs", Some(1)),
+            plain("edit", "C:/b.rs", Some(3)),
+            plain("search", "C:/src", None),
+            plain("run", "C:/src", None),
+            plain("think", "C:/c.rs", None),
+        ]);
+        let trail: Vec<(Doing, &str, Option<(u32, u32)>)> =
+            agents.list[0].trail.iter().map(|step| (step.doing, step.path.to_str().unwrap(), step.lines)).collect();
+        assert_eq!(
+            trail,
+            [
+                (Doing::Reading, "C:/a.rs", Some((9, 4))),
+                (Doing::Reading, "C:/b.rs", Some((0, 4))),
+                (Doing::Editing, "C:/b.rs", Some((2, 4))),
+                (Doing::Searching, "C:/src", None),
+            ],
+            "the same place twice is one step; running and thinking go nowhere"
+        );
+        assert!(agents.list[0].trail.iter().all(|step| step.left() > 0.99));
+
+        for line in 0..20 {
+            agents.hear(&plain("read", "C:/long.rs", Some(line * 10 + 1)));
+        }
+        let trail = &agents.list[0].trail;
+        assert_eq!(trail.len(), TRAIL, "only the last places are kept");
+        assert_eq!((trail[0].lines, trail[TRAIL - 1].lines), (Some((80, 4)), Some((190, 4))));
+
+        if let Some(long_ago) = Instant::now().checked_sub(TRAIL_LASTS + Duration::from_secs(1)) {
+            agents.list[0].trail[0].at = long_ago;
+            agents.faces_changed = false;
+            assert!(agents.poll(), "a place left long ago fades out");
+            assert_eq!(agents.list[0].trail.len(), TRAIL - 1);
+        }
+    }
+
+    #[test]
+    fn an_edit_heard_before_and_after_is_one_step_that_takes_the_line_it_is_found_on() {
+        let edit = |event: &str, old: &str, new: &str| {
+            json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": event, "tool_name": "Edit",
+                    "tool_input": { "file_path": "C:/a.rs", "old_string": old, "new_string": new } } })
+        };
+        let mut agents = heard(&[edit("PreToolUse", "one", "two"), edit("PostToolUse", "one", "two")]);
+        assert_eq!(agents.list[0].trail.len(), 1, "before and after the same edit");
+        agents.list[0].found(41);
+        assert_eq!(agents.list[0].trail[0].lines, Some((41, 1)));
+        agents.hear(&edit("PreToolUse", "three", "four"));
+        agents.hear(&edit("PostToolUse", "three", "four"));
+        agents.list[0].found(7);
+        let steps: Vec<_> = agents.list[0].trail.iter().map(|step| (step.doing, step.lines)).collect();
+        let two = [(Doing::Editing, Some((41, 1))), (Doing::Editing, Some((7, 1)))];
+        assert_eq!(steps, two, "another edit is another step");
     }
 
     #[test]

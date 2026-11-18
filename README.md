@@ -141,6 +141,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   own**: where it is reading (the lines washed in its colour), what it is
   searching, what it has just changed, and what it is running. A session of
   Claude Code is one face and each agent it starts is another, with a name.
+- Each one leaves **a trail of where it has been**: its last places, faint in its
+  colour on those lines and joined in order by a dotted line, a ring where it read
+  and a dot where it edited. They fade out in ten minutes; point at one to see what
+  it did there and how long ago (*Settings, Assistants on the canvas*).
 - Their faces are also at the top of the window: click one to **follow** it, and
   the canvas goes wherever it goes until you move it or press Esc.
 - *Settings, Assistants on the canvas, Connect Claude Code* turns it on: it adds a
@@ -378,9 +382,10 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] A settings window: theme, every colour, every shortcut, commit messages.
 - [x] Line numbers (the file's own, also where a card shows a diff).
 - [x] The folders and files never read can be chosen (Settings, "Never read").
-- [x] Assistants shown on the canvas as they work, each with its own face; following one.
-- [ ] Assistants of a shared session shown to those who joined; a trail of where
-      one has been; other assistants connected out of the box (Codex).
+- [x] Assistants shown on the canvas as they work, each with its own face; following one;
+      a trail of where each one has been.
+- [ ] Assistants of a shared session shown to those who joined; other assistants
+      connected out of the box (Codex).
 - [x] A workspace: folders dragged onto the canvas and taken off it.
 - [x] Sharing a session: others see and edit your folders live from their own app,
       as readers or writers, with everyone's pointer, caret and view, and following.
