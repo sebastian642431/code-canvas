@@ -20,13 +20,30 @@ public static class QaWin {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+    public delegate bool EnumProc(IntPtr h, IntPtr p);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr p);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    public static IntPtr Largest(uint pid) {
+        IntPtr best = IntPtr.Zero; long most = 0;
+        EnumWindows((h, p) => {
+            uint owner; GetWindowThreadProcessId(h, out owner);
+            if (owner != pid || !IsWindowVisible(h)) return true;
+            RECT r; GetWindowRect(h, out r);
+            long area = (long)(r.Right - r.Left) * (r.Bottom - r.Top);
+            if (area > most) { most = area; best = h; }
+            return true;
+        }, IntPtr.Zero);
+        return best;
+    }
 }
 "@
 
 function Save-Window($process, $file) {
     $process.Refresh()
-    $h = $process.MainWindowHandle
-    if ($process.HasExited -or $h -eq [IntPtr]::Zero) { return $false }
+    if ($process.HasExited) { return $false }
+    $h = [QaWin]::Largest([uint32]$process.Id)
+    if ($h -eq [IntPtr]::Zero) { return $false }
     $r = New-Object QaWin+RECT
     [QaWin]::GetWindowRect($h, [ref]$r) | Out-Null
     $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top

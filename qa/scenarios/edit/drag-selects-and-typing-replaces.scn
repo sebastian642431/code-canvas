@@ -8,7 +8,7 @@ wait 3000
 goto a.txt
 wait 1200
 tool edit
-drag 650 245 845 245
+drag 662 245 853 245
 wait 300
 mark selected
 wait 400
@@ -18,7 +18,7 @@ wait 300
 mark selection-back
 wait 400
 type One
-click 930 325
+click 942 325
 type @
 wait 300
 mark clicked

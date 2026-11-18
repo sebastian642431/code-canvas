@@ -243,6 +243,7 @@ pub struct UiState {
     pub files: bool,
     pub dock: Panel,
     pub layout_open: bool,
+    pub new_build: bool,
     layout_button: Option<Rect>,
     pub full_screen: bool,
     pub account: crate::account::Account,
@@ -312,6 +313,7 @@ impl Default for UiState {
             files: true,
             dock: Panel::Files,
             layout_open: false,
+            new_build: false,
             layout_button: None,
             full_screen: false,
             account: Default::default(),
@@ -474,6 +476,7 @@ pub enum Action {
     Fit,
     ZoomBy(f32),
     ToggleFullScreen,
+    RestartIntoNewBuild,
     Account(AccountOp),
     ClearDoodles,
     FrameSelection,
@@ -1088,6 +1091,14 @@ fn status_bar(
         let most = (ui.available_width() * 0.5).max(120.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
+            if st.new_build {
+                let offer = RichText::new(format!("{}  Restart into the new build", icons::REFRESH_CW)).size(12.0).color(pal().accent);
+                let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
+                let tip = "A new build of Code Canvas was put in place of this one. It restarts by itself when you leave it alone for a minute; click to restart now. Open folders and files come back as they are.";
+                if label.on_hover_text(tip).clicked() {
+                    actions.push(Action::RestartIntoNewBuild);
+                }
+            }
             if let crate::update::State::Available(new) = &st.update {
                 let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
                 let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);

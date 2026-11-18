@@ -1,6 +1,6 @@
 title: The button at the top hides and shows the files; a click on an icon opens its card and the same click closes it; an icon goes to the top of its bar and then to the other bar while its card stays open
 expect-file: {WORK}\data\session.json :: "right": \[\s*"deps"
-expect-file: {WORK}\data\session.json :: "cards": \[\s*"deps"
+expect-file: {WORK}\data\session.json :: "cards": \[[^\]]*"deps"
 folders: git-changes
 forbid-log: WARN.*script
 

@@ -203,6 +203,9 @@ pub struct App {
     ext: Extensions,
     symbols_stale: Option<Instant>,
     unsent_edit: Option<(PathBuf, Instant)>,
+    typed: Option<Instant>,
+    own_build: Option<(PathBuf, Option<std::time::SystemTime>, u64)>,
+    build_checked: Instant,
     hover_probe: Option<((u32, u32, u32), Instant, bool)>,
     watcher: crate::watch::Watcher,
     auto_rescan: Option<Instant>,
@@ -328,6 +331,9 @@ impl App {
             ext,
             symbols_stale: None,
             unsent_edit: None,
+            typed: None,
+            own_build: own_build(),
+            build_checked: Instant::now(),
             hover_probe: None,
             watcher: crate::watch::Watcher::new(),
             auto_rescan: None,
@@ -1614,6 +1620,7 @@ impl App {
         page.want_head(&rel);
         self.symbols_stale = Some(Instant::now());
         self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
+        self.typed = Some(Instant::now());
         self.offer_checker(&rel);
         self.find_refresh(false);
         self.keep_caret_visible();
@@ -1880,12 +1887,18 @@ impl App {
     }
 
     fn save_these(&mut self, files: Vec<(usize, String)>, format: bool) {
+        self.save_some(files, format, false);
+    }
+
+    fn save_some(&mut self, files: Vec<(usize, String)>, format: bool, quietly: bool) {
         let mut saved = false;
         let mut held: Option<(usize, String)> = None;
         for (index, rel) in files {
             let own = self.pages.get(index).filter(|page| page.shared.is_none()).map(|page| page.id);
             if own.is_some_and(|id| self.changed_under.contains(&(id, rel.clone()))) {
-                held = held.or(Some((index, rel)));
+                if !quietly {
+                    held = held.or(Some((index, rel)));
+                }
                 continue;
             }
             saved |= self.save_file(index, &rel, format);
@@ -3213,6 +3226,7 @@ impl App {
                     let _ = g.window.drag_window();
                 }
             }
+            Action::RestartIntoNewBuild => self.restart_into_new_build(),
             Action::ToggleFullScreen => {
                 if let Some(g) = &self.gfx {
                     let full = g.window.fullscreen().is_none();
@@ -4074,6 +4088,15 @@ impl App {
             }
         }
         busy |= self.unsent_edit.is_some();
+        if self.typed.is_some_and(|at| at.elapsed() > Duration::from_millis(700)) {
+            self.typed = None;
+            if self.ui.prefs.autosave {
+                let unsaved = self.unsaved();
+                self.save_some(unsaved, false, true);
+            }
+        }
+        busy |= self.typed.is_some();
+        self.watch_own_build();
         busy |= self.poll_share();
         if !self.rescan_later.is_empty() {
             self.rescan_what_waited();
@@ -5350,6 +5373,11 @@ impl ApplicationHandler for App {
             (true, t) => Some(t.map_or(tick, |t| t.min(tick))),
             (false, t) => t,
         };
+        let look_again = self.own_build.is_some().then(|| self.build_checked + Duration::from_secs(5));
+        let wake = match (wake, look_again) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let shown =
             self.gfx.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && can_show(g.window.inner_size()));
         if loading && shown {
@@ -5359,6 +5387,51 @@ impl ApplicationHandler for App {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         });
+    }
+}
+
+fn own_build() -> Option<(PathBuf, Option<std::time::SystemTime>, u64)> {
+    if std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let file = std::fs::metadata(&exe).ok()?;
+    Some((exe, file.modified().ok(), file.len()))
+}
+
+impl App {
+    fn watch_own_build(&mut self) {
+        const EVERY: Duration = Duration::from_secs(5);
+        const LEFT_ALONE: Duration = Duration::from_secs(60);
+        if self.build_checked.elapsed() < EVERY {
+            return;
+        }
+        self.build_checked = Instant::now();
+        let Some((exe, modified, len)) = self.own_build.clone() else { return };
+        if !self.ui.new_build {
+            let Ok(now) = std::fs::metadata(&exe) else { return };
+            if now.len() == len && now.modified().ok() == modified {
+                return;
+            }
+            log::info!("a new build of Code Canvas is in place of this one");
+            self.ui.new_build = true;
+            self.request_redraw();
+        }
+        let alone = self.last_input.elapsed() > LEFT_ALONE;
+        let calm = self.unsaved().is_empty() && self.ui.ask.is_none() && !self.agents.lively();
+        let shared = self.sharing.session.is_some();
+        if alone && calm && !shared {
+            self.restart_into_new_build();
+        }
+    }
+
+    fn restart_into_new_build(&mut self) {
+        let Some((exe, ..)) = self.own_build.clone() else { return };
+        let unsaved = self.unsaved();
+        self.save_some(unsaved, false, true);
+        log::info!("restarting into the new build");
+        self.restart_as = Some(exe);
+        self.exit_requested = true;
     }
 }
 

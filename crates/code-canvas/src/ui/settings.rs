@@ -87,7 +87,7 @@ impl SettingsView {
 const HEAD: f32 = 46.0;
 const NAV: f32 = 190.0;
 
-const EDITING: [(&str, &str); 6] = [
+const EDITING: [(&str, &str); 7] = [
     (
         "Show newer versions of dependencies",
         "In package.json and Cargo.toml. Asks npm and crates.io: only package names are sent.",
@@ -102,6 +102,10 @@ const EDITING: [(&str, &str); 6] = [
         "When an assistant or another program changes a file, the canvas goes to the lines that changed and lights them. Moving the canvas yourself holds it for a moment; it never moves while you edit.",
     ),
     ("Number the lines", "To the left of the code, when it is close enough to read."),
+    (
+        "Save while typing",
+        "Each file is written to disk a moment after you stop typing, so nothing is ever left unsaved. Off, Ctrl+S saves.",
+    ),
     (
         "Offer code while typing",
         "What the language's extension knows fits there (rust-analyzer, TypeScript and the like). Enter or Tab takes it.",
@@ -316,6 +320,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.follow_chat, EDITING[2]);
             option(ui, f, &mut next.follow_changes, EDITING[3]);
             option(ui, f, &mut next.line_numbers, EDITING[4]);
+            option(ui, f, &mut next.autosave, EDITING[6]);
         });
     }
     let assistants = ["Assistants on the canvas", "Claude Code", "agents", "avatar", "hooks"];

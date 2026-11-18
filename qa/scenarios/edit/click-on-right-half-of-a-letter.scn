@@ -1,4 +1,4 @@
-title: A click on the right half of a letter puts the caret after that letter (depends on where goto frames a.txt: the f of "second of a" is at x 962-1001, y 325)
+title: A click on the right half of a letter puts the caret after that letter (depends on where goto frames a.txt: the f of "second of a" is at x 980-1018, y 325)
 folders: edit-odd
 limit: 40
 forbid-log: cannot edit
@@ -8,7 +8,7 @@ wait 3000
 goto a.txt
 wait 1200
 tool edit
-click 992 325
+click 1010 325
 type @
 wait 300
 mark clicked

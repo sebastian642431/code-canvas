@@ -678,6 +678,23 @@ Pictures and what plays
   for the player keeps the picture. The wheel over a veiled player is the
   window's own, so the cursor is noted from the page's wheel before.
 
+Saving and new builds
+
+- **What is typed is saved by itself** (`Prefs::autosave`, on by default,
+  "Save while typing" in Settings): 0.7 s after the last keystroke every
+  unsaved file is written (`App::typed`, `save_some(.., quietly)`), without
+  formatting. A file another program changed meanwhile is left for the person
+  to decide (Ctrl+S asks), never overwritten quietly.
+- **A new build put in place of the running one is picked up by itself**
+  (`App::watch_own_build`, `own_build`): every 5 s the app looks at the size
+  and time of its own .exe (the loop wakes for it even when idle). When they
+  change, the status bar offers "Restart into the new build", and the app
+  restarts into it by itself once it has been left alone for a minute with
+  nothing unsaved, no question open, no assistant busy and no shared session.
+  So a build swapped in beside the running app (the updater's way, or by
+  hand) reaches the person without anyone closing their window. Script and
+  bench runs never do this.
+
 Drawing over the canvas
 
 - The toolbar has three tools: the pointer (edit, what the pencil used to be),

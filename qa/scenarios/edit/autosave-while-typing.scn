@@ -1,0 +1,16 @@
+title: What is typed is written to disk a moment after typing stops, without Ctrl+S, and quitting asks nothing
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+expect-log: saved .*a\.txt
+expect-file: edit-odd/a.txt :: kept by itself
+
+
+wait 3000
+edit a.txt 3 1
+type kept by itself
+key enter
+wait 1500
+mark saved-by-itself
+wait 400
+quit
