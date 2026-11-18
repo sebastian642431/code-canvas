@@ -50,6 +50,8 @@ pub enum Step {
     Ui(String),
     Tool(String),
     Touch(String),
+    Remove(String),
+    Renamed(String),
     Page(String),
     Back,
     Forward,
@@ -70,6 +72,7 @@ pub enum Step {
     Part(String),
     Find(String),
     Where,
+    Count,
     Quit,
 }
 
@@ -134,6 +137,8 @@ fn parse_step(text: &str) -> Option<Step> {
         "ui" => Step::Ui(arg.into()),
         "tool" => Step::Tool(arg.into()),
         "touch" => Step::Touch(arg.into()),
+        "remove" => Step::Remove(arg.into()),
+        "renamed" => Step::Renamed(arg.into()),
         "page" => Step::Page(arg.into()),
         "back" => Step::Back,
         "forward" => Step::Forward,
@@ -157,6 +162,7 @@ fn parse_step(text: &str) -> Option<Step> {
         }
         "find" => Step::Find(arg.into()),
         "where" => Step::Where,
+        "count" => Step::Count,
         "account" => Step::Account(arg.into()),
         "drag" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());

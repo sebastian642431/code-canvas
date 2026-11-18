@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
-use canvas_core::layout::{Layout, NodeKind, FILE_LABEL_H};
+use canvas_core::layout::{Layout, Node, NodeKind, FILE_LABEL_H, NONE};
 use canvas_core::{Rect, Repo, SourceFile, TokenCache, Tokens, Wrap, BLOCK_LINES, CHUNK_LINES, LINE_H};
 
 use crate::gpu_util::DynBuffer;
@@ -27,7 +27,7 @@ impl RectInstance {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct CodeInstance {
     pub file: u32,
     pub line_kind: u32,
@@ -85,7 +85,10 @@ pub struct SceneGpu {
     pub(crate) blocks: wgpu::Buffer,
     block_start: Vec<u32>,
     pub(crate) origins_bind: wgpu::BindGroup,
-    _origins: wgpu::Buffer,
+    origins_buf: wgpu::Buffer,
+    origins: Vec<[f32; 4]>,
+    slots: Vec<u32>,
+    free: Vec<u32>,
     pub(crate) dynamic: DynBuffer,
     pub(crate) dynamic_len: u32,
     pub(crate) frame_ranges: Vec<Range<u32>>,
@@ -144,51 +147,171 @@ pub struct SceneData {
     blocks: Vec<CodeInstance>,
     block_start: Vec<u32>,
     origins: Vec<[f32; 4]>,
+    slots: Vec<u32>,
+}
+
+fn frame_of(n: &Node, repo: &Repo, colors: &theme::Theme) -> RectInstance {
+    match n.kind {
+        NodeKind::Dir => RectInstance::new(
+            n.rect,
+            if n.collapsed { colors.dir_collapsed_fill } else { colors.dir_fill },
+            colors.dir_border(n.depth as usize),
+            6.0,
+            1.0,
+        ),
+        NodeKind::File(fi) => {
+            let fill = if repo.files[fi].note.is_some() { colors.card_note_fill } else { colors.card_fill };
+            RectInstance::new(n.rect, fill, colors.card_border, 3.0, 1.0)
+        }
+    }
+}
+
+fn origin_of(n: &Node) -> [f32; 4] {
+    let [x, y] = n.code_origin();
+    [x, y, n.col_stride, n.fold as f32]
+}
+
+fn blocks_of(n: &Node, repo: &Repo, slots: &[u32]) -> Vec<CodeInstance> {
+    let mut out = Vec::new();
+    if let NodeKind::File(fi) = n.kind {
+        push_blocks(slots[fi] as usize, &repo.files[fi], n.wrap.as_deref(), &mut out);
+    }
+    out
+}
+
+fn origins_of(layout: &Layout, slots: &[u32], len: usize) -> Vec<[f32; 4]> {
+    let mut origins = vec![[0.0f32; 4]; len.max(1)];
+    for (fi, &ni) in layout.file_node.iter().enumerate().filter(|(_, ni)| **ni != NONE) {
+        origins[slots[fi] as usize] = origin_of(&layout.nodes[ni as usize]);
+    }
+    origins
 }
 
 impl SceneData {
     pub fn build(repo: &Repo, layout: &Layout) -> Self {
+        let slots: Vec<u32> = (0..repo.files.len() as u32).collect();
         let mut frames = Vec::with_capacity(layout.nodes.len());
         let mut blocks = Vec::new();
         let mut block_start = Vec::with_capacity(layout.nodes.len() + 1);
         let colors = theme::get();
         for n in &layout.nodes {
             block_start.push(blocks.len() as u32);
-            match n.kind {
-                NodeKind::Dir => frames.push(RectInstance::new(
-                    n.rect,
-                    if n.collapsed { colors.dir_collapsed_fill } else { colors.dir_fill },
-                    colors.dir_border(n.depth as usize),
-                    6.0,
-                    1.0,
-                )),
-                NodeKind::File(fi) => {
-                    let f = &repo.files[fi];
-                    let fill = if f.note.is_some() { colors.card_note_fill } else { colors.card_fill };
-                    frames.push(RectInstance::new(n.rect, fill, colors.card_border, 3.0, 1.0));
-                    push_blocks(fi, f, n.wrap.as_deref(), &mut blocks);
-                }
+            frames.push(frame_of(n, repo, &colors));
+            if let NodeKind::File(fi) = n.kind {
+                push_blocks(fi, &repo.files[fi], n.wrap.as_deref(), &mut blocks);
             }
         }
         block_start.push(blocks.len() as u32);
-
-        let mut origins = vec![[0.0f32; 4]; repo.files.len().max(1)];
-        for (fi, &ni) in layout.file_node.iter().enumerate() {
-            if ni == canvas_core::layout::NONE {
-                continue;
-            }
-            let n = &layout.nodes[ni as usize];
-            let [x, y] = n.code_origin();
-            origins[fi] = [x, y, n.col_stride, n.fold as f32];
-        }
-        SceneData { frames, blocks, block_start, origins }
+        let origins = origins_of(layout, &slots, repo.files.len());
+        SceneData { frames, blocks, block_start, origins, slots }
     }
 }
+
+trait Moves {
+    fn copy(&mut self, from: u32, to: u32, count: u32);
+    fn write(&mut self, at: u32, data: &[CodeInstance]);
+}
+
+fn move_blocks(
+    old_start: &[u32],
+    from: &[u32],
+    mut fresh: impl FnMut(usize) -> Vec<CodeInstance>,
+    out: &mut impl Moves,
+) -> Vec<u32> {
+    let mut start = Vec::with_capacity(from.len() + 1);
+    let mut at = 0u32;
+    let mut run: Option<(u32, u32, u32)> = None;
+    let flush = |run: &mut Option<(u32, u32, u32)>, out: &mut dyn FnMut(u32, u32, u32)| {
+        if let Some((src, dst, count)) = run.take().filter(|r| r.2 > 0) {
+            out(src, dst, count);
+        }
+    };
+    let mut copies = Vec::new();
+    for (i, &was) in from.iter().enumerate() {
+        start.push(at);
+        if was == NONE {
+            flush(&mut run, &mut |s, d, c| copies.push((s, d, c)));
+            let data = fresh(i);
+            out.write(at, &data);
+            at += data.len() as u32;
+            continue;
+        }
+        let (a, b) = (old_start[was as usize], old_start[was as usize + 1]);
+        match &mut run {
+            Some((src, _, count)) if *src + *count == a => *count += b - a,
+            _ => {
+                flush(&mut run, &mut |s, d, c| copies.push((s, d, c)));
+                run = Some((a, at, b - a));
+            }
+        }
+        at += b - a;
+    }
+    flush(&mut run, &mut |s, d, c| copies.push((s, d, c)));
+    for (src, dst, count) in copies {
+        out.copy(src, dst, count);
+    }
+    start.push(at);
+    start
+}
+
+fn splice_blocks(start: &mut [u32], n: usize, data: &[CodeInstance], out: &mut impl Moves) {
+    let (a, b, end) = (start[n], start[n + 1], *start.last().unwrap_or(&0));
+    let len = data.len() as u32;
+    out.copy(0, 0, a);
+    out.write(a, data);
+    out.copy(b, a + len, end - b);
+    for s in &mut start[n + 1..] {
+        *s = *s + len - (b - a);
+    }
+}
+
+struct GpuMoves<'a> {
+    queue: &'a wgpu::Queue,
+    encoder: &'a mut wgpu::CommandEncoder,
+    old: &'a wgpu::Buffer,
+    new: &'a wgpu::Buffer,
+}
+
+const CODE: u64 = std::mem::size_of::<CodeInstance>() as u64;
+
+impl Moves for GpuMoves<'_> {
+    fn copy(&mut self, from: u32, to: u32, count: u32) {
+        if count > 0 {
+            self.encoder.copy_buffer_to_buffer(
+                self.old,
+                from as u64 * CODE,
+                self.new,
+                to as u64 * CODE,
+                count as u64 * CODE,
+            );
+        }
+    }
+
+    fn write(&mut self, at: u32, data: &[CodeInstance]) {
+        if !data.is_empty() {
+            self.queue.write_buffer(self.new, at as u64 * CODE, bytemuck::cast_slice(data));
+        }
+    }
+}
+
+fn buffer(device: &wgpu::Device, label: &str, bytes: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: bytes.max(16).next_multiple_of(4),
+        usage,
+        mapped_at_creation: false,
+    })
+}
+
+const BLOCKS: wgpu::BufferUsages =
+    wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST).union(wgpu::BufferUsages::COPY_SRC);
+const FRAMES: wgpu::BufferUsages = wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST);
+const ORIGINS: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_DST);
 
 impl SceneGpu {
     pub fn new(device: &wgpu::Device, origins_layout: &wgpu::BindGroupLayout, name: &str, data: SceneData) -> Self {
         use wgpu::util::DeviceExt;
-        let SceneData { frames, blocks, block_start, origins } = data;
+        let SceneData { frames, blocks, block_start, origins, slots } = data;
 
         let mk = |label, contents: &[u8], usage| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -197,14 +320,10 @@ impl SceneGpu {
                 usage,
             })
         };
-        let frames_buf = mk("frames", bytemuck::cast_slice(&frames), wgpu::BufferUsages::VERTEX);
-        let blocks_buf = mk("blocks", bytemuck::cast_slice(&blocks), wgpu::BufferUsages::VERTEX);
-        let origins_buf = mk("origins", bytemuck::cast_slice(&origins), wgpu::BufferUsages::STORAGE);
-        let origins_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("origins"),
-            layout: origins_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: origins_buf.as_entire_binding() }],
-        });
+        let frames_buf = mk("frames", bytemuck::cast_slice(&frames), FRAMES);
+        let blocks_buf = mk("blocks", bytemuck::cast_slice(&blocks), BLOCKS);
+        let origins_buf = mk("origins", bytemuck::cast_slice(&origins), ORIGINS);
+        let origins_bind = Self::bind(device, origins_layout, &origins_buf);
 
         log::info!(
             "scene '{}': {} nodes, {} block instances ({:.1} MB on GPU)",
@@ -221,13 +340,141 @@ impl SceneGpu {
             blocks: blocks_buf,
             block_start,
             origins_bind,
-            _origins: origins_buf,
+            origins_buf,
+            origins,
+            slots,
+            free: Vec::new(),
             dynamic: DynBuffer::new(device, "dynamic code", wgpu::BufferUsages::VERTEX),
             dynamic_len: 0,
             frame_ranges: Vec::new(),
             code_ranges: Vec::new(),
             scratch: Vec::new(),
         }
+    }
+
+    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, origins: &wgpu::Buffer) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("origins"),
+            layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: origins.as_entire_binding() }],
+        })
+    }
+
+    fn write_origins(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        span: Range<usize>,
+    ) {
+        let bytes = (self.origins.len() * 16) as u64;
+        if bytes > self.origins_buf.size() {
+            self.origins_buf = buffer(device, "origins", bytes.next_power_of_two(), ORIGINS);
+            self.origins_bind = Self::bind(device, layout, &self.origins_buf);
+            queue.write_buffer(&self.origins_buf, 0, bytemuck::cast_slice(&self.origins));
+        } else if !span.is_empty() {
+            queue.write_buffer(&self.origins_buf, span.start as u64 * 16, bytemuck::cast_slice(&self.origins[span]));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn card_changed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        origins_layout: &wgpu::BindGroupLayout,
+        repo: &Repo,
+        layout: &Layout,
+        file: usize,
+        changed: &[Range<u32>],
+    ) {
+        let colors = theme::get();
+        let (mut low, mut high) = (usize::MAX, 0);
+        for range in changed {
+            let nodes = &layout.nodes[range.start as usize..range.end as usize];
+            let frames: Vec<RectInstance> = nodes.iter().map(|n| frame_of(n, repo, &colors)).collect();
+            queue.write_buffer(&self.frames, range.start as u64 * 32, bytemuck::cast_slice(&frames));
+            for n in nodes {
+                if let NodeKind::File(fi) = n.kind {
+                    let slot = self.slots[fi] as usize;
+                    self.origins[slot] = origin_of(n);
+                    (low, high) = (low.min(slot), high.max(slot + 1));
+                }
+            }
+        }
+        self.write_origins(device, queue, origins_layout, low.min(high)..high);
+        let node = layout.file_node[file];
+        if node == NONE {
+            return;
+        }
+        let n = node as usize;
+        let data = blocks_of(&layout.nodes[n], repo, &self.slots);
+        let (a, b) = (self.block_start[n], self.block_start[n + 1]);
+        if data.len() as u32 == b - a {
+            if !data.is_empty() {
+                queue.write_buffer(&self.blocks, a as u64 * CODE, bytemuck::cast_slice(&data));
+            }
+            return;
+        }
+        let total = self.block_count + data.len() as u32 - (b - a);
+        let new = buffer(device, "blocks", total as u64 * CODE, BLOCKS);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("blocks") });
+        let mut moves = GpuMoves { queue, encoder: &mut encoder, old: &self.blocks, new: &new };
+        splice_blocks(&mut self.block_start, n, &data, &mut moves);
+        queue.submit([encoder.finish()]);
+        (self.blocks, self.block_count) = (new, total);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn relaid(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        origins_layout: &wgpu::BindGroupLayout,
+        repo: &Repo,
+        layout: &Layout,
+        from: &[u32],
+        file: usize,
+        made: bool,
+    ) {
+        match made {
+            true => {
+                let slot = self.free.pop().unwrap_or(self.origins.len() as u32);
+                if slot as usize == self.origins.len() {
+                    self.origins.push([0.0; 4]);
+                }
+                self.slots.insert(file, slot);
+            }
+            false => self.free.push(self.slots.remove(file)),
+        }
+        let colors = theme::get();
+        let frames: Vec<RectInstance> = layout.nodes.iter().map(|n| frame_of(n, repo, &colors)).collect();
+        if (frames.len() * 32) as u64 > self.frames.size() {
+            self.frames = buffer(device, "frames", (frames.len() * 32).next_power_of_two() as u64, FRAMES);
+        }
+        queue.write_buffer(&self.frames, 0, bytemuck::cast_slice(&frames));
+        self.frame_count = frames.len() as u32;
+
+        let total: u32 = from
+            .iter()
+            .enumerate()
+            .map(|(i, &was)| match was {
+                NONE => blocks_of(&layout.nodes[i], repo, &self.slots).len() as u32,
+                was => self.block_start[was as usize + 1] - self.block_start[was as usize],
+            })
+            .sum();
+        let new = buffer(device, "blocks", total as u64 * CODE, BLOCKS);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("blocks") });
+        let mut moves = GpuMoves { queue, encoder: &mut encoder, old: &self.blocks, new: &new };
+        let slots = &self.slots;
+        self.block_start =
+            move_blocks(&self.block_start, from, |i| blocks_of(&layout.nodes[i], repo, slots), &mut moves);
+        queue.submit([encoder.finish()]);
+        (self.blocks, self.block_count) = (new, total);
+
+        let len = self.origins.len();
+        self.origins = origins_of(layout, &self.slots, len);
+        self.write_origins(device, queue, origins_layout, 0..len);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -254,7 +501,7 @@ impl SceneGpu {
             }
             Lod::Lines | Lod::Tokens => {
                 self.scratch.clear();
-                let scratch = &mut self.scratch;
+                let (scratch, slots) = (&mut self.scratch, &self.slots);
                 layout.visit_visible(view, |_, n| {
                     if let NodeKind::File(fi) = n.kind {
                         let f = &repo.files[fi];
@@ -264,10 +511,11 @@ impl SceneGpu {
                                 let cl = f.chunk_lines(c);
                                 let r = lines.start.max(cl.start)..lines.end.min(cl.end);
                                 let wrap = n.wrap.as_deref();
+                                let slot = slots[fi] as usize;
                                 if lod == Lod::Lines {
-                                    push_lines(fi, wrap, toks, cl.start, r, scratch);
+                                    push_lines(slot, wrap, toks, cl.start, r, scratch);
                                 } else {
-                                    push_tokens(fi, wrap, toks, cl.start, r, scratch);
+                                    push_tokens(slot, wrap, toks, cl.start, r, scratch);
                                 }
                             }
                         }
@@ -369,5 +617,112 @@ fn cull_ranges(layout: &Layout, view: &Rect, start: impl Fn(usize) -> u32, out: 
             push(start(i)..start(i + 1), out);
             i += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use canvas_core::scan::{scan, ScanOptions};
+    use canvas_core::LayoutFilter;
+
+    use super::*;
+
+    struct Mirror {
+        old: Vec<CodeInstance>,
+        new: Vec<CodeInstance>,
+    }
+
+    impl Moves for Mirror {
+        fn copy(&mut self, from: u32, to: u32, count: u32) {
+            let (from, to, count) = (from as usize, to as usize, count as usize);
+            self.new[to..to + count].copy_from_slice(&self.old[from..from + count]);
+        }
+
+        fn write(&mut self, at: u32, data: &[CodeInstance]) {
+            self.new[at as usize..at as usize + data.len()].copy_from_slice(data);
+        }
+    }
+
+    fn per_file(
+        repo: &Repo,
+        layout: &Layout,
+        blocks: &[CodeInstance],
+        start: &[u32],
+        slots: &[u32],
+    ) -> HashMap<String, Vec<(String, u32, u32)>> {
+        let file_of: HashMap<u32, usize> = slots.iter().enumerate().map(|(fi, &slot)| (slot, fi)).collect();
+        let mut out = HashMap::new();
+        for (n, node) in layout.nodes.iter().enumerate() {
+            let NodeKind::File(fi) = node.kind else { continue };
+            let mine = &blocks[start[n] as usize..start[n + 1] as usize];
+            let named = mine.iter().map(|b| (repo.files[file_of[&b.file]].rel_path.clone(), b.line_kind, b.col_cols));
+            out.insert(repo.files[fi].rel_path.clone(), named.collect());
+        }
+        out
+    }
+
+    fn same_as_built(repo: &Repo, layout: &Layout, blocks: &[CodeInstance], start: &[u32], slots: &[u32]) {
+        let built = SceneData::build(repo, layout);
+        assert_eq!(start.len(), layout.nodes.len() + 1);
+        assert_eq!(*start.last().unwrap() as usize, blocks.len());
+        assert_eq!(
+            per_file(repo, layout, blocks, start, slots),
+            per_file(repo, layout, &built.blocks, &built.block_start, &built.slots)
+        );
+    }
+
+    #[test]
+    fn blocks_moved_on_the_gpu_are_the_ones_built_again() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-scene-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = |n: usize| (0..n).map(|i| format!("fn f{i}() {{ {} }}\n", "x".repeat(i % 40))).collect::<String>();
+        for (path, lines) in
+            [("a/one.rs", 40), ("a/two.rs", 90), ("b/three.rs", 17), ("b/c/four.rs", 64), ("top.rs", 5)]
+        {
+            std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(path), text(lines)).unwrap();
+        }
+        let opts = ScanOptions::default();
+        let filter = LayoutFilter::default();
+        let mut repo = scan(&dir, &opts, None);
+        let mut layout = Layout::build(&repo);
+        let data = SceneData::build(&repo, &layout);
+        let (mut blocks, mut start, mut slots) = (data.blocks, data.block_start, data.slots);
+
+        std::fs::write(dir.join("a/two.rs"), text(300)).unwrap();
+        let at = repo.file_index("a/two.rs").unwrap();
+        repo.reload_file(at, &opts);
+        layout.resize_file(&repo, &filter, at).unwrap();
+        let n = layout.file_node[at] as usize;
+        let fresh = blocks_of(&layout.nodes[n], &repo, &slots);
+        let total = blocks.len() + fresh.len() - (start[n + 1] - start[n]) as usize;
+        let mut mirror = Mirror { old: blocks, new: vec![CodeInstance::zeroed(); total] };
+        splice_blocks(&mut start, n, &fresh, &mut mirror);
+        blocks = mirror.new;
+        same_as_built(&repo, &layout, &blocks, &start, &slots);
+
+        std::fs::write(dir.join("b/c/new.rs"), text(33)).unwrap();
+        let at = repo.add_file("b/c/new.rs", &opts).unwrap();
+        let from = layout.insert_file(&repo, &filter, at).unwrap();
+        slots.insert(at, slots.len() as u32);
+        let mut mirror = Mirror { old: blocks, new: vec![CodeInstance::zeroed(); 100_000] };
+        start = move_blocks(&start, &from, |i| blocks_of(&layout.nodes[i], &repo, &slots), &mut mirror);
+        blocks = mirror.new;
+        blocks.truncate(*start.last().unwrap() as usize);
+        same_as_built(&repo, &layout, &blocks, &start, &slots);
+
+        std::fs::remove_file(dir.join("a/one.rs")).unwrap();
+        let at = repo.file_index("a/one.rs").unwrap();
+        repo.remove_file(at);
+        let from = layout.remove_file(&repo, &filter, at, "a/one.rs").unwrap();
+        slots.remove(at);
+        let mut mirror = Mirror { old: blocks, new: vec![CodeInstance::zeroed(); 100_000] };
+        start = move_blocks(&start, &from, |i| blocks_of(&layout.nodes[i], &repo, &slots), &mut mirror);
+        blocks = mirror.new;
+        blocks.truncate(*start.last().unwrap() as usize);
+        same_as_built(&repo, &layout, &blocks, &start, &slots);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

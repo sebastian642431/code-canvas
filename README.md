@@ -349,6 +349,20 @@ lines, 782 MB of text), same machine:
 | Relations of a name (996 of them) | 10 ms | 30 ms |
 | A phrase searched in every file | 12 ms | 6 ms |
 
+**A change of one file costs that file**, not the folder: its card and the folders
+around it move, its symbols and imports are taken out and put back, and on the GPU
+only what moved is written. On a folder of 30,721 files (UI thread, release build):
+
+| | before | now |
+|---|---|---|
+| A line typed (the card grows) | 40 ms | **0.2 ms** |
+| A file saved | 73 ms | **9 ms**, most of it reading the file back |
+| A file changed by another program | 85 ms | **1 ms** |
+| A file made / deleted | 0.75 s (a rescan) | **10 ms** |
+
+On the cargo registry (53,028 files, 3.37 M symbols) a file read again went from
+342 ms to 3 ms.
+
 How (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): parallel walk and load;
 tokens produced on demand per visible chunk instead of stored; static geometry uploaded
 once and culled by contiguous folder ranges; near views built only from visible lines;
@@ -359,7 +373,8 @@ Scenarios that run the real app (no mouse or keyboard of yours) are in
 
 Measure it yourself: `CODE_CANVAS_BENCH=1` logs frame statistics while the camera
 sweeps the canvas; `cargo run --release -p canvas-core --example scan_bench -- <folder>`
-times each loading phase.
+times each loading phase; `cargo run --release -p canvas-render --example update_bench
+-- <folder>` times one file changed against building everything again.
 
 ## Roadmap
 
@@ -408,7 +423,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       after the scan and read again when it is looked at, searched or related.
 - [x] What a scan finds is kept on disk: a folder opened again reads only the files
       that changed (`F5` reads everything again).
-- [ ] Cheaper single-file updates on huge folders (today they rebuild the whole layout).
+- [x] One file typed, saved, changed by another program, made, deleted or renamed
+      updates that file alone: its card, the folders around it, its symbols and its
+      imports, without reading or laying out the rest.
 - [x] The symbol index is made in parallel, with no string kept per name.
 - [ ] Memory-mapped sources for 1M+ file monorepos.
 - [x] A settings window: theme, every colour, every shortcut, commit messages.

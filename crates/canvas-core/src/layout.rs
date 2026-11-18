@@ -84,6 +84,8 @@ pub struct Node {
     pub collapsed: bool,
     pub files: u32,
     pub lines: u64,
+    pub offset: [f32; 2],
+    pub slot: [f32; 2],
 }
 
 pub fn rows_per_column(fold: usize) -> usize {
@@ -240,7 +242,7 @@ impl Node {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Layout {
     pub nodes: Vec<Node>,
     pub bounds: Rect,
@@ -263,6 +265,95 @@ struct Laid {
     paths: Vec<String>,
     inner_files: Vec<u32>,
     children: Vec<(f32, f32, Laid)>,
+    kept: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Shift {
+    Insert(usize),
+    Remove(usize),
+}
+
+impl Shift {
+    fn new_of(self, old: usize) -> Option<usize> {
+        match self {
+            Shift::Insert(k) => Some(old + (old >= k) as usize),
+            Shift::Remove(k) if old == k => None,
+            Shift::Remove(k) => Some(old - (old > k) as usize),
+        }
+    }
+
+    fn old_of(self, new: usize) -> Option<usize> {
+        match self {
+            Shift::Insert(k) if new == k => None,
+            Shift::Insert(k) => Some(new - (new > k) as usize),
+            Shift::Remove(k) => Some(new + (new >= k) as usize),
+        }
+    }
+}
+
+struct Relay<'a> {
+    old: &'a Layout,
+    on_path: HashSet<String>,
+    shift: Shift,
+}
+
+fn ancestors_of(rel_path: &str) -> HashSet<String> {
+    let mut out: HashSet<String> = [String::new()].into();
+    let mut at = 0;
+    while let Some(slash) = rel_path[at..].find('/') {
+        out.insert(rel_path[..at + slash].to_string());
+        at += slash + 1;
+    }
+    out
+}
+
+fn card_laid(repo: &Repo, fi: usize) -> Laid {
+    let f = &repo.files[fi];
+    let wrap = wrap_of(f);
+    let (w, h, col_stride) = card_size(repo, fi, wrap.as_deref());
+    Laid {
+        w,
+        h: h + FILE_LABEL_H,
+        kind: NodeKind::File(fi),
+        name: f.name.clone(),
+        rel_path: f.rel_path.clone(),
+        col_stride,
+        wrap,
+        collapsed: false,
+        files: 1,
+        lines: f.line_count() as u64,
+        paths: Vec::new(),
+        inner_files: Vec::new(),
+        children: Vec::new(),
+        kept: None,
+    }
+}
+
+fn kept_laid(old: &Layout, n: u32, kind: NodeKind, name: String) -> Laid {
+    let node = &old.nodes[n as usize];
+    Laid {
+        w: node.slot[0],
+        h: node.slot[1],
+        kind,
+        name,
+        rel_path: String::new(),
+        col_stride: 0.0,
+        wrap: None,
+        collapsed: node.collapsed,
+        files: node.files,
+        lines: node.lines,
+        paths: Vec::new(),
+        inner_files: Vec::new(),
+        children: Vec::new(),
+        kept: Some(n),
+    }
+}
+
+fn collapsed_size(repo: &Repo, inner_files: &[u32]) -> (f32, f32, u64) {
+    let lines: u64 = inner_files.iter().map(|&f| repo.files[f as usize].line_count() as u64).sum();
+    let side = ((lines as f32).sqrt() * 6.0).clamp(140.0, 1600.0);
+    (side * 1.5, side, lines)
 }
 
 fn card_size(repo: &Repo, idx: usize, wrap: Option<&Wrap>) -> (f32, f32, f32) {
@@ -295,7 +386,13 @@ fn collect_inner(dir: &Dir, repo: &Repo, filter: &LayoutFilter, files: &mut Vec<
     }
 }
 
-fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Option<Laid> {
+fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool, relay: Option<&Relay>) -> Option<Laid> {
+    if let Some(relay) = relay.filter(|relay| !is_root && !relay.on_path.contains(&dir.rel_path)) {
+        let &n = relay.old.dir_node.get(&dir.rel_path)?;
+        let deepest = &relay.old.nodes[n as usize].rel_path;
+        let above = dir.rel_path.len() - dir.name.len();
+        return Some(kept_laid(relay.old, n, NodeKind::Dir, deepest[above..].to_string()));
+    }
     if !is_root && filter.hidden.contains(&dir.rel_path) {
         return None;
     }
@@ -307,11 +404,10 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
         if inner_files.is_empty() {
             return None;
         }
-        let lines: u64 = inner_files.iter().map(|&f| repo.files[f as usize].line_count() as u64).sum();
-        let side = ((lines as f32).sqrt() * 6.0).clamp(140.0, 1600.0);
+        let (w, h, lines) = collapsed_size(repo, &inner_files);
         return Some(Laid {
-            w: side * 1.5,
-            h: side,
+            w,
+            h,
             kind: NodeKind::Dir,
             name: dir.name.clone(),
             rel_path: dir.rel_path.clone(),
@@ -323,10 +419,11 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
             paths,
             inner_files,
             children: Vec::new(),
+            kept: None,
         });
     }
 
-    let mut items: Vec<Laid> = dir.dirs.iter().filter_map(|d| lay_dir(d, repo, filter, false)).collect();
+    let mut items: Vec<Laid> = dir.dirs.iter().filter_map(|d| lay_dir(d, repo, filter, false, relay)).collect();
     let own_files: Vec<usize> = dir.files.iter().copied().filter(|&fi| file_visible(repo, fi, filter)).collect();
 
     if !is_root && own_files.is_empty() && items.len() == 1 {
@@ -340,46 +437,24 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
     }
 
     for &fi in &own_files {
-        let f = &repo.files[fi];
-        let wrap = wrap_of(f);
-        let (w, h, col_stride) = card_size(repo, fi, wrap.as_deref());
-        items.push(Laid {
-            w,
-            h: h + FILE_LABEL_H,
-            kind: NodeKind::File(fi),
-            name: f.name.clone(),
-            rel_path: f.rel_path.clone(),
-            col_stride,
-            wrap,
-            collapsed: false,
-            files: 1,
-            lines: f.line_count() as u64,
-            paths: Vec::new(),
-            inner_files: Vec::new(),
-            children: Vec::new(),
+        let kept = relay.and_then(|relay| {
+            let old = relay.shift.old_of(fi)?;
+            let n = *relay.old.file_node.get(old)?;
+            (n != NONE).then(|| kept_laid(relay.old, n, NodeKind::File(fi), repo.files[fi].name.clone()))
         });
+        items.push(kept.unwrap_or_else(|| card_laid(repo, fi)));
     }
 
     let files = items.iter().map(|c| c.files).sum();
     let lines = items.iter().map(|c| c.lines).sum();
-    let area: f32 = items.iter().map(|c| (c.w + GAP) * (c.h + GAP)).sum();
-    let widest = items.iter().map(|c| c.w).fold(0.0, f32::max);
-    let target_w = (area * ASPECT).sqrt().max(widest);
-
-    items.sort_by(|a, b| b.h.total_cmp(&a.h));
-    let mut sky = Skyline::new(target_w);
-    let mut placed = Vec::with_capacity(items.len());
-    let (mut content_w, mut content_h) = (0.0f32, 0.0f32);
-    for item in items {
-        let (ix, iy) = sky.place(item.w + GAP, item.h + GAP);
-        content_w = content_w.max(ix + item.w);
-        content_h = content_h.max(iy + item.h);
-        placed.push((DIR_PAD + ix, DIR_HEADER + iy, item));
-    }
+    let sizes: Vec<[f32; 2]> = items.iter().map(|c| [c.w, c.h]).collect();
+    let (order, places, w, h) = pack(&sizes);
+    let mut items: Vec<Option<Laid>> = items.into_iter().map(Some).collect();
+    let placed = order.into_iter().map(|i| (places[i][0], places[i][1], items[i].take().unwrap())).collect();
 
     Some(Laid {
-        w: content_w.max(120.0) + DIR_PAD * 2.0,
-        h: content_h.max(40.0) + DIR_HEADER + DIR_PAD,
+        w,
+        h,
         kind: NodeKind::Dir,
         name: dir.name.clone(),
         rel_path: dir.rel_path.clone(),
@@ -391,7 +466,28 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
         paths: vec![dir.rel_path.clone()],
         inner_files: Vec::new(),
         children: placed,
+        kept: None,
     })
+}
+
+fn pack(sizes: &[[f32; 2]]) -> (Vec<usize>, Vec<[f32; 2]>, f32, f32) {
+    let area: f32 = sizes.iter().map(|[w, h]| (w + GAP) * (h + GAP)).sum();
+    let widest = sizes.iter().map(|s| s[0]).fold(0.0, f32::max);
+    let target_w = (area * ASPECT).sqrt().max(widest);
+
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by(|&a, &b| sizes[b][1].total_cmp(&sizes[a][1]));
+    let mut sky = Skyline::new(target_w);
+    let mut places = vec![[0.0f32; 2]; sizes.len()];
+    let (mut content_w, mut content_h) = (0.0f32, 0.0f32);
+    for &i in &order {
+        let [w, h] = sizes[i];
+        let (ix, iy) = sky.place(w + GAP, h + GAP);
+        content_w = content_w.max(ix + w);
+        content_h = content_h.max(iy + h);
+        places[i] = [DIR_PAD + ix, DIR_HEADER + iy];
+    }
+    (order, places, content_w.max(120.0) + DIR_PAD * 2.0, content_h.max(40.0) + DIR_HEADER + DIR_PAD)
 }
 
 struct Skyline {
@@ -459,42 +555,120 @@ impl Skyline {
     }
 }
 
-fn flatten(l: Laid, x: f32, y: f32, depth: u16, parent: Option<u32>, out: &mut Layout) {
-    let me = out.nodes.len() as u32;
-    let rect = match l.kind {
-        NodeKind::File(fi) => {
+fn place_rect(kind: NodeKind, x: f32, y: f32, slot: [f32; 2]) -> Rect {
+    match kind {
+        NodeKind::File(_) => Rect::new(x, y + FILE_LABEL_H, slot[0], slot[1] - FILE_LABEL_H),
+        NodeKind::Dir => Rect::new(x, y, slot[0], slot[1]),
+    }
+}
+
+struct Flat<'a> {
+    out: Layout,
+    old: Option<&'a mut Layout>,
+    shift: Option<Shift>,
+    from: Vec<u32>,
+}
+
+impl Flat<'_> {
+    fn flatten(&mut self, l: Laid, at: [f32; 2], offset: [f32; 2], depth: u16, parent: Option<u32>) {
+        if let Some(kept) = l.kept {
+            return self.keep(l, kept as usize, at, offset, depth, parent);
+        }
+        let out = &mut self.out;
+        let me = out.nodes.len() as u32;
+        if let NodeKind::File(fi) = l.kind {
             out.file_node[fi] = me;
             out.file_anchor[fi] = me;
-            Rect::new(x, y + FILE_LABEL_H, l.w, l.h - FILE_LABEL_H)
         }
-        NodeKind::Dir => Rect::new(x, y, l.w, l.h),
-    };
-    for fi in &l.inner_files {
-        out.file_anchor[*fi as usize] = me;
+        for fi in &l.inner_files {
+            out.file_anchor[*fi as usize] = me;
+        }
+        for p in l.paths {
+            out.dir_node.insert(p, me);
+        }
+        out.nodes.push(Node {
+            kind: l.kind,
+            name: l.name,
+            rel_path: l.rel_path,
+            rect: place_rect(l.kind, at[0], at[1], [l.w, l.h]),
+            depth,
+            parent,
+            subtree_end: 0,
+            col_stride: l.col_stride,
+            fold: FOLD_LINES as u32,
+            gutter: 0.0,
+            wrap: l.wrap,
+            collapsed: l.collapsed,
+            files: l.files,
+            lines: l.lines,
+            offset,
+            slot: [l.w, l.h],
+        });
+        self.from.push(NONE);
+        for (cx, cy, child) in l.children {
+            self.flatten(child, [at[0] + cx, at[1] + cy], [cx, cy], depth + 1, Some(me));
+        }
+        self.out.nodes[me as usize].subtree_end = self.out.nodes.len() as u32;
     }
-    for p in l.paths {
-        out.dir_node.insert(p, me);
+
+    fn keep(&mut self, l: Laid, kept: usize, at: [f32; 2], offset: [f32; 2], depth: u16, parent: Option<u32>) {
+        let (Some(old), Some(shift)) = (self.old.as_deref_mut(), self.shift) else { return };
+        let out = &mut self.out;
+        let base = out.nodes.len() as u32;
+        let end = old.nodes[kept].subtree_end as usize;
+        let top_depth = old.nodes[kept].depth;
+        let mut name = Some(l.name);
+        for j in kept..end {
+            let src = &mut old.nodes[j];
+            let (up, offset, [x, y]) = match j == kept {
+                true => (parent, offset, at),
+                false => {
+                    let up = src.parent.map(|p| p - kept as u32 + base);
+                    let above = &out.nodes[up.unwrap_or(base) as usize];
+                    (up, src.offset, [above.rect.x + src.offset[0], above.rect.y + src.offset[1]])
+                }
+            };
+            let kind = match src.kind {
+                NodeKind::File(fi) => NodeKind::File(shift.new_of(fi).unwrap_or(fi)),
+                NodeKind::Dir => NodeKind::Dir,
+            };
+            let me = out.nodes.len() as u32;
+            if let NodeKind::File(fi) = kind {
+                out.file_node[fi] = me;
+                out.file_anchor[fi] = me;
+            }
+            out.nodes.push(Node {
+                kind,
+                name: name.take().unwrap_or_else(|| std::mem::take(&mut src.name)),
+                rel_path: std::mem::take(&mut src.rel_path),
+                rect: place_rect(kind, x, y, src.slot),
+                depth: depth + (src.depth - top_depth),
+                parent: up,
+                subtree_end: src.subtree_end - kept as u32 + base,
+                col_stride: src.col_stride,
+                fold: src.fold,
+                gutter: src.gutter,
+                wrap: src.wrap.take(),
+                collapsed: src.collapsed,
+                files: src.files,
+                lines: src.lines,
+                offset,
+                slot: src.slot,
+            });
+            self.from.push(j as u32);
+        }
+        for p in l.paths {
+            out.dir_node.insert(p, base);
+        }
     }
-    out.nodes.push(Node {
-        kind: l.kind,
-        name: l.name,
-        rel_path: l.rel_path,
-        rect,
-        depth,
-        parent,
-        subtree_end: 0,
-        col_stride: l.col_stride,
-        fold: FOLD_LINES as u32,
-        gutter: 0.0,
-        wrap: l.wrap,
-        collapsed: l.collapsed,
-        files: l.files,
-        lines: l.lines,
-    });
-    for (cx, cy, child) in l.children {
-        flatten(child, x + cx, y + cy, depth + 1, Some(me), out);
+}
+
+fn find_dir<'t>(tree: &'t Dir, rel_path: &str) -> Option<&'t Dir> {
+    let mut dir = tree;
+    for part in rel_path.split('/').filter(|part| !part.is_empty()) {
+        dir = dir.dirs.iter().find(|d| d.name == part)?;
     }
-    out.nodes[me as usize].subtree_end = out.nodes.len() as u32;
+    Some(dir)
 }
 
 impl Layout {
@@ -502,21 +676,247 @@ impl Layout {
         Self::build_filtered(repo, &LayoutFilter::default())
     }
 
-    pub fn build_filtered(repo: &Repo, filter: &LayoutFilter) -> Layout {
-        let laid = lay_dir(&repo.tree, repo, filter, true).expect("the root is always laid out");
-        let mut out = Layout {
+    fn empty(repo: &Repo, laid: &Laid) -> Layout {
+        Layout {
             nodes: Vec::new(),
             bounds: Rect::new(0.0, 0.0, laid.w, laid.h),
             file_node: vec![NONE; repo.files.len()],
             file_anchor: vec![NONE; repo.files.len()],
             dir_node: HashMap::new(),
-        };
-        flatten(laid, 0.0, 0.0, 0, None, &mut out);
-        let Layout { nodes, file_node, .. } = &mut out;
+        }
+    }
+
+    fn finish(&mut self, repo: &Repo, fresh: impl Fn(usize) -> bool) {
+        let Layout { nodes, file_node, .. } = self;
         for (file, &node) in file_node.iter().enumerate().filter(|(_, node)| **node != NONE) {
+            if !fresh(node as usize) {
+                continue;
+            }
             let n = &mut nodes[node as usize];
             n.fold = n.wrap.as_ref().map_or(rows_per_column(repo.files[file].fold) as u32, |wrap| wrap.per());
             n.gutter = gutter_of(&repo.files[file]);
+        }
+    }
+
+    pub fn build_filtered(repo: &Repo, filter: &LayoutFilter) -> Layout {
+        let laid = lay_dir(&repo.tree, repo, filter, true, None).expect("the root is always laid out");
+        let mut flat = Flat { out: Self::empty(repo, &laid), old: None, shift: None, from: Vec::new() };
+        flat.flatten(laid, [0.0, 0.0], [0.0, 0.0], 0, None);
+        let mut out = flat.out;
+        out.finish(repo, |_| true);
+        out
+    }
+
+    pub fn insert_file(&mut self, repo: &Repo, filter: &LayoutFilter, file: usize) -> Option<Vec<u32>> {
+        let rel_path = repo.files.get(file)?.rel_path.clone();
+        self.relay(repo, filter, &rel_path, Shift::Insert(file))
+    }
+
+    pub fn remove_file(&mut self, repo: &Repo, filter: &LayoutFilter, file: usize, rel_path: &str) -> Option<Vec<u32>> {
+        self.relay(repo, filter, rel_path, Shift::Remove(file))
+    }
+
+    fn relay(&mut self, repo: &Repo, filter: &LayoutFilter, rel_path: &str, shift: Shift) -> Option<Vec<u32>> {
+        if filter.only_files.is_some() || self.nodes.is_empty() {
+            return None;
+        }
+        let laid = {
+            let relay = Relay { old: self, on_path: ancestors_of(rel_path), shift };
+            lay_dir(&repo.tree, repo, filter, true, Some(&relay)).expect("the root is always laid out")
+        };
+        let on_path = ancestors_of(rel_path);
+        let mut old = std::mem::take(self);
+        let mut flat =
+            Flat { out: Self::empty(repo, &laid), old: Some(&mut old), shift: Some(shift), from: Vec::new() };
+        flat.flatten(laid, [0.0, 0.0], [0.0, 0.0], 0, None);
+        let Flat { mut out, from, .. } = flat;
+        let mut new_of_old = vec![NONE; old.nodes.len()];
+        for (new, &was) in from.iter().enumerate().filter(|(_, was)| **was != NONE) {
+            new_of_old[was as usize] = new as u32;
+        }
+        for (path, was) in old.dir_node.drain() {
+            let now = new_of_old[was as usize];
+            if now != NONE && !on_path.contains(&path) {
+                out.dir_node.entry(path).or_insert(now);
+            }
+        }
+        for (was_file, &was) in old.file_anchor.iter().enumerate().filter(|(_, was)| **was != NONE) {
+            let (Some(file), now) = (shift.new_of(was_file), new_of_old[was as usize]) else { continue };
+            if now != NONE && out.file_anchor[file] == NONE {
+                out.file_anchor[file] = now;
+            }
+        }
+        out.finish(repo, |node| from[node] == NONE);
+        *self = out;
+        Some(from)
+    }
+
+    pub fn resize_file(&mut self, repo: &Repo, filter: &LayoutFilter, file: usize) -> Option<Vec<Range<u32>>> {
+        if filter.only_files.is_some() {
+            return None;
+        }
+        let anchor = *self.file_anchor.get(file)?;
+        if anchor == NONE {
+            return Some(Vec::new());
+        }
+        let n = anchor as usize;
+        let (before, had) = (self.nodes[n].slot, self.nodes[n].lines);
+        match self.nodes[n].kind {
+            NodeKind::File(fi) => {
+                let f = &repo.files[fi];
+                let wrap = wrap_of(f);
+                let (w, h, col_stride) = card_size(repo, fi, wrap.as_deref());
+                let node = &mut self.nodes[n];
+                node.slot = [w, h + FILE_LABEL_H];
+                node.col_stride = col_stride;
+                node.fold = wrap.as_ref().map_or(rows_per_column(f.fold) as u32, |wrap| wrap.per());
+                node.gutter = gutter_of(f);
+                node.wrap = wrap;
+                node.lines = f.line_count() as u64;
+            }
+            NodeKind::Dir => {
+                let dir = find_dir(&repo.tree, &self.nodes[n].rel_path)?;
+                let (mut inner, mut paths) = (Vec::new(), Vec::new());
+                collect_inner(dir, repo, filter, &mut inner, &mut paths);
+                let (w, h, lines) = collapsed_size(repo, &inner);
+                let node = &mut self.nodes[n];
+                (node.slot, node.lines, node.files) = ([w, h], lines, inner.len() as u32);
+            }
+        }
+        let now = self.nodes[n].lines;
+        let mut up = self.nodes[n].parent;
+        while let Some(p) = up.map(|p| p as usize) {
+            self.nodes[p].lines = self.nodes[p].lines + now - had;
+            up = self.nodes[p].parent;
+        }
+        if self.nodes[n].slot == before {
+            return Some(std::iter::once(n as u32..n as u32 + 1).collect());
+        }
+        let (mut chain, mut moved) = (vec![n], Vec::new());
+        while let Some(p) = self.nodes[*chain.last().unwrap()].parent.map(|p| p as usize) {
+            let before = self.nodes[p].slot;
+            moved.push(self.repack(repo, p)?);
+            chain.push(p);
+            if self.nodes[p].slot == before {
+                break;
+            }
+        }
+        let mut changed = Vec::new();
+        for level in (0..chain.len()).rev() {
+            let c = chain[level];
+            let was = [self.nodes[c].rect.x, self.nodes[c].rect.y];
+            if level + 1 < chain.len() || c == 0 {
+                self.place(c);
+            }
+            let shifted = was != [self.nodes[c].rect.x, self.nodes[c].rect.y];
+            changed.push(c as u32..c as u32 + 1);
+            let Some(below) = level.checked_sub(1).map(|l| chain[l]) else { continue };
+            let movers: Vec<usize> = match shifted {
+                true => self.children(c).collect(),
+                false => moved[level - 1].clone(),
+            };
+            for m in movers.into_iter().filter(|&m| m != below) {
+                let end = self.nodes[m].subtree_end as usize;
+                for i in m..end {
+                    self.place(i);
+                }
+                changed.push(m as u32..end as u32);
+            }
+        }
+        self.bounds = Rect::new(0.0, 0.0, self.nodes[0].slot[0], self.nodes[0].slot[1]);
+        changed.sort_by_key(|r| r.start);
+        Some(changed)
+    }
+
+    fn place(&mut self, i: usize) {
+        let [x, y] = match self.nodes[i].parent {
+            Some(p) => {
+                let (above, n) = (&self.nodes[p as usize], &self.nodes[i]);
+                [above.rect.x + n.offset[0], above.rect.y + n.offset[1]]
+            }
+            None => [0.0, 0.0],
+        };
+        let n = &mut self.nodes[i];
+        n.rect = place_rect(n.kind, x, y, n.slot);
+    }
+
+    fn children(&self, p: usize) -> impl Iterator<Item = usize> + '_ {
+        let end = self.nodes[p].subtree_end as usize;
+        std::iter::successors(Some(p + 1).filter(|&c| c < end), move |&c| {
+            Some(self.nodes[c].subtree_end as usize).filter(|&next| next < end)
+        })
+    }
+
+    fn repack(&mut self, repo: &Repo, p: usize) -> Option<Vec<usize>> {
+        let dir = find_dir(&repo.tree, &self.nodes[p].rel_path)?;
+        let is_child = |n: u32| self.nodes[n as usize].parent == Some(p as u32);
+        let mut items: Vec<usize> = Vec::new();
+        for d in &dir.dirs {
+            if let Some(&c) = self.dir_node.get(&d.rel_path).filter(|&&c| is_child(c)) {
+                items.push(c as usize);
+            }
+        }
+        for &fi in &dir.files {
+            let c = self.file_node[fi];
+            if c != NONE && is_child(c) {
+                items.push(c as usize);
+            }
+        }
+        if items.len() != self.children(p).count() {
+            return None;
+        }
+        let sizes: Vec<[f32; 2]> = items.iter().map(|&c| self.nodes[c].slot).collect();
+        let (_, places, w, h) = pack(&sizes);
+        let mut moved = Vec::new();
+        for (&c, place) in items.iter().zip(places) {
+            if self.nodes[c].offset != place {
+                self.nodes[c].offset = place;
+                moved.push(c);
+            }
+        }
+        let files = items.iter().map(|&c| self.nodes[c].files).sum();
+        let lines = items.iter().map(|&c| self.nodes[c].lines).sum();
+        let node = &mut self.nodes[p];
+        (node.slot, node.files, node.lines) = ([w, h], files, lines);
+        Some(moved)
+    }
+
+    pub fn differences(&self, other: &Layout) -> Vec<String> {
+        let by_path = |l: &Layout| -> HashMap<(bool, String), usize> {
+            l.nodes.iter().enumerate().map(|(i, n)| ((n.is_dir(), n.rel_path.clone()), i)).collect()
+        };
+        let (mine, theirs) = (by_path(self), by_path(other));
+        let mut out = Vec::new();
+        if self.bounds != other.bounds {
+            out.push(format!("bounds {:?} and {:?}", self.bounds, other.bounds));
+        }
+        for (key, &i) in &mine {
+            let Some(&j) = theirs.get(key) else {
+                out.push(format!("{} only here", key.1));
+                continue;
+            };
+            let (a, b) = (&self.nodes[i], &other.nodes[j]);
+            let up = |l: &Layout, n: &Node| n.parent.map(|p| l.nodes[p as usize].rel_path.clone());
+            let same = a.kind == b.kind
+                && a.name == b.name
+                && a.rect == b.rect
+                && a.depth == b.depth
+                && (a.files, a.lines, a.collapsed, a.fold, a.col_stride, a.gutter)
+                    == (b.files, b.lines, b.collapsed, b.fold, b.col_stride, b.gutter)
+                && a.subtree_end as usize - i == b.subtree_end as usize - j
+                && up(self, a) == up(other, b);
+            if !same {
+                out.push(format!("{}: {:?} and {:?}", key.1, a.rect, b.rect));
+            }
+        }
+        out.extend(theirs.keys().filter(|key| !mine.contains_key(*key)).map(|key| format!("{} missing", key.1)));
+        let anchors = |l: &Layout| -> Vec<Option<(bool, String)>> {
+            let node =
+                |n: u32| (n != NONE).then(|| (l.nodes[n as usize].is_dir(), l.nodes[n as usize].rel_path.clone()));
+            l.file_anchor.iter().map(|&n| node(n)).chain(l.file_node.iter().map(|&n| node(n))).collect()
+        };
+        if anchors(self) != anchors(other) {
+            out.push("files are anchored elsewhere".into());
         }
         out
     }

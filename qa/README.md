@@ -83,6 +83,7 @@ the invitation. Its pictures are `guest-<name>.png`.
 | `odd-files` | CRLF, tabs, no final newline, empty, not UTF-8, binary, a 5000 column line, 12000 lines, names with spaces and accents. |
 | `typescript` | A tiny TypeScript project with a `package.json`. |
 | `deps-folders` | 960 TypeScript files in eight layers of four folders, five thousand imports, two import cycles (`core0` and `pages0` import each other; `util1` → `util2` → `util3` → `util1`). |
+| `big-folder` | 30,720 TypeScript files in 6 × 8 × 8 folders of 80, each importing two of its folder, and a `package.json`; no git. Takes about 20 s to make and 30 s for the app to read the first time. |
 | `empty` | An empty folder. |
 
 More fixtures go in a `fixtures_<area>.py` beside it with its own `FIXTURES`
