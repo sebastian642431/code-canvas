@@ -358,7 +358,7 @@ pub fn changes_panel(
         return;
     }
     let writing = page.writing_message();
-    let Page { git, commit_message, only_changed, git_note, diff, showing, .. } = page;
+    let Page { git, commit_message, only_changed, git_note, diff, showing, history, .. } = page;
     let Some(g) = git.as_ref() else {
         ui.label(RichText::new("    This folder is not in a git repository.").size(11.5).color(pal().text_dim));
         return;
@@ -593,9 +593,13 @@ pub fn changes_panel(
             }
         }
 
-        side.show(ui, g, actions);
+        side.show(ui, g, &history.query, actions);
         ui.add_space(8.0);
-        if group_header(ui, "Graph", "graph", None, None).0 {
+        let (open, all) = group_header(ui, "Graph", "graph", None, Some((icons::GIT_GRAPH, "Open all commits on the canvas")));
+        if all {
+            actions.push(Action::Show(super::Panel::History));
+        }
+        if open {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)

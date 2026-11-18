@@ -718,6 +718,35 @@ pub enum GitOp {
     StashApply(u32),
     StashPopAt(u32),
     StashDrop(u32),
+    /// Stand on a commit with no branch (a detached head).
+    CheckoutCommit(String),
+    /// Copy a commit on top of the current branch.
+    CherryPick(String),
+    /// Make a new commit that undoes another one.
+    Revert(String),
+    /// Move the current branch to a commit.
+    Reset {
+        to: String,
+        mode: ResetMode,
+    },
+}
+
+/// How far `git reset` goes: only the branch, the branch and the index, or the files too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+}
+
+impl ResetMode {
+    pub fn word(self) -> &'static str {
+        match self {
+            ResetMode::Soft => "soft",
+            ResetMode::Mixed => "mixed",
+            ResetMode::Hard => "hard",
+        }
+    }
 }
 
 impl GitOp {
@@ -788,6 +817,10 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
         GitOp::StashApply(n) => vec![s(&["stash", "apply", &format!("stash@{{{n}}}")])],
         GitOp::StashPopAt(n) => vec![s(&["stash", "pop", &format!("stash@{{{n}}}")])],
         GitOp::StashDrop(n) => vec![s(&["stash", "drop", &format!("stash@{{{n}}}")])],
+        GitOp::CheckoutCommit(hash) => vec![s(&["switch", "--detach", hash])],
+        GitOp::CherryPick(hash) => vec![s(&["cherry-pick", hash])],
+        GitOp::Revert(hash) => vec![s(&["revert", "--no-edit", hash])],
+        GitOp::Reset { to, mode } => vec![s(&["reset", &format!("--{}", mode.word()), to])],
     }
 }
 
@@ -1166,6 +1199,242 @@ pub fn ago(seconds: i64) -> String {
         }
     }
     "just now".to_string()
+}
+
+/// The day and minute of a moment as `2026-11-18 14:03 UTC`.
+pub fn date_of(seconds: i64) -> String {
+    let (days, rest) = (seconds.div_euclid(86400), seconds.rem_euclid(86400));
+    let z = days + 719_468;
+    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02} UTC", rest / 3600, rest % 3600 / 60)
+}
+
+/// A commit of the whole history, with the commits it grew from and the branches and tags on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryCommit {
+    pub hash: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub time: i64,
+    /// The names git decorates it with: `HEAD -> main`, `HEAD`, `tag: v1`, `origin/main`, `feature`.
+    pub refs: Vec<String>,
+    pub subject: String,
+}
+
+impl HistoryCommit {
+    /// The plain commit the canvas knows how to show.
+    pub fn commit(&self) -> Commit {
+        Commit { hash: self.hash.clone(), author: self.author.clone(), time: self.time, subject: self.subject.clone() }
+    }
+}
+
+/// What the search box of the commit list looks for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Search {
+    #[default]
+    None,
+    Message(String),
+    Author(String),
+    /// A whole hash or its first letters.
+    Hash(String),
+    /// Commits that changed a file.
+    File(String),
+}
+
+/// Which commits the list shows: every branch by default, or only the chosen ones, minus the hidden
+/// ones, narrowed by a search.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryQuery {
+    pub only: Vec<String>,
+    pub hidden: Vec<String>,
+    pub search: Search,
+}
+
+const HISTORY_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s";
+/// A search by hash reads this many commits and keeps the ones whose hash starts with the text.
+const HASH_SEARCH_READS: usize = 100_000;
+
+fn history_args(query: &HistoryQuery, skip: usize, count: usize) -> Vec<String> {
+    let mut args: Vec<String> = ["log", "--topo-order", HISTORY_FORMAT].iter().map(|a| a.to_string()).collect();
+    let shown: Vec<&String> = query.only.iter().filter(|name| !query.hidden.contains(name)).collect();
+    if query.only.is_empty() {
+        for name in &query.hidden {
+            args.push(format!("--exclude=refs/heads/{name}"));
+            args.push(format!("--exclude=refs/remotes/*/{name}"));
+            args.push(format!("--exclude=refs/remotes/{name}"));
+        }
+        args.push("--exclude=refs/stash".to_string());
+        args.push("--all".to_string());
+    }
+    match &query.search {
+        Search::Hash(_) => args.extend(["-n".to_string(), HASH_SEARCH_READS.to_string()]),
+        _ => args.extend(["--skip".to_string(), skip.to_string(), "-n".to_string(), count.to_string()]),
+    }
+    match &query.search {
+        Search::Message(t) => args.extend([format!("--grep={t}"), "-i".to_string()]),
+        Search::Author(t) => args.extend([format!("--author={t}"), "-i".to_string()]),
+        _ => {}
+    }
+    args.extend(shown.into_iter().cloned());
+    args.push("--".to_string());
+    if let Search::File(path) = &query.search {
+        args.push(path.clone());
+    }
+    args
+}
+
+fn parse_history(text: &str) -> Vec<HistoryCommit> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(7, '\u{1f}');
+            let hash = parts.next().filter(|h| !h.is_empty())?;
+            let parents = parts.next()?.split(' ').filter(|p| !p.is_empty()).map(str::to_string).collect();
+            let (author, email, time, refs) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+            let refs = refs
+                .split(", ")
+                .map(str::trim)
+                .filter(|r| !r.is_empty() && !r.ends_with("/HEAD"))
+                .map(str::to_string)
+                .collect();
+            Some(HistoryCommit {
+                hash: hash.to_string(),
+                parents,
+                author: author.to_string(),
+                email: email.to_string(),
+                time: time.parse().ok()?,
+                refs,
+                subject: parts.next().unwrap_or_default().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Reads a page of the history: `count` commits after the first `skip` of what the query shows,
+/// children always before their parents (topological order).
+pub fn history(root: &Path, query: &HistoryQuery, skip: usize, count: usize) -> Vec<HistoryCommit> {
+    let args = history_args(query, skip, count);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let found = git(root, &args).map(|out| parse_history(&String::from_utf8_lossy(&out))).unwrap_or_default();
+    match &query.search {
+        Search::Hash(t) => {
+            let t = t.trim().to_lowercase();
+            found.into_iter().filter(|c| c.hash.starts_with(&t)).skip(skip).take(count).collect()
+        }
+        _ => found,
+    }
+}
+
+/// Where a commit sits in the picture of the history and which lines run through its row.
+///
+/// Lanes are columns, counted from the left. `above` and `below` hold, for every lane, the color of
+/// the line that comes in from the top of the row or leaves through its bottom (none when the lane
+/// is empty there). The dot is in `lane`. `joins` are lanes that end in the dot (their lines come
+/// from the top, slanting in) and `forks` are lanes the dot sends a line to (slanting out to the
+/// bottom): a merge opens a fork for each parent after the first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GraphRow {
+    pub lane: usize,
+    pub color: usize,
+    pub above: Vec<Option<usize>>,
+    pub below: Vec<Option<usize>>,
+    pub joins: Vec<(usize, usize)>,
+    pub forks: Vec<(usize, usize)>,
+}
+
+impl GraphRow {
+    /// How many lanes the row needs room for.
+    pub fn width(&self) -> usize {
+        let drawn = |lanes: &[(usize, usize)]| lanes.iter().map(|(lane, _)| lane + 1).max().unwrap_or(0);
+        (self.lane + 1).max(self.above.len()).max(self.below.len()).max(drawn(&self.joins)).max(drawn(&self.forks))
+    }
+}
+
+/// Gives the commits of a history, fed in order and in pages, their lanes. Every lane waits for
+/// one commit (the parent of the last commit that was in it); a commit takes the lane that waits
+/// for it. A color belongs to a lane from where it starts to where it ends, and colors are counted
+/// up: the picture takes them modulo its palette.
+#[derive(Clone, Debug, Default)]
+pub struct Lanes {
+    waiting: Vec<Option<(String, usize)>>,
+    colors: usize,
+}
+
+impl Lanes {
+    /// How many lanes are waiting for a commit that has not come yet.
+    #[cfg(test)]
+    pub fn open(&self) -> usize {
+        self.waiting.iter().flatten().count()
+    }
+
+    fn free(&mut self) -> usize {
+        match self.waiting.iter().position(Option::is_none) {
+            Some(at) => at,
+            None => {
+                self.waiting.push(None);
+                self.waiting.len() - 1
+            }
+        }
+    }
+
+    fn next_color(&mut self) -> usize {
+        self.colors += 1;
+        self.colors - 1
+    }
+
+    fn colors(&self) -> Vec<Option<usize>> {
+        let mut seen: Vec<Option<usize>> = self.waiting.iter().map(|w| w.as_ref().map(|(_, color)| *color)).collect();
+        while seen.last() == Some(&None) {
+            seen.pop();
+        }
+        seen
+    }
+
+    pub fn push(&mut self, commit: &HistoryCommit) -> GraphRow {
+        let coming: Vec<usize> = (0..self.waiting.len())
+            .filter(|i| self.waiting[*i].as_ref().is_some_and(|(hash, _)| *hash == commit.hash))
+            .collect();
+        let (lane, color) = match coming.first() {
+            Some(at) => (*at, self.waiting[*at].as_ref().map_or(0, |(_, color)| *color)),
+            None => {
+                let (lane, color) = (self.free(), self.next_color());
+                (lane, color)
+            }
+        };
+        let above = self.colors();
+        let mut joins = Vec::new();
+        for other in coming.iter().skip(1) {
+            if let Some((_, other_color)) = self.waiting[*other].take() {
+                joins.push((*other, other_color));
+            }
+        }
+        let mut parents = commit.parents.iter();
+        self.waiting[lane] = parents.next().map(|first| (first.clone(), color));
+        let mut forks: Vec<(usize, usize)> = Vec::new();
+        for parent in parents {
+            let taken = self.waiting.iter().position(|w| w.as_ref().is_some_and(|(hash, _)| hash == parent));
+            match taken {
+                Some(at) => {
+                    let color = self.waiting[at].as_ref().map_or(0, |(_, color)| *color);
+                    if !forks.iter().any(|(to, _)| *to == at) {
+                        forks.push((at, color));
+                    }
+                }
+                None => {
+                    let (at, color) = (self.free(), self.next_color());
+                    self.waiting[at] = Some((parent.clone(), color));
+                    forks.push((at, color));
+                }
+            }
+        }
+        GraphRow { lane, color, above, below: self.colors(), joins, forks }
+    }
 }
 
 pub fn head_of(folder: &std::path::Path) -> Option<String> {
@@ -1646,6 +1915,153 @@ mod tests {
         assert_eq!(one(GitOp::StashApply(2)), v(&["stash", "apply", "stash@{2}"]));
         assert_eq!(one(GitOp::StashPopAt(0)), v(&["stash", "pop", "stash@{0}"]));
         assert_eq!(one(GitOp::StashDrop(1)), v(&["stash", "drop", "stash@{1}"]));
+    }
+
+    #[test]
+    fn commit_steps() {
+        let one = |op: GitOp| steps(&op);
+        let v = |args: &[&str]| vec![args.iter().map(|a| a.to_string()).collect::<Vec<String>>()];
+        assert_eq!(one(GitOp::CheckoutCommit("abc".into())), v(&["switch", "--detach", "abc"]));
+        assert_eq!(one(GitOp::CherryPick("abc".into())), v(&["cherry-pick", "abc"]));
+        assert_eq!(one(GitOp::Revert("abc".into())), v(&["revert", "--no-edit", "abc"]));
+        let reset = |mode| one(GitOp::Reset { to: "abc".into(), mode });
+        assert_eq!(reset(ResetMode::Soft), v(&["reset", "--soft", "abc"]));
+        assert_eq!(reset(ResetMode::Mixed), v(&["reset", "--mixed", "abc"]));
+        assert_eq!(reset(ResetMode::Hard), v(&["reset", "--hard", "abc"]));
+    }
+
+    fn commit(hash: &str, parents: &[&str]) -> HistoryCommit {
+        HistoryCommit {
+            hash: hash.to_string(),
+            parents: parents.iter().map(|p| p.to_string()).collect(),
+            author: String::new(),
+            email: String::new(),
+            time: 0,
+            refs: Vec::new(),
+            subject: String::new(),
+        }
+    }
+
+    fn rows(commits: &[HistoryCommit]) -> Vec<GraphRow> {
+        let mut lanes = Lanes::default();
+        commits.iter().map(|c| lanes.push(c)).collect()
+    }
+
+    #[test]
+    fn lanes_of_a_straight_history() {
+        let r = rows(&[commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])]);
+        assert!(r.iter().all(|row| row.lane == 0 && row.joins.is_empty() && row.forks.is_empty()));
+        assert_eq!((r[0].above.clone(), r[0].below.clone()), (vec![], vec![Some(0)]), "the tip has nothing above");
+        assert_eq!((r[1].above.clone(), r[1].below.clone()), (vec![Some(0)], vec![Some(0)]));
+        assert_eq!(r[2].below, Vec::<Option<usize>>::new(), "the root ends the line");
+    }
+
+    #[test]
+    fn lanes_of_a_branch_and_its_merge() {
+        // m merges f (second parent) into main; f and b both start from a.
+        let r = rows(&[commit("m", &["b", "f"]), commit("f", &["a"]), commit("b", &["a"]), commit("a", &[])]);
+        assert_eq!(r[0].lane, 0);
+        assert_eq!(r[0].forks, vec![(1, 1)], "the merge opens a second lane for the branch");
+        assert_eq!(r[1].lane, 1, "the branch commit sits in the second lane");
+        assert_eq!(r[1].below, vec![Some(0), Some(1)]);
+        assert_eq!(r[2].lane, 0);
+        assert_eq!(r[2].below, vec![Some(0), Some(1)], "the branch lane still waits for a");
+        assert_eq!(r[3].lane, 0);
+        assert_eq!(r[3].joins, vec![(1, 1)], "the lane of the branch ends in a");
+        assert_eq!(r[3].below, Vec::<Option<usize>>::new());
+    }
+
+    #[test]
+    fn lanes_of_an_octopus_and_two_merges() {
+        let r = rows(&[
+            commit("o", &["a", "b", "c"]),
+            commit("a", &["z"]),
+            commit("b", &["z"]),
+            commit("c", &["z"]),
+            commit("z", &[]),
+        ]);
+        assert_eq!(r[0].forks, vec![(1, 1), (2, 2)], "two extra lanes for an octopus merge");
+        assert_eq!((r[1].lane, r[2].lane, r[3].lane), (0, 1, 2));
+        assert_eq!(r[4].lane, 0);
+        assert_eq!(r[4].joins, vec![(1, 1), (2, 2)]);
+        // Two merges: the second one reuses the lane the first one freed.
+        let r = rows(&[
+            commit("m2", &["m1", "y"]),
+            commit("m1", &["a", "x"]),
+            commit("y", &["a"]),
+            commit("x", &["a"]),
+            commit("a", &[]),
+        ]);
+        assert_eq!(r[0].forks, vec![(1, 1)]);
+        assert_eq!(r[1].forks, vec![(2, 2)], "lane 1 is taken by y, so x gets the third one");
+        assert_eq!((r[2].lane, r[3].lane), (1, 2));
+        assert_eq!(r[4].joins, vec![(1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn a_merge_into_a_lane_that_is_already_waiting() {
+        // x waits for c in lane 0; the merge m (a new tip, lane 1) has c as its second parent.
+        let r = rows(&[commit("x", &["c"]), commit("m", &["b", "c"]), commit("b", &["a"]), commit("c", &[])]);
+        assert_eq!(r[1].lane, 1);
+        assert_eq!(r[1].forks, vec![(0, 0)], "the merge line goes into the lane that already waits for c");
+        assert_eq!(r[3].lane, 0);
+    }
+
+    #[test]
+    fn lanes_carry_over_a_page_boundary() {
+        let all = [commit("m", &["b", "f"]), commit("f", &["a"]), commit("b", &["a"]), commit("a", &[])];
+        let whole = rows(&all);
+        let mut lanes = Lanes::default();
+        let mut paged: Vec<GraphRow> = all[..2].iter().map(|c| lanes.push(c)).collect();
+        paged.extend(all[2..].iter().map(|c| lanes.push(c)));
+        assert_eq!(whole, paged, "feeding the commits in pages gives the same rows");
+        assert!(lanes.open() == 0, "nothing is waiting after the root");
+    }
+
+    #[test]
+    fn history_arguments() {
+        let q = HistoryQuery::default();
+        let line = history_args(&q, 0, 300).join(" ");
+        assert!(line.starts_with("log --topo-order --format="), "{line}");
+        assert!(line.contains("--exclude=refs/stash --all --skip 0 -n 300"), "{line}");
+        assert!(line.ends_with(" --"), "{line}");
+        let q = HistoryQuery { only: vec![], hidden: vec!["x".into()], search: Search::Message("fix".into()) };
+        let line = history_args(&q, 300, 300).join(" ");
+        assert!(
+            line.contains(
+                "--exclude=refs/heads/x --exclude=refs/remotes/*/x --exclude=refs/remotes/x --exclude=refs/stash --all"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("--skip 300 -n 300 --grep=fix -i"), "{line}");
+        let q = HistoryQuery {
+            only: vec!["a".into(), "b".into()],
+            hidden: vec!["b".into()],
+            search: Search::File("src/a.rs".into()),
+        };
+        let line = history_args(&q, 0, 10).join(" ");
+        assert!(line.contains("--topo-order") && !line.contains("--all") && !line.contains("--exclude"), "{line}");
+        assert!(line.ends_with("-n 10 a -- src/a.rs"), "{line}");
+        let q = HistoryQuery { search: Search::Author("Ana".into()), ..HistoryQuery::default() };
+        assert!(history_args(&q, 0, 5).join(" ").contains("--author=Ana -i"));
+    }
+
+    #[test]
+    fn dates() {
+        assert_eq!(date_of(0), "1970-01-01 00:00 UTC");
+        assert_eq!(date_of(1_700_000_000), "2023-11-14 22:13 UTC");
+        assert_eq!(date_of(1_709_164_800 + 3600), "2024-02-29 01:00 UTC");
+    }
+
+    #[test]
+    fn history_lines() {
+        let line = "aaa\u{1f}bbb ccc\u{1f}Ana\u{1f}ana@x.dev\u{1f}100\u{1f}HEAD -> main, tag: v1, origin/main, origin/HEAD\u{1f}Fix: the thing";
+        let got = parse_history(&format!("{line}\nbbb\u{1f}\u{1f}Bo\u{1f}b@x\u{1f}50\u{1f}\u{1f}root\n"));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].parents, vec!["bbb".to_string(), "ccc".to_string()]);
+        assert_eq!(got[0].refs, vec!["HEAD -> main", "tag: v1", "origin/main"]);
+        assert_eq!((got[0].email.as_str(), got[0].subject.as_str()), ("ana@x.dev", "Fix: the thing"));
+        assert!(got[1].parents.is_empty() && got[1].refs.is_empty());
     }
 
     #[test]

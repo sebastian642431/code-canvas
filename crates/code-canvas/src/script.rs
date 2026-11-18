@@ -36,6 +36,8 @@ pub enum Step {
     ExpandAll,
     Connected(bool),
     Deps(String),
+    /// `search <text>` or `mode message|author|hash|file`: what the All Commits card looks for.
+    History(String),
     Tab(usize),
     Folders,
     Zoom(f32),
@@ -135,6 +137,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "expand-all" => Step::ExpandAll,
         "connected" => Step::Connected(arg == "on"),
         "deps" => Step::Deps(arg.into()),
+        "history" => Step::History(arg.into()),
         "tab" => Step::Tab(arg.parse().ok()?),
         "folders" => Step::Folders,
         "zoom" => Step::Zoom(arg.parse().ok()?),

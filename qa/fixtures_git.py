@@ -159,7 +159,35 @@ def git_sidebar(root):
     git(root, "stash", "push", "-m", "half done")
 
 
+def git_graph(root):
+    """main with six commits, a feature branch that left it after the third and was merged back after the fourth,
+    a docs branch from the fifth that is still open (two commits), and the tag v1 on the second commit."""
+    init(root)
+    for n in (1, 2, 3):
+        write(root, f"step{n}.txt", f"step {n}\n")
+        commit(root, f"main {n}")
+    git(root, "tag", "v1", "main~1")
+    git(root, "switch", "-q", "-c", "feature")
+    for n in (1, 2):
+        write(root, f"feature{n}.txt", f"feature {n}\n")
+        commit(root, f"feature {n}")
+    git(root, "switch", "-q", "main")
+    write(root, "step4.txt", "step 4\n")
+    commit(root, "main 4")
+    git(root, "merge", "-q", "--no-ff", "-m", "Merge feature into main", "feature")
+    write(root, "step5.txt", "step 5\n")
+    commit(root, "main 5")
+    git(root, "switch", "-q", "-c", "docs")
+    for n in (1, 2):
+        write(root, f"docs{n}.txt", f"docs {n}\n")
+        commit(root, f"docs {n}")
+    git(root, "switch", "-q", "main")
+    write(root, "step6.txt", "step 6\n")
+    commit(root, "main 6")
+
+
 FIXTURES = {
+    "git-graph": git_graph,
     "git-sidebar": git_sidebar,
     "git-remote-branches": git_remote_branches,
     "git-shifted": git_shifted,

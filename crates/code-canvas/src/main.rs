@@ -16,6 +16,7 @@ mod files;
 mod git;
 mod github;
 mod grammars;
+mod history;
 mod icon;
 mod icon_theme;
 mod icons;

@@ -1,0 +1,49 @@
+title: The All Commits card draws the lanes of every branch, shows only one branch from the sidebar, searches and makes a tag on a commit
+folders: git-graph
+expect-file: git-graph/.git/refs/tags/rel-1 :: ^[0-9a-f]{40}
+forbid-log: WARN.*script
+
+wait 3500
+left changes
+wait 1500
+palette Open All Commits
+wait 500
+press enter
+wait 2500
+mark a-lanes
+wait 500
+ui move 100 317
+wait 600
+mark b-hover-buttons
+wait 500
+ui click 301 317
+wait 2000
+mark c-only-feature
+wait 500
+ui click 987 143
+wait 1500
+mark d-all-again
+wait 500
+history search Merge
+wait 1200
+mark e-search
+wait 500
+ui click 1100 146
+wait 1500
+mark f-selected
+wait 500
+ui right 1100 146
+wait 1000
+mark g-menu
+wait 500
+ui click 1190 229
+wait 1000
+type rel-1
+wait 600
+mark h-tag-name
+wait 500
+answer create
+wait 2500
+mark i-tag-made
+wait 500
+quit

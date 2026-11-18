@@ -35,7 +35,11 @@ show-only / hide buttons (they act on the graph: phase 3), interactive rebase an
   Push, Copy name, Create pull request.
 - Tags: checkout, push, delete. Stashes: apply, pop, drop, see its changes; stash with a message.
 
-### 3. The commit graph
+### 3. The commit graph (done, except blame)
+An "All Commits" card: lanes and colours, pages of 300, search by message, author, hash or file,
+branch filters from the sidebar (show only, hide), a commit's details and its right-click menu
+(checkout, new branch, new tag, cherry-pick, revert, reset). While a search filters the list, it is
+drawn flat. Blame is still to do.
 - The whole history with lanes and colours, loaded as it scrolls, branch and tag labels on commits.
 - Search by message, author, hash, and by changed file; filter to chosen branches.
 - A commit's details: message and people, its changes with the diff viewer, the file tree at that commit.

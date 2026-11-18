@@ -18,6 +18,7 @@ mod deps_panel;
 mod ext_panels;
 mod files_tree;
 mod git_panel;
+mod history_panel;
 mod settings;
 mod versions_menu;
 
@@ -44,6 +45,8 @@ pub enum Panel {
     Console,
     /// A card of its own for consoles moved out of the console's card, by its number.
     Consoles(u64),
+    /// Every commit of the repository, with the lines of its branches.
+    History,
     Webview(String),
     /// A container of an extension's tree views, by its id.
     Tree(String),
@@ -71,6 +74,7 @@ impl Panel {
             Panel::Media => "media".to_string(),
             Panel::Console => "console".to_string(),
             Panel::Consoles(card) => format!("console:{card}"),
+            Panel::History => "history".to_string(),
             Panel::Webview(view) => format!("view:{view}"),
             Panel::Tree(id) => format!("{}{id}", crate::ext::TREE),
         }
@@ -88,6 +92,7 @@ impl Panel {
             "deps" => Panel::Deps,
             "media" => Panel::Media,
             "console" => Panel::Console,
+            "history" => Panel::History,
             card if card.starts_with("console:") => Panel::Consoles(card["console:".len()..].parse().ok()?),
             tree if tree.starts_with(crate::ext::TREE) => Panel::Tree(tree[crate::ext::TREE.len()..].to_string()),
             view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
@@ -730,6 +735,10 @@ pub enum Action {
     },
     /// Ask for a name (of a branch or a tag), and then do the git operation that needs it.
     GitName(NameFor),
+    /// Show only the commits of a branch in the All Commits card (again: every branch), and open the card.
+    HistoryOnly(String),
+    /// Leave a branch out of the All Commits card, or bring it back.
+    HistoryHide(String),
     Share(ShareOp),
     Workspace(WorkspaceOp),
     Agent(AgentOp),
@@ -1690,6 +1699,7 @@ fn card_of(
         Panel::Media => ext_panels::media_panel(ui, st, actions),
         Panel::Console => console::console_panel(ui, st, ext, actions, crate::consoles::MAIN),
         Panel::Consoles(card) => console::console_panel(ui, st, ext, actions, *card),
+        Panel::History => history_panel::history_panel(ui, pages.get_mut(active), actions),
         Panel::Tree(id) => ext_panels::tree_panel(ui, st, ext, id),
     }
 }
@@ -1722,6 +1732,7 @@ fn cards(
         let usual = match panel {
             Panel::Console | Panel::Consoles(_) => 600.0,
             Panel::Extension => 580.0,
+            Panel::History => 760.0,
             page if page.is_page() => 420.0,
             _ => 330.0,
         };
@@ -4951,13 +4962,23 @@ pub enum NameFor {
     },
 }
 
+/// A whole commit hash is shown by its first eight letters; a branch name is left as it is.
+fn shortened(name: &str) -> &str {
+    let hash = name.len() == 40 && name.bytes().all(|b| b.is_ascii_hexdigit());
+    if hash {
+        &name[..8]
+    } else {
+        name
+    }
+}
+
 impl NameFor {
     pub fn title(&self) -> String {
         match self {
-            NameFor::NewBranch { from: Some(from) } => format!("New branch from '{from}'"),
+            NameFor::NewBranch { from: Some(from) } => format!("New branch from '{}'", shortened(from)),
             NameFor::NewBranch { from: None } => "New branch".to_string(),
             NameFor::RenameBranch { from } => format!("Rename the branch '{from}'"),
-            NameFor::NewTag { at: Some(at) } => format!("New tag on '{at}'"),
+            NameFor::NewTag { at: Some(at) } => format!("New tag on '{}'", shortened(at)),
             NameFor::NewTag { at: None } => "New tag".to_string(),
         }
     }
@@ -5584,6 +5605,7 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
         ("Canvas: Expand All Folders".into(), Action::ExpandAll),
         ("Canvas: Show All Hidden Files".into(), Action::ShowAll),
         ("Source Control: Refresh".into(), Action::RefreshGit),
+        ("Source Control: Open All Commits".into(), Action::Show(Panel::History)),
         ("Source Control: Show Only Changed Files".into(), Action::SetOnlyChanged(true)),
         ("Source Control: Show All Files".into(), Action::SetOnlyChanged(false)),
         ("Source Control: Stop Showing the Commit".into(), Action::ShowCommit(None)),

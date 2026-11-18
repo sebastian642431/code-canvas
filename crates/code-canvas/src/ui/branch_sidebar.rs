@@ -8,7 +8,7 @@ use egui::{Align2, FontId, Pos2, Sense, Ui, Vec2};
 
 use super::branch_picker::{local_row, remote_row, row, section_head, tree};
 use super::{menu_gap, menu_row, pal, text_fit, Action, NameFor};
-use crate::git::{GitOp, GitState, LocalBranch, RemoteBranch, Stash};
+use crate::git::{GitOp, GitState, HistoryQuery, LocalBranch, RemoteBranch, Stash};
 use crate::icons;
 
 /// Which sections and which folders inside them the person closed or opened.
@@ -60,6 +60,48 @@ fn remote_of(g: &GitState, branch: &LocalBranch) -> String {
     });
     let first = g.remote_branches.first();
     follows.or(first).map(|r| r.remote.clone()).unwrap_or_else(|| "origin".to_string())
+}
+
+/// The buttons that come up on a branch row, for the All Commits card: show only the commits of
+/// this branch, or leave it out. A hidden branch is drawn faint with the eye to bring it back.
+fn history_buttons(ui: &mut Ui, row: egui::Rect, key: &str, query: &HistoryQuery, actions: &mut Vec<Action>) {
+    let hidden = query.hidden.iter().any(|name| name == key);
+    let only = query.only.iter().any(|name| name == key);
+    if hidden {
+        ui.painter().rect_filled(row, 5.0, pal().row.gamma_multiply(0.6));
+    }
+    if !(ui.rect_contains_pointer(row) || hidden || only) {
+        return;
+    }
+    let mut x = row.right() - 6.0;
+    let mut button = |ui: &mut Ui, id: &str, glyph: &str, on: bool, tip: &str| -> bool {
+        let at = egui::Rect::from_center_size(Pos2::new(x - 10.0, row.center().y), Vec2::splat(20.0));
+        x -= 22.0;
+        let resp = ui.interact(at, ui.scope_id().with(("history button", key, id)), Sense::click());
+        ui.painter().rect_filled(at, 5.0, if resp.hovered() { pal().active } else { pal().row });
+        let color = if on {
+            pal().accent
+        } else if resp.hovered() {
+            pal().text
+        } else {
+            pal().text_dim
+        };
+        ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), color);
+        resp.on_hover_text(tip).clicked()
+    };
+    let tip = if hidden { "Show this branch in the commit list again" } else { "Hide from the commit list" };
+    if (hidden || ui.rect_contains_pointer(row))
+        && button(ui, "hide", if hidden { icons::EYE_OFF } else { icons::EYE }, hidden, tip)
+    {
+        actions.push(Action::HistoryHide(key.to_string()));
+    }
+    if !hidden {
+        let tip = if only { "Show every branch in the commit list again" } else { "Show only this branch's commits" };
+        let glyph = crate::codicons::glyph("filter").unwrap_or(icons::GIT_GRAPH);
+        if button(ui, "only", glyph, only, tip) {
+            actions.push(Action::HistoryOnly(key.to_string()));
+        }
+    }
 }
 
 fn confirm(op: GitOp, title: String, text: &str, button: &'static str, danger: bool) -> Action {
@@ -256,7 +298,7 @@ impl Side {
         open
     }
 
-    pub(super) fn show(&mut self, ui: &mut Ui, g: &GitState, actions: &mut Vec<Action>) {
+    pub(super) fn show(&mut self, ui: &mut Ui, g: &GitState, query: &HistoryQuery, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 1.0;
         ui.add_space(8.0);
         if !g.locals.is_empty() && self.section(ui, "branches", "Branches", g.locals.len()) {
@@ -267,6 +309,7 @@ impl Side {
                 if resp.clicked() && !branch.current {
                     actions.push(Action::Git(GitOp::Switch(full.to_string())));
                 }
+                history_buttons(ui, resp.rect, full, query, actions);
                 resp.context_menu(|ui| local_menu(ui, g, branch, actions));
             };
             tree(ui, &mut self.shut, "side local", false, &names, "", &mut leaf);
@@ -298,6 +341,8 @@ impl Side {
                             })),
                         }
                     }
+                    let key = format!("{}/{}", branch.remote, branch.name);
+                    history_buttons(ui, resp.rect, &key, query, actions);
                     resp.context_menu(|ui| remote_menu(ui, g, branch, actions));
                 };
                 tree(ui, &mut self.shut, &format!("side {remote_name}"), false, &names, "", &mut leaf);

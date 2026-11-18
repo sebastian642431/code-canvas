@@ -3718,6 +3718,20 @@ impl App {
                 self.ui.show(panel);
                 self.request_redraw();
             }
+            Action::HistoryOnly(name) => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.history.toggle_only(&name);
+                }
+                self.ui.show(Panel::History);
+                self.session_dirty = true;
+                self.request_redraw();
+            }
+            Action::HistoryHide(name) => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.history.toggle_hidden(&name);
+                }
+                self.request_redraw();
+            }
             Action::Settings(tab) => {
                 self.ui.settings.show(Some(tab));
                 self.request_redraw();
@@ -4123,6 +4137,25 @@ impl App {
                 }
             }
             Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
+            Step::History(what) => {
+                let (verb, arg) = what.split_once(' ').unwrap_or((what.as_str(), ""));
+                let mode = match arg.trim() {
+                    "message" => Some(crate::history::Mode::Message),
+                    "author" => Some(crate::history::Mode::Author),
+                    "hash" => Some(crate::history::Mode::Hash),
+                    "file" => Some(crate::history::Mode::File),
+                    _ => None,
+                };
+                match (verb, self.pages.get_mut(self.active)) {
+                    ("search", Some(page)) => {
+                        page.history.draft = arg.to_string();
+                        page.history.typed();
+                    }
+                    ("mode", Some(page)) if mode.is_some() => page.history.set_mode(mode.unwrap_or_default()),
+                    _ => log::warn!("script: history needs search <text> or mode message|author|hash|file"),
+                }
+                self.request_redraw();
+            }
             Step::Edit(what) => {
                 let mut parts = what.split_whitespace();
                 let rel = parts.next().unwrap_or_default().to_string();
