@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/canvas-core", "crates/canvas-render", "crates/code-canvas"]
+members = ["crates/canvas-core", "crates/canvas-render", "crates/canvas-relay", "crates/code-canvas"]
 
 [workspace.package]
 version = "0.4.3"
@@ -12,6 +12,7 @@ rust-version = "1.94"
 [workspace.dependencies]
 canvas-core = { path = "crates/canvas-core" }
 canvas-render = { path = "crates/canvas-render" }
+canvas-relay = { path = "crates/canvas-relay" }
 glyphon = "0.12"
 winit = "0.30"
 bytemuck = { version = "1", features = ["derive"] }

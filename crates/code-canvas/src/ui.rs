@@ -3490,6 +3490,9 @@ pub struct ShareView {
     pub name: String,
     pub address: String,
     pub guests_write: bool,
+    pub through_relay: bool,
+    pub relay: String,
+    pub relayed: Option<String>,
     pub writer: bool,
     pub people: Vec<PersonView>,
     pub marks: Vec<PeerMark>,
@@ -4011,13 +4014,18 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     changed |= field(ui, &mut view.name, "How the others will see you", false).lost_focus();
                     changed |= check(ui, &mut view.guests_write, "Those who join can edit", true, false).clicked();
                     dim(ui, if view.guests_write { "They type in your files. You can change it for each one." } else { "They only look. You can let each one edit later." });
+                    changed |= check(ui, &mut view.through_relay, "Share through a relay", true, false).clicked();
+                    if view.through_relay {
+                        changed |= field(ui, &mut view.relay, "The relay's address: relay.example.org:7878", true).lost_focus();
+                        dim(ui, "For others on another network, with no VPN and no port forwarded. Code Canvas has no relay of its own: run canvas-relay on a server with a public address, or use one you trust. It passes the session along sealed and cannot read it.");
+                    }
                     if ask_button(ui, "Start sharing", ChoiceLook::Main) {
                         actions.push(Action::Share(ShareOp::Changed));
                         actions.push(Action::Share(ShareOp::Offer));
                     }
                     menu_gap(ui);
                     ui.label(RichText::new("Join someone's session").size(13.0).color(pal().text));
-                    let typed = field(ui, &mut view.typed, "Paste the invitation: cc1:…", true);
+                    let typed = field(ui, &mut view.typed, "Paste the invitation: cc1:… or cc2:…", true);
                     let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ask_button(ui, "Join", ChoiceLook::Plain) || entered) && !view.typed.trim().is_empty() {
                         actions.push(Action::Share(ShareOp::Changed));
@@ -4031,17 +4039,29 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                         ui,
                         |ui| {
                             ui.set_width(WIDTH - 20.0);
-                            let text = RichText::new(&view.invite).font(FontId::monospace(12.0)).color(pal().text);
+                            let text = match view.invite.is_empty() {
+                                true => RichText::new("Asking the relay for a room…").size(12.0).color(pal().text_dim),
+                                false => RichText::new(&view.invite).font(FontId::monospace(12.0)).color(pal().text),
+                            };
                             ui.add(egui::Label::new(text).truncate());
                         },
                     );
-                    if ask_button(ui, "Copy the invitation", ChoiceLook::Main) {
+                    if !view.invite.is_empty() && ask_button(ui, "Copy the invitation", ChoiceLook::Main) {
                         actions.push(Action::Share(ShareOp::CopyInvite));
                     }
                     dim(ui, "Whoever has it gets in: send it only to who should. It stops working when you stop sharing or close the app.");
-                    ui.label(RichText::new("The address the others reach this computer at").size(11.5).color(pal().text_faint));
-                    changed |= field(ui, &mut view.address, "This network's, unless you write another", true).changed();
-                    dim(ui, "On the same network nothing has to be written. From outside: the address of a VPN both are in (Tailscale, ZeroTier), or your public one with the port of the invitation forwarded.");
+                    match &view.relayed {
+                        Some(relay) => {
+                            ui.label(RichText::new("Through the relay at").size(11.5).color(pal().text_faint));
+                            ui.label(RichText::new(relay).font(FontId::monospace(12.0)).color(pal().text));
+                            dim(ui, "Who has the invitation joins from any network. The relay passes the session along sealed with the invitation's key: it cannot read it, and it never has the key.");
+                        }
+                        None => {
+                            ui.label(RichText::new("The address the others reach this computer at").size(11.5).color(pal().text_faint));
+                            changed |= field(ui, &mut view.address, "This network's, unless you write another", true).changed();
+                            dim(ui, "On the same network nothing has to be written. From outside: a relay (Settings, or the panel before sharing), the address of a VPN both are in (Tailscale, ZeroTier), or your public one with the port of the invitation forwarded.");
+                        }
+                    }
                     changed |= check(ui, &mut view.guests_write, "Those who join from now on can edit", true, false).clicked();
                     menu_gap(ui);
                     share_people(ui, view, true, actions);

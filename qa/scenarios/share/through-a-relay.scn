@@ -1,0 +1,65 @@
+title: Shared through a relay: the guest joins with a cc2 invitation, both type in one file and the guest's save reaches the host's disk
+folders: rust-small
+limit: 100
+relay: on
+expect-log: share: sharing through the relay at 127\.0\.0\.1:
+expect-log: share: the relay at 127\.0\.0\.1:\d+ gave the room \w+
+expect-log: share: the invitation is ready, through the relay
+expect-log: is shared, \d+ files
+guest-expect-log: opening .*shared
+relay-expect-log: room \w+ opened
+relay-expect-log: a guest joined room \w+
+expect-file: rust-small/src/main.rs :: from Beto through the relay
+expect-file: rust-small/src/main.rs :: from the host
+
+wait 3000
+left settings:relay
+wait 1200
+mark settings-sharing
+wait 800
+left settings:close
+wait 400
+goto src/main.rs
+share relay {RELAY}
+share panel
+wait 1200
+mark host-before-sharing
+wait 800
+share panel close
+wait 300
+share start writers
+wait 2500
+share panel
+wait 1200
+mark host-relay-panel
+wait 800
+share panel close
+wait 8000
+edit src/main.rs 4 1
+key end
+type  // from the host
+wait 4000
+mark host-both
+wait 7000
+share stop
+wait 1200
+quit
+wait 800
+answer Close without saving
+wait 1500
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4000
+goto src/main.rs
+wait 1200
+tool edit
+edit src/main.rs 6 1
+type // from Beto through the relay
+wait 5500
+mark both
+wait 1500
+key save
+wait 6000
+quit
+wait 1500

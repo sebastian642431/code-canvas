@@ -8,6 +8,7 @@ description = "See a whole codebase on an infinite, GPU-rendered canvas"
 [dependencies]
 canvas-core.workspace = true
 canvas-render.workspace = true
+canvas-relay.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 pollster.workspace = true

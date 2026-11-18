@@ -114,6 +114,8 @@ impl App {
             name => name.to_string(),
         };
         self.ui.share.guests_write = self.ui.prefs.share_writers;
+        self.ui.share.through_relay = self.ui.prefs.share_relay;
+        self.ui.share.relay = self.ui.prefs.relay.clone();
         let shared = session::data_dir().join("shared");
         for left in std::fs::read_dir(&shared).into_iter().flatten().flatten() {
             if !in_use(&left.path()) {
@@ -171,6 +173,7 @@ impl App {
                     );
                 }
             }
+            ShareOp::CopyInvite if self.ui.share.invite.is_empty() => {}
             ShareOp::CopyInvite => {
                 let invite = self.ui.share.invite.clone();
                 let copied = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(invite));
@@ -185,15 +188,20 @@ impl App {
             }
             ShareOp::Changed => {
                 let (name, writers) = (self.ui.share.name.trim().to_string(), self.ui.share.guests_write);
-                if (name.as_str(), writers) != (self.ui.prefs.share_name.as_str(), self.ui.prefs.share_writers) {
+                let (relayed, relay) = (self.ui.share.through_relay, self.ui.share.relay.trim().to_string());
+                let prefs = &self.ui.prefs;
+                let before = (prefs.share_name.as_str(), prefs.share_writers, prefs.share_relay, prefs.relay.as_str());
+                if (name.as_str(), writers, relayed, relay.as_str()) != before {
                     self.ui.prefs.share_name = name;
                     self.ui.prefs.share_writers = writers;
+                    self.ui.prefs.share_relay = relayed;
+                    self.ui.prefs.relay = relay;
                     crate::prefs::save(&self.ui.prefs);
                 }
                 let address = self.ui.share.address.trim().to_string();
                 if let Some(session) = self.sharing.session.as_mut().filter(|session| session.host) {
                     session.guests_write = writers;
-                    if let Some(invite) = session.invite.as_mut() {
+                    if let Some(invite) = session.invite.as_mut().filter(|invite| invite.room.is_none()) {
                         invite.host = if address.is_empty() { share::local_address() } else { address };
                     }
                 }
@@ -207,7 +215,7 @@ impl App {
             return;
         }
         if join && Invite::read(&self.ui.share.typed).is_none() {
-            let text = "That is not an invitation: it starts with cc1: and is copied whole from who shares.";
+            let text = "That is not an invitation: it starts with cc1: or cc2: and is copied whole from who shares.";
             return self.ext.notice(ext::Level::Warn, "Sharing", text);
         }
         let (title, text, yes) = match join {
@@ -233,19 +241,35 @@ impl App {
         if self.sharing.session.is_some() {
             return;
         }
-        match Session::open(&self.share_name(), self.ui.share.guests_write) {
+        let relay = self.ui.share.relay.trim().to_string();
+        let opened = match (self.ui.share.through_relay, relay.as_str()) {
+            (true, "") => {
+                let text = "Write the address of a relay first (Settings, Sharing), or share without one.";
+                return self.ext.notice(ext::Level::Warn, "Sharing", text);
+            }
+            (true, relay) => {
+                log::info!("share: sharing through the relay at {relay}");
+                Session::open_through(relay, &self.share_name(), self.ui.share.guests_write)
+            }
+            (false, _) => Session::open(&self.share_name(), self.ui.share.guests_write),
+        };
+        match opened {
             Ok(mut session) => {
                 let address = self.ui.share.address.trim();
                 if let (Some(invite), false) = (session.invite.as_mut(), address.is_empty()) {
                     invite.host = address.to_string();
                 }
-                if std::env::var_os("CODE_CANVAS_SCRIPT").is_some() {
-                    let written = session.invite.as_ref().map(Invite::written).unwrap_or_default();
-                    let _ = std::fs::write(session::data_dir().join("invite.txt"), written);
-                }
                 self.sharing = Sharing { session: Some(session), ..Default::default() };
+                self.share_tell_script();
             }
             Err(e) => self.ext.notice(ext::Level::Error, "Sharing", format!("The session could not be opened: {e}")),
+        }
+    }
+
+    fn share_tell_script(&self) {
+        let invite = self.sharing.session.as_ref().and_then(|session| session.invite.as_ref());
+        if let (Some(invite), true) = (invite, std::env::var_os("CODE_CANVAS_SCRIPT").is_some()) {
+            let _ = std::fs::write(session::data_dir().join("invite.txt"), invite.written());
         }
     }
 
@@ -254,7 +278,7 @@ impl App {
             return;
         }
         let Some(invite) = Invite::read(typed) else {
-            let text = "That is not an invitation: it starts with cc1: and is copied whole from who shares.";
+            let text = "That is not an invitation: it starts with cc1: or cc2: and is copied whole from who shares.";
             return self.ext.notice(ext::Level::Warn, "Sharing", text);
         };
         let dir = session::data_dir().join("shared").join(format!("{:x}", std::process::id()));
@@ -271,7 +295,7 @@ impl App {
 
     pub(super) fn share_stop(&mut self, why: Option<String>) {
         let Some(mut session) = self.sharing.session.take() else { return };
-        let (host, connected) = (session.host, session.connected);
+        let (host, connected) = (session.host, session.connected && (!session.host || session.invite.is_some()));
         session.close(if host { "the one sharing ended the session" } else { "left" });
         drop(session);
         let dir = self.sharing.dir.take();
@@ -747,6 +771,11 @@ impl App {
                 let text = format!("{} brought everyone to what they are looking at.", who(self, id));
                 self.ext.notice(ext::Level::Info, "Sharing", text);
             }
+            Event::Invited => {
+                let relay = self.sharing.session.as_ref().and_then(|session| session.relay.clone());
+                log::info!("share: the invitation is ready, through the relay at {}", relay.unwrap_or_default());
+                self.share_tell_script();
+            }
             Event::Ended(why) => self.share_stop(Some(why)),
         }
     }
@@ -939,6 +968,7 @@ impl App {
             (false, true) => ShareMode::Joined,
         };
         view.invite = session.invite.as_ref().map(Invite::written).unwrap_or_default();
+        view.relayed = session.relay.clone();
         view.writer = session.writer();
         view.following = self.sharing.following;
         view.people = session

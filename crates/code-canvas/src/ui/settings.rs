@@ -130,6 +130,11 @@ const GRAMMARS: (&str, &str) = (
     "A language Code Canvas does not know is always coloured by the grammar its extension brings. On, so are the ones it knows (Rust, TypeScript, Python…), when an extension brings a grammar for them.",
 );
 
+const RELAY: (&str, &str) = (
+    "Share through a relay",
+    "For sharing with someone on another network, with no VPN and no port forwarded: both apps connect out to the relay, and its invitation starts with cc2:. Code Canvas has no relay of its own and no account: run canvas-relay on a server with a public address, or use one you trust. The session crosses it sealed with the key in the invitation, which the relay never has.",
+);
+
 const UPDATES: (&str, &str) =
     ("Look for new versions of Code Canvas", "Asks GitHub for the latest release when the app starts.");
 
@@ -378,6 +383,21 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             note(ui, "Connecting reads the session files Codex writes as it works (~/.codex/sessions, or CODEX_HOME), in a terminal, with codex exec or in its editor extension, and shows each session where it reads, searches and edits. Codex's own settings are not touched and nothing leaves this computer.");
         });
     }
+    let sharing = hit(f, &["Sharing", "relay", "invitation", RELAY.0, RELAY.1]);
+    if sharing {
+        section(ui, icons::NETWORK, "Sharing");
+        well(ui, |ui| {
+            option(ui, "", &mut next.share_relay, RELAY);
+            ui.label(RichText::new("The relay's address").size(12.5).color(pal().text));
+            let field = egui::TextEdit::singleline(&mut next.relay)
+                .hint_text("relay.example.org:7878")
+                .desired_width(f32::INFINITY)
+                .font(FontId::monospace(12.0));
+            ui.add(field);
+            ui.add_space(2.0);
+            note(ui, "A name or an address, and the port (7878 when none is written). Sharing directly, on the same network or through a VPN, keeps working as before when this is off.");
+        });
+    }
     let never = ["Folders never read", "Files never read", "skip", "ignore", "node_modules"];
     let reading = hit(f, &never);
     if reading {
@@ -412,7 +432,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
     if next != st.prefs {
         actions.push(Action::SetPrefs(next));
     }
-    about || editing || reading || seen
+    about || editing || reading || seen || sharing
 }
 
 fn appearance(

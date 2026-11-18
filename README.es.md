@@ -153,7 +153,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   compartidas se ven en el lienzo de todos: su cara, en qué anda, qué líneas lee o
   edita y su rastro, con un circulito del color de su dueño; a la de otro la seguís
   igual que a la tuya. Se corta con un botón y sola al cerrar la app. En la misma red funciona directo;
-  desde afuera hace falta una VPN (Tailscale, ZeroTier) o abrir el puerto.
+  desde afuera, por un **relay** al que se conectan las dos apps (ver
+  [Compartir entre redes](#compartir-entre-redes-un-relay)), por una VPN (Tailscale,
+  ZeroTier) o abriendo el puerto.
 - **Control de código**: un panel como el de VS Code (rama, mensaje y Commit, cambios
   preparados y sin preparar, sincronizar, últimos commits), las líneas cambiadas
   marcadas en el lienzo, "mostrar solo lo que cambió" y el historial (*timeline*) del
@@ -206,6 +208,65 @@ cargo run --release -- ruta/al/frontend ruta/al/backend
 
 Sin argumentos restaura la sesión anterior. Todos los atajos están en el
 [README en inglés](README.md#install-and-run) y dentro de la app (ícono de ayuda).
+
+## Compartir entre redes: un relay
+
+Cuando los demás están en otra red y no hay VPN ni puerto abierto, un relay los
+junta: las dos apps se conectan *hacia afuera*, a él, así que ninguna necesita una
+dirección a la que la otra llegue. Code Canvas no trae relay ni cuenta: lo corrés
+vos en cualquier servidor con dirección pública (alcanza con el VPS más chico), o
+usás uno de alguien en quien confiás.
+
+El relay es `canvas-relay`, un programa chico de este repositorio (std y `ring`, sin
+archivo de configuración):
+
+```sh
+cargo build --release -p canvas-relay
+./target/release/canvas-relay --listen 0.0.0.0:7878
+```
+
+Abrí el puerto TCP 7878 en el firewall de ese servidor. Después, en Code Canvas,
+*Settings → Sharing*: marcá **Share through a relay** y escribí su dirección
+(`relay.ejemplo.org:7878`; si no ponés puerto, es 7878), o hacé lo mismo en el panel
+de compartir antes de *Start sharing*. La invitación pasa a ser
+`cc2:relay:<dirección del relay>:<sala>:<secreto>`; quien la pega entra por el
+relay y todo lo demás anda igual que compartiendo directo. Sin la casilla marcada,
+compartir directo (invitaciones `cc1:`) sigue como siempre.
+
+**Qué ve el relay y qué no.** Ve qué direcciones se conectan, el nombre de la sala,
+cuándo y cuántos bytes pasan. El secreto de la invitación nunca le llega: la sesión
+va sellada de punta a punta con ChaCha20-Poly1305, con claves hechas de ese secreto
+y de sales al azar nuevas en cada conexión (HKDF), una clave y un contador por
+sentido. No puede leer archivos, nombres ni ediciones, y si cambia, repite, reordena
+o devuelve un mensaje, se rechaza; alguien en el relay sin el secreto no entra. Lo
+único que puede hacer es dejar de pasar bytes.
+
+**Límites** (cada uno con su opción, `canvas-relay --help`): 256 salas, 1024
+conexiones, 64 conexiones y 8 salas por dirección, 32 invitados por sala, mensajes
+de hasta 16 MiB, un invitado y su anfitrión se separan tras 5 minutos sin que pase
+nada (las apps avisan que siguen ahí cada 25 segundos), y una sala termina a las 24
+horas de abierta. Solo deja pasar lo que empieza como una sesión de Code Canvas: no
+sirve de túnel para otra cosa.
+
+Para que siga andando con nada más que una shell (sin systemd ni Docker), un archivo
+al lado del programa:
+
+```sh
+#!/bin/sh
+# keep-relay.sh: vuelve a arrancar canvas-relay cada vez que se detiene.
+# Arrancalo con:  nohup ./keep-relay.sh >> relay.log 2>&1 &
+# y en cada inicio con esta línea en `crontab -e`:
+#   @reboot cd /home/yo/relay && nohup ./keep-relay.sh >> relay.log 2>&1 &
+cd "$(dirname "$0")"
+while true; do
+  ./canvas-relay --listen 0.0.0.0:7878
+  echo "canvas-relay se detuvo con $?; arranca de nuevo en 5 segundos"
+  sleep 5
+done
+```
+
+Escribe una línea cuando se abre o termina una sala y cuando un invitado entra o se
+separa, y nunca nada de lo que pasa por él.
 
 ## Rendimiento
 
