@@ -112,6 +112,11 @@ const EDITING: [(&str, &str); 7] = [
     ),
 ];
 
+const TRAILS: (&str, &str) = (
+    "Show where each assistant has been",
+    "Its last places, faint in its colour and joined by a dotted line: a ring where it read, a dot where it edited. They fade out in ten minutes. Point at one to see what it did there.",
+);
+
 const UPDATES: (&str, &str) =
     ("Look for new versions of Code Canvas", "Asks GitHub for the latest release when the app starts.");
 
@@ -323,13 +328,14 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.autosave, EDITING[6]);
         });
     }
-    let assistants = ["Assistants on the canvas", "Claude Code", "agents", "avatar", "hooks"];
+    let assistants = ["Assistants on the canvas", "Claude Code", "agents", "avatar", "hooks", "trail", TRAILS.0];
     let seen = hit(f, &assistants);
     if seen {
         section(ui, icons::EYE, "Assistants on the canvas");
         well(ui, |ui| {
             note(ui, "Each assistant working on your files shows on the canvas with a face of its own: where it reads, what it searches and what it changes. Click a face at the top to follow it.");
             ui.add_space(4.0);
+            option(ui, "", &mut next.trails, TRAILS);
             let connected = st.claude_connected;
             let state =
                 if connected { "Claude Code tells the canvas what it does." } else { "Claude Code is not connected." };

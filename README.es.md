@@ -98,6 +98,11 @@ muy grandes. Código abierto: cualquiera puede aportar.
   acaba de cambiar. Una sesión de Claude Code es un avatar y cada agente que lanza
   es otro. Clic en su cara (arriba) para **seguirlo**. Se activa en Ajustes,
   *Assistants on the canvas*, *Connect Claude Code*.
+- **El rastro de cada IA**: cada asistente deja marcas tenues de su color en los
+  últimos lugares por donde pasó, unidas en orden por una línea punteada: un aro
+  donde leyó y un punto donde editó. Se van apagando y a los diez minutos
+  desaparecen; pasás el puntero por una y te dice qué hizo ahí y hace cuánto. Se
+  apaga en Ajustes, *Show where each assistant has been*.
 - **Workspace**: cada carpeta que abrís queda en la lista *Workspace* del panel de
   archivos. Arrastrás una al lienzo (o le hacés clic) y aparece junto a las demás;
   la cruz, o el clic derecho en el lienzo, la saca sin olvidarla.

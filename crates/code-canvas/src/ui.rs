@@ -288,6 +288,7 @@ pub struct UiState {
     pub workspace: Vec<WorkspaceRow>,
     pub agents: Vec<AgentView>,
     pub agent_marks: Vec<AgentMark>,
+    pub agent_trails: Vec<AgentTrail>,
     pub claude_connected: bool,
     faces: Vec<egui::TextureHandle>,
     pub workspace_shut: bool,
@@ -359,6 +360,7 @@ impl Default for UiState {
             workspace: Vec::new(),
             agents: Vec::new(),
             agent_marks: Vec::new(),
+            agent_trails: Vec::new(),
             claude_connected: false,
             faces: Vec::new(),
             workspace_shut: false,
@@ -3627,6 +3629,22 @@ pub struct AgentMark {
     pub quiet: bool,
 }
 
+pub struct AgentTrail {
+    pub color: u32,
+    pub name: String,
+    pub steps: Vec<TrailStep>,
+}
+
+pub struct TrailStep {
+    pub at: Pos2,
+    pub line_h: f32,
+    pub lines: Vec<Rect>,
+    pub edited: bool,
+    pub did: String,
+    pub age: std::time::Duration,
+    pub left: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AccountOp {
     SignIn,
@@ -3688,8 +3706,100 @@ fn face(
     }
 }
 
+fn ago(age: std::time::Duration) -> String {
+    match age.as_secs() {
+        0..60 => "just now".to_string(),
+        60..120 => "a minute ago".to_string(),
+        secs => format!("{} minutes ago", secs / 60),
+    }
+}
+
+fn trail_curve(from: Pos2, to: Pos2, canvas: Rect) -> Vec<Pos2> {
+    let along = to - from;
+    let bend = from + along * 0.5 + along.rot90() * 0.18;
+    let room = Rect::from_points(&[from, to, bend]);
+    if !room.intersects(canvas) || along.length() < 1.0 {
+        return Vec::new();
+    }
+    let parts = ((along.length() / 24.0) as usize).clamp(2, 48);
+    (0..=parts)
+        .map(|i| {
+            let t = i as f32 / parts as f32;
+            let u = 1.0 - t;
+            Pos2::new(
+                u * u * from.x + 2.0 * u * t * bend.x + t * t * to.x,
+                u * u * from.y + 2.0 * u * t * bend.y + t * t * to.y,
+            )
+        })
+        .collect()
+}
+
+fn agent_trails(ctx: &egui::Context, painter: &egui::Painter, st: &UiState, canvas: Rect) {
+    if st.agent_trails.is_empty() {
+        return;
+    }
+    let pointer = ctx
+        .pointer_hover_pos()
+        .filter(|at| canvas.contains(*at) && !st.floating.iter().any(|taken| taken.contains(*at)));
+    let mut hovered: Option<(f32, &AgentTrail, &TrailStep)> = None;
+    for trail in &st.agent_trails {
+        let color = c(trail.color);
+        for pair in trail.steps.windows(2) {
+            let points = trail_curve(pair[0].at, pair[1].at, canvas);
+            if points.len() < 2 {
+                continue;
+            }
+            let length: f32 = points.windows(2).map(|p| (p[1] - p[0]).length()).sum();
+            let spacing = (length / 300.0).max(7.0);
+            let faint = color.gamma_multiply(0.5 * pair[0].left.max(0.15));
+            painter.extend(egui::Shape::dotted_line(&points, faint, spacing, 1.1));
+        }
+        for step in &trail.steps {
+            let strength = step.left.max(0.0).powf(0.6);
+            for line in step.lines.iter().filter(|line| line.intersects(canvas)) {
+                painter.rect_filled(*line, 1.0, color.gamma_multiply(0.07 * strength));
+            }
+            let radius = (step.line_h * 0.36).clamp(2.5, 5.0);
+            if !canvas.expand(radius).contains(step.at) {
+                continue;
+            }
+            let mark = color.gamma_multiply(0.25 + 0.65 * strength);
+            match step.edited {
+                true => painter.circle_filled(step.at, radius, mark),
+                false => painter.circle_stroke(step.at, radius - 0.6, Stroke::new(1.3, mark)),
+            };
+            if let Some(near) = pointer.map(|at| (at - step.at).length()).filter(|near| *near <= radius + 4.0) {
+                if hovered.is_none_or(|(best, _, _)| near <= best) {
+                    hovered = Some((near, trail, step));
+                }
+            }
+        }
+    }
+    if let Some((_, trail, step)) = hovered {
+        painter.circle_stroke(step.at, (step.line_h * 0.36).clamp(2.5, 5.0) + 3.0, Stroke::new(1.5, c(trail.color)));
+        egui::Area::new(egui::Id::unique("trail_tip"))
+            .fixed_pos(step.at + Vec2::new(14.0, 10.0))
+            .order(egui::Order::Tooltip)
+            .interactable(false)
+            .show(ctx, |ui| {
+                Frame::NONE
+                    .fill(pal().card)
+                    .stroke(Stroke::new(1.0, c(trail.color)))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(9, 6))
+                    .show(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        ui.label(RichText::new(format!("{} {}", trail.name, step.did)).size(13.0).color(pal().text));
+                        ui.label(RichText::new(ago(step.age)).size(11.0).color(pal().text_dim));
+                    });
+            });
+    }
+    ctx.request_repaint_after(std::time::Duration::from_secs(20));
+}
+
 fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, canvas: Rect) {
     load_faces(ctx, st);
+    agent_trails(ctx, painter, st, canvas);
     let beat = (ctx.input(|i| i.time) * 4.0).sin() as f32 * 0.5 + 0.5;
     for mark in &st.agent_marks {
         let color = c(mark.color);

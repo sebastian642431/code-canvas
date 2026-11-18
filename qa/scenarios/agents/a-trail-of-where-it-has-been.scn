@@ -1,0 +1,36 @@
+title: An assistant that reads three places and edits one leaves a trail of faint marks joined in order, a ring where it read and a dot where it edited
+folders: rust-small
+limit: 60
+expect-log: an assistant \(Codex\) is on the canvas
+forbid-log: script: agent needs
+
+wait 3000
+fit
+wait 1000
+agent {"agent":"codex-1","name":"Codex","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":9,"lines":6,"note":"looking for step 3"}
+wait 400
+agent {"agent":"codex-1","name":"Codex","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":1,"lines":3}
+wait 400
+agent {"agent":"codex-1","name":"Codex","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":4,"lines":3}
+wait 400
+agent {"agent":"codex-1","name":"Codex","action":"edit","path":"{WORK}/fix/rust-small/src/steps.rs","line":37,"lines":3,"note":"step 10"}
+wait 1500
+mark trail-whole
+wait 500
+goto src/steps.rs
+wait 1500
+mark trail-close
+wait 500
+agent Codex
+wait 400
+agent {"agent":"codex-1","name":"Codex","action":"read","path":"{WORK}/fix/rust-small/src/util.rs","line":5,"lines":3}
+wait 2500
+mark following-with-a-trail
+wait 500
+left settings:where each assistant has been
+wait 1500
+mark the-setting
+wait 500
+left settings:close
+wait 300
+quit
