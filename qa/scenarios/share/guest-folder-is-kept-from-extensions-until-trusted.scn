@@ -1,0 +1,37 @@
+title: A folder received from someone sharing is not given to the guest's extensions: the guest is asked, restricted mode shows while it is not trusted, and once trusted for the session extensions run on it
+folders: share-text
+limit: 75
+guest-extensions: trust-extension
+expect-log: share: share-text is shared, 4 files
+guest-expect-log: asking whether to trust .*share-text
+guest-expect-log: kept in restricted mode
+guest-expect-log: the status bar shows restricted mode
+guest-expect-log: share-text is trusted
+guest-expect-log: extension qa\.fake-trust started
+guest-expect-log: the status bar no longer shows restricted mode
+
+wait 3000
+share start
+wait 22000
+quit
+wait 800
+answer Close without saving
+wait 1000
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 4500
+mark asked
+wait 600
+answer Stay in restricted mode
+wait 1500
+mark restricted
+wait 600
+trust
+wait 800
+answer Trust the folder
+wait 3500
+mark trusted
+wait 600
+quit
+wait 1500

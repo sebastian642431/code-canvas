@@ -209,6 +209,13 @@ while (@($running | Where-Object { -not $_[0].HasExited }).Count -gt 0 -and (Get
         Start-Sleep -Milliseconds 200
         New-Item -ItemType Directory -Force -Path $guestData | Out-Null
         if ($prefs) { Set-Content -LiteralPath (Join-Path $guestData 'prefs.json') -Value $prefs -Encoding ASCII }
+        if ($head.ContainsKey('guest-extensions')) {
+            $into = Join-Path $guestData 'extensions'
+            New-Item -ItemType Directory -Force -Path $into | Out-Null
+            foreach ($one in @($head['guest-extensions'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                Copy-Item -Recurse -Path (Join-Path $PSScriptRoot "fake\$one") -Destination (Join-Path $into $one)
+            }
+        }
         $env:CODE_CANVAS_DATA_DIR = $guestData
         $env:CODE_CANVAS_SCRIPT = $guestScript.Replace('{INVITE}', (Get-Content $invite -Raw).Trim())
         $second = Start-Process -FilePath $Exe -PassThru

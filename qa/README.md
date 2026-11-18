@@ -48,6 +48,7 @@ quit
 | `expect-file` | `path :: regex`: a file (relative to the fixtures) whose text must match. |
 | `absent-file` | A file that must not exist when it ends. |
 | `guest-expect-log` | As `expect-log`, for the second instance. |
+| `guest-extensions` | As `extensions`, for the second instance. |
 | `prefs` | The preferences the app starts with, as JSON (also the guest's): `{"autosave": false}` for a scenario about what is typed and not saved. |
 | `github` | `empty`, or a file of `qa/fake` with the files of a gist: the run gets a GitHub of its own on this computer (`qa/fake/github.py`) to sign in to. |
 | `openvsx` | `on`: an Open VSX of its own for the run (`qa/fake/openvsx.py`, three made-up extensions with icons, READMEs, changelogs and manifests, one of each kind: things that do not work in Code Canvas, all that works, code only for the browser); the app is pointed at it with `CODE_CANVAS_OPEN_VSX`. What it was asked is in `openvsx.log` of the run. |
