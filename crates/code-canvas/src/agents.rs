@@ -398,6 +398,24 @@ fn first_line(text: &str) -> String {
     line.chars().take(200).collect()
 }
 
+fn spoken(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut inside = false;
+    for c in text.chars() {
+        match c {
+            '<' => inside = true,
+            '>' if inside => {
+                inside = false;
+                plain.push(' ');
+            }
+            c if !inside => plain.push(c),
+            _ => {}
+        }
+    }
+    let said = plain.lines().map(str::trim).find(|line| line.chars().filter(|c| c.is_alphanumeric()).count() > 3);
+    said.map(|line| line.chars().take(200).collect()).unwrap_or_default()
+}
+
 fn brief(text: &str, most: usize) -> String {
     let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
     match one.chars().count() > most {
@@ -567,7 +585,7 @@ impl Agents {
         agent.role = role;
         agent.at = Instant::now();
         if let Some(task) = text(event, &["task"]) {
-            agent.task = brief(&first_line(task), 48);
+            agent.task = brief(&spoken(task), 48);
         }
         agent.note = text(event, &["note"]).map(|note| brief(note, 90)).unwrap_or_default();
         agent.doing = match text(event, &["action"]).unwrap_or("read") {
@@ -627,12 +645,12 @@ impl Agents {
             _ => None,
         };
         if let Some(task) = handed {
-            self.handed.entry(session.to_string()).or_default().push_back(brief(&first_line(task), 48));
+            self.handed.entry(session.to_string()).or_default().push_back(brief(&spoken(task), 48));
         }
         let agent = self.agent(&key, session, &role);
         agent.at = Instant::now();
         if let Some(task) = text(hook, &["prompt"]).filter(|_| inner.is_none() && event == "UserPromptSubmit") {
-            agent.task = brief(&first_line(task), 48);
+            agent.task = brief(&spoken(task), 48);
         }
         match event {
             "SubagentStop" => (agent.doing, agent.note) = (Doing::Leaving, String::new()),
@@ -708,6 +726,15 @@ impl Agents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_assistant_is_named_by_words_not_by_markup() {
+        let wrapped =
+            "<agent-message from=\"a098ff741e8394478\">\n[Subagent hand-back] Write the tests\n</agent-message>";
+        assert_eq!(spoken(wrapped), "[Subagent hand-back] Write the tests");
+        assert_eq!(spoken("Make the parser faster\nand more"), "Make the parser faster");
+        assert_eq!(spoken("<only-a-tag>"), "");
+    }
 
     fn heard(events: &[Value]) -> Agents {
         let mut agents = Agents {

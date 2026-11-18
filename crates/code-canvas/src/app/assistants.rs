@@ -52,6 +52,28 @@ impl App {
         (rel.is_empty() || r.layout.node_for_path(&r.repo, &rel).is_some()).then_some((index, rel))
     }
 
+    fn bring_into_view(&mut self, path: &Path) {
+        let Some((index, rel)) = self.locate_file(path) else { return };
+        let filter = &mut self.pages[index].filter;
+        let mut changed = false;
+        let mut at = String::new();
+        for part in rel.split('/').filter(|part| !part.is_empty()) {
+            if !at.is_empty() {
+                at.push('/');
+            }
+            at.push_str(part);
+            for key in [at.clone(), format!("{at}/")] {
+                changed |= filter.hidden.remove(&key);
+                changed |= filter.collapsed.remove(&key);
+            }
+        }
+        if changed {
+            log::info!("{rel} was folded or hidden on the canvas: it is shown to follow an assistant there");
+            self.switch_to(index);
+            self.relayout();
+        }
+    }
+
     fn agent_line(&self, index: usize, rel: &str, wanted: &str) -> Option<u32> {
         let page = &self.pages[index];
         if let Some(editor) = page.editors.get(rel) {
@@ -117,14 +139,23 @@ impl App {
             let now = (agent.moved, agent.lines.map(|lines| lines.0));
             let looking = agent.find.is_some() && agent.lines.is_none() && agent.at.elapsed() < LOOKED_FOR;
             if self.agent_followed != Some(now) && !looking {
-                if let Some((index, rel)) = self.agent_file(&agent).filter(|(_, rel)| !rel.is_empty()) {
-                    let is_file = self.pages[index].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
-                    if is_file {
-                        if index != self.active {
-                            self.switch_to(index);
+                match self.agent_file(&agent).filter(|(_, rel)| !rel.is_empty()) {
+                    Some((index, rel)) => {
+                        let is_file = self.pages[index].ready().is_some_and(|r| r.repo.file_index(&rel).is_some());
+                        if is_file {
+                            if index != self.active {
+                                self.switch_to(index);
+                            }
+                            self.following = Some((index, rel, now.1.unwrap_or(0), Instant::now()));
+                            self.agent_followed = Some(now);
                         }
-                        self.following = Some((index, rel, now.1.unwrap_or(0), Instant::now()));
-                        self.agent_followed = Some(now);
+                    }
+                    None => {
+                        if let Some(path) = agent.path.clone().filter(|path| path.is_file()) {
+                            self.agent_followed = Some(now);
+                            self.bring_into_view(&path);
+                            self.show_path(&path, now.1.map(|line| (line, 0, 1)));
+                        }
                     }
                 }
             }

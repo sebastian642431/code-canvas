@@ -1961,6 +1961,12 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   `faces.json` in the data folder (the last 600), so a session that comes back
   has the same face. A new one takes, of the faces nobody on the canvas has,
   the one given longest ago or never.
+- **Following an assistant always reaches it**: when the file it works on is not
+  on the canvas (in a folded or hidden folder, ignored, or outside every open
+  folder, such as another working copy), `bring_into_view` unfolds and shows
+  the folders on the way and `show_path` puts the file on the canvas, then the
+  canvas goes there. The name taken from a prompt skips markup such as
+  `<agent-message …>` (`spoken`).
 - **Assistants have no names; they are called by what they are doing**
   (`Agent::task`, `Agent::name`): the main assistant by the first line of what
   it was last asked (`UserPromptSubmit`'s `prompt`), a helper by the
