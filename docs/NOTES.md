@@ -2226,6 +2226,8 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     round corners are the ground painted over its square ones (`enclose`,
     `corner`: a fan of triangles from the corner to the arc), with the border
     drawn last.
+  - The version (`v0.4.3`) is the last thing at the right of the status bar;
+    a click on it opens Settings, where updates are.
   - The status bar is a band of the ground under everything, 22 points tall
     (`status_bar`, `STATUS_H`): what is under the pointer on the left; on the
     right what extensions report, problems, what is not saved, the branch, an

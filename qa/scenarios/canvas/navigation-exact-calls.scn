@@ -12,4 +12,5 @@ wait 2500
 locate
 wait 1200
 mark exact-calls
+wait 800
 quit

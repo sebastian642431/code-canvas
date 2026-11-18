@@ -30,6 +30,9 @@ pub enum RelKind {
     Implementation,
 }
 
+/// A file, a line and a column: where a call is made or where what it calls is.
+pub type CallPlace = (u32, u32, u16);
+
 impl RelKind {
     pub const ALL: [RelKind; 5] = [
         RelKind::Definition,
@@ -641,7 +644,7 @@ impl Repo {
     /// Puts the calls a language server says the target makes in place of the guessed ones.
     /// Each is `(where the call is, where what it calls is named)`. As with the guess, one
     /// relation per callee, at its first call, and the target calling itself is left out.
-    pub fn refine_calls(&self, rel: &mut Relations, calls: &[((u32, u32, u16), (u32, u32, u16))]) {
+    pub fn refine_calls(&self, rel: &mut Relations, calls: &[(CallPlace, CallPlace)]) {
         rel.items.retain(|r| r.kind != RelKind::OutgoingCall);
         let mut calls = calls.to_vec();
         calls.sort_unstable();

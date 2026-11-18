@@ -3,7 +3,7 @@ folders: long-lines
 expect-log: the rest of line 3 of src/table\.rs is shown beside its card
 expect-log: the rest of line 8 of src/table\.rs is shown beside its card
 expect-log: the rest of line 6 of src/table\.rs is shown
-expect-file: src/table.rs :: alpha_0.*here_is_the_caret
+expect-file: long-lines/src/table.rs :: alpha_0.*here_is_the_caret
 forbid-log: the rest of line (1|2|4|5|7|9|10|11|12) of
 
 resize 1600 1000

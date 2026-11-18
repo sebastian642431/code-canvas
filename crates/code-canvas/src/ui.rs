@@ -1104,6 +1104,11 @@ fn status_bar(
         let most = (ui.available_width() * 0.5).max(120.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
+            let version = RichText::new(format!("v{}", crate::update::current())).size(11.5).color(pal().text_faint);
+            let version = ui.add(egui::Label::new(version).sense(Sense::click()));
+            if version.on_hover_text("The version of Code Canvas: click for Settings and updates").clicked() {
+                st.settings.show(Some(settings::Tab::General));
+            }
             if st.new_build {
                 let offer = RichText::new(format!("{}  Restart into the new build", icons::REFRESH_CW)).size(12.0).color(pal().accent);
                 let label = ui.add(egui::Label::new(offer).sense(Sense::click()));

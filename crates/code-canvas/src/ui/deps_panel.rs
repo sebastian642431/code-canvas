@@ -71,7 +71,9 @@ fn legend(ui: &mut egui::Ui, sample: Sample, text: &str) {
                     x += 7.0;
                 }
             }
-            _ => painter.line_segment([Pos2::new(start, y), Pos2::new(end - 6.0, y)], stroke),
+            _ => {
+                painter.line_segment([Pos2::new(start, y), Pos2::new(end - 6.0, y)], stroke);
+            }
         }
         let head = if sample == Sample::Bundle { 6.5 } else { 3.6 };
         let tip = vec![Pos2::new(end, y), Pos2::new(end - head * 2.2, y - head), Pos2::new(end - head * 2.2, y + head)];

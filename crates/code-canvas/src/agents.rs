@@ -861,7 +861,8 @@ mod tests {
             plain("run", "C:/src", None),
             plain("think", "C:/c.rs", None),
         ]);
-        let trail: Vec<(Doing, &str, Option<(u32, u32)>)> =
+        type Step<'a> = (Doing, &'a str, Option<(u32, u32)>);
+        let trail: Vec<Step> =
             agents.list[0].trail.iter().map(|step| (step.doing, step.path.to_str().unwrap(), step.lines)).collect();
         assert_eq!(
             trail,

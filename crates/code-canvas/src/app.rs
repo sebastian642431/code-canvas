@@ -4987,8 +4987,8 @@ impl App {
         let strip_rows: Vec<StripRow> =
             long_line.as_ref().map_or_else(Vec::new, |(long, caret)| long.draw(&mut canvas_overlay, *caret, s));
         let page_id = self.pages.get(self.active).map_or(0, |p| p.id);
-        let shown = long_line.as_ref().map(|(long, _)| (page_id, long.file, long.line, long.rest.frame));
-        if shown.map(|(id, file, line, _)| (id, file, line))
+        let long_shown = long_line.as_ref().map(|(long, _)| (page_id, long.file, long.line, long.rest.frame));
+        if long_shown.map(|(id, file, line, _)| (id, file, line))
             != self.long_line.map(|(id, file, line, _)| (id, file, line))
         {
             if let Some(((long, _), page)) = long_line.as_ref().zip(self.pages.get(self.active)) {
@@ -5001,8 +5001,8 @@ impl App {
                 );
             }
         }
-        self.long_line = shown;
-        self.in_long_line = shown.is_some_and(|(.., frame)| frame.contains(self.cursor));
+        self.long_line = long_shown;
+        self.in_long_line = long_shown.is_some_and(|(.., frame)| frame.contains(self.cursor));
         let labels: Vec<Label> = canvas_overlay.labels.iter().map(|l| l.as_label()).collect();
         let chip_labels: Vec<Label> = canvas_overlay.chip_labels.iter().map(|l| l.as_label()).collect();
 
