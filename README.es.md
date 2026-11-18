@@ -30,6 +30,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   importado, y las que son parte de un ciclo de imports van punteadas. Cuando son
   muchas, las que van entre dos carpetas se juntan en una sola más gruesa con su
   cantidad; si te acercás o seleccionás un archivo, se vuelven a abrir.
+- **Ordenar la carpeta por sus imports** (en el panel de Dependencias, se acuerda
+  por carpeta): en cada carpeta, lo que se importa va primero, desde arriba a la
+  izquierda, y lo que lo importa va después, capa por capa; los archivos y carpetas
+  que se importan entre sí quedan juntos. Ahí una curva punteada va en contra de ese
+  orden. Si cambiás un import, se reacomodan solo las carpetas de arriba de ese
+  archivo.
 - **Buscar**: explorador con casillas y filtro, `Ctrl+P` para ir a un archivo,
   `Ctrl+Shift+F` para buscar texto en todos los archivos.
 - **Archivos**: clic derecho en el explorador para crear, renombrar, borrar (a la
@@ -51,8 +57,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   código toman sus colores, también los claros.
 - **Gramáticas de VS Code**: un lenguaje que la app no colorea por su cuenta (Elm,
   Terraform, Ink, el de tu empresa…) se colorea con la gramática TextMate que trae
-  su extensión, en un hilo aparte, también mientras escribís. Un ajuste deja que las
-  gramáticas coloreen también los lenguajes que la app ya conoce.
+  su extensión, en un hilo aparte, también mientras escribís, y también de lejos una
+  vez que el archivo se coloreó. Un ajuste deja que las gramáticas coloreen también
+  los lenguajes que la app ya conoce.
 - **Ajustes** (el engranaje, o `Ctrl+,`): se abren en una ventana sobre la app, con
   versión y actualizaciones, tema, íconos, cada color, cada atajo y un buscador que
   recorre todo. La ventana abre donde y como la dejaste (maximizada si lo estaba) y

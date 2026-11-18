@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::scan::SourceFile;
-use crate::syntax::{Token, TokenKind, Tokens, CHUNK_LINES};
+use crate::syntax::{dominant_kind, Block, Token, TokenKind, Tokens, BLOCK_LINES, CHUNK_LINES};
 
 struct Entry {
     tokens: Tokens,
@@ -59,6 +59,42 @@ impl Painted {
             }
         }
         out.line_start.push(out.tokens.len() as u32);
+        Some(out)
+    }
+
+    /// The far-away bars of the file (one per `BLOCK_LINES` lines: the columns its
+    /// pieces cover and the kind most of them are), as `syntax::analyze` makes them
+    /// from the app's own tokens. Only for the whole file, painted for its text.
+    pub fn blocks(&self, file: &SourceFile) -> Option<Vec<Block>> {
+        let n = file.line_count();
+        if self.serial != file.serial() || self.total != n || self.lines.len() < n {
+            return None;
+        }
+        let (text, starts) = (file.text(), file.line_starts());
+        let mut out = Vec::with_capacity(n.div_ceil(BLOCK_LINES));
+        let mut block = (u16::MAX, 0u16, [0u32; 11]);
+        for line in 0..n {
+            let start = *starts.get(line)? as usize;
+            let end = starts.get(line + 1).map_or(text.len(), |&next| next as usize - 1);
+            let body = text.get(start..end)?;
+            let (mut col, mut at) = (0usize, 0usize);
+            for piece in self.lines[line].iter() {
+                let (s, e) = (piece.start as usize, piece.start as usize + piece.len as usize);
+                if s < at || e > body.len() || !body.is_char_boundary(s) || !body.is_char_boundary(e) {
+                    return None;
+                }
+                col += body[at..s].chars().count();
+                let cols = body[s..e].chars().count();
+                let (lo, hi) = (col.min(u16::MAX as usize) as u16, (col + cols).min(u16::MAX as usize) as u16);
+                (block.0, block.1) = (block.0.min(lo), block.1.max(hi));
+                block.2[piece.kind as usize] += cols as u32;
+                (col, at) = (col + cols, e);
+            }
+            if line % BLOCK_LINES == BLOCK_LINES - 1 || line + 1 == n {
+                out.push(Block { lo: block.0, hi: block.1, kind: dominant_kind(&block.2) });
+                block = (u16::MAX, 0, [0; 11]);
+            }
+        }
         Some(out)
     }
 }
@@ -247,6 +283,24 @@ mod tests {
         assert!(cache.paint(0, Arc::new(partial)).is_empty());
         cache.chunk(0, file, 0);
         assert_eq!(cache.take_asked(), vec![0]);
+    }
+
+    #[test]
+    fn the_far_away_blocks_come_from_the_whole_painted_file() {
+        let file = &notes();
+        let lines = vec![
+            vec![piece(0, 5, TokenKind::Keyword), piece(6, 4, TokenKind::Keyword)],
+            vec![piece(0, 5, TokenKind::Function), piece(9, 1, TokenKind::Number)],
+            vec![],
+        ];
+        let whole = painted(file, lines);
+        assert_eq!(whole.blocks(file), Some(vec![Block { lo: 0, hi: 10, kind: TokenKind::Keyword }]));
+        let partial = Painted { lines: whole.lines[..1].to_vec(), ..Painted::clone(&whole) };
+        assert_eq!(partial.blocks(file), None, "only once the whole file is painted");
+        let stale = Painted { serial: whole.serial + 1000, ..Painted::clone(&whole) };
+        assert_eq!(stale.blocks(file), None, "only for the text it was painted for");
+        let misfit = painted(file, vec![vec![piece(3, 40, TokenKind::Keyword)], vec![], vec![]]);
+        assert_eq!(misfit.blocks(file), None);
     }
 
     #[test]

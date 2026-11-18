@@ -21,6 +21,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [cache.rs](#cratescanvas-coresrccachers) ·
   [deps.rs](#cratescanvas-coresrcdepsrs) ·
   [layout.rs](#cratescanvas-coresrclayoutrs) ·
+  [order.rs](#cratescanvas-coresrcorderrs) ·
   [refs.rs](#cratescanvas-coresrcrefsrs) ·
   [scan.rs](#cratescanvas-coresrcscanrs) ·
   [store.rs](#cratescanvas-coresrcstorers) ·
@@ -170,6 +171,13 @@ loading, the pre-order layout and the symbol index are explained in
   shaped text (`TextLayer::drop_chunks`).
 - Above `PAINTED_LINES` (a million lines) painted in all, the files that have no
   chunk in the cache any more are let go; they are asked again when seen.
+- `Painted::blocks`: the far-away bars of a file made from its pieces the way
+  `syntax::analyze` makes them from the app's tokens (the columns covered and the
+  dominant kind per `BLOCK_LINES`), only when the whole file is painted for its
+  text. The app keeps them in `Analysis::painted` of that `SourceFile`
+  (`Ready::paint`), so they last as long as that version of the file: an edit makes
+  a new `SourceFile` without them, and they come back with the grammar's answer.
+  They are not kept in the scan store.
 
 ### crates/canvas-core/src/deps.rs
 
@@ -347,6 +355,18 @@ Resolution rules per language:
 - Children are packed tallest first, which packs best; ties keep the alphabetical
   order. A file's slot includes the label strip above its card, and `Layout::hit`
   counts that strip as part of the card.
+- **Arranged by imports** (`LayoutFilter::order`, an `Order`, see
+  [order.rs](#cratescanvas-coresrcorderrs)): `pack` sorts by the child's rank in its
+  folder (every child has its own) before anything else, so what is imported is
+  placed first, at the top left of the skyline, and a cycle's members follow each
+  other. It packs worse than tallest first. `Layout::order` is the order
+  the layout was made with; the one-file-at-a-time updates compare it with the
+  filter's (`reordered`, folders by `Order::changed`, only those on the canvas with
+  children of their own): `resize_file` repacks the folders in another order when
+  they are all above the file (an import changed can only reorder those) and keeps
+  going up until it has passed them, `insert_file` / `remove_file` when they are
+  all on the file's path (laid out again anyway). Otherwise, or when only one of
+  the two has an order, they return `None` and the caller lays out everything.
 - **One file at a time.** Every node keeps the size of its place in its folder
   (`Node::slot`, the label strip included) and where that place is from the
   folder's corner (`Node::offset`), so a folder can be packed again from its
@@ -378,6 +398,40 @@ Resolution rules per language:
   - With `only_files` set (only changed, only connected, a commit shown) the file
     numbers in the filter are the caller's, so these return `None` and the caller
     builds everything again.
+
+### crates/canvas-core/src/order.rs
+
+What "Arrange the folder by its imports" does: in every folder, what is imported
+comes before what imports it.
+
+- Items are the folders (numbered by a walk of the tree, the root first) and then
+  the files. Each edge of `Deps` (not `Module`, not to itself) becomes one between
+  the two items under the folder that holds both ends: their ancestors that are
+  siblings (`siblings`, climbing by depth). So every edge links two siblings, and
+  one pass of Tarjan's components (no recursion, as in `deps.rs`) over all items
+  finds the cycles of every folder at once. Components come out sinks first, so
+  each one's layer (0 for one importing nothing, else one more than the deepest it
+  imports) is known when it is found.
+- In a folder the children are sorted by (layer, the place of the component's first
+  member in the folder, score, their own place): by layer, then by name as the
+  folders and files come (folders first), the members of a cycle side by side.
+  Inside a cycle the score is how many file edges a member sends to the others
+  minus how many it gets from them, so what is imported more than it imports
+  comes first and few edges go backwards. `rank` is the child's position.
+- `against(edge)`: what the edge imports comes after the importer in the folder
+  holding both; only an edge inside a cycle of siblings can. With the order on,
+  the overlay dashes an edge when it is in a cycle or against the order: an edge
+  of a file cycle that leaves the folder can go with the order, and an edge
+  against it need not be part of a cycle of files (two folders that import each
+  other through different files).
+- `sig` per folder hashes its children's names and ranks; `changed` compares two
+  orders folder by folder by path, so it works across a file made or deleted
+  (file numbers move).
+- Building it is linear in the edges times the depth of the tree, plus a sort of
+  the sibling pairs. The app builds it on the scan thread when the folder was left
+  arranged, when it is turned on, and again after imports change (a file saved or
+  written with other imports, typed imports once their edges are taken, a file
+  made or deleted).
 
 ### crates/canvas-core/src/refs.rs
 
@@ -662,6 +716,9 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
   - `Moves` is what both write through: the GPU, or a `Vec` in the test that checks
     them against a scene built again.
 - `push_lines` merges tokens separated by small gaps into one bar.
+- `push_blocks` takes `Analysis::painted` (the grammar's bars, see `cache.rs`) when
+  the file has them, else the app's own. `SceneGpu::blocks_changed` writes one
+  card's blocks again (in place when as many, else spliced like `card_changed`).
 - On a wrapped card the instances carry rows, not lines: `push_bar` cuts a bar
   into one per row (`Wrap::pieces`) and `push_blocks` stretches a block over the
   rows of its lines, in pieces of at most 255 (the span has 8 bits). The shader
@@ -1931,6 +1988,9 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
   folders around it. The groups follow the zoom in steps of √2 (`zoom_step`):
   `Page::dep_zoom` is the step the curves were made for, and `App` makes them
   again when the camera, at rest, is on another one.
+- With the folder arranged by imports, an edge is dashed when it is in a cycle or
+  goes against the order of the layout (`Order::against` of `Layout::order`), and
+  so is a bundle holding one.
 - A relation that ends at a definition attaches to the start of its line (see
   `Repo::sym_line_start`). A plain mention outside any function gets no chip.
 - Labels: screen rectangles of placed labels are remembered; parents are visited
@@ -2239,7 +2299,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `collapse-all` | `collapse-all` | No argument. |
 | `expand-all` | `expand-all` | No argument. |
 | `connected` | `connected on\|off` | Show only connected files. |
-| `deps` | `deps all\|selected on\|off`, `deps report` | The switches of the Dependencies panel: every edge, the edges of the selection. `report` logs "script: deps N of M edges drawn, bundled\|one by one, K counts" for the selection. |
+| `deps` | `deps all\|selected\|arrange on\|off`, `deps report`, `deps order <folder>` | The switches of the Dependencies panel: every edge, the edges of the selection, arranging the folder by its imports. `report` logs "script: deps N of M edges drawn, bundled\|one by one, K counts" for the selection. `order` (arranged only) logs "script: deps order of '<folder>': name layer, …" in the order laid out, and how many edges go against it. |
 | `changed` | `changed on\|off` | Show only the files git reports as changed. |
 | `tab` | `tab <n>` | Switch to tab `n`, 1-based. |
 | `zoom` | `zoom <factor>` | Zoom by a factor. |
@@ -2271,6 +2331,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `colours` | `colours <path> <line>` | Logs "script: colours of <path> line N: keyword let · ident x · …": the kind of each token of that line (1-based) as the canvas draws it, from a grammar or the app's own. |
+| `bars` | `bars <path>` | Logs "script: bars of <path> from its grammar\|the app: N blocks, kind · kind · …": where the far-away bars of the file come from and the kinds of the first eight. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `remove` | `remove <path>` | Delete a file behind the app's back. |
 | `renamed` | `renamed <path> <new path>` | Rename (or move) a file behind the app's back. |
@@ -2298,6 +2359,7 @@ the menu with.
 
 - What survives between launches, as JSON in the data directory (locations in
   [Quick reference](#files-in-the-data-directory)).
+- `PageSession::arranged`: the folder is arranged by its imports (`Page::arranged`).
 - `PageSession::camera` is the portable camera of `Page::portable_camera`: the
   world point in the middle of the page's part of the window, and the zoom in
   logical pixels per world unit.

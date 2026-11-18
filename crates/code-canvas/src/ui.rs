@@ -510,6 +510,7 @@ pub enum Action {
     SaveFile,
     RunCommand(String, String),
     DepsChanged,
+    Arrange(bool),
     Git(crate::git::GitOp),
     RefreshGit,
     WriteCommitMessage,

@@ -326,6 +326,7 @@ pub struct Block {
 #[derive(Clone, Debug, Default)]
 pub struct Analysis {
     pub blocks: Vec<Block>,
+    pub painted: Option<std::sync::Arc<[Block]>>,
     pub chunk_in_comment: Vec<bool>,
     pub symbols: Vec<crate::symbols::Symbol>,
     pub impl_traits: Vec<(u32, u32, u16)>,

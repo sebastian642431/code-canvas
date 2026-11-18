@@ -24,6 +24,7 @@ pub struct Loaded {
     pub repo: Repo,
     pub deps: canvas_core::deps::Deps,
     pub layout: Layout,
+    pub order: Option<Arc<canvas_core::Order>>,
     pub scene: SceneData,
     pub total_ms: u128,
 }
@@ -49,6 +50,32 @@ pub struct Ready {
     pub load_ms: u128,
     pub tree: Vec<TreeRow>,
     pub tree_dirty: bool,
+}
+
+impl Ready {
+    /// A grammar's tokens for a file, and from the whole file its far-away bars,
+    /// written on the GPU when they are not the ones there. The chunks newly covered.
+    pub fn paint(&mut self, index: usize, painted: Arc<canvas_core::Painted>, gpu: &Gpu) -> Vec<u32> {
+        let blocks = self.repo.files.get(index).and_then(|f| painted.blocks(f));
+        let fresh = self.tokens.paint(index, painted);
+        if let Some(blocks) = blocks {
+            let file = &mut self.repo.files[index];
+            if file.analysis.painted.as_deref() != Some(&blocks[..]) {
+                file.analysis.painted = Some(blocks.into());
+                self.gpu.blocks_changed(gpu.device, gpu.queue, &self.repo, &self.layout, index);
+            }
+        }
+        fresh
+    }
+
+    /// Forgets the far-away bars grammars gave; whether there were any.
+    pub fn unpaint(&mut self) -> bool {
+        let mut had = false;
+        for file in &mut self.repo.files {
+            had |= file.analysis.painted.take().is_some();
+        }
+        had
+    }
 }
 
 pub enum PageState {
@@ -119,6 +146,7 @@ pub struct Page {
     pub pane_viewport: [f32; 2],
     pub extent: Option<canvas_core::Rect>,
     pub filter: LayoutFilter,
+    pub arranged: bool,
     pub tree_open: HashSet<String>,
     pub selections: Vec<Selection>,
     pub want_exact: Vec<SymRef>,
@@ -288,6 +316,19 @@ pub fn scan_options() -> ScanOptions {
     options
 }
 
+fn arrange(repo: &Repo, deps: &canvas_core::deps::Deps) -> canvas_core::Order {
+    let t = Instant::now();
+    let order = canvas_core::Order::build(repo, deps);
+    log::info!(
+        "arranged '{}' by its imports: {} layers at most, {} cycles kept together, in {:.1} ms",
+        repo.name,
+        order.layers + 1,
+        order.tied,
+        t.elapsed().as_secs_f64() * 1000.0
+    );
+    order
+}
+
 pub fn text_budget() -> usize {
     let megabytes = std::env::var("CODE_CANVAS_TEXT_MB").ok().and_then(|mb| mb.parse::<usize>().ok());
     megabytes.unwrap_or(768) << 20
@@ -345,6 +386,7 @@ impl Page {
             pane_viewport: [0.0, 0.0],
             extent: None,
             filter: LayoutFilter::default(),
+            arranged: false,
             tree_open: HashSet::new(),
             selections: Vec::new(),
             want_exact: Vec::new(),
@@ -402,6 +444,7 @@ impl Page {
             page.filter.collapsed = s.collapsed.iter().cloned().collect();
             page.filter.hidden = s.hidden.iter().cloned().collect();
             page.tree_open = s.tree_open.iter().cloned().collect();
+            page.arranged = s.arranged;
             page.restore_camera = s.camera.map(|(center, zoom)| Camera { center, zoom });
         }
         if scan {
@@ -467,6 +510,7 @@ impl Page {
             collapsed: sorted(&self.filter.collapsed),
             hidden: sorted(&self.filter.hidden),
             tree_open: sorted(&self.tree_open),
+            arranged: self.arranged,
         }
     }
 
@@ -1033,7 +1077,8 @@ impl Page {
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         let p = progress.clone();
-        let filter = LayoutFilter { only_files: None, ..self.filter.clone() };
+        let mut filter = LayoutFilter { only_files: None, order: None, ..self.filter.clone() };
+        let arranged = self.arranged;
         let reuse = !std::mem::take(&mut self.read_again);
         (self.warm_at, self.warm_batch) = (0, 256);
         let (only, extra) = (self.only, self.extra.clone());
@@ -1061,6 +1106,9 @@ impl Page {
                     deps.unresolved,
                     deps.external
                 );
+                if arranged {
+                    filter.order = Some(Arc::new(arrange(&repo, &deps)));
+                }
                 let layout = Layout::build_filtered(&repo, &filter);
                 let scene = SceneData::build(&repo, &layout);
                 let total_ms = t.elapsed().as_millis();
@@ -1075,7 +1123,7 @@ impl Page {
                     repo.timings.index_ms,
                     total_ms
                 );
-                let _ = tx.send(Loaded { repo, deps, layout, scene, total_ms });
+                let _ = tx.send(Loaded { repo, deps, layout, order: filter.order, scene, total_ms });
             })
             .expect("spawn scan thread");
         self.state = PageState::Loading { progress, rx, started: Instant::now() };
@@ -1251,6 +1299,41 @@ impl Page {
         log::debug!("relayout: {} nodes in {:.1} ms", r.layout.nodes.len(), t.elapsed().as_secs_f32() * 1000.0);
     }
 
+    pub fn set_arranged(&mut self, on: bool, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
+        self.arranged = on;
+        let Some(r) = self.ready() else { return };
+        self.filter.order = on.then(|| Arc::new(arrange(&r.repo, &r.deps)));
+        self.relayout(renderer, device, filters);
+    }
+
+    /// The order of the folders made again after imports changed; the layout follows
+    /// it when it is next updated (`Layout::resize_file` and the others), alone or
+    /// with everything laid out again. How many folders are in another order.
+    fn rearrange(&mut self) -> usize {
+        let Some(r) = self.ready().filter(|_| self.arranged) else { return 0 };
+        let order = arrange(&r.repo, &r.deps);
+        let moved = r.layout.order.as_deref().map_or(1, |old| old.changed(&order).len());
+        self.filter.order = Some(Arc::new(order));
+        moved
+    }
+
+    pub fn imports_typed(&mut self, typed: &std::collections::BTreeSet<u32>, gpu: &Gpu, filters: &RelFilters) {
+        let started = Instant::now();
+        let moved = self.rearrange();
+        if moved == 0 {
+            return;
+        }
+        let one = typed.iter().next().filter(|_| typed.len() == 1).map(|&f| f as usize);
+        let rel = one.and_then(|f| Some(self.ready()?.repo.files.get(f)?.rel_path.clone()));
+        match (one, rel) {
+            (Some(index), Some(rel)) => {
+                let more = format!(", {moved} folders in another order");
+                self.card_changed(index, &rel, "imports typed", started, gpu, filters, &more)
+            }
+            _ => self.relayout(gpu.renderer, gpu.device, filters),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn card_changed(
         &mut self,
@@ -1296,8 +1379,16 @@ impl Page {
         let moved = r.deps.update_files(&r.repo, &[index as u32].into());
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         let edges = if moved { " (edges changed)" } else { "" };
-        let imports = format!(", read and indexed {read:.2} ms, imports {ms:.2} ms{edges}");
         r.tokens.forget_file(index);
+        let reordered = match moved {
+            true => self.rearrange(),
+            false => 0,
+        };
+        let reordered = match reordered {
+            0 => String::new(),
+            n => format!(", {n} folders in another order"),
+        };
+        let imports = format!(", read and indexed {read:.2} ms, imports {ms:.2} ms{edges}{reordered}");
         self.search = None;
         self.select_again(selected);
         self.card_changed(index, rel_path, why, started, gpu, filters, &imports);
@@ -1338,6 +1429,9 @@ impl Page {
             r.repo.files.len()
         });
         let imports = t.elapsed().as_secs_f64() * 1000.0;
+        let reordered = self.rearrange();
+        let filter = LayoutFilter { order: self.filter.order.clone(), ..filter };
+        let PageState::Ready(r) = &mut self.state else { return false };
         let t = Instant::now();
         let from = match made {
             true => r.layout.insert_file(&r.repo, &filter, index),
@@ -1374,8 +1468,12 @@ impl Page {
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let why = if made { "made" } else { "deleted" };
         let how = if alone { "alone" } else { "with everything laid out again" };
+        let reordered = match reordered {
+            0 => String::new(),
+            n => format!(", {n} folders in another order"),
+        };
         log::info!(
-            "updated '{rel_path}' ({why}) {how} in {ms:.2} ms: imports of {resolved} files resolved again in {imports:.2} ms, layout {laid:.2} ms ({boxes} boxes), scene {drawn:.2} ms"
+            "updated '{rel_path}' ({why}) {how} in {ms:.2} ms: imports of {resolved} files resolved again in {imports:.2} ms, layout {laid:.2} ms ({boxes} boxes), scene {drawn:.2} ms{reordered}"
         );
         true
     }

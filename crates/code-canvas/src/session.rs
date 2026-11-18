@@ -32,6 +32,7 @@ pub struct PageSession {
     pub collapsed: Vec<String>,
     pub hidden: Vec<String>,
     pub tree_open: Vec<String>,
+    pub arranged: bool,
 }
 
 pub fn data_dir() -> PathBuf {

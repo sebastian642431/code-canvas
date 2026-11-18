@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::deps::{analyze, Deps};
 use crate::layout::{Layout, LayoutFilter, NodeKind, NONE};
+use crate::order::Order;
 use crate::refs::SymbolIndex;
 use crate::scan::{scan, Dir, Repo, ScanOptions};
 
@@ -12,6 +14,7 @@ struct World {
     layout: Layout,
     deps: Deps,
     filter: LayoutFilter,
+    arranged: bool,
 }
 
 fn key(layout: &Layout, n: u32) -> String {
@@ -64,11 +67,22 @@ impl World {
             std::fs::write(p, text).unwrap();
         }
         let repo = scan(&dir, &ScanOptions::default(), None);
-        let layout = Layout::build_filtered(&repo, &filter);
         let deps = analyze(&repo);
-        let world = World { dir, repo, layout, deps, filter };
+        let mut filter = filter;
+        let arranged = filter.order.is_some();
+        if arranged {
+            filter.order = Some(Arc::new(Order::build(&repo, &deps)));
+        }
+        let layout = Layout::build_filtered(&repo, &filter);
+        let world = World { dir, repo, layout, deps, filter, arranged };
         world.check("at the start");
         world
+    }
+
+    fn arrange(&mut self) {
+        if self.arranged {
+            self.filter.order = Some(Arc::new(Order::build(&self.repo, &self.deps)));
+        }
     }
 
     fn check(&self, after: &str) {
@@ -80,7 +94,14 @@ impl World {
         folders(&fresh.tree, &fresh, &mut theirs);
         assert_eq!(mine, theirs, "{after}: the folders");
         assert_eq!(self.repo.total_lines, fresh.total_lines, "{after}: the lines");
-        let whole = Layout::build_filtered(&fresh, &self.filter);
+        let mut filter = self.filter.clone();
+        if self.arranged {
+            let order = Order::build(&fresh, &analyze(&fresh));
+            assert_eq!(self.filter.order.as_deref(), Some(&order), "{after}: the order");
+            assert!(self.layout.order.as_deref() == Some(&order), "{after}: the order laid out");
+            filter.order = Some(Arc::new(order));
+        }
+        let whole = Layout::build_filtered(&fresh, &filter);
         let (mine, theirs) = (shape(&self.layout, &self.repo), shape(&whole, &fresh));
         for (k, v) in &theirs {
             assert_eq!(mine.get(k), Some(v), "{after}: {k}");
@@ -100,15 +121,17 @@ impl World {
         match self.repo.file_index(rel) {
             Some(at) => {
                 self.repo.reload_file(at, &opts);
-                self.layout.resize_file(&self.repo, &self.filter, at).expect("laid out again in place");
                 self.deps.update_files(&self.repo, &[at as u32].into());
+                self.arrange();
+                self.layout.resize_file(&self.repo, &self.filter, at).expect("laid out again in place");
             }
             None => {
                 let at = self.repo.add_file(rel, &opts).expect("a new file");
-                self.layout.insert_file(&self.repo, &self.filter, at).expect("laid out around it");
                 if self.deps.insert_file(&self.repo, at as u32).is_none() {
                     self.deps = analyze(&self.repo);
                 }
+                self.arrange();
+                self.layout.insert_file(&self.repo, &self.filter, at).expect("laid out around it");
             }
         }
         self.check(&format!("writing {rel}"));
@@ -117,9 +140,10 @@ impl World {
     fn typed(&mut self, rel: &str, text: &str) {
         let at = self.repo.file_index(rel).unwrap();
         self.repo.replace_source(at, text, &ScanOptions::default());
-        self.layout.resize_file(&self.repo, &self.filter, at).expect("laid out again in place");
         assert_eq!(self.repo.reindex_symbols(), vec![at]);
         self.deps.update_files(&self.repo, &[at as u32].into());
+        self.arrange();
+        self.layout.resize_file(&self.repo, &self.filter, at).expect("laid out again in place");
         std::fs::write(self.dir.join(rel), text).unwrap();
         self.check(&format!("typing in {rel}"));
     }
@@ -128,10 +152,11 @@ impl World {
         std::fs::remove_file(self.dir.join(rel)).unwrap();
         let at = self.repo.file_index(rel).unwrap();
         let old = self.repo.remove_file(at);
-        self.layout.remove_file(&self.repo, &self.filter, at, rel).expect("laid out without it");
         if self.deps.remove_file(&self.repo, at as u32, &old).is_none() {
             self.deps = analyze(&self.repo);
         }
+        self.arrange();
+        self.layout.remove_file(&self.repo, &self.filter, at, rel).expect("laid out without it");
         self.check(&format!("deleting {rel}"));
     }
 }
@@ -160,6 +185,9 @@ fn start() -> Vec<(&'static str, String)> {
         ("web/util/x.ts", "export function x() {}\n".into()),
         ("deep/one/two/three.py", "import four\n\ndef three():\n    pass\n".into()),
         ("docs/readme.md", "# hi\n".into()),
+        ("ring/p.ts", "export const p = 1;\n".into()),
+        ("ring/q.ts", "import { p } from './p';\nexport const q = p;\n".into()),
+        ("ring/r.ts", "export const r = 1;\n".into()),
     ];
     const LOTS: [&str; 12] = ["l00", "l01", "l02", "l03", "l04", "l05", "l06", "l07", "l08", "l09", "l10", "l11"];
     for (i, name) in LOTS.iter().enumerate() {
@@ -195,6 +223,13 @@ fn walk(tag: &str, filter: LayoutFilter) {
     w.delete("docs/readme.md");
     w.write("docs/again.md", "# again\n");
     w.typed("src/main.rs", "mod a;\nmod b;\n\nfn main() {}\n");
+    w.typed("ring/p.ts", "import { r } from './r';\nexport const p = r;\n");
+    w.write("ring/s.ts", "import { q } from './q';\n");
+    w.write("ring/deeper/t.ts", "export const t = 1;\n");
+    w.typed("ring/r.ts", "import { t } from './deeper/t';\nexport const r = t;\n");
+    w.typed("ring/r.ts", "import { t } from './deeper/t';\nimport { s } from './s';\nexport const r = t;\n");
+    w.delete("ring/s.ts");
+    w.write("ring/deeper/t.ts", &lines("t", 200, 120));
 }
 
 #[test]
@@ -210,6 +245,39 @@ fn the_same_with_folders_collapsed_and_hidden() {
     filter.hidden.insert("docs".into());
     filter.hidden.insert("src/b/d.rs".into());
     walk("filtered", filter);
+}
+
+#[test]
+fn the_same_with_folders_arranged_by_their_imports() {
+    walk("arranged", LayoutFilter { order: Some(Arc::new(Order::default())), ..Default::default() });
+}
+
+#[test]
+fn the_same_arranged_with_folders_collapsed_and_hidden() {
+    let mut filter = LayoutFilter { order: Some(Arc::new(Order::default())), ..Default::default() };
+    filter.collapsed.insert("lots".into());
+    filter.collapsed.insert("deep/one".into());
+    filter.hidden.insert("ring/q.ts".into());
+    walk("arranged-filtered", filter);
+}
+
+#[test]
+fn an_import_typed_reorders_its_folder_in_place() {
+    let arranged = LayoutFilter { order: Some(Arc::new(Order::default())), ..Default::default() };
+    let mut w = World::new("reorder", &start(), arranged);
+    let at = w.repo.file_index("ring/p.ts").unwrap();
+    let r = w.layout.file_node[w.repo.file_index("ring/r.ts").unwrap()] as usize;
+    let before = w.layout.nodes[r].rect;
+    let text = "import { r } from './r';\nexport const p = r;\n";
+    w.repo.replace_source(at, text, &ScanOptions::default());
+    w.repo.reindex_symbols();
+    assert!(w.deps.update_files(&w.repo, &[at as u32].into()), "p imports something else");
+    w.arrange();
+    let changed = w.layout.resize_file(&w.repo, &w.filter, at).expect("in place");
+    assert!(changed.iter().any(|range| range.contains(&(r as u32))), "r.ts moved");
+    assert_ne!(w.layout.nodes[r].rect, before);
+    std::fs::write(w.dir.join("ring/p.ts"), text).unwrap();
+    w.check("an import typed");
 }
 
 #[test]

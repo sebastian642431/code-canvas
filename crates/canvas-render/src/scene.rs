@@ -104,7 +104,8 @@ fn dominant(counts: &[u32; 11]) -> u32 {
 
 fn push_blocks(fi: usize, f: &SourceFile, wrap: Option<&Wrap>, out: &mut Vec<CodeInstance>) {
     let n = f.line_count();
-    for (b, block) in f.analysis.blocks.iter().enumerate() {
+    let blocks = f.analysis.painted.as_deref().unwrap_or(&f.analysis.blocks);
+    for (b, block) in blocks.iter().enumerate() {
         let line = b * BLOCK_LINES;
         let span = BLOCK_LINES.min(n - line);
         let hi = block.hi.min(canvas_core::layout::MAX_COLS as u16);
@@ -403,7 +404,20 @@ impl SceneGpu {
             }
         }
         self.write_origins(device, queue, origins_layout, low.min(high)..high);
-        let node = layout.file_node[file];
+        self.blocks_changed(device, queue, repo, layout, file);
+    }
+
+    /// The far-away bars of one card made again (from a grammar's colours, say),
+    /// nothing else moved.
+    pub fn blocks_changed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        repo: &Repo,
+        layout: &Layout,
+        file: usize,
+    ) {
+        let Some(&node) = layout.file_node.get(file) else { return };
         if node == NONE {
             return;
         }
