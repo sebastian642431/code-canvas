@@ -2776,7 +2776,7 @@ impl App {
         self.request_redraw();
     }
 
-    fn exact_uses(&mut self, page: u32, of: (u32, u32), places: Vec<(PathBuf, u32, u32)>) {
+    fn exact_relations(&mut self, page: u32, of: (u32, u32), found: ext::Found) {
         let Some(index) = self.pages.iter().position(|p| p.id == page) else { return };
         let mut root = ext::path_key(&self.pages[index].root.to_string_lossy());
         root.push('/');
@@ -2786,9 +2786,7 @@ impl App {
             let rel = text.get(root.len()..).filter(|_| key.starts_with(&root) && key.len() == text.len())?;
             Some(rel.to_string())
         };
-        let places: Vec<(String, u32, u32)> =
-            places.iter().filter_map(|(path, line, col)| Some((inside(path)?, *line, *col))).collect();
-        if self.pages[index].exact_uses(of, &places) {
+        if self.pages[index].exact_relations(of, &found.with_paths(inside)) {
             if index == self.active && self.pages[index].only_connected {
                 self.relayout();
             }
@@ -4132,7 +4130,7 @@ impl App {
             changed |= page.poll_git_op();
             for sym in std::mem::take(&mut page.want_exact) {
                 if let Some((path, line, col)) = page.use_site(sym) {
-                    self.ext.request_uses(&path, line, col, page.id, (sym.file, sym.index));
+                    self.ext.request_relations(&path, line, col, page.id, (sym.file, sym.index));
                 }
             }
             if let Some((fine, said)) = page.git_said.take() {
@@ -4209,7 +4207,7 @@ impl App {
                 ext::Event::Reveal(path) => self.reveal_file(&path),
                 ext::Event::GoTo { path, line, col, len } => self.show_path(&path, Some((line, col, len))),
                 ext::Event::Suggestions(found) => self.offer_code(found),
-                ext::Event::Uses { page, of, places } => self.exact_uses(page, of, places),
+                ext::Event::Relations { page, of, found } => self.exact_relations(page, of, found),
                 ext::Event::ExtraEdits { path, edits } => self.extra_edits(&path, edits),
                 ext::Event::WebviewHtml { handle, html } => self.webviews.set_html(&handle, html),
                 ext::Event::WebviewPost { handle, message } => self.webviews.post(&handle, &message),

@@ -2150,6 +2150,57 @@ function plainLocations(result) {
       return { path: appPath(l.uri), ...plainRange(l.range), col: col(l.range.start), endCol: col(l.range.end) };
     });
 }
+// Where a position of a file is, as the app counts: its path, line and display column.
+// `docs` keeps the files read for one answer, which often names the same file many times.
+function plainPlace(uri, p, docs) {
+  const key = uriKey(uri);
+  if (!docs.has(key)) docs.set(key, documents.get(key) || loadDocument(uri, true));
+  const doc = docs.get(key);
+  const col = doc && p.line < doc.lineCount ? displayColumn(doc.lineAt(p.line).text, p.character, state.tabWidth) : p.character;
+  return { path: appPath(uri), line: p.line, col };
+}
+// The calls `caller` makes, one entry per place it makes one: where the callee's name is
+// (path, line, col) and where the call is (fromPath, fromLine, fromCol), which is in the
+// caller's file.
+function plainOutgoing(caller, calls) {
+  const docs = new Map();
+  const out = [];
+  for (const call of Array.isArray(calls) ? calls : []) {
+    const to = call && call.to;
+    const named = to && to.uri && (to.selectionRange || to.range);
+    if (!named) continue;
+    const target = plainPlace(to.uri, named.start, docs);
+    for (const r of call.fromRanges || []) {
+      const from = plainPlace(caller.uri, r.start, docs);
+      out.push({ ...target, name: String(to.name || ''), fromPath: from.path, fromLine: from.line, fromCol: from.col });
+    }
+  }
+  return out;
+}
+
+// What the canvas asks to draw relations waits this long at most for a language server.
+const RELATION_DEADLINE_MS = 20000;
+// Asks one provider with a token of its own. Past `until` the token is cancelled and the
+// answer is null, as it is when the provider fails: the app keeps what it guessed.
+async function askUntil(p, until, call) {
+  const source = new CancellationTokenSource();
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      source.cancel();
+      resolve(null);
+    }, Math.max(0, until - Date.now()));
+  });
+  try {
+    return await Promise.race([scope.run(p.extension, () => call(source.token)), late]);
+  } catch (e) {
+    log('warn', p.extension, `${p.kind} failed: ${(e && e.message) || e}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function plainHover(h) {
   if (!h) return '';
   const parts = Array.isArray(h.contents) ? h.contents : [h.contents];
@@ -2328,17 +2379,38 @@ const requests = {
     const text = applyEdits(doc, edits);
     return { changed: text !== doc.getText(), text, extension: chosen.extension };
   },
-  async locations({ path: file, line, col, kind }) {
+  async locations({ path: file, line, col, kind, deadline }) {
     const doc = openDocument(file, false);
     if (!doc) return { items: [] };
     const position = positionAt(doc, line, col);
     const method = { Definition: 'provideDefinition', Reference: 'provideReferences', Implementation: 'provideImplementation', TypeDefinition: 'provideTypeDefinition', Declaration: 'provideDeclaration' }[kind];
+    const until = deadline ? Date.now() + deadline : 0;
     for (const p of providersFor(kind, doc)) {
-      const args = kind === 'Reference' ? [doc, position, { includeDeclaration: true }, noToken] : [doc, position, noToken];
-      const items = plainLocations(await scope.run(p.extension, () => p.provider[method](...args)));
+      const ask = (token) => p.provider[method](...(kind === 'Reference' ? [doc, position, { includeDeclaration: true }, token] : [doc, position, token]));
+      const items = plainLocations(until ? await askUntil(p, until, ask) : await scope.run(p.extension, () => ask(noToken)));
       if (items.length) return { items, extension: p.extension };
     }
     return { items: [] };
+  },
+  // The calls the function at the position makes, from the call hierarchy. `known` says a
+  // server knew the function and answered, so no items means it calls nothing.
+  async outgoingCalls({ path: file, line, col, deadline }) {
+    const doc = openDocument(file, false);
+    if (!doc) return { items: [], known: false };
+    const position = positionAt(doc, line, col);
+    const until = Date.now() + (deadline || RELATION_DEADLINE_MS);
+    for (const p of providersFor('CallHierarchy', doc)) {
+      const prepared = await askUntil(p, until, (token) => p.provider.prepareCallHierarchy(doc, position, token));
+      const items = [];
+      let known = false;
+      for (const item of Array.isArray(prepared) ? prepared : prepared ? [prepared] : []) {
+        const calls = await askUntil(p, until, (token) => p.provider.provideCallHierarchyOutgoingCalls(item, token));
+        known = known || Array.isArray(calls);
+        items.push(...plainOutgoing(item, calls));
+      }
+      if (known) return { items, known, extension: p.extension };
+    }
+    return { items: [], known: false };
   },
   async hover({ path: file, line, col }) {
     const doc = openDocument(file, false);

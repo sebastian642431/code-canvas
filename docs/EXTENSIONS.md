@@ -106,7 +106,8 @@ that only has tree views gets no icon yet: there would be nothing to show.
 
 Implemented: colour themes, file icon themes, webview views and panels, documents and their events, configuration, diagnostics, every
 `languages.register…Provider` (kept by kind; the app uses formatting, hovers,
-definitions and completions, and references can be requested), commands, workspace edits,
+definitions and completions, and references, call hierarchies and implementations
+for the relations of a selected name), commands, workspace edits,
 `workspace.fs`, output channels, status bar items, messages, decorations, extension
 storage, activation events, and the classes and enums extensions construct.
 

@@ -1,0 +1,15 @@
+title: The outgoing calls and implementations a language server gives take the place of the ones guessed by name
+folders: rust-small
+extensions: relations-extension
+expect-log: exact outgoing calls of 'main': 1
+expect-log: exact implementations of 'main': 1
+forbid-log: exact uses of
+
+wait 4000
+right symbols
+select main
+wait 2500
+locate
+wait 1200
+mark exact-calls
+quit

@@ -21,7 +21,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   llamadas entrantes y salientes e implementaciones, con filtros por tipo y la opción
   de mostrar solo los archivos conectados. Funciona al instante con un índice propio
   por nombres (aproximado); con la extensión del lenguaje instalada (rust-analyzer,
-  TypeScript…) los usos del nombre elegido pasan a ser los exactos.
+  TypeScript…) los usos del nombre elegido, las llamadas que hace y lo que lo
+  implementa pasan a ser los exactos al ratito. El panel de Símbolos dice cuáles
+  son exactos y cuáles van por nombre.
 - **Dependencias**: qué archivo importa a cuál, leído de los `import`. Al seleccionar
   un archivo o una carpeta salen curvas hacia lo que usa y desde lo que lo usa, con un
   panel que lista ambas cosas.

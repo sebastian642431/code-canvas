@@ -49,6 +49,7 @@ quit
 | `absent-file` | A file that must not exist when it ends. |
 | `guest-expect-log` | As `expect-log`, for the second instance. |
 | `github` | `empty`, or a file of `qa/fake` with the files of a gist: the run gets a GitHub of its own on this computer (`qa/fake/github.py`) to sign in to. |
+| `extensions` | Folders of `qa/fake` put in the run's extensions folder before it starts: `relations-extension` plays a language server. |
 
 A line `=== again` starts a part that is run after the app has ended: the app
 is started again with no folders on the data of the first run (what it

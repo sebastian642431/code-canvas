@@ -86,6 +86,13 @@ $data = Join-Path $Work 'data'
 $guestData = Join-Path $Work 'data-guest'
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
 New-Item -ItemType Directory -Force -Path $fix, $out, $data, (Join-Path $Work 'claude') | Out-Null
+if ($head.ContainsKey('extensions')) {
+    $into = Join-Path $data 'extensions'
+    New-Item -ItemType Directory -Force -Path $into | Out-Null
+    foreach ($one in @($head['extensions'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        Copy-Item -Recurse -Path (Join-Path $PSScriptRoot "fake\$one") -Destination (Join-Path $into $one)
+    }
+}
 
 $wanted = @()
 if ($head.ContainsKey('folders')) { $wanted = @($head['folders'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }

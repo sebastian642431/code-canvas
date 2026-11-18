@@ -10,6 +10,7 @@ use canvas_render::{Renderer, SceneData, SceneGpu};
 
 use crate::camera::Camera;
 use crate::editor::Editor;
+use crate::ext::Found;
 use crate::git::{Change, Commit, CommitFile, FileChange, GitState, Row};
 use crate::session::PageSession;
 
@@ -1310,21 +1311,42 @@ impl Page {
         self.curves_dirty = true;
     }
 
-    pub fn exact_uses(&mut self, of: (u32, u32), places: &[(String, u32, u32)]) -> bool {
+    /// Puts what a language server said about a selected name (places relative to the
+    /// folder, in lines of the file) in place of what was guessed by name.
+    pub fn exact_relations(&mut self, of: (u32, u32), found: &Found<String>) -> bool {
         let sym = SymRef { file: of.0, index: of.1 };
         let Some(at) = self.selections.iter().position(|s| s.sym == sym) else { return false };
         let PageState::Ready(r) = &self.state else { return false };
-        let uses: Vec<(u32, u32, u16)> = places
-            .iter()
-            .filter_map(|(rel, line, col)| {
-                let row = self.diffs.get(rel).map_or(*line, |shown| shown.row(*line));
-                Some((r.repo.file_index(rel)? as u32, row, (*col).min(u16::MAX as u32) as u16))
-            })
-            .collect();
-        if uses.is_empty() {
-            return false;
-        }
-        r.repo.refine(&mut self.selections[at].rel, &uses);
+        let place = |(rel, line, col): &(String, u32, u32)| {
+            let row = self.diffs.get(rel).map_or(*line, |shown| shown.row(*line));
+            Some((r.repo.file_index(rel)? as u32, row, (*col).min(u16::MAX as u32) as u16))
+        };
+        let rel = &mut self.selections[at].rel;
+        let (what, before) = match found {
+            Found::Uses(places) => {
+                let uses: Vec<(u32, u32, u16)> = places.iter().filter_map(place).collect();
+                if uses.is_empty() {
+                    return false;
+                }
+                r.repo.refine(rel, &uses);
+                ("uses", RelKind::Reference)
+            }
+            Found::Calls(calls) => {
+                let calls: Vec<_> = calls.iter().filter_map(|(from, to)| Some((place(from)?, place(to)?))).collect();
+                r.repo.refine_calls(rel, &calls);
+                ("outgoing calls", RelKind::OutgoingCall)
+            }
+            Found::Implementations(places) => {
+                let places: Vec<(u32, u32, u16)> = places.iter().filter_map(place).collect();
+                r.repo.refine_implementations(rel, &places);
+                ("implementations", RelKind::Implementation)
+            }
+        };
+        let count = match before {
+            RelKind::Reference => rel.count(RelKind::Reference) + rel.count(RelKind::IncomingCall),
+            kind => rel.count(kind),
+        };
+        log::info!("exact {what} of '{}': {count}", r.repo.sym_name(sym));
         self.curves_dirty = true;
         true
     }

@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use canvas_core::{RelKind, Site};
+use canvas_core::{RelKind, Relations, Site};
 use canvas_render::{theme, FrameStats};
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
@@ -3163,10 +3163,7 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
                                 .color(pal().text_dim),
                         );
                     }
-                    let mut note = match sel.rel.exact {
-                        true => "uses as the language's extension knows them".to_string(),
-                        false => format!("by name · searched in {:.0} ms", sel.rel.search_ms),
-                    };
+                    let mut note = exact_note(&sel.rel);
                     if sel.rel.truncated {
                         note.push_str(" · results truncated");
                     }
@@ -3175,6 +3172,24 @@ fn symbols_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actio
         }
         ui.add_space(8.0);
     });
+}
+
+/// Which relations of a selected name come from a language server and which are guessed
+/// by name, for the foot of the Symbols panel.
+fn exact_note(rel: &Relations) -> String {
+    let parts = [
+        (rel.is_exact(RelKind::Reference), "uses"),
+        (rel.is_exact(RelKind::OutgoingCall), "outgoing calls"),
+        (rel.is_exact(RelKind::Implementation), "implementations"),
+    ];
+    let exact: Vec<&str> = parts.iter().filter(|(exact, _)| *exact).map(|(_, name)| *name).collect();
+    match exact.as_slice() {
+        [] => format!("by name · searched in {:.0} ms", rel.search_ms),
+        [_, _, _] => "uses, calls and implementations as the language's extension knows them".to_string(),
+        [one] => format!("{one} as the language's extension knows them · the rest by name"),
+        [one, two] => format!("{one} and {two} as the language's extension knows them · the rest by name"),
+        _ => unreachable!(),
+    }
 }
 
 fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>, keys: &Keymap) {
@@ -4776,6 +4791,28 @@ fn tooltip(ctx: &egui::Context, canvas: Rect, info: &FrameInfo) {
 #[cfg(test)]
 mod tests {
     use super::quick_score;
+
+    #[test]
+    fn the_panel_says_which_relations_are_exact() {
+        use canvas_core::{RelKind, Relations, SymRef};
+        let mut rel = Relations {
+            target: SymRef { file: 0, index: 0 },
+            items: Vec::new(),
+            truncated: false,
+            search_ms: 3.0,
+            exact: [false; 5],
+        };
+        assert_eq!(super::exact_note(&rel), "by name · searched in 3 ms");
+        rel.exact[RelKind::OutgoingCall.index()] = true;
+        assert_eq!(super::exact_note(&rel), "outgoing calls as the language's extension knows them · the rest by name");
+        rel.exact[RelKind::Reference.index()] = true;
+        assert_eq!(
+            super::exact_note(&rel),
+            "uses and outgoing calls as the language's extension knows them · the rest by name"
+        );
+        rel.exact[RelKind::Implementation.index()] = true;
+        assert_eq!(super::exact_note(&rel), "uses, calls and implementations as the language's extension knows them");
+    }
 
     #[test]
     fn hover_markdown_becomes_a_tooltip() {

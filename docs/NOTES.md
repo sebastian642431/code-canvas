@@ -1587,15 +1587,39 @@ Details:
   (`Editor::edit_before`), where they cannot move what was just typed sideways.
   The host keeps the items of the last `complete` only (`offered`), by a serial
   the app gives back: an older list answers with nothing.
-- **Exact uses.** `Page::toggle_symbol` selects with the relations the names give
-  and leaves the symbol in `want_exact`; the app asks the host where it is used
-  (`locations`, kind `Reference`, at the definition) and `Page::exact_uses` gives
-  the answer to `Repo::refine`: references and incoming calls not confirmed go,
-  confirmed places the names missed are added (a call if the token there is one),
-  and `Relations::exact` says so in the panel. Definitions, outgoing calls and
-  implementations stay as guessed. No answer, or an empty one (no extension for
-  the language, or one still starting), leaves the guess. Places come in lines of
-  the file and go through `row_of` for a card that shows a diff.
+- **Exact relations.** `Page::toggle_symbol` selects with the relations the names
+  give and leaves the symbol in `want_exact`; `Extensions::request_relations` asks
+  the host three things at the definition, each answered on its own as an
+  `Event::Relations` (`ext::Found`), which `Page::exact_relations` hands to
+  `Repo`:
+  - where it is used (`locations`, kind `Reference`) → `refine`: references and
+    incoming calls not confirmed go, confirmed places the names missed are added
+    (a call if the token there is one);
+  - the calls it makes (`outgoingCalls`: `prepareCallHierarchy`, then
+    `provideCallHierarchyOutgoingCalls` for each item) → `refine_calls`: every
+    guessed outgoing call goes; one relation per callee, at its first call, the
+    target calling itself left out, as the guess does;
+  - what implements it (`locations`, kind `Implementation`) → `refine_implementations`:
+    the guessed implementations go; the target itself is left out.
+  `symbol_named_at` finds the symbol a server points at: the one whose name starts
+  there, else the first defined on that line (the place may be another part of an
+  `impl` line). A callee with no symbol there still gets its curve, nameless.
+  Places outside the folder (the standard library) are dropped by the app
+  (`Found::with_paths`); a call with either end there goes.
+- `Relations::exact` is per kind; the foot of the Symbols panel (`ui::exact_note`)
+  names the ones a server gave and says "the rest by name". Definitions are never
+  replaced.
+- No answer leaves the guess: no extension for the language, one still starting,
+  an error, an empty list of uses or implementations. Outgoing calls are the
+  exception: when a server prepared the function and answered (`known`), an empty
+  list means it calls nothing and the guesses go.
+- Every relation request carries `deadline` (`RELATIONS_WAIT_MS`, 20 s): the host
+  gives each provider a token of its own (`askUntil`), cancels it when the time
+  is up and answers as if there were nothing. Until an answer comes the guesses
+  are drawn; a late answer for a name no longer selected is dropped. Nothing is
+  kept between selections: selecting again asks again.
+- Places come in lines of the file and go through `row_of` for a card that shows
+  a diff.
 - A file that changes on disk does not drop the selection any more:
   `Page::reload_file` selects the same names again (`select_again`: same file,
   nearest line), which also asks for their exact uses again.
