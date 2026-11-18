@@ -3399,7 +3399,7 @@ impl App {
     fn page_chord(&mut self, k: &crate::webview::PageKey) {
         let chord = Chord::new(&k.key, k.ctrl, k.shift, k.alt);
         match self.ui.keys.command(&chord).map(Command::info) {
-            Some(info) if info.scope != Scope::Canvas => {
+            Some(info) if info.scope != Scope::Canvas && info.command.reachable_from_a_page() => {
                 if matches!(info.command, Command::Palette | Command::GoToFile | Command::SearchInFiles) {
                     self.webviews.focus_app();
                 }

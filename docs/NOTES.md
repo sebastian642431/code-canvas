@@ -1720,6 +1720,24 @@ Host and documents
 - `own_decorations` (what the app itself draws on files, in the same form as
   extensions' decorations) survives a restart of the host.
 
+What the host may ask
+
+- **A `write` (a workspace edit) is done only for a document open in the app
+  (`open`) that lies inside a folder given to the host** (`writable`): the path
+  must be full, may not go up with `..` nor into a `.git` folder, and once
+  canonicalized (links followed) must be under one of the folders and not under
+  the app's data folder or the folder of its program (`own_dirs`). A link to
+  nowhere is refused. Anything else is logged ("refused a write of …") and told
+  as a notice. What the app formats itself (`Pending::Format`) is its own request
+  and not checked. A write in a session shared as host still reaches the guests.
+- Sizes have ceilings (`MAX_*` beside `MAX_OPEN`): texts are clipped (`clip`),
+  lists cut (status items, diagnostics and decorations per file and how many
+  files, contexts, webviews, the extension's own questions, whose oldest is
+  answered as dismissed), a page over 16 MiB is not shown and a write over
+  64 MiB is refused. `host.rs` reads lines of at most 96 MiB (`next_line`): a
+  longer one is skipped whole, and a line that is not UTF-8 no longer stops the
+  reading.
+
 Paths and positions
 
 - Diagnostics and decorations are keyed by `path_key`, the same for a path however
@@ -3346,6 +3364,16 @@ Messages and lifetime
 
 - Page → `ipc` → `WebViews::poll`; extension → `WebViews::post` →
   `window.postMessage` in the page.
+- **Only the webview's own page speaks for it** (`own_page`): a message whose
+  source is not exactly `https://ccres.localhost/view/<handle>` (another webview's
+  page, a file of the folder served under `/file/`, a site the page went to) is
+  dropped and logged. A page cannot go elsewhere either: the navigation handler
+  keeps every webview on its own page; the media viewer's links go to
+  `App::follow_link` as before, the others are logged and stay.
+- A key a page passes on (`{key}`) runs a command of the app only if
+  `Command::reachable_from_a_page` says so: what shows or saves things (the
+  palette, go to file, search, find, save, panels, settings), never what opens or
+  closes folders, formats or edits.
 - Messages posted before a page finished loading are queued in order and delivered
   when it is `ready`. A message for a webview that is not on screen yet is
   dropped: nothing listens, and VS Code drops these too.

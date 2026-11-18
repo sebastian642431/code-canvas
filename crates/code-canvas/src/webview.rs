@@ -215,6 +215,35 @@ fn opens_links(handle: &str) -> bool {
     handle == crate::media::HANDLE || handle == crate::ext::details::PAGE
 }
 
+const ORIGIN: &str = "https://ccres.localhost";
+
+fn decode(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex =
+            (bytes[i] == b'%').then(|| path.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+pub fn own_page(source: &str, handle: &str) -> bool {
+    let Some(rest) = source.strip_prefix(ORIGIN) else { return false };
+    let path = rest.split(['?', '#']).next().unwrap_or_default();
+    path.starts_with('/') && decode(path) == format!("/view/{handle}")
+}
+
 #[cfg(windows)]
 mod platform {
     use std::borrow::Cow;
@@ -229,9 +258,9 @@ mod platform {
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
-    use super::{opens_links, theme_json, PageKey, PageMessage, PageNote, PageWheel, INIT_JS};
-
-    const ORIGIN: &str = "https://ccres.localhost";
+    use super::{
+        decode, opens_links, own_page, theme_json, PageKey, PageMessage, PageNote, PageWheel, INIT_JS, ORIGIN,
+    };
 
     #[derive(Default)]
     struct Shared {
@@ -355,29 +384,6 @@ mod platform {
             "pdf" => "application/pdf",
             _ => "application/octet-stream",
         }
-    }
-
-    fn decode(path: &str) -> String {
-        let bytes = path.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            let hex = (bytes[i] == b'%')
-                .then(|| path.get(i + 1..i + 3))
-                .flatten()
-                .and_then(|h| u8::from_str_radix(h, 16).ok());
-            match hex {
-                Some(b) => {
-                    out.push(b);
-                    i += 3;
-                }
-                None => {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-        }
-        String::from_utf8_lossy(&out).into_owned()
     }
 
     fn respond(status: u16, kind: &str, body: Vec<u8>) -> Response<Cow<'static, [u8]>> {
@@ -616,19 +622,32 @@ mod platform {
                 .with_browser_accelerator_keys(false)
                 .with_navigation_handler({
                     let (tx, owner) = (self.tx.clone(), handle.to_string());
-                    let own = format!("{ORIGIN}/view/{handle}");
                     move |url: String| {
-                        let elsewhere = url.split('#').next() != Some(own.as_str());
-                        let web = url.starts_with("https://") || url.starts_with("http://");
-                        if !opens_links(&owner) || !elsewhere || !web {
+                        if own_page(&url, &owner) {
                             return true;
                         }
-                        let _ = tx.send((owner.clone(), serde_json::json!({ "navigate": url }).to_string()));
-                        crate::ext::wake_ui();
+                        let web = url.starts_with("https://") || url.starts_with("http://");
+                        if opens_links(&owner) && web {
+                            let _ = tx.send((owner.clone(), serde_json::json!({ "navigate": url }).to_string()));
+                            crate::ext::wake_ui();
+                        } else {
+                            log::warn!(
+                                "the page {owner} was kept from going to {}",
+                                url.chars().take(200).collect::<String>()
+                            );
+                        }
                         false
                     }
                 })
                 .with_ipc_handler(move |request: Request<String>| {
+                    let source = request.uri().to_string();
+                    if !own_page(&source, &owner) {
+                        log::warn!(
+                            "a message to the app from {} was refused: not the page of {owner}",
+                            source.chars().take(200).collect::<String>()
+                        );
+                        return;
+                    }
                     let _ = tx.send((owner.clone(), request.body().clone()));
                     crate::ext::wake_ui();
                 })
@@ -816,3 +835,23 @@ mod platform {
 pub use platform::WebViews;
 
 pub const AVAILABLE: bool = cfg!(windows);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_page_of_its_own_speaks_for_a_webview() {
+        assert!(own_page("https://ccres.localhost/view/w1", "w1"));
+        assert!(own_page("https://ccres.localhost/view/w1#top", "w1"));
+        assert!(own_page("https://ccres.localhost/view/w1?x=1", "w1"));
+        assert!(own_page("https://ccres.localhost/view/claude%2Esidebar", "claude.sidebar"));
+        assert!(!own_page("https://ccres.localhost/view/w2", "w1"), "another webview's page");
+        assert!(!own_page("https://ccres.localhost/view/w1/more", "w1"));
+        assert!(!own_page("https://ccres.localhost/file/C:/repo/page.html", "w1"), "a file of the folder");
+        assert!(!own_page("https://evil.example/view/w1", "w1"));
+        assert!(!own_page("https://ccres.localhost.evil.example/view/w1", "w1"));
+        assert!(!own_page("http://ccres.localhost/view/w1", "w1"));
+        assert!(!own_page("", "w1"));
+    }
+}

@@ -9,6 +9,31 @@ use super::Waker;
 
 const HOST_JS: &str = include_str!("../../exthost/host.js");
 
+const MAX_LINE: usize = 96 * 1024 * 1024;
+
+fn next_line(reader: &mut impl BufRead, most: usize) -> Option<Result<String, usize>> {
+    let mut line = Vec::new();
+    let read = std::io::Read::take(&mut *reader, most as u64).read_until(b'\n', &mut line).ok()?;
+    if read == 0 {
+        return None;
+    }
+    if line.last() != Some(&b'\n') && read == most {
+        let mut skipped = read;
+        loop {
+            line.clear();
+            let more = std::io::Read::take(&mut *reader, most as u64).read_until(b'\n', &mut line).ok()?;
+            skipped += more;
+            if more == 0 || line.last() == Some(&b'\n') {
+                return Some(Err(skipped));
+            }
+        }
+    }
+    while matches!(line.last(), Some(b'\n' | b'\r')) {
+        line.pop();
+    }
+    Some(Ok(String::from_utf8_lossy(&line).into_owned()))
+}
+
 pub enum HostEvent {
     Message(Value),
     Stderr(String),
@@ -67,7 +92,9 @@ impl Host {
 
         let (tx_err, wake_err) = (tx.clone(), waker.clone());
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let mut reader = BufReader::new(stderr);
+            while let Some(line) = next_line(&mut reader, MAX_LINE) {
+                let line = line.unwrap_or_else(|skipped| format!("a line of {skipped} bytes was left out"));
                 if tx_err.send(HostEvent::Stderr(line)).is_err() {
                     break;
                 }
@@ -75,10 +102,14 @@ impl Host {
             }
         });
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let event = match serde_json::from_str::<Value>(&line) {
-                    Ok(v) => HostEvent::Message(v),
-                    Err(_) => HostEvent::Stderr(line),
+            let mut reader = BufReader::new(stdout);
+            while let Some(line) = next_line(&mut reader, MAX_LINE) {
+                let event = match line {
+                    Ok(line) => match serde_json::from_str::<Value>(&line) {
+                        Ok(v) => HostEvent::Message(v),
+                        Err(_) => HostEvent::Stderr(line),
+                    },
+                    Err(skipped) => HostEvent::Stderr(format!("a message of {skipped} bytes was left out")),
                 };
                 if tx.send(event).is_err() {
                     return;
@@ -131,4 +162,26 @@ fn node_command_free(program: &str) -> Command {
     let mut c = Command::new(program);
     c.creation_flags(CREATE_NO_WINDOW);
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_too_long_is_left_out_and_the_next_one_still_read() {
+        let text = format!("short\r\n{}\nafter\nlast", "x".repeat(25));
+        let mut reader = std::io::Cursor::new(text.into_bytes());
+        assert_eq!(next_line(&mut reader, 10), Some(Ok("short".to_string())));
+        assert_eq!(next_line(&mut reader, 10), Some(Err(26)));
+        assert_eq!(next_line(&mut reader, 10), Some(Ok("after".to_string())));
+        assert_eq!(next_line(&mut reader, 10), Some(Ok("last".to_string())));
+        assert_eq!(next_line(&mut reader, 10), None);
+        let mut broken = std::io::Cursor::new(b"caf\xe9\n".to_vec());
+        assert_eq!(
+            next_line(&mut broken, 10),
+            Some(Ok("caf\u{fffd}".to_string())),
+            "not UTF-8 does not stop the reading"
+        );
+    }
 }

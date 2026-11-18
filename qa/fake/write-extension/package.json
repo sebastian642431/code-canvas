@@ -1,0 +1,12 @@
+{
+  "name": "fake-write",
+  "publisher": "qa",
+  "displayName": "QA writes",
+  "description": "Its command qa.write.outside asks the app, through a workspace edit, to change a file of the folder next to the first one (plain/src/main.rs), once by its full path and once by a path that goes up with '..'.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "engines": { "vscode": "^1.80.0" },
+  "capabilities": { "untrustedWorkspaces": { "supported": true } },
+  "contributes": { "commands": [{ "command": "qa.write.outside", "title": "Write outside" }] }
+}

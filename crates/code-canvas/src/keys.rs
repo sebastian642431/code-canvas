@@ -192,6 +192,25 @@ impl Command {
     pub fn info(self) -> &'static CommandInfo {
         COMMANDS.iter().find(|c| c.command == self).expect("every command is in COMMANDS")
     }
+
+    pub fn reachable_from_a_page(self) -> bool {
+        matches!(
+            self,
+            Command::Palette
+                | Command::GoToFile
+                | Command::SearchInFiles
+                | Command::Find
+                | Command::Save
+                | Command::NextFolder
+                | Command::PreviousFolder
+                | Command::ToggleLeftPanel
+                | Command::ToggleConsole
+                | Command::ToggleSideBySide
+                | Command::ToggleUi
+                | Command::FullScreen
+                | Command::Settings
+        )
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -381,6 +400,21 @@ pub fn save(file: &KeyFile) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_can_reach_only_the_commands_that_show_things() {
+        let reached: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|c| c.command.reachable_from_a_page() && c.scope != Scope::Canvas)
+            .map(|c| c.id)
+            .collect();
+        for id in ["commandPalette", "goToFile", "searchInFiles", "save", "toggleConsole", "settings"] {
+            assert!(reached.contains(&id), "{id}");
+        }
+        for id in ["openFolder", "closeFolder", "formatFile", "rescan", "addNextOccurrence", "addCaretAbove"] {
+            assert!(!reached.contains(&id), "{id}");
+        }
+    }
 
     fn chord(text: &str) -> Chord {
         Chord::parse(text).unwrap()

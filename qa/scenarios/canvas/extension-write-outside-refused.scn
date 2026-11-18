@@ -1,0 +1,16 @@
+title: An extension that asks the app to change a file outside the open folders is refused, by a full path or one going up with '..'
+folders: rust-small
+fixtures: plain
+extensions: write-extension
+expect-log: extension qa\.fake-write started
+expect-log: refused a write of QA writes to .*plain.src.main\.rs: it is not a document open in the app
+expect-log: refused a write of QA writes to .*rust-small.\.\..plain.src.main\.rs: it goes up with \.\.
+forbid-log: wrote .*plain.src.main\.rs
+expect-file: plain/src/main.rs :: \A(?![\s\S]*changed by an extension)
+
+wait 3000
+command qa.write.outside
+wait 2000
+mark refused
+wait 600
+quit

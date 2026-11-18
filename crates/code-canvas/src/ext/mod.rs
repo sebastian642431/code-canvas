@@ -591,6 +591,67 @@ enum Pending {
 
 const MAX_OPEN: usize = 48;
 const MAX_LOG: usize = 400;
+const MAX_WRITE: usize = 64 * 1024 * 1024;
+const MAX_HTML: usize = 16 * 1024 * 1024;
+const MAX_TEXT: usize = 2000;
+const MAX_SHORT: usize = 200;
+const MAX_STATUS: usize = 40;
+const MAX_FILES: usize = 5000;
+const MAX_ITEMS: usize = 2000;
+const MAX_KINDS: usize = 64;
+const MAX_CONTEXTS: usize = 4000;
+const MAX_CONTEXT_VALUE: usize = 16 * 1024;
+const MAX_WEBVIEWS: usize = 64;
+const MAX_QUESTIONS: usize = 8;
+const MAX_ACTIONS: usize = 8;
+const MAX_UNSUPPORTED: usize = 64;
+
+pub fn clip(text: &str, most: usize) -> String {
+    match text.char_indices().nth(most) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
+    }
+}
+
+fn real_key(path: &Path) -> Option<String> {
+    let real = match path.canonicalize() {
+        Ok(real) => real,
+        Err(_) if std::fs::symlink_metadata(path).is_ok() => return None,
+        Err(_) => path.parent()?.canonicalize().ok()?.join(path.file_name()?),
+    };
+    Some(path_key(&canvas_core::scan::clean_path(real).to_string_lossy()))
+}
+
+pub fn writable(path: &Path, open: &[PathBuf], folders: &[PathBuf], forbidden: &[PathBuf]) -> Result<(), &'static str> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return Err("it is not a full path");
+    }
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("it goes up with ..");
+    }
+    if path.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git")) {
+        return Err("it is inside .git");
+    }
+    let wanted = path_key(&path.to_string_lossy());
+    if !open.iter().any(|p| path_key(&p.to_string_lossy()) == wanted) {
+        return Err("it is not a document open in the app");
+    }
+    let real = real_key(path).ok_or("it cannot be found")?;
+    let inside = |root: &PathBuf| {
+        real_key(root).is_some_and(|root| {
+            let root = root.trim_end_matches('/');
+            real.len() > root.len() && real.starts_with(root) && real[root.len()..].starts_with('/')
+        })
+    };
+    if !folders.iter().any(inside) {
+        return Err("it is outside the open folders");
+    }
+    if forbidden.iter().any(inside) {
+        return Err("it is in the app's own folders");
+    }
+    Ok(())
+}
 
 pub struct Extensions {
     pub installed: Vec<Installed>,
@@ -627,6 +688,7 @@ pub struct Extensions {
 
     dir: PathBuf,
     data_dir: PathBuf,
+    own_dirs: Vec<PathBuf>,
     disabled: HashSet<String>,
     host: Option<Host>,
     folders: Vec<PathBuf>,
@@ -1002,6 +1064,13 @@ impl Extensions {
             views: views::Views::default(),
             installed_revision: 0,
             dir,
+            own_dirs: [
+                Some(data_dir.clone()),
+                std::env::current_exe().ok().and_then(|e| Some(e.parent()?.to_path_buf())),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             data_dir,
             disabled,
             host: None,
@@ -1769,9 +1838,9 @@ impl Extensions {
                 }
             }
             "unsupported" => {
-                let (id, api) = (s("extension"), s("api"));
+                let (id, api) = (s("extension"), clip(&s("api"), MAX_SHORT));
                 if let Some(e) = self.installed.iter_mut().find(|e| e.id == id) {
-                    if !e.unsupported.contains(&api) {
+                    if !e.unsupported.contains(&api) && e.unsupported.len() < MAX_UNSUPPORTED {
                         e.unsupported.push(api.clone());
                     }
                 }
@@ -1783,9 +1852,12 @@ impl Extensions {
                 let items: Vec<Diagnostic> = m
                     .get("items")
                     .and_then(Value::as_array)
-                    .map(|l| l.iter().map(diagnostic).collect())
+                    .map(|l| l.iter().take(MAX_ITEMS).map(diagnostic).collect())
                     .unwrap_or_default();
                 let key = path_key(&path);
+                if !items.is_empty() && !self.diagnostics.contains_key(&key) && self.diagnostics.len() >= MAX_FILES {
+                    return;
+                }
                 if items.is_empty() {
                     self.diagnostics.remove(&key);
                 } else {
@@ -1798,17 +1870,24 @@ impl Extensions {
             "context" => {
                 let key = s("key");
                 match m.get("value") {
-                    None | Some(Value::Null) => self.contexts.remove(&key),
-                    Some(value) => self.contexts.insert(key, value.clone()),
-                };
+                    None | Some(Value::Null) => {
+                        self.contexts.remove(&key);
+                    }
+                    Some(value) => {
+                        let fits = key.len() <= MAX_SHORT && value.to_string().len() <= MAX_CONTEXT_VALUE;
+                        if fits && (self.contexts.contains_key(&key) || self.contexts.len() < MAX_CONTEXTS) {
+                            self.contexts.insert(key, value.clone());
+                        }
+                    }
+                }
             }
             "webviewView" => {
                 let key = s("view");
-                if !self.webviews.iter().any(|w| w.key == key) {
+                if !self.webviews.iter().any(|w| w.key == key) && self.webviews.len() < MAX_WEBVIEWS {
                     self.webviews.push(WebviewEntry {
                         key,
                         extension: s("extension"),
-                        title: s("title"),
+                        title: clip(&s("title"), MAX_SHORT),
                         handle: None,
                         resolving: false,
                         failed: false,
@@ -1818,12 +1897,16 @@ impl Extensions {
             }
             "webviewPanel" => {
                 let handle = s("handle");
+                if self.webviews.len() >= MAX_WEBVIEWS && !self.webviews.iter().any(|w| w.key == handle) {
+                    self.send(json!({ "type": "closeWebview", "handle": handle }));
+                    return;
+                }
                 match self.webviews.iter_mut().find(|w| w.key == handle) {
-                    Some(entry) => entry.title = s("title"),
+                    Some(entry) => entry.title = clip(&s("title"), MAX_SHORT),
                     None => self.webviews.push(WebviewEntry {
                         key: handle.clone(),
                         extension: s("extension"),
-                        title: s("title"),
+                        title: clip(&s("title"), MAX_SHORT),
                         handle: Some(handle.clone()),
                         resolving: false,
                         failed: false,
@@ -1835,7 +1918,14 @@ impl Extensions {
                     events.push(Event::ShowWebview(self.panel_key(&handle)));
                 }
             }
-            "webviewHtml" => events.push(Event::WebviewHtml { handle: s("handle"), html: s("html") }),
+            "webviewHtml" => {
+                let html = s("html");
+                if html.len() <= MAX_HTML {
+                    events.push(Event::WebviewHtml { handle: s("handle"), html });
+                } else {
+                    log::warn!("a page of {} bytes for {} was not shown", html.len(), s("handle"));
+                }
+            }
             "webviewPost" => events.push(Event::WebviewPost {
                 handle: s("handle"),
                 message: m.get("message").cloned().unwrap_or(Value::Null),
@@ -1852,8 +1942,15 @@ impl Extensions {
                 let items: Vec<Decoration> = m
                     .get("items")
                     .and_then(Value::as_array)
-                    .map(|l| l.iter().map(decoration).collect())
+                    .map(|l| l.iter().take(MAX_ITEMS).map(decoration).collect())
                     .unwrap_or_default();
+                let room = match self.decorations.get(&key) {
+                    Some(file) => file.by_type.contains_key(&s("key")) || file.by_type.len() < MAX_KINDS,
+                    None => self.decorations.len() < MAX_FILES,
+                };
+                if !items.is_empty() && !room {
+                    return;
+                }
                 let file = self
                     .decorations
                     .entry(key.clone())
@@ -1878,12 +1975,19 @@ impl Extensions {
                     _ => Level::Info,
                 };
                 let source = self.display_name(&s("extension"));
-                self.notice(level, &source, s("text"));
                 let actions: Vec<String> = m
                     .get("actions")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|a| a.iter().filter_map(Value::as_str).take(MAX_ACTIONS).map(|a| clip(a, MAX_SHORT)).collect())
                     .unwrap_or_default();
+                if !actions.is_empty() {
+                    let theirs: Vec<usize> =
+                        (0..self.notices.len()).filter(|&i| self.notices[i].reply_to.is_some()).collect();
+                    if theirs.len() >= MAX_QUESTIONS {
+                        self.answer_notice(theirs[0], None);
+                    }
+                }
+                self.notice(level, &source, clip(&s("text"), MAX_TEXT));
                 if let (Some(id), Some(last), false) =
                     (m.get("id").and_then(Value::as_u64), self.notices.last_mut(), actions.is_empty())
                 {
@@ -1895,12 +1999,28 @@ impl Extensions {
                 let id = s("id");
                 self.status_items.retain(|(i, _)| *i != id);
                 let visible = m.get("visible").and_then(Value::as_bool).unwrap_or(false);
-                let text = crate::codicons::render(&s("text")).trim().to_string();
-                if visible && !text.is_empty() {
+                let text = clip(crate::codicons::render(&s("text")).trim(), MAX_SHORT);
+                if visible && !text.is_empty() && self.status_items.len() < MAX_STATUS {
                     self.status_items.push((id, text));
                 }
             }
-            "write" => events.push(Event::Write { path: PathBuf::from(s("path")), text: s("text") }),
+            "write" => {
+                let (path, text) = (PathBuf::from(s("path")), s("text"));
+                let by = self.display_name(&s("extension"));
+                let refused = match writable(&path, &self.open, &self.folders, &self.own_dirs) {
+                    Ok(()) if text.len() > MAX_WRITE => Some("it is too big"),
+                    Ok(()) => None,
+                    Err(why) => Some(why),
+                };
+                match refused {
+                    None => events.push(Event::Write { path, text }),
+                    Some(why) => {
+                        log::warn!("refused a write of {by} to {}: {why}", path.display());
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.notice(Level::Warn, &by, format!("was not let change {}: {why}", clip(&name, MAX_SHORT)));
+                    }
+                }
+            }
             "reveal" => {
                 let n = |key: &str| m.get(key).and_then(Value::as_u64).map(|n| n as u32);
                 let path = PathBuf::from(s("path"));
@@ -2085,7 +2205,7 @@ fn decoration(v: &Value) -> Decoration {
         end_line: n("endLine"),
         end_col: n("endCol"),
         whole_line: v.get("wholeLine").and_then(Value::as_bool).unwrap_or(false),
-        text: s("text").to_string(),
+        text: clip(s("text"), MAX_SHORT),
         color: parse_color(s("color")),
         background: parse_color(s("background")),
     }
@@ -2105,9 +2225,9 @@ fn diagnostic(v: &Value) -> Diagnostic {
             2 => Severity::Info,
             _ => Severity::Hint,
         },
-        message: s("message"),
-        source: s("source"),
-        code: s("code"),
+        message: clip(&s("message"), MAX_TEXT),
+        source: clip(&s("source"), MAX_SHORT),
+        code: clip(&s("code"), MAX_SHORT),
     }
 }
 
@@ -2494,5 +2614,114 @@ mod tests {
         ext.mark_restricted();
         assert_eq!(ext.installed[0].status, Status::Idle);
         assert!(!ext.restricted_mode());
+    }
+
+    fn link_dir(link: &Path, target: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+                return true;
+            }
+            let made = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .is_ok_and(|o| o.status.success());
+            made && link.exists()
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+    }
+
+    #[test]
+    fn an_extension_writes_only_open_documents_inside_the_open_folders() {
+        let root = std::env::temp_dir().join(format!("code-canvas-test-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (folder, outside, data) = (root.join("project"), root.join("outside"), root.join("project").join("data"));
+        for dir in [&folder.join("src"), &outside, &data, &folder.join(".git").join("hooks")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let file = folder.join("src").join("a.ts");
+        let away = outside.join("b.ts");
+        let hook = folder.join(".git").join("hooks").join("pre-commit");
+        let own = data.join("prefs.json");
+        let up = folder.join("src").join("..").join("..").join("outside").join("b.ts");
+        let fresh = folder.join("src").join("new.ts");
+        for f in [&file, &away, &hook, &own] {
+            std::fs::write(f, "x").unwrap();
+        }
+        let folders = vec![folder.clone()];
+        let forbidden = vec![data.clone()];
+        let open = vec![file.clone(), away.clone(), hook.clone(), own.clone(), up.clone(), fresh.clone()];
+        let check = |path: &Path| writable(path, &open, &folders, &forbidden);
+        assert_eq!(check(&file), Ok(()));
+        assert_eq!(check(&fresh), Ok(()), "an open document not written yet");
+        let spelled = PathBuf::from(file.to_string_lossy().replace('\\', "/"));
+        if cfg!(windows) {
+            assert_eq!(writable(&spelled, &open, &folders, &forbidden), Ok(()), "the same file spelled another way");
+        }
+        assert_eq!(check(&folder.join("src").join("closed.ts")), Err("it is not a document open in the app"));
+        assert_eq!(check(&away), Err("it is outside the open folders"));
+        assert_eq!(check(&up), Err("it goes up with .."));
+        assert_eq!(check(&hook), Err("it is inside .git"));
+        assert_eq!(check(&own), Err("it is in the app's own folders"));
+        assert_eq!(check(Path::new("src/a.ts")), Err("it is not a full path"));
+        assert_eq!(writable(&file, &open, &[], &forbidden), Err("it is outside the open folders"));
+        let link = folder.join("linked");
+        if link_dir(&link, &outside) {
+            let through = link.join("b.ts");
+            let open = vec![through.clone()];
+            assert_eq!(
+                writable(&through, &open, &folders, &forbidden),
+                Err("it is outside the open folders"),
+                "a link out"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn what_the_host_says_is_kept_small() {
+        let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
+        let mut events = Vec::new();
+        let long = "y".repeat(10_000);
+        for i in 0..100 {
+            ext.on_message(
+                &json!({ "type": "status", "id": format!("s{i}"), "visible": true, "text": long }),
+                &mut events,
+            );
+        }
+        assert_eq!(ext.status_items.len(), MAX_STATUS);
+        assert!(ext.status_items[0].1.chars().count() <= MAX_SHORT + 1);
+        let items: Vec<Value> =
+            (0..5000).map(|i| json!({ "line": i, "col": 0, "endLine": i, "endCol": 1, "message": long })).collect();
+        ext.on_message(&json!({ "type": "diagnostics", "path": "C:/w/a.ts", "items": items }), &mut events);
+        let file = ext.diagnostics.values().next().unwrap();
+        assert_eq!(file.items.len(), MAX_ITEMS);
+        assert!(file.items[0].message.chars().count() <= MAX_TEXT + 1);
+        for i in 0..100 {
+            let message = json!({ "type": "message", "id": i, "level": "info", "text": long, "actions": ["a", "b"] });
+            ext.on_message(&message, &mut events);
+        }
+        assert_eq!(ext.notices.iter().filter(|n| n.reply_to.is_some()).count(), MAX_QUESTIONS);
+        assert!(ext.notices.iter().all(|n| n.text.chars().count() <= MAX_TEXT + 1));
+        for i in 0..100 {
+            let panel = json!({ "type": "webviewPanel", "handle": format!("w{i}"), "extension": "x.y", "title": long });
+            ext.on_message(&panel, &mut events);
+        }
+        assert_eq!(ext.webviews.len(), MAX_WEBVIEWS);
+        for i in 0..5000 {
+            ext.on_message(&json!({ "type": "context", "key": format!("k{i}"), "value": true }), &mut events);
+        }
+        ext.on_message(&json!({ "type": "context", "key": "big", "value": long.repeat(2) }), &mut events);
+        assert_eq!(ext.contexts.len(), MAX_CONTEXTS);
+        assert!(!ext.contexts.contains_key("big"));
+        ext.on_message(&json!({ "type": "write", "path": "C:/w/a.ts", "text": "x", "extension": "x.y" }), &mut events);
+        assert!(!events.iter().any(|e| matches!(e, Event::Write { .. })), "not open, no folders");
+        assert_eq!(clip("añb", 2), "añ…");
+        assert_eq!(clip("ab", 2), "ab");
     }
 }
