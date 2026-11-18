@@ -1,4 +1,5 @@
 title: 'part stage' on a new untracked file, on a file changed only in the editor (not saved) and on line 39 of steps.rs while it has unsaved text: nothing wrong is staged, nothing is saved behind the user's back
+prefs: {"autosave": false}
 folders: git-changes
 expect-file: git-changes/src/util.rs :: ^pub fn double\(n: u32\) -> u32 \{\n    n \* 2\n
 expect-file: git-changes/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n

@@ -1,4 +1,5 @@
 title: Undoing past a save leaves the file unsaved (quit asks), and redo back to the saved text makes it clean again
+prefs: {"autosave": false}
 folders: plain
 limit: 40
 forbid-log: cannot edit

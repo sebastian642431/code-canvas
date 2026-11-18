@@ -1,4 +1,5 @@
 title: Close without saving ends the app and leaves the files on disk as they were
+prefs: {"autosave": false}
 folders: edit-odd
 limit: 40
 forbid-log: cannot edit

@@ -86,6 +86,9 @@ $data = Join-Path $Work 'data'
 $guestData = Join-Path $Work 'data-guest'
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
 New-Item -ItemType Directory -Force -Path $fix, $out, $data, (Join-Path $Work 'claude') | Out-Null
+$prefs = $null
+if ($head.ContainsKey('prefs')) { $prefs = $head['prefs'] }
+if ($prefs) { Set-Content -LiteralPath (Join-Path $data 'prefs.json') -Value $prefs -Encoding ASCII }
 
 $wanted = @()
 if ($head.ContainsKey('folders')) { $wanted = @($head['folders'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
@@ -163,6 +166,7 @@ while (@($running | Where-Object { -not $_[0].HasExited }).Count -gt 0 -and (Get
         $guestDue = $false
         Start-Sleep -Milliseconds 200
         New-Item -ItemType Directory -Force -Path $guestData | Out-Null
+        if ($prefs) { Set-Content -LiteralPath (Join-Path $guestData 'prefs.json') -Value $prefs -Encoding ASCII }
         $env:CODE_CANVAS_DATA_DIR = $guestData
         $env:CODE_CANVAS_SCRIPT = $guestScript.Replace('{INVITE}', (Get-Content $invite -Raw).Trim())
         $second = Start-Process -FilePath $Exe -PassThru

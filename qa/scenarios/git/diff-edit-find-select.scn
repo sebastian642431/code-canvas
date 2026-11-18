@@ -1,4 +1,5 @@
 title: With the diff on: editing a changed file turns its card back into plain text (and the diff comes back, with the typed line, after Escape), find walks matches inside a diffed card, a symbol is selected and gone to; nothing typed is lost and the save writes exactly the typed line
+prefs: {"autosave": false}
 folders: git-changes
 expect-file: git-changes/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n// typed with the diff on\n    1\n\}[\s\S]*let two = 2;\n    two\n[\s\S]*step_5\(\) -> u32 \{\n    5\n\}\n\nfn step_7[\s\S]*eleven\(\)\n\}\n[\s\S]*fn step_14\(\) -> u32 \{\n    14\n\}\n$
 forbid-log: script: ignoring
