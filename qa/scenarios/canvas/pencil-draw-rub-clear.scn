@@ -1,0 +1,40 @@
+title: The pencil draws over the canvas in a colour and a width, rubs out a part of it, and clears it all
+folders: rust-small
+expect-log: script: Tool\("move"\)
+
+wait 3500
+ui click 505 886
+wait 500
+mark pencil-on
+wait 500
+drag 700 300 1100 300
+drag 1100 300 1100 600
+ui click 477 842
+ui click 600 842
+wait 300
+drag 700 650 1200 700
+wait 400
+mark drawn
+wait 500
+zoom 0.6
+wait 900
+mark zoomed-out
+wait 500
+zoom 1.6667
+wait 900
+ui click 640 842
+wait 300
+drag 880 250 920 350
+drag 1050 500 1150 500
+wait 400
+mark rubbed
+wait 500
+ui click 670 842
+wait 400
+mark cleared
+wait 500
+tool move
+wait 400
+mark hand-again
+wait 500
+quit

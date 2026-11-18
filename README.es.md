@@ -50,16 +50,19 @@ muy grandes. Código abierto: cualquiera puede aportar.
   nunca más grande que la pantalla.
 - **Varias carpetas a la vez**: comparten un solo lienzo, una al lado de la otra y con
   el mismo zoom; `Ctrl+E` vuelve a una sola por vez.
-- **Mirar o editar**: la barra de abajo tiene dos herramientas. Con la **mano** (`H`)
-  solo se recorre el lienzo: nada se modifica por accidente. Con el **lápiz** (`E`) el
-  código legible es un editor: clic y a escribir, con deshacer, copiar y pegar y `Ctrl+S`.
+- **Mirar, editar o dibujar**: la barra de abajo tiene tres herramientas. Con la **mano**
+  (`H`) solo se recorre el lienzo: nada se modifica por accidente. Con el **cursor** (`E`)
+  el código legible es un editor: clic y a escribir, con deshacer, copiar y pegar y
+  `Ctrl+S`. Con el **lápiz** (`D`) se hacen garabatos sobre el lienzo para señalar cosas
+  mientras lo hablás con alguien: seis colores, tres anchos, una goma que borra solo
+  la parte por la que pasa y una papelera que lo borra todo.
 - **Lo que escribís se ve al instante**, antes de guardar: un punto en el nombre del
   archivo, sus líneas cambiadas coloreadas y el archivo en Control de código fuente.
   Formatea al guardar (se apaga con `editor.formatOnSave`) y los problemas se actualizan
   mientras escribís (Rust con rust-analyzer, que la app ofrece instalar).
 - **Seguir a la IA**: cuando un asistente u otro programa cambia un archivo, el lienzo
   viaja a las líneas que cambiaron y las ilumina. Se apaga en la configuración.
-- **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el lápiz, arrastrar selecciona.
+- **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el cursor, arrastrar selecciona.
 - **Imágenes y videos dentro del lienzo**: la imagen se dibuja en su tarjeta, y un video,
   un audio o un PDF se reproduce dentro de su tarjeta al tocarlo.
 - **Cualquier ruta se abre en el lienzo**: la que nombra un asistente, una definición, un

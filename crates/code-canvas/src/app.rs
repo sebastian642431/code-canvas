@@ -233,6 +233,7 @@ pub struct App {
     pictures: crate::pictures::Pictures,
     playing: Option<PathBuf>,
     player_shown: bool,
+    inking: bool,
     still: Still,
     commit_from: Option<Place>,
     sharing: sharing::Sharing,
@@ -359,6 +360,7 @@ impl App {
             pictures: crate::pictures::Pictures::new(),
             playing: None,
             player_shown: false,
+            inking: false,
             still: Default::default(),
             commit_from: None,
             sharing: Default::default(),
@@ -2603,6 +2605,48 @@ impl App {
         self.request_redraw();
     }
 
+    fn ink(&mut self, at: [f32; 2], begins: bool) {
+        let (vp, s, pen) = (self.viewport(), self.scale(), self.ui.pen);
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let view = page.camera.view(vp);
+        let (on_canvas, zoom) = (view.to_world(at), view.zoom / s);
+        if pen.rubbing {
+            crate::doodle::rub(&mut page.doodles, on_canvas, crate::doodle::RUBBER / zoom);
+        } else if begins {
+            page.doodles.push(crate::doodle::Stroke::begin(on_canvas, pen, zoom));
+        } else if let Some(stroke) = page.doodles.last_mut() {
+            stroke.reach(on_canvas, zoom);
+        }
+        self.request_redraw();
+    }
+
+    fn place_doodles(&mut self) {
+        let (vp, s, area) = (self.viewport(), self.scale(), self.canvas);
+        self.ui.doodles.clear();
+        for i in self.shown() {
+            let Some(page) = self.pages.get(i).filter(|page| !page.doodles.is_empty()) else { continue };
+            let view = page.camera.view(vp);
+            for stroke in &page.doodles {
+                let wide = (stroke.width * view.zoom).max(s);
+                let on_screen: Vec<[f32; 2]> = stroke.points.iter().map(|point| view.to_screen(*point)).collect();
+                let within = |axis: usize, from: f32, to: f32| {
+                    let all = on_screen.iter().map(|point| point[axis]);
+                    let (least, most) =
+                        all.fold((f32::MAX, f32::MIN), |(least, most), at| (least.min(at), most.max(at)));
+                    most + wide >= from && least - wide <= to
+                };
+                if within(0, area.x, area.right()) && within(1, area.y, area.bottom()) {
+                    let points = on_screen.iter().map(|point| egui::pos2(point[0] / s, point[1] / s)).collect();
+                    let [r, g, b] = stroke.colour;
+                    self.ui.doodles.push((points, wide / s, egui::Color32::from_rgb(r, g, b)));
+                }
+            }
+        }
+        let rubbing = self.ui.pen.on && self.ui.pen.rubbing && !self.over_ui(self.cursor);
+        let at = egui::pos2(self.cursor[0] / s, self.cursor[1] / s);
+        self.ui.rubber = rubbing.then_some((at, crate::doodle::RUBBER));
+    }
+
     fn pan(&mut self, dx: f32, dy: f32) {
         if let Some(p) = self.pages.get_mut(self.active) {
             p.target = None;
@@ -2884,7 +2928,12 @@ impl App {
             Command::Save => self.save_edit(),
             Command::MoveTool | Command::EditTool => {
                 let edit = command == Command::EditTool;
+                self.ui.pen.on = false;
                 self.apply(Action::SetPrefs(crate::prefs::Prefs { edit, ..self.ui.prefs.clone() }));
+            }
+            Command::DrawTool => {
+                self.ui.pen.on = true;
+                self.request_redraw();
             }
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
@@ -2947,6 +2996,14 @@ impl App {
             Action::Rescan => self.rescan(),
             Action::Fit => self.frame_every_folder(),
             Action::ZoomBy(f) => self.zoom_center(f),
+            Action::ClearDoodles => {
+                for i in self.shown() {
+                    if let Some(page) = self.pages.get_mut(i) {
+                        page.doodles.clear();
+                    }
+                }
+                self.request_redraw();
+            }
             Action::FrameSelection => self.frame_selection(),
             Action::FlyToSite(site) => self.frame_site(site),
             Action::OpenMedia(path) => {
@@ -3774,10 +3831,19 @@ impl App {
                 }
                 self.apply(Action::SetDiff(view));
             }
-            Step::Tool(which) => {
-                let edit = which == "edit";
-                self.apply(Action::SetPrefs(crate::prefs::Prefs { edit, ..self.ui.prefs.clone() }));
-            }
+            Step::Tool(which) => match which.as_str() {
+                "draw" | "rub" => self.ui.pen = crate::doodle::Pen { on: true, rubbing: which == "rub", ..self.ui.pen },
+                "clear" => self.apply(Action::ClearDoodles),
+                which => match which.split_once(' ') {
+                    Some(("colour", nth)) => self.ui.pen.colour = nth.parse().unwrap_or(0).min(5),
+                    Some(("width", nth)) => self.ui.pen.width = nth.parse().unwrap_or(0).min(2),
+                    _ => {
+                        let edit = which == "edit";
+                        self.ui.pen.on = false;
+                        self.apply(Action::SetPrefs(crate::prefs::Prefs { edit, ..self.ui.prefs.clone() }));
+                    }
+                },
+            },
             Step::Touch(what) => {
                 let (rel, text) = what.split_once(' ').unwrap_or((what.as_str(), ""));
                 let file = self.pages.get(self.active).map(|page| page.root.join(rel));
@@ -3842,6 +3908,14 @@ impl App {
                         }
                         self.find(ui::FindOp::Changed);
                     }
+                }
+            }
+            Step::Drag(from, to) if self.ui.pen.on => {
+                self.focus_folder_at(from);
+                for nth in 0..=24 {
+                    let along = nth as f32 / 24.0;
+                    self.cursor = [from[0] + (to[0] - from[0]) * along, from[1] + (to[1] - from[1]) * along];
+                    self.ink(self.cursor, nth == 0);
                 }
             }
             Step::Drag(from, to) => {
@@ -4456,6 +4530,7 @@ impl App {
             self.pictures.begin_frame(&g.egui);
         }
         self.place_pictures();
+        self.place_doodles();
         let standing = self.stand_still();
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
@@ -5028,6 +5103,11 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = [position.x as f32, position.y as f32];
                 let mut selecting = None;
+                if self.inking {
+                    self.ink(p, false);
+                } else if self.ui.pen.on {
+                    self.request_redraw();
+                }
                 if let Some(d) = &mut self.drag {
                     let (dx, dy) = (p[0] - d.last[0], p[1] - d.last[1]);
                     d.last = p;
@@ -5062,7 +5142,11 @@ impl ApplicationHandler for App {
                     self.last_input = Instant::now();
                     self.webviews.focus_app();
                     self.focus_folder_at(self.cursor);
-                    if self.drag.is_none() && !self.over_ui(self.cursor) {
+                    if button == MouseButton::Left && self.ui.pen.on && !self.over_ui(self.cursor) {
+                        self.inking = true;
+                        self.ui.card_menu = None;
+                        self.ink(self.cursor, true);
+                    } else if self.drag.is_none() && !self.over_ui(self.cursor) {
                         let plain = button == MouseButton::Left && !self.mods.control_key() && !self.mods.shift_key();
                         let select = if plain && self.ui.prefs.edit { self.code_under(self.cursor) } else { None };
                         self.drag = Some(Drag {
@@ -5076,6 +5160,9 @@ impl ApplicationHandler for App {
                     }
                 }
                 ElementState::Released => {
+                    if button == MouseButton::Left && std::mem::take(&mut self.inking) {
+                        self.request_redraw();
+                    }
                     if let Some(d) = self.drag.take() {
                         if d.button != button {
                             self.drag = Some(d);

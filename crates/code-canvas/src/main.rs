@@ -6,6 +6,7 @@ mod bench;
 mod camera;
 mod codicons;
 mod commit_ai;
+mod doodle;
 mod editor;
 mod ext;
 mod files;

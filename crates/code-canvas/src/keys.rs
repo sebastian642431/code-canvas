@@ -13,6 +13,7 @@ pub enum Command {
     Save,
     MoveTool,
     EditTool,
+    DrawTool,
     GoToDefinition,
     OpenFolder,
     CloseFolder,
@@ -98,6 +99,7 @@ pub const COMMANDS: &[CommandInfo] = &[
         Scope::Canvas,
         &["e"],
     ),
+    info(Command::DrawTool, "drawTool", "Draw: scribble over the canvas", "Editing", Scope::Canvas, &["d"]),
     info(
         Command::ToggleLeftPanel,
         "toggleLeftPanel",

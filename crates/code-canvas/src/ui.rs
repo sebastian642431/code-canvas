@@ -288,6 +288,9 @@ pub struct UiState {
     explorer_seen: (f32, f32),
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
+    pub pen: crate::doodle::Pen,
+    pub doodles: Vec<(Vec<Pos2>, f32, Color32)>,
+    pub rubber: Option<(Pos2, f32)>,
     pub commit_ai: crate::commit_ai::Settings,
     file_icons: FileIcons,
 }
@@ -347,6 +350,9 @@ impl Default for UiState {
             explorer_seen: (0.0, 0.0),
             can_go: (false, false),
             pictures: Vec::new(),
+            pen: Default::default(),
+            doodles: Vec::new(),
+            rubber: None,
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
         }
@@ -439,6 +445,7 @@ pub enum Action {
     FiltersChanged,
     Fit,
     ZoomBy(f32),
+    ClearDoodles,
     FrameSelection,
     CollapseAll,
     ExpandAll,
@@ -754,6 +761,17 @@ pub fn build(
     for (picture, at) in st.pictures.drain(..) {
         on_canvas.image(picture, at, whole, Color32::WHITE);
     }
+    for (points, width, colour) in st.doodles.drain(..) {
+        let (Some(first), Some(last)) = (points.first().copied(), points.last().copied()) else { continue };
+        on_canvas.circle_filled(first, width * 0.5, colour);
+        if first != last || points.len() > 2 {
+            on_canvas.circle_filled(last, width * 0.5, colour);
+            on_canvas.add(egui::Shape::line(points, Stroke::new(width, colour)));
+        }
+    }
+    if let Some((at, reach)) = st.rubber.take() {
+        on_canvas.circle_stroke(at, reach, Stroke::new(1.0, pal().text));
+    }
     center_message(ui, canvas, pages.get(active), &st.keys);
     agent_marks(&ctx, &on_canvas, st, canvas);
     peer_marks(&on_canvas, st, canvas);
@@ -773,6 +791,10 @@ pub fn build(
     ext_panels::notices(&ctx, st, canvas, ext);
     settings::settings_modal(&ctx, st, ext, actions);
     ask_modal(&ctx, st, actions);
+    let over_canvas = |at: Pos2| canvas.contains(at) && !st.floating.iter().any(|taken| taken.contains(at));
+    if st.pen.on && ctx.pointer_hover_pos().is_some_and(over_canvas) {
+        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
     canvas
@@ -2357,8 +2379,9 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
             "Editing",
             vec![
                 ("Move around without editing (the hand)", key(Command::MoveTool)),
-                ("Edit: a click puts the caret (the pencil)", key(Command::EditTool)),
-                ("Select code", fixed("Drag over it with the pencil")),
+                ("Edit: a click puts the caret (the pointer)", key(Command::EditTool)),
+                ("Select code", fixed("Drag over it with the pointer")),
+                ("Draw over the canvas (the pencil)", key(Command::DrawTool)),
                 ("Save", key(Command::Save)),
                 ("Stop typing in a file", fixed("Esc")),
             ],
@@ -2683,17 +2706,25 @@ fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo
                         ui.painter().rect_filled(gap, 0.0, pal().border);
                         ui.add_space(4.0);
                         let tools = [
-                            (icons::HAND, false, Command::MoveTool, "Move: drag to travel, click a name to see where it is used. Nothing gets edited"),
-                            (icons::PENCIL, true, Command::EditTool, "Edit: click in the code to put the caret there and type"),
+                            (icons::MOUSE_POINTER_2, Some(true), Command::EditTool, "Edit: click in the code to put the caret there and type"),
+                            (icons::HAND, Some(false), Command::MoveTool, "Move: drag to travel, click a name to see where it is used. Nothing gets edited"),
+                            (icons::PENCIL, None, Command::DrawTool, "Draw: scribble over the canvas to point things out. The right button still moves it"),
                         ];
                         for (glyph, edits, command, tip) in tools {
-                            let button = icon_button(ui, glyph, b, edit == edits, pal().hover);
-                            if edit && edits {
+                            let chosen = match edits {
+                                Some(edits) => !st.pen.on && edit == edits,
+                                None => st.pen.on,
+                            };
+                            let button = icon_button(ui, glyph, b, chosen, pal().hover);
+                            if chosen && edits != Some(false) {
                                 let at = button.rect.center();
                                 ui.painter().text(at, Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), pal().accent);
                             }
-                            if button.on_hover_text(st.keys.hint(tip, command)).clicked() && edit != edits {
-                                actions.push(Action::SetPrefs(crate::prefs::Prefs { edit: edits, ..st.prefs.clone() }));
+                            if button.on_hover_text(st.keys.hint(tip, command)).clicked() && !chosen {
+                                st.pen.on = edits.is_none();
+                                if let Some(edits) = edits.filter(|edits| *edits != edit) {
+                                    actions.push(Action::SetPrefs(crate::prefs::Prefs { edit: edits, ..st.prefs.clone() }));
+                                }
                             }
                         }
                         ui.add_space(4.0);
@@ -2747,6 +2778,74 @@ token chunks {}  ·  text chunks {}",
                         .on_hover_text(drawn);
                         if icon_button(ui, icons::PLUS, b, false, pal().hover).on_hover_text("Zoom in").clicked() {
                             actions.push(Action::ZoomBy(1.4));
+                        }
+                    });
+                });
+        });
+    st.floating.push(resp.response.rect);
+    if st.pen.on {
+        pen_bar(ctx, st, Pos2::new(pos.x, resp.response.rect.top() - 44.0), actions);
+    }
+}
+
+fn pen_bar(ctx: &egui::Context, st: &mut UiState, pos: Pos2, actions: &mut Vec<Action>) {
+    use crate::doodle::{COLOURS, COLOUR_NAMES, WIDTHS, WIDTH_NAMES};
+    let resp =
+        egui::Area::new(egui::Id::unique("pen bar")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
+            Frame::NONE
+                .fill(pal().card)
+                .stroke(Stroke::new(1.0, pal().border))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(5, 4))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let b = Vec2::splat(30.0);
+                        let rule = |ui: &mut egui::Ui| {
+                            ui.add_space(4.0);
+                            let (sep, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
+                            ui.painter().rect_filled(sep, 0.0, pal().border);
+                            ui.add_space(4.0);
+                        };
+                        for (nth, [r, g, b_]) in COLOURS.into_iter().enumerate() {
+                            let chosen = !st.pen.rubbing && st.pen.colour == nth;
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(26.0, 30.0), Sense::click());
+                            let at = rect.center();
+                            if chosen {
+                                ui.painter().circle_stroke(at, 10.5, Stroke::new(1.5, pal().text));
+                            } else if resp.hovered() {
+                                ui.painter().circle_stroke(at, 10.5, Stroke::new(1.0, pal().border_strong));
+                            }
+                            ui.painter().circle_filled(at, 7.0, Color32::from_rgb(r, g, b_));
+                            if resp.on_hover_text(COLOUR_NAMES[nth]).clicked() {
+                                (st.pen.colour, st.pen.rubbing) = (nth, false);
+                            }
+                        }
+                        rule(ui);
+                        let [r, g, b_] = COLOURS[st.pen.colour.min(COLOURS.len() - 1)];
+                        for (nth, width) in WIDTHS.into_iter().enumerate() {
+                            let chosen = !st.pen.rubbing && st.pen.width == nth;
+                            let (rect, resp) = ui.allocate_exact_size(b, Sense::click());
+                            if chosen {
+                                ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().raised);
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
+                            }
+                            ui.painter().circle_filled(rect.center(), 1.0 + width * 0.5, Color32::from_rgb(r, g, b_));
+                            if resp.on_hover_text(WIDTH_NAMES[nth]).clicked() {
+                                (st.pen.width, st.pen.rubbing) = (nth, false);
+                            }
+                        }
+                        rule(ui);
+                        let rubber = icon_button(ui, icons::ERASER, b, st.pen.rubbing, pal().hover);
+                        if rubber.on_hover_text("Rub out: drag over what was drawn to take that part away").clicked() {
+                            st.pen.rubbing = !st.pen.rubbing;
+                        }
+                        if icon_button(ui, icons::TRASH_2, b, false, pal().hover)
+                            .on_hover_text("Clear everything drawn on this canvas")
+                            .clicked()
+                        {
+                            actions.push(Action::ClearDoodles);
                         }
                     });
                 });

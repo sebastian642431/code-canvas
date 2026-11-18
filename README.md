@@ -70,9 +70,9 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   hits marked on the canvas.
 
 **Editing**
-- The toolbar has two tools. With the **hand** (`H`) the canvas is only looked at:
+- The toolbar has three tools. With the **hand** (`H`) the canvas is only looked at:
   drags travel, clicks select, nothing can be changed by accident. With the
-  **pencil** (`E`) readable code is an editor: click to place the caret and type.
+  **pointer** (`E`) readable code is an editor: click to place the caret and type.
   Selection, undo and redo, copy and paste, `Ctrl+S` to save. Each file keeps its
   own tabs and line endings.
 - What is typed shows at once, before saving: a dot on the file's name (on its
@@ -83,10 +83,14 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   **side by side** in two columns of the same card. The lines that did not change
   fold away, so a long file is only its changes. With *Show only changed files*
   the canvas becomes the change itself.
-- With the pencil, dragging over code selects it; the hand, or the right button,
+- With the pointer, dragging over code selects it; the hand, or the right button,
   moves the canvas.
+- With the **pencil** (`D`) you draw over the canvas, to point things out while you
+  talk about the code with someone: six colours, three widths, a rubber that takes
+  away only what it passes over, and a bin that clears it all. What is drawn stays
+  on the code it was drawn over as the canvas moves and zooms.
 - `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
-  and Shift+Enter walk them, and with the pencil one or all can be replaced.
+  and Shift+Enter walk them, and with the pointer one or all can be replaced.
 - **Pictures and videos are on the canvas too**: a picture is drawn inside its
   card, and a video, a sound or a PDF plays inside its card when it is clicked
   (`Esc`, or a click somewhere else, stops it).
@@ -328,7 +332,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - [x] **Editing**: click into a file and type, with undo and save; format on save;
       reload when files change on disk; command palette.
-- [x] A hand to look and a pencil to edit; what is typed shown before it is saved;
+- [x] A hand to look and a pointer to edit; what is typed shown before it is saved;
       drag to select; find and replace in a file.
 - [x] The canvas travels to what an assistant or another program changes; any path
       opens on the canvas, also outside the open folders; back and forward.

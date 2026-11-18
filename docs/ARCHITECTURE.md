@@ -207,7 +207,7 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 points: what a button, a menu or a drag of an icon gets),
 `move <panel> left|right [panel to sit before]` (an icon to the other bar),
 `preview <path>` (a Markdown file rendered), `drop <path>` (a file dropped on the window),
-`tool move|edit` (the hand or the pencil), `back`, `forward`, `diff on|off|split|together|fold|unfold|around <lines>` (what changed
+`tool move|edit|draw|rub|clear` (the hand, the pointer, the pencil, its rubber, its bin), `back`, `forward`, `diff on|off|split|together|fold|unfold|around <lines>` (what changed
 inside the files), `drag <x> <y> <x> <y>` (a drag on the canvas), `find <text>|next|previous|replace <text>|replace-all <text>|close`,
 `touch <path> <text>` (a line appended to a file behind
 the app's back, as another program would), `page <javascript>` (a line of script run in the

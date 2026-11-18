@@ -678,6 +678,29 @@ Pictures and what plays
   for the player keeps the picture. The wheel over a veiled player is the
   window's own, so the cursor is noted from the page's wheel before.
 
+Drawing over the canvas
+
+- The toolbar has three tools: the pointer (edit, what the pencil used to be),
+  the hand (move) and the pencil, which draws. The pencil is not a preference:
+  `UiState::pen` (`doodle::Pen`) is on until another tool is taken, and the app
+  starts without it. With it the left button draws and the right one still
+  moves the canvas; the wheel is as always.
+- What is drawn belongs to the canvas, not to the screen: a `doodle::Stroke`
+  keeps its points and its width in the canvas's own measure (`App::ink`), in
+  `Page::doodles`, so it travels and grows with the code it points at. It is
+  never thinner than a pixel. It is not saved: it lasts while the folder is
+  open, like a scribble on a whiteboard during a call.
+- They are painted by egui on the canvas, after the pictures
+  (`App::place_doodles` turns the ones in view into points of the screen each
+  frame). A page that is a window of its own (a video playing, an extension)
+  is over them.
+- The bar of the pencil (`ui::pen_bar`, over the toolbar while the pencil is
+  taken) has six colours, three widths, the rubber and the bin. The rubber
+  takes away what it passes over and no more (`doodle::rub`): a stroke rubbed
+  in the middle becomes two, and a long straight stretch is first cut into
+  short ones near the rubber so that only the part under it goes. The bin
+  clears every canvas in view.
+
 Back and forward
 
 - A `Place` is not a camera: it is the node under the middle of the canvas, where
@@ -1675,7 +1698,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `type` | `type <text>` | Type at the caret. |
 | `key` | `key enter\|backspace\|delete\|tab\|left\|right\|up\|down\|home\|end\|undo\|redo\|save\|escape` | Press a key in the editor. With a completion list up, the keys that walk and take it go to the list, as when typed. `save` with no caret saves every unsaved file. |
 | `back`, `forward` | `back`, `forward` | Where the canvas was before its last jump, and forward again. |
-| `tool` | `tool move\|edit` | The hand or the pencil of the toolbar. `edit <path>` puts a caret whatever the tool is. |
+| `tool` | `tool move\|edit\|draw\|rub\|clear\|colour <n>\|width <n>` | The pointer (`edit`), the hand (`move`) or the pencil (`draw`) of the toolbar; `rub` is the pencil rubbing out, `clear` takes away everything drawn, `colour` and `width` pick one of the pencil's by its place. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
 | `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived; or follow the one with that name. |
 | `workspace` | `workspace put\|off\|forget <folder>`, `workspace all` | Put a folder of the workspace on the canvas, take it off, forget it, or put them all. |
@@ -1689,7 +1712,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `interface` | `interface` | Hide the interface, or show it again. |
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
-| `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
+| `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it draws (or rubs out) with the pencil, selects code with the pointer over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
