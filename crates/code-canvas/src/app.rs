@@ -5420,7 +5420,6 @@ fn own_build() -> Option<(PathBuf, Option<std::time::SystemTime>, u64)> {
 impl App {
     fn watch_own_build(&mut self) {
         const EVERY: Duration = Duration::from_secs(5);
-        const LEFT_ALONE: Duration = Duration::from_secs(60);
         if self.build_checked.elapsed() < EVERY {
             return;
         }
@@ -5434,12 +5433,6 @@ impl App {
             log::info!("a new build of Code Canvas is in place of this one");
             self.ui.new_build = true;
             self.request_redraw();
-        }
-        let alone = self.last_input.elapsed() > LEFT_ALONE;
-        let calm = self.unsaved().is_empty() && self.ui.ask.is_none() && !self.agents.lively();
-        let shared = self.sharing.session.is_some();
-        if alone && calm && !shared {
-            self.restart_into_new_build();
         }
     }
 

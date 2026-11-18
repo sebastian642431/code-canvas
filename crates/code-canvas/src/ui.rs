@@ -1103,7 +1103,7 @@ fn status_bar(
             if st.new_build {
                 let offer = RichText::new(format!("{}  Restart into the new build", icons::REFRESH_CW)).size(12.0).color(pal().accent);
                 let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
-                let tip = "A new build of Code Canvas was put in place of this one. It restarts by itself when you leave it alone for a minute; click to restart now. Open folders and files come back as they are.";
+                let tip = "A new build of Code Canvas was put in place of this one. Click to restart into it when it suits you (an assistant's chat open here restarts too). Open folders and files come back as they are.";
                 if label.on_hover_text(tip).clicked() {
                     actions.push(Action::RestartIntoNewBuild);
                 }
