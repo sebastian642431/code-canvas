@@ -1,4 +1,4 @@
-// Two webview views for the scenarios that move a page between the canvas and the side panel.
+// Webview views for the scenarios that move a page between the canvas, the side panels and the console's tabs.
 //
 // Each page counts its clicks and keeps a text in memory only: a page that is loaded again
 // starts from nothing. Every page says when it has loaded, and `window.qa.report()` (run from
@@ -68,6 +68,7 @@ exports.activate = (context) => {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('qa.chat', provider('chat', '#e8a33d')),
     vscode.window.registerWebviewViewProvider('qa.pad', provider('pad', '#4fb0e8')),
+    vscode.window.registerWebviewViewProvider('qa.log', provider('log', '#7fd17f')),
   );
 };
 

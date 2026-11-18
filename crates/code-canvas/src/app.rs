@@ -3021,6 +3021,7 @@ impl App {
             .iter()
             .chain(Some(&self.ui.dock).filter(|_| self.ui.files))
             .chain(self.ui.beside.as_ref())
+            .chain(self.ui.console_tab.as_ref())
             .filter_map(|c| if let Panel::Tree(id) = c { Some(id.clone()) } else { None })
             .collect();
         let mut views: Vec<(String, String)> = Vec::new();
@@ -4515,7 +4516,8 @@ impl App {
                     let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
                     view.map(|w| Panel::of_rail(w.view)).or_else(|| Panel::from_key(name))
                 });
-                let side = match parts.next() {
+                let place = parts.next();
+                let side = match place {
                     Some("left") => Some(Side::Left),
                     Some("right") => Some(Side::Right),
                     _ => None,
@@ -4524,9 +4526,10 @@ impl App {
                     let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
                     view.map_or_else(|| name.to_string(), |w| Panel::of_rail(w.view).key())
                 });
-                match (panel, side) {
-                    (Some(panel), Some(side)) => self.ui.request_move(panel, side, before),
-                    _ => log::warn!("script: move needs <panel> left|right [panel to sit before]"),
+                match (panel, side, place) {
+                    (Some(panel), Some(side), _) => self.ui.request_move(panel, side, before),
+                    (Some(panel), None, Some("console")) => self.ui.request_console_tab(panel),
+                    _ => log::warn!("script: move needs <panel> left|right [panel to sit before], or <panel> console"),
                 }
             }
             Step::Find(what) => {

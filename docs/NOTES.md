@@ -2497,7 +2497,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `preview` | `preview <path>` | Show a Markdown file of the folder rendered, or close it if it is the one shown. `open <path>` shows one from anywhere. |
 | `drop` | `drop <path>` | What dropping that file on the window does: a copy in the selected folder. |
 | `mark` | `mark <name>` | Leave an empty file `marks/<name>` in the data directory. `scripts/screenshot.ps1 -Marks` takes a picture at each. |
-| `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar: `left` is the main bar (Files, Search...) and `right` the other one, whichever side of the window each is on. What it shows moves with it. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
+| `move` | `move <panel> left\|right [panel to sit before]`, `move <view> console` | Move an icon to a bar: `left` is the main bar (Files, Search...) and `right` the other one, whichever side of the window each is on. What it shows moves with it. `console` puts an extension's view in the console's tabs. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
 | `click` | `click <x> <y>`, `click <path> <line> <column>` | A click on the canvas, in physical pixels of the window, or in the middle of a cell of a card (1-based, as `hover`): on a wrapped card that is the row the column is on. |
 | `hover` | `hover <x> <y>`, `hover <path> <line> <column>` | The pointer resting on the canvas, in physical pixels or on a cell of a card (1-based; a column past the card's edge is where it would be if the card went on): what is under it reacts (the rest of a long line). |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
@@ -3306,6 +3306,27 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 The consoles: a card like any other (`Panel::Console`, `` Ctrl+` ``), with
 shells in the folder that is open, as many as wanted (`consoles.rs`).
+
+- **The console's title is a row of tabs, as VS Code's panel** ("Console",
+  then the extensions' views that live there, `UiState::console_tabs`,
+  `view_tabs`). A view an extension puts in VS Code's panel
+  (`contributes.viewsContainers.panel`, `Container::panel`,
+  `RailItem::panel`) is a tab there and no icon of a bar; any extension's
+  icon goes there too from its menu ("Move into the console's tabs", the
+  script's `move <view> console`), and a tab goes back to a bar from its own
+  menu. Where they are is `Rails::tabs` (`Rails::in_tabs`: listed there, or
+  of VS Code's panel and on no bar), saved with the bars. "Console" shows
+  the consoles with their own row under it; a view's tab shows the view in
+  the card's body (`UiState::console_tab`, not saved), and opening that view
+  from anywhere (`UiState::show`, an extension revealing it) opens the
+  console on its tab. The header's console buttons are only on the
+  "Console" tab. Only the first card has the tabs, not a card of consoles
+  moved out of it. The card goes where the console's icon says (a panel or
+  floating, see `UiState::place_of`); in a panel it has no button to fill
+  the canvas (`IN_PANEL`). The tabs are clicks only, so the card is still
+  dragged by its title between and around them.
+  Pretty TypeScript Errors (0.8.7) declares its view in the activity bar, not
+  the panel, so it starts as an icon; moved into the tabs, it stays there.
 
 - **Many consoles, as in VS Code's terminal** (`consoles::Consoles`): each one
   (`Tab`) has its shell, screen, scrollback, selection and folder. The card

@@ -31,6 +31,7 @@ pub struct Rails {
     pub right: Vec<String>,
     pub homes: u32,
     pub cards: std::collections::BTreeMap<String, [f32; 4]>,
+    pub tabs: Vec<String>,
 }
 
 pub const HOMES: u32 = 3;
@@ -77,6 +78,18 @@ impl Rails {
         }
     }
 
+    pub fn in_tabs(&self, key: &str, by_default: bool) -> bool {
+        self.tabs.iter().any(|tab| tab == key) || (by_default && self.side_of(key).is_none())
+    }
+
+    pub fn put_in_tabs(&mut self, key: &str) {
+        self.left.retain(|placed| placed != key);
+        self.right.retain(|placed| placed != key);
+        if !self.tabs.iter().any(|tab| tab == key) {
+            self.tabs.push(key.to_string());
+        }
+    }
+
     pub fn side_of(&self, key: &str) -> Option<Side> {
         Side::BOTH.into_iter().find(|side| self.list(*side).iter().any(|placed| placed == key))
     }
@@ -108,6 +121,7 @@ impl Rails {
         }
         self.left.retain(|placed| placed != key);
         self.right.retain(|placed| placed != key);
+        self.tabs.retain(|placed| placed != key);
         let list = self.list_mut(side);
         let at = before.and_then(|next| list.iter().position(|placed| placed == next)).unwrap_or(list.len());
         list.insert(at, key.to_string());
@@ -210,6 +224,22 @@ mod tests {
         let mut untouched = Rails { homes: 2, ..Default::default() };
         untouched.at_home(home);
         assert_eq!(untouched, Rails { homes: HOMES, ..Default::default() }, "never arranged: the homes say it");
+    }
+
+    #[test]
+    fn a_view_goes_into_the_console_and_back_to_a_bar() {
+        let mut rails = Rails::default();
+        assert!(rails.in_tabs("view:log", true), "what VS Code puts in its panel starts in the console");
+        assert!(!rails.in_tabs("view:chat", false));
+        rails.put_in_tabs("view:chat");
+        assert!(rails.in_tabs("view:chat", false));
+        assert_eq!(rails.arrange(&available())[1], keys(&["symbols", "view:chat"]), "the bars leave it to the caller");
+        rails.place(&available(), "view:chat", Side::Left, None);
+        assert!(!rails.in_tabs("view:chat", false));
+        rails.place(&available(), "view:log", Side::Right, None);
+        assert!(!rails.in_tabs("view:log", true), "put on a bar, it stays there");
+        rails.put_in_tabs("view:log");
+        assert!(rails.in_tabs("view:log", true) && rails.side_of("view:log").is_none());
     }
 
     #[test]

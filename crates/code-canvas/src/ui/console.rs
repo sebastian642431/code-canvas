@@ -1,7 +1,11 @@
 use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
-use super::{ask_button, menu_gap, menu_row, menu_row_key, pal, text_fit, Action, ChoiceLook, Panel, UiState};
+use super::{
+    ask_button, ext_panels, menu_gap, menu_row, menu_row_key, paint_look, pal, text_fit, Action, ChoiceLook, Panel,
+    RailLook, Side, UiState,
+};
 use crate::consoles::{Menu, MenuKind, MenuPage, MAIN};
+use crate::ext::Extensions;
 use crate::icons;
 use crate::keys::Command;
 use crate::term::{self, Mouse, Selection, Spot, Terminal, Unit};
@@ -529,15 +533,78 @@ fn rename_field(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, 
     }
 }
 
-fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u64) {
+fn title_tab(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &Extensions,
+    look: &RailLook,
+    title: &str,
+    on: bool,
+) -> egui::Response {
+    let font = FontId::proportional(13.0);
+    let text = ui.painter().layout_no_wrap(title.to_string(), font.clone(), pal().text).size().x.min(160.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(text + 34.0, 26.0), Sense::click());
+    if resp.hovered() && !on {
+        ui.painter().rect_filled(rect.shrink2(Vec2::new(0.0, 1.0)), 6.0, pal().hover);
+    }
+    let color = if on || resp.hovered() { pal().text } else { pal().text_dim };
+    paint_look(ui, st, ext, look, Pos2::new(rect.left() + 14.0, rect.center().y), 13.0, color);
+    text_fit(ui.painter(), Pos2::new(rect.left() + 26.0, rect.center().y), title, font, color, text + 2.0);
+    if on {
+        let mark = Rect::from_min_max(
+            Pos2::new(rect.left() + 6.0, rect.bottom() - 2.0),
+            Pos2::new(rect.right() - 6.0, rect.bottom()),
+        );
+        ui.painter().rect_filled(mark, 1.0, pal().accent);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn view_tabs(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, showing: Option<&Panel>) {
+    let console = RailLook::Glyph(codicon("terminal"));
+    if title_tab(ui, st, ext, &console, "Console", showing.is_none()).clicked() {
+        st.console_tab = None;
+    }
+    for tab in st.console_tabs.clone() {
+        let resp = title_tab(ui, st, ext, &tab.look, &tab.tip, showing == Some(&tab.panel));
+        resp.context_menu(|ui| {
+            ui.set_width(210.0);
+            for side in Side::BOTH {
+                let label = match (side == Side::Right) != st.prefs.dock_right {
+                    true => "Move to the right bar",
+                    false => "Move to the left bar",
+                };
+                if menu_row(ui, icons::PANEL_LEFT, label) {
+                    st.rail_move = Some((tab.panel.clone(), side, None));
+                    ui.close();
+                }
+            }
+        });
+        if resp.on_hover_text(format!("{}\nRight click it to move it to a bar", tab.tip)).clicked() {
+            st.console_tab = Some(tab.panel.clone());
+        }
+    }
+}
+
+fn header(ui: &mut egui::Ui, st: &mut UiState, ext: &Extensions, actions: &mut Vec<Action>, card: u64) {
     let front = st.console.front(card);
     let filled = st.console.filled == Some(card);
     let keys = st.keys.label(Command::SplitConsole);
     let crossed = ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::unique(super::CARD_X))).unwrap_or(false);
     let in_panel = ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::unique(super::IN_PANEL))).unwrap_or(false);
+    let tabbed = card == MAIN && !st.console_tabs.is_empty();
+    let showing = st.console_tab.clone().filter(|tab| tabbed && st.tabbed(tab));
     let place = Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.add(egui::Label::new(RichText::new("Console").size(14.0).color(pal().text)).selectable(false));
+            match tabbed {
+                true => {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    view_tabs(ui, st, ext, showing.as_ref());
+                }
+                false => {
+                    ui.add(egui::Label::new(RichText::new("Console").size(14.0).color(pal().text)).selectable(false));
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if crossed {
@@ -549,6 +616,9 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: 
                 };
                 if !in_panel && head_button(ui, codicon(glyph), tip, 24.0, false).0 {
                     actions.push(Action::Console(ConsoleOp::Fill(Some(card))));
+                }
+                if showing.is_some() {
+                    return;
                 }
                 let more =
                     st.console.menu.as_ref().is_some_and(|menu| menu.card == card && menu.kind == MenuKind::More);
@@ -795,11 +865,17 @@ fn pane(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, id: u64,
     }
 }
 
-pub fn console_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u64) {
+pub fn console_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, actions: &mut Vec<Action>, card: u64) {
     if !st.console.looked {
         st.console.look();
     }
-    header(ui, st, actions, card);
+    header(ui, st, ext, actions, card);
+    let view = st.console_tab.clone().filter(|tab| card == MAIN && st.tabbed(tab));
+    match view {
+        Some(Panel::Webview(view)) => return ext_panels::webview_panel(ui, st, ext, &view),
+        Some(Panel::Tree(id)) => return ext_panels::tree_panel(ui, st, ext, &id),
+        _ => {}
+    }
     if st.console.profiles.is_empty() {
         no_shell(ui, st, actions);
         return;

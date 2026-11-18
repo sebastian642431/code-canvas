@@ -281,6 +281,7 @@ pub struct Container {
     pub title: String,
     pub codicon: Option<String>,
     pub views: Vec<ViewDecl>,
+    pub panel: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -298,6 +299,7 @@ pub struct RailItem {
     pub title: String,
     pub codicon: Option<String>,
     pub tabs: usize,
+    pub panel: bool,
 }
 
 fn view_words(id: &str) -> String {
@@ -855,7 +857,11 @@ fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
     };
     let mut out = Vec::new();
     if let Some(Value::Object(bars)) = v.pointer("/contributes/viewsContainers") {
-        for item in bars.values().filter_map(Value::as_array).flatten() {
+        for (bar, item) in bars
+            .iter()
+            .filter_map(|(bar, list)| Some((bar, list.as_array()?)))
+            .flat_map(|(bar, list)| list.iter().map(move |item| (bar, item)))
+        {
             let id = text(item, "id");
             if id.is_empty() {
                 continue;
@@ -863,7 +869,7 @@ fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
             let icon = item.get("icon").and_then(Value::as_str).unwrap_or_default();
             let codicon = icon.strip_prefix("$(").and_then(|i| i.strip_suffix(')')).map(str::to_string);
             let views = views_in(&id);
-            out.push(Container { id, title: text(item, "title"), codicon, views });
+            out.push(Container { id, title: text(item, "title"), codicon, views, panel: bar == "panel" });
         }
     }
     // Trees an extension adds to VS Code's own containers (the explorer, source control,
@@ -879,7 +885,7 @@ fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
     if !elsewhere.is_empty() {
         let id =
             format!("{}.{}:views", manifest_text(v, nls, "publisher"), manifest_text(v, nls, "name")).to_lowercase();
-        out.push(Container { id, title: String::new(), codicon: None, views: elsewhere });
+        out.push(Container { id, title: String::new(), codicon: None, views: elsewhere, panel: false });
     }
     out
 }
@@ -904,6 +910,7 @@ fn rail_items_of(
                     title: title.cloned().unwrap_or_default(),
                     codicon: container.codicon.clone(),
                     tabs: 0,
+                    panel: container.panel,
                 });
             }
             if let Some(view) = shown {
@@ -914,6 +921,7 @@ fn rail_items_of(
                     title: title.cloned().unwrap_or_default(),
                     codicon: container.codicon.clone(),
                     tabs: 0,
+                    panel: container.panel,
                 });
             }
         }
@@ -931,6 +939,7 @@ fn rail_items_of(
                 title: format!("{} · what is open ({tabs})", e.display_name),
                 codicon: None,
                 tabs,
+                panel: false,
             });
         }
         if out.len() == before {
@@ -941,6 +950,7 @@ fn rail_items_of(
                     title: w.title.clone(),
                     codicon: None,
                     tabs: 0,
+                    panel: false,
                 });
             }
         }
@@ -2510,6 +2520,24 @@ mod tests {
         assert!(!by_id("box").views[1].webview);
         assert!(by_id("side").views.is_empty());
         assert!(manifest_containers(&json!({}), &nls).is_empty());
+        assert!(containers.iter().all(|c| !c.panel));
+    }
+
+    #[test]
+    fn a_container_of_the_panel_is_known_as_such() {
+        let manifest = json!({ "contributes": {
+            "viewsContainers": {
+                "activitybar": [{ "id": "side", "title": "Side", "icon": "$(book)" }],
+                "panel": [{ "id": "low", "title": "Low", "icon": "$(output)" }]
+            },
+            "views": {
+                "side": [{ "id": "side.page", "name": "Page", "type": "webview" }],
+                "low": [{ "id": "low.page", "name": "Low page", "type": "webview" }]
+            }
+        }});
+        let containers = manifest_containers(&manifest, &json!({}));
+        let panel: Vec<(&str, bool)> = containers.iter().map(|c| (c.id.as_str(), c.panel)).collect();
+        assert_eq!(panel, [("side", false), ("low", true)]);
     }
 
     fn installed_with(name: &str, manifest: Value) -> Installed {

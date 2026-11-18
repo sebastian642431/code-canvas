@@ -126,12 +126,21 @@ pub enum Place {
     Card,
 }
 
+#[derive(Clone)]
 enum RailLook {
     Glyph(&'static str),
     Extension { id: String, codicon: Option<String> },
 }
 
 struct RailEntry {
+    panel: Panel,
+    tip: String,
+    look: RailLook,
+    low: bool,
+}
+
+#[derive(Clone)]
+struct ConsoleTab {
     panel: Panel,
     tip: String,
     look: RailLook,
@@ -303,6 +312,9 @@ pub struct UiState {
     rail_order: [Vec<Panel>; 2],
     rail_drag: Option<RailDrag>,
     rail_move: Option<(Panel, Side, Option<String>)>,
+    to_console: Option<Panel>,
+    console_tabs: Vec<ConsoleTab>,
+    pub console_tab: Option<Panel>,
     pub extension: String,
     /// The tab the page of an extension shows.
     pub extension_tab: crate::ext::details::Tab,
@@ -388,6 +400,9 @@ impl Default for UiState {
             rail_order: Default::default(),
             rail_drag: None,
             rail_move: None,
+            to_console: None,
+            console_tabs: Vec::new(),
+            console_tab: None,
             extension_tab: Default::default(),
             ext_icons: Default::default(),
             market_icons: Default::default(),
@@ -464,7 +479,18 @@ impl UiState {
         }
     }
 
+    fn tabbed(&self, panel: &Panel) -> bool {
+        self.console_tabs.iter().any(|tab| tab.panel == *panel)
+    }
+
+    pub fn request_console_tab(&mut self, panel: Panel) {
+        self.to_console = Some(panel);
+    }
+
     pub fn is_open(&self, panel: &Panel) -> bool {
+        if self.tabbed(panel) {
+            return self.console_tab.as_ref() == Some(panel) && self.is_open(&Panel::Console);
+        }
         match self.place_of(panel) {
             Place::Main => self.files && self.dock == *panel,
             Place::Beside => self.beside.as_ref() == Some(panel),
@@ -486,6 +512,9 @@ impl UiState {
             self.console.fold(*number);
         }
         self.cards.retain(|open| open != panel);
+        if self.console_tab.as_ref() == Some(panel) {
+            self.console_tab = None;
+        }
         if self.dock == *panel {
             self.files = false;
         }
@@ -495,6 +524,11 @@ impl UiState {
     }
 
     pub fn show(&mut self, panel: Panel) {
+        if self.tabbed(&panel) {
+            self.console_tab = Some(panel);
+            self.show(Panel::Console);
+            return;
+        }
         let place = self.place_of(&panel);
         if place != Place::Card {
             self.cards.retain(|card| *card != panel);
@@ -527,6 +561,24 @@ impl UiState {
     }
 
     fn settle(&mut self) {
+        if self.tabbed(&self.dock) {
+            let view = std::mem::replace(&mut self.dock, Panel::Files);
+            if self.files {
+                self.show(view);
+            }
+        }
+        if let Some(view) = self.beside.clone().filter(|beside| self.tabbed(beside)) {
+            self.beside = None;
+            self.show(view);
+        }
+        let tabbed: Vec<Panel> = self.cards.iter().filter(|card| self.tabbed(card)).cloned().collect();
+        for view in tabbed {
+            self.cards.retain(|card| *card != view);
+            self.show(view);
+        }
+        if self.console_tab.as_ref().is_some_and(|tab| !self.tabbed(tab) && self.bar_of(tab).is_some()) {
+            self.console_tab = None;
+        }
         let dock = self.dock.clone();
         let known = self.bar_of(&dock).is_some();
         if known && self.place_of(&dock) != Place::Main {
@@ -931,7 +983,11 @@ pub fn build(
     if !st.bare && st.prefs.status {
         status_bar(ui, st, ext, pages.get(active), info, actions);
     }
-    let entries = rail_entries(st, ext);
+    let (tabs, entries): (Vec<RailEntry>, Vec<RailEntry>) = rail_entries(st, ext)
+        .into_iter()
+        .partition(|entry| entry.panel.of_extension() && st.rails.in_tabs(&entry.panel.key(), entry.low));
+    st.console_tabs =
+        tabs.into_iter().map(|entry| ConsoleTab { panel: entry.panel, tip: entry.tip, look: entry.look }).collect();
     let available: Vec<(String, Side)> = entries.iter().map(|entry| (entry.panel.key(), entry.panel.home())).collect();
     let order = st.arrange(&available);
     st.rail_order = order.clone().map(|keys| keys.iter().filter_map(|key| Panel::from_key(key)).collect());
@@ -953,6 +1009,10 @@ pub fn build(
     finish_rail_drag(ui, st, ext, &entries);
     if let Some((panel, side, before)) = st.rail_move.take() {
         st.move_panel(&available, &panel, side, before.as_deref());
+        actions.push(Action::RailsChanged);
+    }
+    if let Some(panel) = st.to_console.take() {
+        st.rails.put_in_tabs(&panel.key());
         actions.push(Action::RailsChanged);
     }
     let free = ui.available_rect_before_wrap();
@@ -1600,8 +1660,8 @@ fn card_of(
             ext_panels::webview_panel(ui, st, ext, view)
         }
         Panel::Media => ext_panels::media_panel(ui, st, actions),
-        Panel::Console => console::console_panel(ui, st, actions, crate::consoles::MAIN),
-        Panel::Consoles(card) => console::console_panel(ui, st, actions, *card),
+        Panel::Console => console::console_panel(ui, st, ext, actions, crate::consoles::MAIN),
+        Panel::Consoles(card) => console::console_panel(ui, st, ext, actions, *card),
         Panel::Tree(id) => ext_panels::tree_panel(ui, st, ext, id),
     }
 }
@@ -1779,7 +1839,12 @@ fn cards(
 }
 
 fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
-    let own = |panel: Panel, glyph: &'static str, tip: String| RailEntry { panel, tip, look: RailLook::Glyph(glyph) };
+    let own = |panel: Panel, glyph: &'static str, tip: String| RailEntry {
+        panel,
+        tip,
+        look: RailLook::Glyph(glyph),
+        low: false,
+    };
     let mut entries = vec![
         own(Panel::Files, icons::FOLDER, st.keys.hint("Files", Command::ToggleLeftPanel)),
         own(Panel::Search, icons::TEXT_SEARCH, st.keys.hint("Search in files", Command::SearchInFiles)),
@@ -1805,6 +1870,7 @@ fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
             panel: Panel::of_rail(item.view),
             tip: item.title,
             look: RailLook::Extension { id: item.extension, codicon: item.codicon },
+            low: item.panel,
         });
     }
     entries
@@ -1955,6 +2021,11 @@ fn rail(
                     ui.set_width(200.0);
                     if menu_row(ui, icons::PANEL_LEFT, offer) {
                         st.rail_move = Some((entry.panel.clone(), other, None));
+                        ui.close();
+                    }
+                    let terminal = crate::codicons::glyph("terminal").unwrap_or(icons::CHEVRON_RIGHT);
+                    if entry.panel.of_extension() && menu_row(ui, terminal, "Move into the console's tabs") {
+                        st.to_console = Some(entry.panel.clone());
                         ui.close();
                     }
                 });
@@ -5591,6 +5662,46 @@ mod place_tests {
         assert_eq!(st.beside, Some(chat()));
         st.arrange(&available());
         assert_eq!(st.beside, Some(chat()));
+    }
+
+    fn log() -> Panel {
+        Panel::Webview("log".to_string())
+    }
+
+    fn with_a_log_tab(other_panel: bool) -> UiState {
+        let mut st = state(other_panel);
+        st.console_tabs =
+            vec![ConsoleTab { panel: log(), tip: "Log".to_string(), look: RailLook::Glyph(icons::FILE_TEXT) }];
+        st
+    }
+
+    #[test]
+    fn a_view_of_the_console_opens_the_console_on_its_tab() {
+        let mut st = with_a_log_tab(false);
+        st.show(log());
+        assert_eq!((st.cards.clone(), st.console_tab.clone()), (vec![Panel::Console], Some(log())));
+        assert!(st.is_open(&log()));
+        st.console_tab = None;
+        assert!(!st.is_open(&log()), "the console shows its consoles");
+        let mut st = with_a_log_tab(true);
+        st.show(log());
+        assert_eq!((st.beside.clone(), st.console_tab.clone()), (Some(Panel::Console), Some(log())));
+        st.close_panel(&log());
+        assert_eq!((st.beside.clone(), st.console_tab.clone()), (Some(Panel::Console), None));
+    }
+
+    #[test]
+    fn a_view_put_in_the_console_leaves_its_card_and_comes_out_with_its_icon() {
+        let mut st = state(false);
+        st.show(chat());
+        st.console_tabs =
+            vec![ConsoleTab { panel: chat(), tip: "Chat".to_string(), look: RailLook::Glyph(icons::FILE) }];
+        st.on_bars.retain(|(key, _)| *key != chat().key());
+        st.settle();
+        assert_eq!((st.cards.clone(), st.console_tab.clone()), (vec![Panel::Console], Some(chat())));
+        st.console_tabs.clear();
+        st.arrange(&available());
+        assert_eq!(st.console_tab, None, "back on a bar, it is no tab");
     }
 
     #[test]

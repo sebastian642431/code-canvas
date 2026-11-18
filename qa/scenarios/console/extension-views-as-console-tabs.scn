@@ -1,0 +1,80 @@
+title: A view an extension puts in VS Code's panel is a tab next to "Console" in the console's title, not an icon of a bar: a click shows it and "Console" brings the consoles back; an icon of a bar goes into those tabs and back out to a bar, the card is still dragged by its title, goes into the side panel with its tabs, and no page is ever loaded again
+folders: rust-small
+extensions: webview-extension
+limit: 150
+forbid-log: WARN.*script
+expect-file: rust-small/qa-pages.txt :: log holds 3 clicks and "in the console" after 1 load\(s\)
+expect-file: ..\data\session.json :: "tabs": \[\s*"view:qa\.pad"
+expect-file: ..\data\session.json :: "beside": "console"
+
+wait 3000
+ui click 1680 134
+wait 2500
+mark a-console-card-with-a-log-tab
+wait 400
+right qa.log
+wait 2500
+page window.qa.more()
+page window.qa.write('in the console')
+wait 400
+mark b-the-log-tab
+wait 400
+ui click 1100 71
+wait 1200
+mark c-console-tab-shows-the-consoles
+wait 400
+ui click 1180 71
+wait 1200
+page window.qa.more()
+wait 400
+mark d-back-on-the-log
+wait 400
+move qa.pad console
+wait 1500
+right qa.pad
+wait 2500
+mark e-pad-moved-into-the-tabs
+wait 400
+ui right 1185 71
+wait 900
+mark f-the-tab-menu
+wait 400
+ui click 1240 120
+wait 1500
+mark g-pad-back-on-a-bar
+wait 400
+ui right 1680 206
+wait 900
+mark h-the-icon-menu
+wait 400
+ui click 1580 258
+wait 1500
+mark i-pad-in-the-tabs-again
+wait 400
+ui drag 1400 71 1000 200
+wait 1200
+mark j-the-card-dragged-by-its-title
+wait 400
+ui click 1545 20
+wait 700
+ui click 1500 226
+wait 900
+press escape
+wait 1500
+mark k-the-console-in-the-right-panel-with-its-tabs
+wait 400
+right qa.log
+wait 1500
+page window.qa.more()
+wait 400
+page window.qa.report()
+wait 1200
+mark l-the-log-tab-in-the-panel
+wait 400
+quit
+
+=== again
+wait 5000
+mark m-after-a-restart
+wait 500
+quit

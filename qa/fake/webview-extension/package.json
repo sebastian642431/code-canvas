@@ -2,10 +2,10 @@
   "name": "fake-webviews",
   "publisher": "qa",
   "displayName": "QA webviews",
-  "description": "Two webview views that keep state in the page: a chat with a counter and a pad with a text. What the pages say is written to qa-pages.txt in the first folder.",
+  "description": "Webview views that keep state in the page: a chat and a pad on the bars, and a log that VS Code would put in its panel. What the pages say is written to qa-pages.txt in the first folder.",
   "version": "1.0.0",
   "main": "./extension.js",
-  "activationEvents": ["onView:qa.chat", "onView:qa.pad"],
+  "activationEvents": ["onView:qa.chat", "onView:qa.pad", "onView:qa.log"],
   "engines": { "vscode": "^1.80.0" },
   "capabilities": { "untrustedWorkspaces": { "supported": true } },
   "contributes": {
@@ -13,11 +13,13 @@
       "activitybar": [
         { "id": "qaChat", "title": "QA chat", "icon": "$(comment-discussion)" },
         { "id": "qaPad", "title": "QA pad", "icon": "$(notebook)" }
-      ]
+      ],
+      "panel": [{ "id": "qaLog", "title": "QA log", "icon": "$(output)" }]
     },
     "views": {
       "qaChat": [{ "type": "webview", "id": "qa.chat", "name": "QA chat" }],
-      "qaPad": [{ "type": "webview", "id": "qa.pad", "name": "QA pad" }]
+      "qaPad": [{ "type": "webview", "id": "qa.pad", "name": "QA pad" }],
+      "qaLog": [{ "type": "webview", "id": "qa.log", "name": "QA log" }]
     }
   }
 }
