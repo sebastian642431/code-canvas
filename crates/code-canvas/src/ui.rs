@@ -1292,6 +1292,7 @@ fn cards(
     const LOWEST: f32 = 150.0;
     const UNDER: f32 = 50.0;
     let mut next = canvas.right() - AWAY;
+    const TOOLBAR_REACH: f32 = 420.0;
     let height = (canvas.height() - AWAY - UNDER).max(120.0);
     st.cards_reach = 0.0;
     for panel in st.cards.clone().iter().rev() {
@@ -1316,7 +1317,11 @@ fn cards(
                 let y = y.clamp(AWAY, (canvas.height() - h - AWAY).max(AWAY));
                 Rect::from_min_size(canvas.min + Vec2::new(x, y), Vec2::new(w, h)).round()
             }
-            None => Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, height)),
+            None => {
+                let over_toolbar = st.prefs.toolbar && next - width < canvas.left() + TOOLBAR_REACH;
+                let tall = if over_toolbar { height } else { (canvas.height() - 2.0 * AWAY).max(120.0) };
+                Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, tall))
+            }
         };
         let mut placed = None;
         let mut settled = false;

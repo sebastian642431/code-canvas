@@ -2101,9 +2101,8 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     `.git/HEAD` every 5 s (`git::head_of`, which also follows a `.git` file
     and shows a detached head as its short hash). On the folder being looked
     at, a click on the branch opens the list to switch to another. Source
-    Control has no row for the repository any more: `Repositories` is one line
-    with the sync button (pull, then push), showing how many commits there
-    are to pull and to push.
+    Control has no section for the repository any more; Sync (pull, then
+    push) is in its menu with Pull, Push and Fetch.
   - Nothing draws a line between the bar of icons, the dock and the header:
     the seam of their outlines is painted over in their own fill, the header
     has no separator, and the dock's resize line is drawn with no stroke (the

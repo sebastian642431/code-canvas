@@ -291,6 +291,7 @@ pub fn changes_panel(
                             ui.spacing_mut().item_spacing.y = 1.0;
                             let mut op = None;
                             for (glyph, label, what) in [
+                                (icons::ARROW_UP_DOWN, "Sync (pull, then push)", GitOp::Sync),
                                 (icons::DOWNLOAD, "Pull", GitOp::Pull),
                                 (icons::ARROW_UP, "Push", GitOp::Push),
                                 (icons::REFRESH_CW, "Fetch", GitOp::Fetch),
@@ -366,37 +367,6 @@ pub fn changes_panel(
 
     ui.spacing_mut().item_spacing.y = 0.0;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        {
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
-            let mid = rect.center().y;
-            let title = RichText::new("Repositories").size(12.5).color(pal().text);
-            let galley = ui.painter().layout_no_wrap(title.text().to_string(), FontId::proportional(12.5), pal().text);
-            ui.painter().galley(Pos2::new(rect.left() + 26.0, mid - galley.size().y * 0.5), galley, pal().text);
-            let mut said = icons::ARROW_UP_DOWN.to_string();
-            if g.behind > 0 {
-                said.push_str(&format!(" {}{}", g.behind, icons::ARROW_DOWN));
-            }
-            if g.ahead > 0 {
-                said.push_str(&format!(" {}{}", g.ahead, icons::ARROW_UP));
-            }
-            let shown = ui.painter().layout_no_wrap(said, FontId::proportional(13.0), pal().text_dim);
-            let width = (shown.size().x + 12.0).max(22.0);
-            let at = Rect::from_center_size(Pos2::new(rect.right() - 10.0 - width * 0.5, mid), Vec2::new(width, 22.0));
-            let sync = ui.interact(at, ui.scope_id().with("sync"), Sense::click());
-            if sync.hovered() {
-                ui.painter().rect_filled(at, 5.0, pal().hover);
-            }
-            let color = if sync.hovered() { pal().text } else { pal().text_dim };
-            ui.painter().galley(at.center() - shown.size() * 0.5, shown, color);
-            let tip = match (g.behind, g.ahead) {
-                (0, 0) => "Sync: pull (fast-forward only), then push".to_string(),
-                (behind, ahead) => format!("Sync: pull {behind} and push {ahead} (pull fast-forward only, then push)"),
-            };
-            if sync.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() && !busy {
-                actions.push(Action::Git(GitOp::Sync));
-            }
-        }
-
         if group_header(ui, "Changes", "changes", None, None).0 {
             Frame::NONE.inner_margin(Margin { left: 26, right: 10, top: 2, bottom: 6 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
