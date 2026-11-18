@@ -904,21 +904,6 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             let at = Rect::from_center_size(slot.center() + Vec2::new(EDGE * 0.5, 0.0), Vec2::splat(24.0));
             let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
             ui.painter().image(logo.id(), at, uv, Color32::WHITE);
-            let tip = st.keys.hint("Show or hide the files", Command::ToggleLeftPanel);
-            if icon_button(ui, icons::PANEL_LEFT, Vec2::splat(30.0), st.files, pal().hover).on_hover_text(tip).clicked()
-            {
-                st.files = !st.files;
-            }
-            ui.add_space(4.0);
-            let rescan = ui.add(
-                egui::Button::new(
-                    RichText::new(format!("{}  Rescan", icons::REFRESH_CW)).size(13.0).color(pal().text_dim),
-                )
-                .frame(false),
-            );
-            if rescan.on_hover_text(st.keys.hint("Reload the folder from disk", Command::Rescan)).clicked() {
-                actions.push(Action::Rescan);
-            }
             ui.add_space(8.0);
 
             left_end = ui.min_rect().right();
