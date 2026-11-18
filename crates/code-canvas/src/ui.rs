@@ -278,6 +278,7 @@ pub struct UiState {
     pub files: bool,
     pub dock: Panel,
     pub layout_open: bool,
+    window_focused: bool,
     faces_stack: Option<Rect>,
     pub new_build: bool,
     layout_button: Option<Rect>,
@@ -362,6 +363,7 @@ impl Default for UiState {
             files: true,
             dock: Panel::Files,
             layout_open: false,
+            window_focused: false,
             faces_stack: None,
             new_build: false,
             layout_button: None,
@@ -1008,6 +1010,12 @@ pub fn build(
         if st.prefs.toolbar {
             toolbar(&ctx, st, canvas, info, actions);
         }
+    }
+    let focused = ctx.input(|i| i.focused);
+    if std::mem::replace(&mut st.window_focused, focused) && !focused {
+        st.layout_open = false;
+        st.account.menu = false;
+        st.console.menu = None;
     }
     layout_menu(&ctx, st, actions);
     account_menu(&ctx, st, actions);

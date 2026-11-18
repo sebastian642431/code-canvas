@@ -298,11 +298,13 @@ mod platform {
     }
 
     const FAR: i32 = 1 << 20;
+    const ROUND: i32 = 22;
     const HIDE_SETTLES: std::time::Duration = std::time::Duration::from_millis(400);
 
     #[link(name = "gdi32")]
     extern "system" {
         fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> *mut std::ffi::c_void;
+        fn CreateRoundRectRgn(left: i32, top: i32, right: i32, bottom: i32, w: i32, h: i32) -> *mut std::ffi::c_void;
         fn CombineRgn(
             into: *mut std::ffi::c_void,
             one: *mut std::ffi::c_void,
@@ -327,7 +329,7 @@ mod platform {
             }
             let seen = CreateRectRgn(0, 0, FAR, FAR);
             for [left, top, right, bottom] in holes {
-                let hole = CreateRectRgn(*left, *top, *right, *bottom);
+                let hole = CreateRoundRectRgn(*left, *top, *right + 1, *bottom + 1, ROUND, ROUND);
                 CombineRgn(seen, seen, hole, DIFFERENCE);
                 DeleteObject(hole);
             }
@@ -347,7 +349,12 @@ mod platform {
             if left <= 0.0 && top <= 0.0 && right >= area.w && bottom >= area.h {
                 return None;
             }
-            let hole = [left as i32, top as i32, right as i32, bottom as i32];
+            let hole = [
+                (cover.x - area.x).floor() as i32,
+                (cover.y - area.y).floor() as i32,
+                (cover.right() - area.x).ceil() as i32,
+                (cover.bottom() - area.y).ceil() as i32,
+            ];
             if right > left && bottom > top && !holes.contains(&hole) {
                 holes.push(hole);
             }
@@ -801,7 +808,11 @@ mod platform {
             let elsewhere = Rect::new(0.0, 0.0, 90.0, 40.0);
             assert_eq!(holes_in(page, &[]), Some(Vec::new()));
             assert_eq!(holes_in(page, &[elsewhere]), Some(Vec::new()));
-            assert_eq!(holes_in(page, &[toolbar, elsewhere, toolbar]), Some(vec![[0, 550, 300, 590]]));
+            assert_eq!(
+                holes_in(page, &[toolbar, elsewhere, toolbar]),
+                Some(vec![[-40, 550, 300, 590]]),
+                "the hole keeps the cover's own edges, past the page too, so its round corners fall on the cover's"
+            );
             let whole_window = Rect::new(0.0, 0.0, 1706.0, 920.0);
             assert_eq!(holes_in(page, &[toolbar, whole_window]), None, "nothing of it is left to see");
         }
