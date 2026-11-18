@@ -2461,6 +2461,7 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
 | `wrap` | Wrap lines wider than their card into the rows under them instead of cutting them (`canvas_core::layout::set_wrap`, off by default). |
 | `codex`, `asked_codex` | Follow Codex from the session files it writes (`codex.rs`), and whether the app already offered it. |
 | `grammars_everywhere` | Let a grammar of an extension colour the languages the app's own tokenizer knows too (off by default: only the ones it does not know, see `grammars.rs`). |
+| `docked` | The extensions' views kept in the side panel instead of floating, by `Panel::key` (`view:<id>`, `tree:<container>`), in the order of their tabs. Absent or empty: every view floats, as before there was a choice. Synced with the rest of the file. |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
 ### qa
@@ -2490,13 +2491,13 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `goto` | `goto <path>` | Select a file or folder and fly to it. |
 | `select` | `select <name>` | Select the first symbol with that name. |
 | `search` | `search <text>` | Search in files. |
-| `left` | `left files\|search\|extensions\|problems\|changes\|help` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
+| `left` | `left files\|search\|extensions\|problems\|changes\|help\|views` or `left <publisher.name>`; `left none` | Open that panel on the side its icon is on, or that extension's own panel. `none` closes the left side. |
 | `left settings` | `left settings`, `left settings:general\|appearance\|colours\|keyboard\|commits`, `left settings:<text>`, `left settings:close` | Open Settings, on a category, or searching for the text; close it. |
 | `right` | `right symbols\|deps` or `right <view id or extension id>`; `right none` | Open that panel, or that extension's webview, on the side its icon is on. `none` closes the right side. |
 | `preview` | `preview <path>` | Show a Markdown file of the folder rendered, or close it if it is the one shown. `open <path>` shows one from anywhere. |
 | `drop` | `drop <path>` | What dropping that file on the window does: a copy in the selected folder. |
 | `mark` | `mark <name>` | Leave an empty file `marks/<name>` in the data directory. `scripts/screenshot.ps1 -Marks` takes a picture at each. |
-| `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
+| `move` | `move <panel> left\|right [panel to sit before]`, `move <panel> dock [tab to sit before]`, `move <panel> float` | Move an icon to a bar (a docked view floats again), dock an extension's view in the side panel as a tab, or float it as a card. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
 | `click` | `click <x> <y>`, `click <path> <line> <column>` | A click on the canvas, in physical pixels of the window, or in the middle of a cell of a card (1-based, as `hover`): on a wrapped card that is the row the column is on. |
 | `hover` | `hover <x> <y>`, `hover <path> <line> <column>` | The pointer resting on the canvas, in physical pixels or on a cell of a card (1-based; a column past the card's edge is where it would be if the card went on): what is under it reacts (the rest of a long line). |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
@@ -3091,6 +3092,43 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     folder switcher and the workspace above it (`folder_row`), so choosing
     another folder shows that repository's changes. Which one is docked is
     saved with the open cards (`UiState::open_keys`).
+  - **An extension's view floats or is docked, as each person likes**
+    (`Prefs::docked`, `ui/docked.rs`). Floating is what it always was: its
+    icon on a bar, a card on the canvas. Docked, its icon leaves the bar and
+    it becomes a tab of `Panel::Views`, the fifth tab of the dock, whose icon
+    (`PANELS_TOP_LEFT`, after Extensions) is on the bar while anything is
+    docked: a row of tabs across the top (icon and title, only icons when the
+    titles do not fit, `tab_widths`) and the view under them. `UiState::dock`
+    is then the view itself (`Panel::Webview`, `Panel::Tree`), so the docked
+    view shown is saved and opened again like Files or Search, and
+    `UiState::show` of a docked view (its icon, a script, an extension
+    revealing it) opens the panel on its tab. `dock_entry` is what the bar
+    lights for it. The dock remembers a width for the views apart from the
+    files (another `egui::Panel` id, wider by default and up to 960).
+  - Docking: the icon dragged from a bar and dropped on the side panel
+    (`drop_on_dock`: over the tabs it goes before the one under the pointer,
+    elsewhere at the end, with the whole panel lit while it would take it), "Dock
+    in the side panel" in the icon's menu, or the button in the title of a
+    floating web page. Floating: a tab dragged onto the canvas (a free card
+    under the pointer, `card_at`) or onto a bar (its icon is put there), or
+    "Float on the canvas" in the tab's menu. A tab dragged along the row is
+    reordered. The drag is the bars' (`RailDrag`, `DropAt`); the target of the
+    dock is set after both bars are drawn, so `finish_rail_drag` runs after
+    `files_dock`.
+  - The preferences can change under the dock (sync from GitHub):
+    `settle_docked` runs every frame, takes a docked view out of the cards and
+    sends the dock back to the files when what it shows floats now. A docked
+    view whose extension has not shown it yet (its `when` is false for now)
+    keeps its tab and stays selected, so a restart does not lose it.
+  - **The page is the same wherever it is**: a webview belongs to its handle,
+    not to a card, so docking, floating, switching tabs, hiding the panel
+    (Ctrl+B, the title bar, only the canvas) and moving the dock to the other
+    side only move it, hide it or show it (`set_bounds`, `set_visible`). It is
+    never loaded again: an assistant's conversation goes on where it was.
+    What floats over the dock (menus, tooltips, the dragged icon, the lit
+    panel while dropping) is cut out of it like over a card (`covers_of`: a
+    page of no card has every card counted above it, and none reaches the
+    dock).
   - **Each folder of the workspace shows its branch** where its count of files
     was (`WorkspaceRow::branch`; the count is in its hint): from the folder's
     git when it is open (with `*` when something changed), else read from
@@ -3486,6 +3524,13 @@ Messages and lifetime
   dropped: nothing listens, and VS Code drops these too.
 - `WebViews::show` does nothing for a handle whose extension has not produced the
   page yet.
+- **A page is not made within `HIDE_SETTLES` (400 ms) of hiding another.**
+  Making a WebView2 right after `set_visible(false)` of another one never
+  returned: `build_as_child` waited for ever for its controller, pumping
+  messages at one core, and the window stayed white. Switching between two docked
+  views did exactly that (the second page is asked for as the first hides). The
+  page waits a few frames instead (`show` returns that it is waiting, and the app
+  draws again).
 - `WebViews::retheme` gives the theme to pages that have not had the current one.
   A page still loading gets it when it is ready, so `App::follow_theme` calls it
   again then; it is cheap when nothing is due.

@@ -1,0 +1,93 @@
+title: Extensions' views are dragged into the side panel as tabs and out again onto the canvas, and each page keeps what it holds
+folders: rust-small
+extensions: webview-extension, views-extension
+limit: 150
+forbid-log: WARN.*script
+expect-log: script: tree qa\.items: > Fruits / v Vegetables /   carrot /   leek / Read me
+expect-file: rust-small/qa-pages.txt :: chat holds 3 clicks and "kept across moves" after 1 load\(s\)
+expect-file: rust-small/qa-pages.txt :: pad holds 1 clicks and "" after 1 load\(s\)
+expect-file: ..\data\prefs.json :: "docked": \[\s*"view:qa.pad"\s*\]
+
+wait 3000
+right qa.chat
+wait 2500
+page window.qa.more()
+page window.qa.more()
+page window.qa.write('kept across moves')
+wait 400
+mark a-chat-floating
+wait 500
+ui drag 1680 98 250 420
+wait 1500
+mark b-chat-docked-by-a-drag
+wait 500
+right qa.pad
+wait 2500
+ui drag 1680 98 64 62
+wait 1500
+mark c-pad-docked-before-chat
+wait 500
+page window.qa.more()
+ui click 190 62
+wait 1200
+mark d-back-to-the-chat-tab
+wait 500
+page window.qa.more()
+press ctrl+b
+wait 900
+mark e-panel-hidden
+wait 400
+press ctrl+b
+wait 900
+mark f-panel-shown-again
+wait 400
+ui drag 446 500 646 500
+wait 900
+mark g-panel-wider
+wait 400
+ui click 1545 20
+wait 700
+ui click 1500 256
+wait 1200
+mark h-panel-on-the-right-under-the-menu
+wait 400
+ui click 1500 226
+wait 900
+press escape
+wait 600
+ui drag 190 62 900 300
+wait 1500
+mark i-chat-floats-again
+wait 500
+page window.qa.report()
+wait 1200
+ui click 1213 267
+wait 1200
+mark j-chat-docked-from-its-card
+wait 500
+move qa.chat float
+wait 1200
+ui right 1680 62
+wait 900
+mark k-dock-from-the-bar-menu
+wait 400
+ui click 1568 114
+wait 2500
+tree report
+mark l-tree-docked
+wait 500
+ui right 190 62
+wait 900
+mark m-float-from-the-tab-menu
+wait 400
+ui click 285 83
+wait 1500
+mark n-tree-floats-pad-shown
+wait 500
+quit
+
+=== again
+wait 4000
+mark o-pad-still-docked
+wait 500
+quit

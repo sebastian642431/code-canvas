@@ -298,6 +298,7 @@ mod platform {
     }
 
     const FAR: i32 = 1 << 20;
+    const HIDE_SETTLES: std::time::Duration = std::time::Duration::from_millis(400);
 
     #[link(name = "gdi32")]
     extern "system" {
@@ -365,6 +366,7 @@ mod platform {
         notes: Vec<(String, PageNote)>,
         links: Vec<String>,
         follow: bool,
+        hidden_at: Option<std::time::Instant>,
     }
 
     fn mime(path: &Path) -> &'static str {
@@ -501,6 +503,7 @@ mod platform {
                 notes: Vec::new(),
                 links: Vec::new(),
                 follow: true,
+                hidden_at: None,
             }
         }
 
@@ -573,7 +576,7 @@ mod platform {
             self.shown.retain(|(shown, _)| shown != handle);
         }
 
-        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect, Vec<Rect>)]) {
+        pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect, Vec<Rect>)]) -> bool {
             let targets: Vec<(&str, Rect, Vec<[i32; 4]>)> = targets
                 .iter()
                 .filter_map(|(handle, area, covers)| Some((*handle, *area, holes_in(*area, covers)?)))
@@ -581,14 +584,14 @@ mod platform {
             let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.shown)
                 .into_iter()
                 .partition(|(shown, _)| targets.iter().any(|(wanted, ..)| wanted == shown));
-            for (handle, _) in gone {
-                if let Some(view) = self.views.get(&handle) {
-                    let _ = view.web.set_visible(false);
-                }
-            }
+            let mut waits = false;
             for (handle, area, holes) in targets {
                 if !self.views.contains_key(handle) {
                     if !self.has_html(handle) {
+                        continue;
+                    }
+                    if self.hidden_at.is_some_and(|at| at.elapsed() < HIDE_SETTLES) {
+                        waits = true;
                         continue;
                     }
                     match self.create(window, handle, area) {
@@ -620,6 +623,13 @@ mod platform {
                 }
                 self.shown.push((handle.to_string(), area));
             }
+            for (handle, _) in gone {
+                if let Some(view) = self.views.get(&handle) {
+                    let _ = view.web.set_visible(false);
+                    self.hidden_at = Some(std::time::Instant::now());
+                }
+            }
+            waits
         }
 
         fn create(&self, window: &winit::window::Window, handle: &str, area: Rect) -> wry::Result<WebView> {
@@ -824,7 +834,9 @@ mod platform {
         pub fn veil(&mut self, _handle: &str, _veiled: bool) {}
         pub fn run(&mut self, _script: &str) {}
         pub fn run_in(&mut self, _handle: &str, _script: &str) {}
-        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect, Vec<Rect>)]) {}
+        pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect, Vec<Rect>)]) -> bool {
+            false
+        }
         pub fn poll(&mut self) -> Vec<PageMessage> {
             Vec::new()
         }

@@ -3030,6 +3030,7 @@ impl App {
             .ui
             .cards
             .iter()
+            .chain(Some(&self.ui.dock).filter(|_| self.ui.files))
             .filter_map(|c| if let Panel::Tree(id) = c { Some(id.clone()) } else { None })
             .collect();
         let mut views: Vec<(String, String)> = Vec::new();
@@ -3974,6 +3975,7 @@ impl App {
                 "extensions" => self.ui.show(Panel::Extensions),
                 "problems" => self.ui.show(Panel::Problems),
                 "changes" => self.ui.show(Panel::Changes),
+                "views" => self.ui.show(Panel::Views),
                 "settings" => self.ui.settings.show(None),
                 "settings:close" => self.ui.settings.open = false,
                 id if id.starts_with("settings:") => match ui::SettingsTab::from_key(&id[9..]) {
@@ -4519,14 +4521,36 @@ impl App {
                     let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
                     view.map(|w| Panel::of_rail(w.view)).or_else(|| Panel::from_key(name))
                 });
-                let side = match parts.next() {
+                let place = parts.next();
+                let side = match place {
                     Some("left") => Some(Side::Left),
                     Some("right") => Some(Side::Right),
                     _ => None,
                 };
-                match (panel, side) {
-                    (Some(panel), Some(side)) => self.ui.request_move(panel, side, parts.next().map(str::to_string)),
-                    _ => log::warn!("script: move needs <panel> left|right [panel to sit before]"),
+                let before = parts.next().map(|name| {
+                    let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
+                    view.map_or_else(|| name.to_string(), |w| Panel::of_rail(w.view).key())
+                });
+                match (panel, side, place) {
+                    (Some(panel), Some(side), _) => {
+                        if self.ui.float_view(&panel, false) {
+                            self.apply(Action::SetPrefs(self.ui.prefs.clone()));
+                        }
+                        self.ui.request_move(panel, side, before)
+                    }
+                    (Some(panel), None, Some("dock")) => {
+                        if self.ui.dock_view(panel, before.as_deref()) {
+                            self.apply(Action::SetPrefs(self.ui.prefs.clone()));
+                        }
+                    }
+                    (Some(panel), None, Some("float")) => {
+                        if self.ui.float_view(&panel, true) {
+                            self.apply(Action::SetPrefs(self.ui.prefs.clone()));
+                        }
+                    }
+                    _ => {
+                        log::warn!("script: move needs <panel> left|right|dock [panel to sit before], or <panel> float")
+                    }
                 }
             }
             Step::Find(what) => {
@@ -5369,7 +5393,9 @@ impl App {
                 .collect();
             let g = self.gfx.as_ref().unwrap();
             let t = Instant::now();
-            self.webviews.show(&g.window, &targets);
+            if self.webviews.show(&g.window, &targets) {
+                self.request_redraw();
+            }
             let ms = t.elapsed().as_secs_f32() * 1000.0;
             if ms > 8.0 {
                 log::debug!("placing the webview took {ms:.1} ms");

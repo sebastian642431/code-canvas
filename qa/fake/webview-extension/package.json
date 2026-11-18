@@ -1,0 +1,23 @@
+{
+  "name": "fake-webviews",
+  "publisher": "qa",
+  "displayName": "QA webviews",
+  "description": "Two webview views that keep state in the page: a chat with a counter and a pad with a text. What the pages say is written to qa-pages.txt in the first folder.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["onView:qa.chat", "onView:qa.pad"],
+  "engines": { "vscode": "^1.80.0" },
+  "capabilities": { "untrustedWorkspaces": { "supported": true } },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "qaChat", "title": "QA chat", "icon": "$(comment-discussion)" },
+        { "id": "qaPad", "title": "QA pad", "icon": "$(notebook)" }
+      ]
+    },
+    "views": {
+      "qaChat": [{ "type": "webview", "id": "qa.chat", "name": "QA chat" }],
+      "qaPad": [{ "type": "webview", "id": "qa.pad", "name": "QA pad" }]
+    }
+  }
+}
