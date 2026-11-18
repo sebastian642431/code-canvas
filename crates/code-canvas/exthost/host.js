@@ -950,8 +950,14 @@ function layerTree(flat, languageId) {
   return tree;
 }
 
+// What Code Canvas wants that differs from an extension's own default; a person's settings.json still wins.
+const OURS = {
+  'claudeCode.attachOpenFile': false,
+};
+
 const config = {
   defaults: {
+    ...OURS,
     'editor.tabSize': 4,
     'editor.insertSpaces': true,
     'editor.detectIndentation': true,
@@ -2030,6 +2036,7 @@ function registerContributions(ext) {
   const sections = Array.isArray(c.configuration) ? c.configuration : c.configuration ? [c.configuration] : [];
   for (const section of sections) {
     for (const [key, schema] of Object.entries((section && section.properties) || {})) {
+      if (key in OURS) continue;
       if (schema && schema.default !== undefined) config.defaults[key] = schema.default;
       else if (schema && !(key in config.defaults)) {
         const t = Array.isArray(schema.type) ? schema.type[0] : schema.type;

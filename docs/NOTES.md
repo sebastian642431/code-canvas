@@ -938,6 +938,10 @@ Graphics and the frame
   `note_covers` leaves the cards out of `UiState::covers`, and
   `ui::covers_of` gives each page the covers plus every card but its own. A
   card still covers what plays on the canvas under it.
+- **Some settings of extensions start the way Code Canvas wants**, not the
+  extension's (`OURS` in host.js; a person's `settings.json` still wins): the
+  Claude Code panel does not attach the open file to every message
+  (`claudeCode.attachOpenFile: false`). `qa/host/settings.test.js` checks it.
 - `progressBar-background` is given the accent by name. Guessed from its name
   it was a background, so the colour of the card: the bar of the weekly usage
   of Claude Code was filled with the colour of what it stood on, and only the
