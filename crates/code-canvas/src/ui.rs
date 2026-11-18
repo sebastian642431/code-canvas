@@ -3848,7 +3848,8 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         let at = rect.center() - Vec2::new(0.0, 2.0);
         cut(ui, at, 15.0);
         let lifted = if resp.hovered() { Vec2::new(0.0, -2.0) } else { Vec2::ZERO };
-        rail_face(ui.painter(), &st.faces, agent.avatar, at + lifted, 12.0, !agent.quiet, agent.followed);
+        let state = (!agent.quiet, agent.followed);
+        rail_face(ui.painter(), &st.faces, agent.avatar, at + lifted, 12.0, c(agent.color), state);
         if let Some((owner, color)) = &agent.owner {
             owner_badge(ui.painter(), at + lifted + Vec2::new(9.0, 9.0), 5.5, owner, c(*color));
         }
@@ -4004,15 +4005,18 @@ fn rail_face(
     avatar: usize,
     center: Pos2,
     radius: f32,
-    working: bool,
-    followed: bool,
+    own: Color32,
+    (working, followed): (bool, bool),
 ) {
     let t = theme::get();
     let ground = if working { c(t.git_added) } else { c(t.problem_error).gamma_multiply(0.4) };
-    if followed {
-        painter.circle_stroke(center, radius + 2.5, Stroke::new(1.5, ground));
-    }
     painter.circle_filled(center, radius, ground);
+    let edge = if working { own } else { own.gamma_multiply(0.6) };
+    let width = if followed { 2.5 } else { 1.5 };
+    painter.circle_stroke(center, radius + width * 0.5, Stroke::new(width, edge));
+    if followed {
+        painter.circle_stroke(center, radius + width + 2.0, Stroke::new(1.0, edge.gamma_multiply(0.5)));
+    }
     let Some(picture) = faces.get(avatar % faces.len().max(1)) else { return };
     let tint = if working { Color32::WHITE } else { Color32::from_gray(170) };
     round_picture(painter, picture.id(), center, radius * 0.86, tint);
