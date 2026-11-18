@@ -5,6 +5,7 @@ mod agents;
 mod app;
 mod bench;
 mod camera;
+mod codex;
 mod codicons;
 mod commit_ai;
 mod doodle;

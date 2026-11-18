@@ -172,6 +172,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   hook to Claude Code's own settings that tells the app which file each tool
   touched. Nothing leaves the computer. It works for sessions in a terminal, in
   an editor, or in the panel inside the app.
+- *Connect Codex*, beside it, does the same for **Codex**: the app reads the
+  session files Codex writes as it works (`~/.codex/sessions`), so each session
+  shows where it reads lines, searches and edits, named by what it was asked —
+  in a terminal, with `codex exec` or in its editor extension. Codex's own
+  settings are not touched. Both are offered once when the app finds them.
 - Any other program can say where it is with one line of JSON
   (see [docs/NOTES.md](docs/NOTES.md), `agents.rs`).
 
@@ -418,7 +423,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
       a trail of where each one has been.
 - [x] Assistants of a shared session shown to everyone in it, the host's and each
       guest's, and followed from any canvas.
-- [ ] Other assistants connected out of the box (Codex).
+- [x] Codex connected out of the box, followed from the session files it writes.
+- [ ] More assistants connected out of the box (Gemini CLI, GitHub Copilot's agent).
 - [x] A workspace: folders dragged onto the canvas and taken off it.
 - [x] Sharing a session: others see and edit your folders live from their own app,
       as readers or writers, with everyone's pointer, caret and view, and following.

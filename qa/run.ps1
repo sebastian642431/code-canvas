@@ -85,7 +85,7 @@ $out = Join-Path $Work 'shots'
 $data = Join-Path $Work 'data'
 $guestData = Join-Path $Work 'data-guest'
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
-New-Item -ItemType Directory -Force -Path $fix, $out, $data, (Join-Path $Work 'claude') | Out-Null
+New-Item -ItemType Directory -Force -Path $fix, $out, $data, (Join-Path $Work 'claude'), (Join-Path $Work 'codex') | Out-Null
 $prefs = $null
 if ($head.ContainsKey('prefs')) { $prefs = $head['prefs'] }
 if ($prefs) { Set-Content -LiteralPath (Join-Path $data 'prefs.json') -Value $prefs -Encoding ASCII }
@@ -112,7 +112,7 @@ function Fill([string]$step) {
     $places = @{ '{FIX}' = $fix; '{WORK}' = $Work; '{REPO}' = $repo }
     foreach ($name in $places.Keys) {
         $path = $places[$name]
-        if ($step.TrimStart().StartsWith('agent ')) { $path = $path.Replace('\', '/') }
+        if ($step.TrimStart().StartsWith('agent ') -or $step.TrimStart().StartsWith('touch ')) { $path = $path.Replace('\', '/') }
         $step = $step.Replace($name, $path)
     }
     return $step
@@ -130,6 +130,8 @@ function Read-Log($dir) {
 $env:CODE_CANVAS_SHARE_ON = '127.0.0.1'
 $env:CODE_CANVAS_QUIET = '1'
 $env:CLAUDE_CONFIG_DIR = Join-Path $Work 'claude'
+$env:CODEX_HOME = Join-Path $Work 'codex'
+if ($head.ContainsKey('codex')) { $env:CODEX_HOME = Join-Path $fix $head['codex'] }
 $fakeGitHub = $null
 foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
 if ($head.ContainsKey('github')) {

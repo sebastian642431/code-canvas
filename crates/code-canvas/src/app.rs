@@ -401,6 +401,7 @@ impl App {
         };
         app.share_setup();
         app.know_folders();
+        app.agents.follow_codex(app.ui.prefs.codex);
         app
     }
 
@@ -3626,6 +3627,15 @@ impl App {
                     self.completion = None;
                 }
                 let numbered = prefs.line_numbers != self.ui.prefs.line_numbers || prefs.wrap != self.ui.prefs.wrap;
+                if prefs.codex != self.ui.prefs.codex {
+                    self.agents.follow_codex(prefs.codex);
+                    let (level, text) = match (prefs.codex, crate::codex::home()) {
+                        (true, Some(home)) => (ext::Level::Info, format!("Codex now shows on the canvas: every session, where it reads and edits. Its sessions are read from {}.", home.join("sessions").display())),
+                        (true, None) => (ext::Level::Warn, "Codex cannot be followed: the folder of its sessions is not known (set CODEX_HOME).".to_string()),
+                        (false, _) => (ext::Level::Info, "Codex no longer tells the canvas what it does.".to_string()),
+                    };
+                    self.ext.notice(level, "Assistants", text);
+                }
                 let skipped =
                     (&prefs.skip_dirs, &prefs.skip_files) != (&self.ui.prefs.skip_dirs, &self.ui.prefs.skip_files);
                 self.ui.prefs = prefs;
@@ -4257,10 +4267,10 @@ impl App {
                     if let Some(parent) = file.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    let mut all = std::fs::read_to_string(file).unwrap_or_default();
-                    all.push_str(&text.replace("\\n", "\n"));
-                    all.push('\n');
-                    std::fs::write(file, all)
+                    use std::io::Write as _;
+                    let line = format!("{}\n", text.replace("\\n", "\n"));
+                    let mut opened = std::fs::OpenOptions::new().create(true).append(true).open(file)?;
+                    opened.write_all(line.as_bytes())
                 });
                 if !matches!(written, Some(Ok(()))) {
                     log::warn!("script: cannot append to '{rel}'");
@@ -4448,6 +4458,7 @@ impl App {
         if self.claude_offer_due.is_some_and(|due| due <= Instant::now()) {
             self.claude_offer_due = None;
             self.offer_claude();
+            self.offer_codex();
         }
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
@@ -4732,6 +4743,10 @@ impl App {
             }
             if about == assistants::CLAUDE_OFFER {
                 self.claude_answered(&choice);
+                continue;
+            }
+            if about == assistants::CODEX_OFFER {
+                self.codex_answered(&choice);
                 continue;
             }
             if about != "update" {

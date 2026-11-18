@@ -62,6 +62,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [script.rs](#cratescode-canvassrcscriptrs) ·
   [session.rs](#cratescode-canvassrcsessionrs) ·
   [agents.rs](#cratescode-canvassrcagentsrs) ·
+  [codex.rs](#cratescode-canvassrccodexrs) ·
   [share](#cratescode-canvassrcshare) ·
   [themes.rs](#cratescode-canvassrcthemesrs) ·
   [ui.rs](#cratescode-canvassrcuirs) ·
@@ -87,6 +88,7 @@ to run things. These notes were rescued from the comments the code used to have.
 | `CODE_CANVAS_NO_VSYNC` | `app.rs` | See "Measuring" in [ARCHITECTURE.md](ARCHITECTURE.md). |
 | `CODE_CANVAS_PRETEND_VERSION` | `update::current` | Replaces the version of this build, to see how an offered update looks without waiting for a release. |
 | `CODE_CANVAS_CHECK_UPDATES` | `App::new` | Lets a quiet run look for updates anyway (for testing the updater). |
+| `CODEX_HOME` | `codex::home` | Codex's own: where its sessions are (`~/.codex` otherwise). The QA runner points it at a folder of the run. |
 
 A *quiet* run (scripted or benchmark) does not install the default extensions and
 does not look for updates: such runs must not reach for the network.
@@ -122,6 +124,7 @@ network; the last rows are not tests but belong to the same toolbox.
 | Time each phase of loading a folder | `cargo run --release -p canvas-core --example scan_bench -- <folder>` |
 | Time dependency analysis on a real repository | `CODE_CANVAS_DEPS_REPO=<folder> cargo test --release -p canvas-core deps::tests::bench -- --ignored --nocapture` |
 | Ask a real assistant for a commit message about this repository | `COMMIT_AI_TEST=claude cargo test -p code-canvas real_assistant -- --ignored --nocapture` |
+| What the Codex of this computer did, as the canvas would be told it (reads its sessions, writes nothing; `CODEX_SESSIONS_SHOW=1` lists each place) | `CODEX_SESSIONS_TEST=%USERPROFILE%\.codex\sessions cargo test -p code-canvas real_sessions -- --ignored --nocapture` |
 | Rail icons of a real extensions folder | `EXT_RAIL_TEST=<extensions folder> cargo test -p code-canvas rail_of_a_real -- --ignored --nocapture` |
 | `git::load` on a real repository | `GIT_LOAD_TEST=<folder> cargo test -p code-canvas load_a_real -- --ignored --nocapture` |
 | Draw what a real icon theme gives a few names, side by side, to look at | `ICON_THEME_TEST=<theme.json> ICON_THEME_SHEET=<out.png> cargo test -p code-canvas real_icon_theme -- --ignored --nocapture` |
@@ -1927,6 +1930,7 @@ Details:
 | `share_name`, `share_writers` | The name the others see in a shared session, and whether those who join can edit from the start. |
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
 | `wrap` | Wrap lines wider than their card into the rows under them instead of cutting them (`canvas_core::layout::set_wrap`, off by default). |
+| `codex`, `asked_codex` | Follow Codex from the session files it writes (`codex.rs`), and whether the app already offered it. |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
 ### qa
@@ -2043,7 +2047,9 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   assistant that says nothing for `GONE_AFTER` is gone.
 - **The plain form**, for any program:
   `{"agent": "<an id of its own>", "name": "Codex", "action": "read|edit|search|run|think|wait|done", "path": "<file or folder>", "line": 120, "lines": 30, "note": "why"}`.
-  Only `agent` is needed; `line` counts from 1.
+  Only `agent` is needed; `line` counts from 1. Two more are optional: `find`, a
+  line of text to look for in the file when the line number is not known (an
+  edit), and `session`, the assistant a helper belongs to.
 - **Claude Code** is heard through its hooks. `code-canvas --agent-hook claude`
   is the command of the hook: it reads the hook's JSON from its input, cuts the
   long texts out of it (`shortened`: a datagram holds 64 KB and an edit can be
@@ -2119,6 +2125,65 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   with `Agent::from` set to the person they belong to (see the share section):
   `Agents::agent` never takes one of them for one heard here, and only the ones
   with no `from` are sent to the others.
+
+### crates/code-canvas/src/codex.rs
+
+Codex followed without touching it: the app reads the session files Codex
+writes as it works and tells `Agents` what each line says, as plain events.
+
+- **Why the session files.** Codex (0.169 here) keeps every session, in the
+  terminal, in `codex exec` and in its VS Code extension alike, in
+  `$CODEX_HOME/sessions/<year>/<month>/<day>/rollout-<time>-<id>.jsonl` (`CODEX_HOME`
+  is `~/.codex` unless set), one JSON object a line, written as it goes. Its other
+  ways out were weighed: `notify` in `config.toml` only runs at the end of a turn;
+  its hooks (`hooks.json`, shaped like Claude Code's) would mean writing into the
+  user's Codex configuration, which the app leaves alone; `codex exec --json`
+  only exists for a session the app itself starts. The files need nothing from
+  the user and nothing of Codex is changed.
+- **What a line says** (`Session::hear`, all of it unit-tested on lines shaped like
+  the real ones): `session_meta` gives the session's id, folder and source
+  (`exec` leaves when its task is complete; a `subagent` with `thread_spawn` is a
+  helper of `parent_thread_id`, named by its `agent_role`; the internal ones,
+  `compact`, `memory_consolidation`, guardians, are not shown). `turn_context`
+  moves the folder. The name is the first thing asked (`item_completed`
+  `UserMessage`, `user_message`, or a user `message` that is not one of the texts
+  Codex adds itself: `<environment_context>`, `# AGENTS.md`…; the IDE's
+  "## My request for Codex:" is cut to the request). Where it is: a
+  `CommandExecution` item (or `exec_command_begin`) with Codex's own reading of the
+  command (`parsed_cmd`: `read` a file, `search`, `list_files`); a `FileChange`
+  item (or `patch_apply_begin`) with each file changed and its unified diff, whose
+  first hunk gives the line; `apply_patch` (`*** Update File:`… and the first line
+  written, looked for like Claude's edits); the older `shell`, `shell_command`,
+  `exec_command`, `read_file`, `list_dir`, `grep_files`, `view_image` calls; and the
+  code-mode `exec` tool, whose JavaScript is read for its string literals (a
+  `cmd:` is a command, a patch is a patch). `task_complete` is waiting for the user.
+- **A command line is read like a person would** (`shell::understood`): split on
+  `;`, `&&`, `||`, new lines and pipes, quotes kept together, redirections dropped;
+  `cat`, `type`, `Get-Content`, `head`, `sed -n 'a,bp'` are reads (with the range
+  of lines when the command or a `| head` / `| Select-Object -Skip -First` says it),
+  `rg`, `grep`, `Select-String`, `findstr`, `git grep` searches (`for <pattern>`),
+  `ls`, `dir`, `Get-ChildItem`, `find`, `fd` searches of a folder, anything else is
+  running a command. A path with `*` stands for its folder.
+- **Whatever is not understood is let be**: an unknown line, field or tool gives
+  nothing, or "thinking" with the tool's name; a line that is not JSON is skipped.
+- **Following the files** (`Tail`, `Follower`, a thread of its own): the folder of
+  sessions is watched (`notify`), and every 1.5 s the newest two day folders are
+  listed and the files known are measured. **The size, not the time**: on Windows a
+  rollout keeps the modification time of its creation while Codex writes to it,
+  and change events can come late, so a file is known to have grown by its length
+  (read through an open handle) and only the bytes after the last whole line are
+  read; half a line waits for the rest. A file that has not grown for five minutes
+  is measured every 15 s. Files are opened sharing everything and closed at once,
+  so Codex is never in the way.
+- **What was said long ago is not told again.** At start, a file whose last line
+  is older than 15 minutes is not read (its beginning is read silently if it grows
+  again, `codex resume`). Lines older than a minute are read for what they set
+  (folder, name) but not told, except the last thing said when it is less than 15
+  minutes old, so a session at work before the app started is where it was.
+- On in `Prefs::codex` (off until the user connects it, or accepts the offer made
+  once when `~/.codex` is found: `App::offer_codex`, after Claude Code's own offer).
+  Turning it off lets the faces of Codex leave. An assistant of Codex is keyed
+  `codex:<session id>` (`codex:<parent>/<id>` for a helper), so it keeps its face.
 
 ### crates/code-canvas/src/share
 
