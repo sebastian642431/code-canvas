@@ -293,6 +293,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     Status::Idle => (String::new(), pal().text_faint),
                 };
                 let mut open = false;
+                let acted = op.is_some();
                 let mut row = Frame::NONE.corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(8, 7)).begin(ui);
                 {
                     let ui = &mut row.content_ui;
@@ -345,10 +346,14 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                         });
                     });
                 }
-                if ui.rect_contains_pointer(row.content_ui.min_rect().expand(6.0)) {
+                let place = row.content_ui.min_rect().expand(6.0);
+                let over = ui.rect_contains_pointer(place);
+                if over {
                     row.frame.fill = pal().well;
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 row.end(ui);
+                open |= over && !acted && op.is_none() && ui.input(|i| i.pointer.primary_clicked());
                 if open {
                     op = Some(Op::Open(e.id.clone(), String::new()));
                 }

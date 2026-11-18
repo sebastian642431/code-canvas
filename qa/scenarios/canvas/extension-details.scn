@@ -49,4 +49,14 @@ ext runtime
 wait 1200
 mark runtime
 wait 600
+ui click 1672 70
+wait 800
+ext-search
+wait 1500
+mark installed-list
+wait 400
+ui click 230 212
+wait 2500
+mark opened-by-its-card
+wait 600
 quit
