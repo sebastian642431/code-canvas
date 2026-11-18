@@ -146,8 +146,12 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   Claude Code extension renders there (Windows only for now).
 - Language extensions answer about the code under the pointer (hover) and `F12` goes
   to a definition. VS Code's own TypeScript extension works: real compiler errors.
-- Checked so far with ESLint, Prettier, Error Lens, Claude Code and TypeScript. Tree views are
-  not shown yet — the state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+- Code lenses ("3 references", "Run") sit above their functions on the cards, faint; a
+  click does what they say ("references" selects the name and draws its uses).
+- Tree views: the lists an extension adds to the side bar open from its icon as a card,
+  with their buttons.
+- Checked so far with ESLint, Prettier, Error Lens, Claude Code and TypeScript — the
+  state of each piece is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
 **Assistants on the canvas**
 - Every assistant working on your files is **on the canvas with a face of its
@@ -365,7 +369,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Language servers that come as extensions (rust-analyzer, VS Code's TypeScript):
       problems while typing, hover, go to definition. Tabs for what an extension
       opens as an editor (the sessions of Claude Code).
-- [ ] Tree views and code lenses on the canvas; webviews on Linux and macOS.
+- [x] Tree views and code lenses on the canvas.
+- [ ] Webviews on Linux and macOS.
 - [x] Colour themes from extensions (Dracula, GitHub Theme, Tokyo Night…): the
       canvas, the panels and the code take their colours. File icon themes too.
 - [ ] Grammars from extensions (highlighting is the app's own).

@@ -750,6 +750,16 @@ class TabInputText {
   }
 }
 
+// `new TreeItem(label or uri, collapsibleState)`: a Uri is the item's resource, and its
+// label is then the file's name.
+class TreeItem {
+  constructor(labelOrUri, collapsibleState) {
+    if (labelOrUri instanceof Uri) this.resourceUri = labelOrUri;
+    else this.label = labelOrUri;
+    this.collapsibleState = collapsibleState || 0;
+  }
+}
+
 const classes = {
   Disposable,
   EventEmitter,
@@ -820,7 +830,7 @@ const classes = {
   NotebookRange: record('NotebookRange', ['start', 'end']),
   NotebookCellData: record('NotebookCellData', ['kind', 'value', 'languageId']),
   NotebookData: record('NotebookData', ['cells']),
-  TreeItem: record('TreeItem', ['label', 'collapsibleState']),
+  TreeItem,
   QuickInputButtons: { Back: {} },
   ShellExecution: record('ShellExecution', ['commandLine', 'args', 'options']),
   ProcessExecution: record('ProcessExecution', ['process', 'args', 'options']),
@@ -1515,6 +1525,120 @@ function createWebviewPanel(viewType, title, _show, options) {
   return panel;
 }
 
+// Tree views. The app asks for the children of a row by its handle and gets plain rows
+// back; the host keeps which element each handle is. A handle is made from the item's id
+// or from its parent's handle and its label, so it stays the same when the tree is asked
+// again and the app can keep what was expanded.
+const trees = new Map();
+
+function treeLabel(item) {
+  const label = item.label;
+  if (typeof label === 'string') return label;
+  if (label && typeof label.label === 'string') return label.label;
+  if (item.resourceUri) return path.basename(item.resourceUri.fsPath || item.resourceUri.path || '');
+  return '';
+}
+
+function plainTreeItem(handle, item) {
+  const icon = item.iconPath;
+  const themeIcon = icon && typeof icon.id === 'string' && !(icon instanceof Uri) ? icon : null;
+  const resource = item.resourceUri && item.resourceUri.scheme === 'file' ? appPath(item.resourceUri) : '';
+  let description = typeof item.description === 'string' ? item.description : '';
+  if (item.description === true && resource) description = path.dirname(resource);
+  const tooltip = typeof item.tooltip === 'string' ? item.tooltip : (item.tooltip && item.tooltip.value) || '';
+  return {
+    handle,
+    label: treeLabel(item),
+    description,
+    tooltip,
+    icon: themeIcon ? themeIcon.id : '',
+    iconColor: themeIcon ? colorName(themeIcon.color) : '',
+    resource,
+    collapsible: item.collapsibleState || 0,
+    command: !!(item.command && item.command.command),
+    context: typeof item.contextValue === 'string' ? item.contextValue : '',
+  };
+}
+
+function treeChanged(entry) {
+  if (entry.changeTimer) return;
+  entry.changeTimer = setTimeout(() => {
+    entry.changeTimer = null;
+    if (trees.get(entry.viewId) === entry) send({ type: 'treeChanged', view: entry.viewId });
+  }, 30);
+}
+
+function sendTreeInfo(entry) {
+  const v = entry.view;
+  send({ type: 'treeInfo', view: entry.viewId, title: v.title || '', description: v.description || '', message: v.message || '' });
+}
+
+function registerTree(viewId, provider) {
+  const extension = currentId() || '';
+  const entry = { viewId, provider, extension, nodes: new Map(), items: new Map(), changeTimer: null };
+  const selection = new EventEmitter();
+  const visibility = new EventEmitter();
+  const expand = new EventEmitter();
+  const collapse = new EventEmitter();
+  const info = { title: undefined, description: undefined, message: undefined, badge: undefined };
+  const setter = (key) => ({
+    get: () => info[key],
+    set: (v) => {
+      info[key] = v;
+      sendTreeInfo(entry);
+    },
+    enumerable: true,
+  });
+  const view = {
+    visible: false,
+    selection: [],
+    onDidChangeSelection: selection.event,
+    onDidChangeVisibility: visibility.event,
+    onDidExpandElement: expand.event,
+    onDidCollapseElement: collapse.event,
+    onDidChangeCheckboxState: neverEvent,
+    reveal: () => Promise.resolve(),
+    dispose() {
+      if (trees.get(viewId) !== entry) return;
+      trees.delete(viewId);
+      send({ type: 'treeGone', view: viewId });
+    },
+  };
+  for (const key of ['title', 'description', 'message', 'badge']) Object.defineProperty(view, key, setter(key));
+  entry.view = view;
+  entry.events = { selection, visibility, expand, collapse };
+  if (provider && typeof provider.onDidChangeTreeData === 'function') {
+    try {
+      provider.onDidChangeTreeData(() => treeChanged(entry));
+    } catch (e) {
+      log('warn', extension, `onDidChangeTreeData failed: ${(e && e.message) || e}`);
+    }
+  }
+  trees.set(viewId, entry);
+  send({ type: 'treeView', view: viewId, extension });
+  return entry;
+}
+
+function createTreeView(viewId, options) {
+  return registerTree(viewId, (options && options.treeDataProvider) || {}).view;
+}
+
+function registerTreeDataProvider(viewId, provider) {
+  const entry = registerTree(viewId, provider);
+  return new Disposable(() => entry.view.dispose());
+}
+
+async function treeEntry(view) {
+  if (!trees.has(view)) await activateForView(view);
+  return trees.get(view);
+}
+
+function treeNode(entry, handle) {
+  if (!entry) throw new Error('no extension provides that view');
+  if (!entry.items.has(handle)) throw new Error('that row is gone');
+  return { element: entry.nodes.get(handle), item: entry.items.get(handle) };
+}
+
 const pendingMessages = new Map();
 let messageSeq = 0;
 const itemTitle = (i) => (typeof i === 'string' ? i : i.title);
@@ -1783,18 +1907,8 @@ const window = permissive('window', {
   createTerminal: () => permissive('Terminal', { name: 'terminal', processId: Promise.resolve(undefined), sendText() {}, show() {}, hide() {}, dispose() {} }),
   createWebviewPanel,
   registerWebviewViewProvider,
-  registerTreeDataProvider: disposableStub,
-  createTreeView: () => ({
-    visible: false,
-    selection: [],
-    onDidExpandElement: neverEvent,
-    onDidCollapseElement: neverEvent,
-    onDidChangeSelection: neverEvent,
-    onDidChangeVisibility: neverEvent,
-    onDidChangeCheckboxState: neverEvent,
-    reveal: () => Promise.resolve(),
-    dispose() {},
-  }),
+  registerTreeDataProvider,
+  createTreeView,
   registerWebviewPanelSerializer: disposableStub,
   registerCustomEditorProvider: disposableStub,
   registerUriHandler: disposableStub,
@@ -1830,6 +1944,16 @@ const languages = new Proxy(
         return (selector, provider, ...rest) => {
           const entry = { kind: m[1], selector, provider, rest, extension: currentId() || '', order: state.providers.length };
           state.providers.push(entry);
+          if (entry.kind === 'CodeLens') {
+            lensesChanged();
+            if (provider && typeof provider.onDidChangeCodeLenses === 'function') {
+              try {
+                provider.onDidChangeCodeLenses(lensesChanged);
+              } catch (e) {
+                log('warn', entry.extension, `onDidChangeCodeLenses failed: ${(e && e.message) || e}`);
+              }
+            }
+          }
           return new Disposable(() => {
             const at = state.providers.indexOf(entry);
             if (at >= 0) state.providers.splice(at, 1);
@@ -1867,6 +1991,16 @@ const commands = permissive('commands', {
       const uri = target instanceof Uri ? target : typeof target === 'string' ? Uri.parse(target) : null;
       if (uri && uri.scheme === 'file') send({ type: 'reveal', path: appPath(uri) });
       else if (uri) send({ type: 'openExternal', url: uri.toString() });
+      return Promise.resolve();
+    }
+    if (SHOW_USES.has(id)) {
+      const [uri, position] = args;
+      if (uri instanceof Uri && uri.scheme === 'file' && position && typeof position.line === 'number') {
+        const doc = documents.get(uriKey(uri)) || loadDocument(uri, true);
+        const line = position.line;
+        const col = doc && line < doc.lineCount ? displayColumn(doc.lineAt(line).text, position.character, state.tabWidth) : position.character;
+        send({ type: 'showUses', path: appPath(uri), line, col });
+      }
       return Promise.resolve();
     }
     if (id === 'setContext') {
@@ -2207,6 +2341,35 @@ function plainHover(h) {
   return parts.map((c) => (typeof c === 'string' ? c : c && c.language ? '```' + c.language + '\n' + c.value + '\n```' : (c && c.value) || '')).join('\n\n');
 }
 
+// The commands that show the uses of a name in VS Code (what "3 references" runs): here the
+// canvas selects the name, which draws its uses.
+const SHOW_USES = new Set(['editor.action.showReferences', 'editor.action.peekLocations', 'editor.action.goToLocations', 'editor.action.findReferences', 'references-view.findReferences']);
+
+// Code lenses. The app asks for those of a file it shows (`codeLenses`) and gets plain rows
+// with an id; running one (`runLens`) finds the lens by that id, with its arguments, which
+// cannot cross the wire. Only the last answer of each file is kept.
+const LENS_DEADLINE_MS = 10000;
+const MAX_LENSES = 300;
+const lensTable = new Map();
+const lensesOf = new Map();
+const lensAsks = new Map();
+let lensSeq = 0;
+let lensAskSeq = 0;
+let lensTimer = null;
+
+function lensesChanged() {
+  if (lensTimer) return;
+  lensTimer = setTimeout(() => {
+    lensTimer = null;
+    send({ type: 'lensesChanged' });
+  }, 200);
+}
+
+function forgetLenses(key) {
+  for (const id of lensesOf.get(key) || []) lensTable.delete(id);
+  lensesOf.delete(key);
+}
+
 const COMPLETION_KINDS = ['Text', 'Method', 'Function', 'Constructor', 'Field', 'Variable', 'Class', 'Interface', 'Module', 'Property', 'Unit', 'Value', 'Enum', 'Keyword', 'Snippet', 'Color', 'File', 'Reference', 'Folder', 'EnumMember', 'Constant', 'Struct', 'Event', 'Operator', 'TypeParameter', 'User', 'Issue'];
 const MAX_COMPLETIONS = 200;
 let offered = { serial: 0, doc: null, list: [] };
@@ -2446,6 +2609,116 @@ const requests = {
     await commands.executeCommand(command, ...(args || []));
     return { ok: true };
   },
+  // `wait`: a file being typed in is asked once it has rested that long; a newer request
+  // for the same file makes this one answer `superseded`.
+  async codeLenses({ path: file, wait }) {
+    const doc = openDocument(file, false);
+    if (!doc) return { items: [] };
+    const key = uriKey(doc.uri);
+    const ask = ++lensAskSeq;
+    lensAsks.set(key, ask);
+    if (wait) {
+      await new Promise((r) => setTimeout(r, wait));
+      if (lensAsks.get(key) !== ask) return { superseded: true };
+    }
+    const version = doc.version;
+    const until = Date.now() + LENS_DEADLINE_MS;
+    const found = [];
+    for (const p of providersFor('CodeLens', doc)) {
+      const list = await askUntil(p, until, (token) => p.provider.provideCodeLenses(doc, token));
+      for (const lens of Array.isArray(list) ? list : []) if (lens && lens.range && found.length < MAX_LENSES) found.push({ lens, p });
+    }
+    await Promise.all(
+      found.map(async (f) => {
+        if (f.lens.command || typeof f.p.provider.resolveCodeLens !== 'function') return;
+        const resolved = await askUntil(f.p, until, (token) => f.p.provider.resolveCodeLens(f.lens, token));
+        if (resolved) f.lens = resolved;
+      }),
+    );
+    if (lensAsks.get(key) !== ask) return { superseded: true };
+    forgetLenses(key);
+    const ids = [];
+    const items = [];
+    for (const f of found) {
+      const c = f.lens.command;
+      if (!c || !c.title || doc.isClosed) continue;
+      const start = f.lens.range.start;
+      if (start.line >= doc.lineCount) continue;
+      const id = 'l' + ++lensSeq;
+      lensTable.set(id, f);
+      ids.push(id);
+      const col = displayColumn(doc.lineAt(start.line).text, start.character, state.tabWidth);
+      items.push({ id, line: start.line, col, title: String(c.title), tooltip: typeof c.tooltip === 'string' ? c.tooltip : '', runs: !!c.command });
+    }
+    lensesOf.set(key, ids);
+    return { items, version };
+  },
+  async runLens({ id }) {
+    const f = lensTable.get(id);
+    if (!f) throw new Error('that code lens is gone; it is being asked again');
+    const c = f.lens.command;
+    if (c && c.command) await commands.executeCommand(c.command, ...(Array.isArray(c.arguments) ? c.arguments : []));
+    return { ok: true, title: c ? String(c.title) : '' };
+  },
+  async treeChildren({ view, parent }) {
+    const entry = await treeEntry(view);
+    if (!entry) return { items: [], missing: true };
+    let element;
+    if (parent) {
+      if (!entry.items.has(parent)) return { items: [], gone: true };
+      element = entry.nodes.get(parent);
+    } else if (!entry.view.visible) {
+      entry.view.visible = true;
+      scope.run(entry.extension, () => entry.events.visibility.fire({ visible: true }));
+    }
+    const children = await scope.run(entry.extension, () => entry.provider.getChildren && entry.provider.getChildren(element));
+    const items = [];
+    const used = new Set();
+    for (const child of Array.isArray(children) ? children : []) {
+      let item = await scope.run(entry.extension, () => entry.provider.getTreeItem(child));
+      if (!item) continue;
+      if (item.tooltip === undefined && typeof entry.provider.resolveTreeItem === 'function') {
+        try {
+          item = (await scope.run(entry.extension, () => entry.provider.resolveTreeItem(item, child, noToken))) || item;
+        } catch (_) {}
+      }
+      const base = item.id != null ? 'i/' + item.id : (parent || '') + '/' + (treeLabel(item) || 'item');
+      let handle = base;
+      for (let n = 2; used.has(handle); n++) handle = base + '#' + n;
+      used.add(handle);
+      entry.nodes.set(handle, child);
+      entry.items.set(handle, item);
+      items.push(plainTreeItem(handle, item));
+    }
+    const v = entry.view;
+    return { items, message: v.message || '', title: v.title || '', description: v.description || '' };
+  },
+  async treeClick({ view, handle }) {
+    const entry = trees.get(view);
+    const { element, item } = treeNode(entry, handle);
+    entry.view.selection = [element];
+    scope.run(entry.extension, () => entry.events.selection.fire({ selection: [element] }));
+    const c = item.command;
+    if (c && c.command) await commands.executeCommand(c.command, ...(Array.isArray(c.arguments) ? c.arguments : []));
+    return { ok: true, ran: c && c.command ? c.command : '' };
+  },
+  async treeExpand({ view, handle, expanded }) {
+    const entry = trees.get(view);
+    const { element } = treeNode(entry, handle);
+    const ev = expanded ? entry.events.expand : entry.events.collapse;
+    scope.run(entry.extension, () => ev.fire({ element }));
+    return { ok: true };
+  },
+  // A command of the view's title (no handle) or of a row (its element is the argument).
+  async treeCommand({ view, handle, command }) {
+    if (!handle) {
+      await commands.executeCommand(command);
+      return { ok: true };
+    }
+    const { element } = treeNode(trees.get(view), handle);
+    await commands.executeCommand(command, element, [element]);
+    return { ok: true };
+  },
   async describe() {
     const kinds = {};
     for (const p of state.providers) (kinds[p.kind] = kinds[p.kind] || []).push(p.extension);
@@ -2454,6 +2727,7 @@ const requests = {
       commands: [...state.commands.keys()],
       documents: [...documents.values()].map((d) => d.fileName),
       webviews: [...webviewProviders.keys()],
+      trees: [...trees.keys()],
     };
   },
 };
@@ -2490,6 +2764,7 @@ async function handle(msg) {
       break;
     case 'close':
       closeDocument(msg.path);
+      forgetLenses(fileKey(msg.path));
       break;
     case 'closeWebview': {
       const shown = webviews.get(msg.handle);

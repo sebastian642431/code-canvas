@@ -95,7 +95,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   errores sobre el código y en un panel de problemas; `Shift+Alt+F` formatea con la
   configuración del proyecto. Las *webviews* (la interfaz propia de una extensión) se
   abren como tarjeta sobre el lienzo: ahí se ve el panel oficial de Claude Code (por
-  ahora solo en Windows). Las vistas de árbol todavía no se muestran.
+  ahora solo en Windows). Las vistas de árbol (las listas que una extensión agrega a la
+  barra lateral) se abren desde su ícono como una tarjeta, con sus botones, y los *code
+  lenses* ("3 references", "Run") aparecen tenues arriba de cada función: un clic hace
+  lo que dicen ("references" selecciona el nombre y dibuja dónde se usa).
 - **Autocompletado**: con la extensión del lenguaje instalada (rust-analyzer,
   TypeScript y similares), mientras se escribe aparecen los miembros después de un
   punto y los nombres que encajan, con su tipo. Enter o Tab lo toma y agrega el

@@ -1,0 +1,43 @@
+title: An extension's tree views open from its icon as a card of lists that expand, run commands and refresh
+folders: rust-small
+extensions: views-extension
+expect-log: the tree qa\.items shows 3 rows at its root
+expect-log: script: tree qa\.items: > Fruits / v Vegetables /   carrot /   leek / Read me
+expect-log: script: tree qa\.notes: first note / second note
+expect-log: script: tree qa\.items: v Fruits /   banana /   cherry /   damson / v Vegetables
+forbid-log: qa\.hidden
+expect-file: rust-small/qa-ran.txt :: expanded Fruits
+expect-file: rust-small/qa-ran.txt :: open banana
+expect-file: rust-small/qa-ran.txt :: remove apple
+expect-file: rust-small/qa-ran.txt :: add damson
+expect-file: rust-small/qa-ran.txt :: run readme
+
+wait 3000
+right qa.fake-views
+wait 2500
+tree report
+mark tree
+wait 600
+tree Fruits
+wait 1200
+mark tree-open
+wait 600
+ui move 1450 146
+wait 500
+mark tree-row-buttons
+wait 600
+ui move 1450 100
+wait 500
+mark tree-title-buttons
+wait 600
+ui move 900 600
+tree banana
+tree Read me
+tree button qa.items.remove apple
+wait 1200
+tree title qa.items.add
+wait 1500
+tree report
+mark tree-changed
+wait 600
+quit

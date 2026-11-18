@@ -1,5 +1,6 @@
 pub mod host;
 pub mod market;
+pub mod views;
 pub mod when;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -12,6 +13,7 @@ use serde_json::{json, Value};
 
 use host::{Host, HostEvent};
 pub use market::MarketItem;
+pub use views::TREE;
 
 #[derive(Clone)]
 pub struct Waker(Arc<dyn Fn() + Send + Sync>);
@@ -92,6 +94,7 @@ pub struct Installed {
     pub commands: Vec<(String, String)>,
     pub views: Vec<String>,
     pub containers: Vec<Container>,
+    pub menus: Vec<views::MenuItem>,
     pub icon_themes: Vec<IconThemeDecl>,
     pub color_themes: Vec<ColorThemeDecl>,
 }
@@ -275,16 +278,43 @@ pub enum NodeStatus {
 }
 
 pub enum Event {
-    Write { path: PathBuf, text: String },
+    Write {
+        path: PathBuf,
+        text: String,
+    },
     Reveal(PathBuf),
-    WebviewHtml { handle: String, html: String },
-    WebviewPost { handle: String, message: Value },
+    WebviewHtml {
+        handle: String,
+        html: String,
+    },
+    WebviewPost {
+        handle: String,
+        message: Value,
+    },
     WebviewClosed(String),
     ShowWebview(String),
-    GoTo { path: PathBuf, line: u32, col: u32, len: u32 },
+    GoTo {
+        path: PathBuf,
+        line: u32,
+        col: u32,
+        len: u32,
+    },
     Suggestions(Suggestions),
-    Relations { page: u32, of: (u32, u32), found: Found },
-    ExtraEdits { path: PathBuf, edits: Vec<ExtraEdit> },
+    Relations {
+        page: u32,
+        of: (u32, u32),
+        found: Found,
+    },
+    ExtraEdits {
+        path: PathBuf,
+        edits: Vec<ExtraEdit>,
+    },
+    /// Select the name at that place, which shows its uses (what "3 references" asks).
+    ShowUses {
+        path: PathBuf,
+        line: u32,
+        col: u32,
+    },
 }
 
 /// A place in a file: path, line of the file and display column.
@@ -449,6 +479,7 @@ enum Pending {
     Complete(PathBuf, u32, u32),
     Relations(u32, (u32, u32), Asked),
     CompletionExtra(PathBuf),
+    View(views::Asked),
 }
 
 const MAX_OPEN: usize = 48;
@@ -478,6 +509,7 @@ pub struct Extensions {
     completing: u64,
     dropped_webviews: Vec<String>,
     pub host_running: bool,
+    pub views: views::Views,
 
     dir: PathBuf,
     data_dir: PathBuf,
@@ -571,18 +603,9 @@ fn manifest_views(v: &Value, nls: &Value) -> Vec<String> {
 
 fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
     let text = |item: &Value, key: &str| item.get(key).map(|t| localized(t, nls)).unwrap_or_default();
-    let Some(Value::Object(bars)) = v.pointer("/contributes/viewsContainers") else { return Vec::new() };
-    let mut out = Vec::new();
-    for item in bars.values().filter_map(Value::as_array).flatten() {
-        let id = text(item, "id");
-        if id.is_empty() {
-            continue;
-        }
-        let icon = item.get("icon").and_then(Value::as_str).unwrap_or_default();
-        let codicon = icon.strip_prefix("$(").and_then(|i| i.strip_suffix(')')).map(str::to_string);
-        let views = v
-            .pointer("/contributes/views")
-            .and_then(|views| views.get(&id))
+    let views_in = |place: &str| -> Vec<ViewDecl> {
+        v.pointer("/contributes/views")
+            .and_then(|views| views.get(place))
             .and_then(Value::as_array)
             .map(|list| {
                 list.iter()
@@ -597,8 +620,35 @@ fn manifest_containers(v: &Value, nls: &Value) -> Vec<Container> {
                     })
                     .collect()
             })
-            .unwrap_or_default();
-        out.push(Container { id, title: text(item, "title"), codicon, views });
+            .unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    if let Some(Value::Object(bars)) = v.pointer("/contributes/viewsContainers") {
+        for item in bars.values().filter_map(Value::as_array).flatten() {
+            let id = text(item, "id");
+            if id.is_empty() {
+                continue;
+            }
+            let icon = item.get("icon").and_then(Value::as_str).unwrap_or_default();
+            let codicon = icon.strip_prefix("$(").and_then(|i| i.strip_suffix(')')).map(str::to_string);
+            let views = views_in(&id);
+            out.push(Container { id, title: text(item, "title"), codicon, views });
+        }
+    }
+    // Trees an extension adds to VS Code's own containers (the explorer, source control,
+    // testing) are put together in one container of the extension's, with no title: its
+    // name stands in.
+    let Some(Value::Object(places)) = v.pointer("/contributes/views") else { return out };
+    let elsewhere: Vec<ViewDecl> = places
+        .keys()
+        .filter(|place| !out.iter().any(|c| c.id == **place))
+        .flat_map(|place| views_in(place))
+        .filter(|view| !view.webview)
+        .collect();
+    if !elsewhere.is_empty() {
+        let id =
+            format!("{}.{}:views", manifest_text(v, nls, "publisher"), manifest_text(v, nls, "name")).to_lowercase();
+        out.push(Container { id, title: String::new(), codicon: None, views: elsewhere });
     }
     out
 }
@@ -611,8 +661,20 @@ fn rail_items_of(
     let mut out = Vec::new();
     for e in installed.iter().filter(|e| e.enabled && e.has_code) {
         let before = out.len();
+        let mut trees = Vec::new();
         for container in &e.containers {
             let shown = container.views.iter().find(|v| v.webview && when::eval(&v.when, context));
+            let tree = container.views.iter().any(|v| !v.webview && when::eval(&v.when, context));
+            if shown.is_none() && tree {
+                let title = [&container.title, &e.display_name].into_iter().find(|t| !t.is_empty());
+                trees.push(RailItem {
+                    view: format!("{TREE}{}", container.id),
+                    extension: e.id.clone(),
+                    title: title.cloned().unwrap_or_default(),
+                    codicon: container.codicon.clone(),
+                    tabs: 0,
+                });
+            }
             if let Some(view) = shown {
                 let title = [&container.title, &view.name, &e.display_name].into_iter().find(|t| !t.is_empty());
                 out.push(RailItem {
@@ -651,6 +713,7 @@ fn rail_items_of(
                 });
             }
         }
+        out.extend(trees);
     }
     out
 }
@@ -692,6 +755,7 @@ fn read_installed(dir: &Path, disabled: &HashSet<String>) -> Option<Installed> {
         commands: manifest_commands(&v, &nls),
         views: manifest_views(&v, &nls),
         containers: manifest_containers(&v, &nls),
+        menus: views::manifest_menus(&v, &nls),
         color_themes: v
             .pointer("/contributes/themes")
             .and_then(Value::as_array)
@@ -758,6 +822,7 @@ impl Extensions {
             completing: 0,
             dropped_webviews: Vec::new(),
             host_running: false,
+            views: views::Views::default(),
             dir,
             data_dir,
             disabled,
@@ -947,6 +1012,7 @@ impl Extensions {
         self.dropped_webviews.extend(self.webviews.drain(..).filter_map(|w| w.handle));
         self.contexts.clear();
         self.decorations.clear();
+        self.clear_views();
         if !self.diagnostics.is_empty() {
             self.diagnostics.clear();
             self.revision += 1;
@@ -1019,9 +1085,11 @@ impl Extensions {
                 }
             }
         }
+        self.lenses_for(visible);
         while self.open.len() > MAX_OPEN {
             let old = self.open.remove(0);
             self.decorations.remove(&path_key(&old.to_string_lossy()));
+            self.forget_lenses(&old);
             self.send(json!({ "type": "close", "path": old }));
         }
         if let Some(f) = focus {
@@ -1037,10 +1105,12 @@ impl Extensions {
             self.open.push(path.to_path_buf());
         }
         self.send(json!({ "type": "edit", "path": path, "text": text }));
+        self.lenses_edited(path);
     }
 
     pub fn file_changed(&mut self, path: &Path) {
         self.send(json!({ "type": "changed", "path": path }));
+        self.lenses_stale(path);
     }
 
     pub fn format(&mut self, path: &Path) {
@@ -1362,6 +1432,9 @@ impl Extensions {
 
     fn on_message(&mut self, m: &Value, events: &mut Vec<Event>) {
         let s = |key: &str| m.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        if self.on_view_message(&s("type"), m, events) {
+            return;
+        }
         match s("type").as_str() {
             "ready" => self.log_line("[host] ready"),
             "extension" => {
@@ -1529,6 +1602,10 @@ impl Extensions {
                 let id = m.get("id").and_then(Value::as_u64).unwrap_or(0);
                 let (path, quiet) = match self.pending.remove(&id) {
                     Some(Pending::Format(path, quiet)) => (path, quiet),
+                    Some(Pending::View(asked)) => {
+                        self.on_view_reply(id, asked, m);
+                        return;
+                    }
                     Some(Pending::Webview(key)) => {
                         let handle = m.pointer("/result/handle").and_then(Value::as_str).map(str::to_string);
                         let error = m.get("error").and_then(Value::as_str).unwrap_or("it gave no page").to_string();
@@ -1892,7 +1969,9 @@ mod tests {
         }});
         let containers = manifest_containers(&manifest, &nls);
         let by_id = |id: &str| containers.iter().find(|c| c.id == id).unwrap();
-        assert_eq!(containers.len(), 3);
+        assert_eq!(containers.len(), 4);
+        let elsewhere = by_id(".:views");
+        assert_eq!((elsewhere.title.as_str(), elsewhere.views[0].id.as_str()), ("", "x.outline"));
         assert_eq!(by_id("box").title, "My Box");
         assert_eq!(by_id("box").codicon, None);
         assert_eq!(by_id("prs").codicon.as_deref(), Some("github"));
@@ -1939,8 +2018,8 @@ mod tests {
             rail_items_of(&installed, webviews, &|key| context.get(key).cloned()).into_iter().map(|i| i.view).collect()
         };
 
-        assert_eq!(views(json!({}), &[]), vec!["box.b"]);
-        assert_eq!(views(json!({ "box.narrow": true }), &[]), vec!["box.a"]);
+        assert_eq!(views(json!({}), &[]), vec!["box.b", "tree:trees"]);
+        assert_eq!(views(json!({ "box.narrow": true }), &[]), vec!["box.a", "tree:trees"]);
 
         let panel = WebviewEntry {
             key: "panel-1".into(),
@@ -1951,7 +2030,7 @@ mod tests {
             failed: false,
             tab: true,
         };
-        assert_eq!(views(json!({}), std::slice::from_ref(&panel)), vec!["box.b", "panel-1"]);
+        assert_eq!(views(json!({}), std::slice::from_ref(&panel)), vec!["box.b", "tree:trees", "panel-1"]);
 
         let item = rail_items_of(&installed, &[], &|_| None).remove(0);
         assert_eq!((item.title.as_str(), item.codicon, item.extension.as_str()), ("Box, elsewhere", None, "test.box"));

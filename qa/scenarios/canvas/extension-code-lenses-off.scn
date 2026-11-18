@@ -1,0 +1,14 @@
+title: With "Show code lenses" off nothing is asked and nothing is drawn
+folders: rust-small
+extensions: views-extension
+prefs: {"code_lenses": false}
+forbid-log: code lenses for
+expect-log: script: no code lenses in src/main\.rs
+
+wait 3000
+goto src/main.rs
+wait 3000
+lens report src/main.rs
+mark no-lenses
+wait 600
+quit

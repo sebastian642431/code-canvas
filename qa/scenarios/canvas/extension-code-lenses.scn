@@ -1,0 +1,42 @@
+title: Code lenses of an extension sit above their functions, run their command when clicked, follow edits and change when the extension says so
+folders: rust-small
+extensions: views-extension
+expect-log: code lenses for main\.rs
+expect-log: script: lenses of src/main\.rs line 4: ▸ Run \| 1 reference
+expect-log: running the code lens '▸ Run'
+expect-log: showing the uses of 'main'
+expect-log: script: lenses of src/main\.rs line 4: ▸ Run \| 1 reference \| more
+expect-log: script: lenses of src/main\.rs line 3: ▸ Run \| 1 reference
+expect-file: rust-small/qa-ran.txt :: run main 3
+expect-file: rust-small/qa-ran.txt :: more lenses true
+
+wait 3000
+goto src/main.rs
+wait 2500
+mark lenses
+wait 600
+lens report src/main.rs
+lens src/main.rs 4 1
+wait 800
+lens src/main.rs 4 2
+wait 2000
+mark uses
+wait 600
+command qa.lenses.more
+wait 2000
+lens report src/main.rs
+goto src/util.rs
+wait 2500
+mark first-line
+wait 600
+goto src/main.rs
+wait 1500
+edit src/main.rs 3 1
+type fn extra() {}
+wait 2500
+lens report src/main.rs
+mark edited
+wait 600
+key save
+wait 800
+quit

@@ -57,6 +57,8 @@ pub struct CanvasOverlay {
     pub chip_hits: Vec<(Rect, SymRef)>,
     pub toggle_hits: Vec<(Rect, String)>,
     pub preview_hits: Vec<(Rect, String)>,
+    /// The code lenses drawn that run something, in screen pixels.
+    pub lens_hits: Vec<(Rect, crate::ext::views::Lens)>,
 }
 
 pub struct LongLine {
@@ -438,6 +440,140 @@ fn selection_overlay(
                 bold: false,
                 sym: Some(other),
             });
+        }
+    }
+}
+
+/// Lenses are drawn once a line is this many pixels tall: the zoom where code is read.
+const LENS_MIN_PX: f32 = 6.5;
+const MAX_LENS_LINES: usize = 400;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LensAt {
+    /// On the line above, at this column.
+    Above(u32),
+    /// The first line's: on the row of the file's name, after the name.
+    Name,
+    /// After the end of the line itself, at this column.
+    After(u32),
+}
+
+/// Where the lenses of a line go: on the line above, at the line's indentation when the
+/// line above is empty there, else after the text above if it fits in the card; the first
+/// line's beside the file's name; otherwise (no room above) after the end of the line.
+pub fn lens_place(above: Option<&str>, line: &str, cols: u32, shown: u32) -> LensAt {
+    let indent = line.chars().take_while(|c| c.is_whitespace()).count() as u32;
+    let end_of = |text: &str| text.trim_end().chars().count() as u32;
+    match above {
+        None => LensAt::Name,
+        Some(above) if end_of(above) <= indent => LensAt::Above(indent),
+        Some(above) if end_of(above) + 2 + cols <= shown => LensAt::Above(end_of(above) + 2),
+        _ => LensAt::After(end_of(line) + 3),
+    }
+}
+
+fn code_lenses(
+    page: &Page,
+    view: View,
+    world: &Rect,
+    s: f32,
+    ext: &Extensions,
+    text: &mut TextLayer,
+    out: &mut CanvasOverlay,
+) {
+    let PageState::Ready(r) = &page.state else { return };
+    let (repo, layout, z) = (&r.repo, &r.layout, view.zoom);
+    let t = theme::get();
+    let size = (z * LINE_H * 0.72).round();
+    let char_w = CHAR_W * z;
+    let bar = " | ";
+    let bar_w = text.measure(bar, size, false);
+    let mut drawn = 0usize;
+    for (rel, found) in ext.lenses_under(&page.root) {
+        let Some(fi) = repo.file_index(rel) else { continue };
+        let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
+            continue;
+        };
+        if !n.rect.intersects(world) || found.items.is_empty() {
+            continue;
+        }
+        let f = &repo.files[fi];
+        let rows = page.diffs.get(rel);
+        let mut lines: std::collections::BTreeMap<u32, Vec<&crate::ext::views::Lens>> = Default::default();
+        for lens in &found.items {
+            lines.entry(lens.line).or_default().push(lens);
+        }
+        for (line, mut lenses) in lines {
+            let row = row_of(rows, line);
+            if row as usize >= f.line_count() || drawn >= MAX_LENS_LINES {
+                continue;
+            }
+            if !n.cell_rect(row, 0, 1).intersects(&world.expand(LINE_H * 2.0)) {
+                continue;
+            }
+            drawn += 1;
+            lenses.sort_by_key(|l| l.col);
+            let titles: Vec<String> = lenses.iter().map(|l| crate::ext::views::plain_title(&l.title)).collect();
+            let width: f32 =
+                titles.iter().map(|t| text.measure(t, size, false)).sum::<f32>() + bar_w * (titles.len() - 1) as f32;
+            let cols = (width / char_w).ceil() as u32;
+            let above = (row > 0).then(|| f.line(row as usize - 1));
+            let line_h = z * LINE_H;
+            let cell_at = |row: u32, col: u32| {
+                let cell = n.cell_rect(row, col.min(canvas_core::layout::MAX_COLS), 1);
+                view.to_screen([cell.x, cell.y])
+            };
+            let (mut x, top) = match lens_place(above, f.line(row as usize), cols, n.shown_cols() as u32) {
+                LensAt::Above(col) => {
+                    let p = cell_at(row - 1, col);
+                    (p[0], p[1] + (line_h - size * 1.25) * 0.9)
+                }
+                LensAt::After(col) => {
+                    let p = cell_at(row, col);
+                    (p[0], p[1] + (line_h - size * 1.25) * 0.5)
+                }
+                LensAt::Name => {
+                    let lab_px = FILE_LABEL_H * z;
+                    let name_size = (lab_px * 0.7).min(14.0 * s).round();
+                    let dirty = page.editors.get(&n.rel_path).is_some_and(|e| e.dirty);
+                    let name = if dirty { format!("● {}", n.name) } else { n.name.clone() };
+                    let corner = view.to_screen([n.rect.x, n.rect.y]);
+                    let after_name = corner[0] + 2.0 + text.measure(&name, name_size, false) + 14.0 * s;
+                    let indent = f.line(row as usize).chars().take_while(|c| c.is_whitespace()).count() as u32;
+                    (cell_at(row, indent)[0].max(after_name), corner[1] - lab_px + (lab_px - size * 1.25) * 0.5)
+                }
+            };
+            for (i, (lens, title)) in lenses.iter().zip(titles).enumerate() {
+                if i > 0 {
+                    out.labels.push(OwnedLabel {
+                        text: bar.to_string(),
+                        left: x,
+                        top,
+                        size,
+                        color: theme::mix(t.ui_text_dim, t.background, 0.45),
+                        max_w: bar_w + 2.0,
+                        bold: false,
+                    });
+                    x += bar_w;
+                }
+                let w = text.measure(&title, size, false);
+                let hovered = ext.views.lens_hover.as_deref() == Some(lens.id.as_str());
+                let color = match (lens.runs, hovered) {
+                    (true, true) => t.accent,
+                    (true, false) => t.ui_text_dim,
+                    (false, _) => theme::mix(t.ui_text_dim, t.background, 0.3),
+                };
+                out.labels.push(OwnedLabel { text: title, left: x, top, size, color, max_w: w + 2.0, bold: false });
+                if hovered {
+                    let under = Rect::new(x, top + size * 1.2, w, s.max(1.0));
+                    out.chips.push(RectInstance::new(under, t.accent, 0, 0.0, 0.0));
+                }
+                if lens.runs {
+                    let hit = Rect::new(x - 2.0 * s, top - s, w + 4.0 * s, size * 1.3 + 2.0 * s);
+                    out.lens_hits.push((hit, (*lens).clone()));
+                }
+                x += w;
+            }
         }
     }
 }
@@ -900,6 +1036,10 @@ pub fn build(
         }
     }
 
+    if z * LINE_H >= LENS_MIN_PX {
+        code_lenses(page, view, &world, s, ext, text, &mut out);
+    }
+
     let mut chips: Vec<Chip> = Vec::new();
     let mut seen_bodies = HashSet::new();
     let mut seen_chips = HashSet::new();
@@ -1000,4 +1140,18 @@ pub fn build(
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lenses_find_room_above_their_line() {
+        assert_eq!(lens_place(None, "fn main() {", 10, 80), LensAt::Name);
+        assert_eq!(lens_place(Some(""), "    fn helper() {", 10, 80), LensAt::Above(4));
+        assert_eq!(lens_place(Some("}"), "    fn helper() {", 10, 80), LensAt::Above(4));
+        assert_eq!(lens_place(Some("/// Doubles it."), "fn double() {", 10, 80), LensAt::Above(17));
+        assert_eq!(lens_place(Some(&"x".repeat(75)), "fn double() {", 10, 80), LensAt::After(16));
+    }
 }

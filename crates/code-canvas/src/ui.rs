@@ -36,6 +36,8 @@ pub enum Panel {
     Media,
     Console,
     Webview(String),
+    /// A container of an extension's tree views, by its id.
+    Tree(String),
 }
 
 impl Panel {
@@ -56,6 +58,7 @@ impl Panel {
             Panel::Media => "media".to_string(),
             Panel::Console => "console".to_string(),
             Panel::Webview(view) => format!("view:{view}"),
+            Panel::Tree(id) => format!("{}{id}", crate::ext::TREE),
         }
     }
 
@@ -71,13 +74,22 @@ impl Panel {
             "deps" => Panel::Deps,
             "media" => Panel::Media,
             "console" => Panel::Console,
+            tree if tree.starts_with(crate::ext::TREE) => Panel::Tree(tree[crate::ext::TREE.len()..].to_string()),
             view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
         })
     }
 
+    /// What an icon of an extension in the rail opens: a webview, or a container of trees.
+    pub fn of_rail(view: String) -> Panel {
+        match view.strip_prefix(crate::ext::TREE) {
+            Some(id) => Panel::Tree(id.to_string()),
+            None => Panel::Webview(view),
+        }
+    }
+
     fn home(&self) -> Side {
         match self {
-            Panel::Webview(_) => Side::Right,
+            Panel::Webview(_) | Panel::Tree(_) => Side::Right,
             _ => Side::Left,
         }
     }
@@ -307,6 +319,8 @@ pub struct UiState {
     pub rubber: Option<(Pos2, f32)>,
     pub commit_ai: crate::commit_ai::Settings,
     file_icons: FileIcons,
+    /// The views of a container's card that are folded away, by view id.
+    tree_shut: std::collections::HashSet<String>,
 }
 
 impl Default for UiState {
@@ -379,6 +393,7 @@ impl Default for UiState {
             rubber: None,
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
+            tree_shut: Default::default(),
         }
     }
 }
@@ -1311,6 +1326,7 @@ fn card_of(
         }
         Panel::Media => ext_panels::media_panel(ui, st, actions),
         Panel::Console => console::console_panel(ui, st, actions),
+        Panel::Tree(id) => ext_panels::tree_panel(ui, st, ext, id),
     }
 }
 
@@ -1507,7 +1523,7 @@ fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
     }
     for item in ext.rail_items() {
         entries.push(RailEntry {
-            panel: Panel::Webview(item.view),
+            panel: Panel::of_rail(item.view),
             tip: item.title,
             look: RailLook::Extension { id: item.extension, codicon: item.codicon },
         });
