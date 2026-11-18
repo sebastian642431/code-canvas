@@ -1,0 +1,10 @@
+{
+  "name": "fake-relations",
+  "publisher": "qa",
+  "displayName": "QA relations",
+  "description": "Plays a language server that knows the outgoing calls and implementations of main in the rust-small fixture.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["*"],
+  "engines": { "vscode": "^1.80.0" }
+}

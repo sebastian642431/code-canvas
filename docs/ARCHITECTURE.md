@@ -110,8 +110,9 @@ its name is a slice of the file text.
 
 This is name-based and approximate. The `Relation` / `Site` types are independent
 of how they were found: when an extension of the language answers "where is this
-used" (`Extensions::request_uses`), `Repo::refine` drops the guessed uses it does
-not confirm and adds the ones it found, and the canvas and the panels draw the
+used", "what does it call" or "what implements it" (`Extensions::request_relations`),
+`Repo::refine`, `refine_calls` and `refine_implementations` put its answer in place
+of the guessed relations of that kind, and the canvas and the panels draw the
 result as they drew the guess.
 
 ## Dependencies between files (`canvas-core::deps`)

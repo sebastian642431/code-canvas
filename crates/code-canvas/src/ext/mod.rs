@@ -283,8 +283,72 @@ pub enum Event {
     ShowWebview(String),
     GoTo { path: PathBuf, line: u32, col: u32, len: u32 },
     Suggestions(Suggestions),
-    Uses { page: u32, of: (u32, u32), places: Vec<(PathBuf, u32, u32)> },
+    Relations { page: u32, of: (u32, u32), found: Found },
     ExtraEdits { path: PathBuf, edits: Vec<ExtraEdit> },
+}
+
+/// A place in a file: path, line of the file and display column.
+pub type Place<P = PathBuf> = (P, u32, u32);
+
+/// What a language server knows about a selected name, to put in place of the relations
+/// guessed by name.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Found<P = PathBuf> {
+    /// Where it is used: its references and incoming calls.
+    Uses(Vec<Place<P>>),
+    /// The calls it makes: where each call is, and where what it calls is named. Empty when
+    /// the server knew the function and it calls nothing.
+    Calls(Vec<(Place<P>, Place<P>)>),
+    /// What implements it.
+    Implementations(Vec<Place<P>>),
+}
+
+impl<P> Found<P> {
+    /// The same answer with other paths; a place `path` gives none for is left out, and so
+    /// is a call with one end there.
+    pub fn with_paths<Q>(&self, path: impl Fn(&P) -> Option<Q>) -> Found<Q> {
+        let place = |(p, line, col): &Place<P>| Some((path(p)?, *line, *col));
+        match self {
+            Found::Uses(list) => Found::Uses(list.iter().filter_map(place).collect()),
+            Found::Calls(list) => Found::Calls(list.iter().filter_map(|(a, b)| Some((place(a)?, place(b)?))).collect()),
+            Found::Implementations(list) => Found::Implementations(list.iter().filter_map(place).collect()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Asked {
+    Uses,
+    Calls,
+    Implementations,
+}
+
+/// How long a language server is given to say what a selected name is related to. Until it
+/// answers the guesses are shown; past this the request is cancelled and they stay.
+const RELATIONS_WAIT_MS: u64 = 20_000;
+
+fn found_of(asked: Asked, result: Option<&Value>) -> Option<Found> {
+    let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
+    let items = result.and_then(|r| r.get("items")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let place = |v: &Value| Some((PathBuf::from(v.get("path")?.as_str()?), n(v, "line"), n(v, "col")));
+    match asked {
+        Asked::Uses | Asked::Implementations => {
+            let places: Vec<Place> = items.iter().filter_map(place).collect();
+            if places.is_empty() {
+                return None;
+            }
+            Some(if asked == Asked::Uses { Found::Uses(places) } else { Found::Implementations(places) })
+        }
+        Asked::Calls => {
+            let known = result.and_then(|r| r.get("known")).and_then(Value::as_bool).unwrap_or(false);
+            let call = |v: &Value| {
+                let from = (PathBuf::from(v.get("fromPath")?.as_str()?), n(v, "fromLine"), n(v, "fromCol"));
+                Some((from, place(v)?))
+            };
+            let calls: Vec<(Place, Place)> = items.iter().filter_map(call).collect();
+            (known || !calls.is_empty()).then_some(Found::Calls(calls))
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -383,7 +447,7 @@ enum Pending {
     Hover(PathBuf, u32, u32),
     Definition(PathBuf),
     Complete(PathBuf, u32, u32),
-    Uses(u32, (u32, u32)),
+    Relations(u32, (u32, u32), Asked),
     CompletionExtra(PathBuf),
 }
 
@@ -1059,15 +1123,29 @@ impl Extensions {
         self.send(json!({ "type": "request", "id": id, "method": "completionExtra", "params": params }));
     }
 
-    pub fn request_uses(&mut self, path: &Path, line: u32, col: u32, page: u32, of: (u32, u32)) {
+    /// Asks the language servers what the name defined at the place is related to: where it
+    /// is used, the calls it makes and what implements it. Each answer comes on its own, as
+    /// an `Event::Relations`.
+    pub fn request_relations(&mut self, path: &Path, line: u32, col: u32, page: u32, of: (u32, u32)) {
         if self.host.is_none() {
             return;
         }
-        let id = self.next_request;
-        self.next_request += 1;
-        self.pending.insert(id, Pending::Uses(page, of));
-        let params = json!({ "path": path, "line": line, "col": col, "kind": "Reference" });
-        self.send(json!({ "type": "request", "id": id, "method": "locations", "params": params }));
+        let at = json!({ "path": path, "line": line, "col": col, "deadline": RELATIONS_WAIT_MS });
+        let asks = [
+            (Asked::Uses, "locations", Some("Reference")),
+            (Asked::Calls, "outgoingCalls", None),
+            (Asked::Implementations, "locations", Some("Implementation")),
+        ];
+        for (asked, method, kind) in asks {
+            let id = self.next_request;
+            self.next_request += 1;
+            self.pending.insert(id, Pending::Relations(page, of, asked));
+            let mut params = at.clone();
+            if let Some(kind) = kind {
+                params["kind"] = json!(kind);
+            }
+            self.send(json!({ "type": "request", "id": id, "method": method, "params": params }));
+        }
     }
 
     pub fn request_definition(&mut self, path: &Path, line: u32, col: u32) -> bool {
@@ -1475,16 +1553,9 @@ impl Extensions {
                         self.hover = Some(Hover { path, line, col, text });
                         return;
                     }
-                    Some(Pending::Uses(page, of)) => {
-                        let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
-                        let items = m.pointer("/result/items").and_then(Value::as_array).map(Vec::as_slice);
-                        let places: Vec<(PathBuf, u32, u32)> = items
-                            .unwrap_or_default()
-                            .iter()
-                            .filter_map(|v| Some((PathBuf::from(v.get("path")?.as_str()?), n(v, "line"), n(v, "col"))))
-                            .collect();
-                        if !places.is_empty() {
-                            events.push(Event::Uses { page, of, places });
+                    Some(Pending::Relations(page, of, asked)) => {
+                        if let Some(found) = found_of(asked, m.get("result")) {
+                            events.push(Event::Relations { page, of, found });
                         }
                         return;
                     }
@@ -1690,6 +1761,55 @@ mod tests {
 
         ext.on_message(&json!({ "type": "diagnostics", "path": "C:\\Work\\App\\src\\a.ts", "items": [] }), &mut events);
         assert_eq!(ext.totals(), (0, 0));
+    }
+
+    #[test]
+    fn answers_about_relations_become_events() {
+        let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
+        let mut events = Vec::new();
+        let asked =
+            [(1, Asked::Uses), (2, Asked::Calls), (3, Asked::Implementations), (4, Asked::Calls), (5, Asked::Uses)];
+        for (id, what) in asked {
+            ext.pending.insert(id, Pending::Relations(9, (1, 2), what));
+        }
+        let reply = |id: u64, result: Value| json!({ "type": "reply", "id": id, "result": result });
+        let at = |line: u32, col: u32| (PathBuf::from("/w/a.rs"), line, col);
+        ext.on_message(
+            &reply(1, json!({ "items": [{ "path": "/w/a.rs", "line": 3, "col": 4, "endLine": 3, "endCol": 7 }] })),
+            &mut events,
+        );
+        let call = json!({ "path": "/w/a.rs", "line": 8, "col": 3, "name": "helper", "fromPath": "/w/a.rs", "fromLine": 5, "fromCol": 4 });
+        ext.on_message(&reply(2, json!({ "items": [call], "known": true })), &mut events);
+        ext.on_message(&reply(3, json!({ "items": [{ "path": "/w/a.rs", "line": 2, "col": 5 }] })), &mut events);
+        ext.on_message(&reply(4, json!({ "items": [], "known": true })), &mut events);
+        ext.on_message(&reply(5, json!({ "items": [] })), &mut events);
+        ext.on_message(&json!({ "type": "reply", "id": 6, "result": { "items": [], "known": true } }), &mut events);
+        let found: Vec<Found> = events
+            .into_iter()
+            .map(|e| match e {
+                Event::Relations { page: 9, of: (1, 2), found } => found,
+                _ => panic!("another event"),
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                Found::Uses(vec![at(3, 4)]),
+                Found::Calls(vec![(at(5, 4), at(8, 3))]),
+                Found::Implementations(vec![at(2, 5)]),
+                Found::Calls(Vec::new()),
+            ],
+            "no uses is no answer, but a function the server knows may call nothing"
+        );
+        assert!(ext.pending.is_empty());
+        assert_eq!(found_of(Asked::Calls, Some(&json!({ "items": [], "known": false }))), None);
+        let outside = Found::Calls(vec![(at(5, 4), at(8, 3)), (at(6, 0), (PathBuf::from("/std/x.rs"), 1, 1))]);
+        let inside = |p: &PathBuf| p.strip_prefix("/w").ok().map(|r| r.to_string_lossy().into_owned());
+        assert_eq!(
+            outside.with_paths(inside),
+            Found::Calls(vec![(("a.rs".to_string(), 5, 4), ("a.rs".to_string(), 8, 3))]),
+            "a call to what is outside the folder is left out"
+        );
     }
 
     #[test]

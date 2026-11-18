@@ -73,12 +73,17 @@ pub struct Relations {
     pub items: Vec<Relation>,
     pub truncated: bool,
     pub search_ms: f32,
-    pub exact: bool,
+    /// The kinds a language server gave, by `RelKind::index`; the others are guessed by name.
+    pub exact: [bool; 5],
 }
 
 impl Relations {
     pub fn count(&self, kind: RelKind) -> usize {
         self.items.iter().filter(|r| r.kind == kind).count()
+    }
+
+    pub fn is_exact(&self, kind: RelKind) -> bool {
+        self.exact[kind.index()]
     }
 }
 
@@ -583,7 +588,7 @@ impl Repo {
             }
         }
 
-        Relations { target, items, truncated, search_ms: started.elapsed().as_secs_f32() * 1000.0, exact: false }
+        Relations { target, items, truncated, search_ms: started.elapsed().as_secs_f32() * 1000.0, exact: [false; 5] }
     }
 
     pub fn refine(&self, rel: &mut Relations, uses: &[(u32, u32, u16)]) {
@@ -617,7 +622,91 @@ impl Repo {
                 other: enclosing.filter(|sym| *sym != rel.target || line != def.line),
             });
         }
-        rel.exact = true;
+        rel.exact[RelKind::Reference.index()] = true;
+        rel.exact[RelKind::IncomingCall.index()] = true;
+    }
+
+    /// The symbol named at a place: the one whose name starts there, else the first one
+    /// defined on that line (a server may point at another part of an `impl` line).
+    pub fn symbol_named_at(&self, file: u32, line: u32, col: u16) -> Option<SymRef> {
+        let symbols = &self.files.get(file as usize)?.analysis.symbols;
+        let start = symbols.partition_point(|s| s.line < line);
+        let count = symbols[start..].iter().take_while(|s| s.line == line).count();
+        let on_line = &symbols[start..start + count];
+        let at = on_line.iter().position(|s| s.col == col).unwrap_or(0);
+        on_line.get(at)?;
+        Some(SymRef { file, index: (start + at) as u32 })
+    }
+
+    /// Puts the calls a language server says the target makes in place of the guessed ones.
+    /// Each is `(where the call is, where what it calls is named)`. As with the guess, one
+    /// relation per callee, at its first call, and the target calling itself is left out.
+    pub fn refine_calls(&self, rel: &mut Relations, calls: &[((u32, u32, u16), (u32, u32, u16))]) {
+        rel.items.retain(|r| r.kind != RelKind::OutgoingCall);
+        let mut calls = calls.to_vec();
+        calls.sort_unstable();
+        let has_line =
+            |file: u32, line: u32| self.files.get(file as usize).is_some_and(|f| (line as usize) < f.line_count());
+        let mut seen: HashSet<(u32, u32, u16)> = HashSet::new();
+        for ((file, line, col), (to_file, to_line, to_col)) in calls {
+            if !has_line(file, line) || !has_line(to_file, to_line) {
+                continue;
+            }
+            let callee = self.symbol_named_at(to_file, to_line, to_col);
+            if callee == Some(rel.target) {
+                continue;
+            }
+            let to = match callee {
+                Some(sym) => self.sym_site(sym),
+                None => Site { file: to_file, line: to_line, col: to_col, len: 1 },
+            };
+            if !seen.insert((to.file, to.line, to.col)) {
+                continue;
+            }
+            if seen.len() > MAX_PER_KIND {
+                rel.truncated = true;
+                break;
+            }
+            rel.items.push(Relation {
+                kind: RelKind::OutgoingCall,
+                from: Site { file, line, col, len: to.len },
+                to,
+                other: callee,
+            });
+        }
+        rel.exact[RelKind::OutgoingCall.index()] = true;
+    }
+
+    /// Puts what a language server says implements the target in place of the guessed
+    /// implementations. A place is where the implementation is named.
+    pub fn refine_implementations(&self, rel: &mut Relations, places: &[(u32, u32, u16)]) {
+        rel.items.retain(|r| r.kind != RelKind::Implementation);
+        let def = self.sym_site(rel.target);
+        let mut places = places.to_vec();
+        places.sort_unstable();
+        let mut seen: HashSet<(u32, u32, u16)> = HashSet::new();
+        for (file, line, col) in places {
+            let Some(f) = self.files.get(file as usize).filter(|f| (line as usize) < f.line_count()) else { continue };
+            if (file, line, col) == (def.file, def.line, def.col) {
+                continue;
+            }
+            let named = self.symbol_named_at(file, line, col);
+            if named == Some(rel.target) {
+                continue;
+            }
+            let from = named.map_or(Site { file, line, col, len: def.len }, |sym| self.sym_site(sym));
+            if !seen.insert((from.file, from.line, from.col)) {
+                continue;
+            }
+            if seen.len() > MAX_PER_KIND {
+                rel.truncated = true;
+                break;
+            }
+            let enclosing =
+                || symbol_at_line(&f.analysis.symbols, line).map(|index| SymRef { file, index: index as u32 });
+            rel.items.push(Relation { kind: RelKind::Implementation, from, to: def, other: named.or_else(enclosing) });
+        }
+        rel.exact[RelKind::Implementation.index()] = true;
     }
 }
 
@@ -655,9 +744,10 @@ mod tests {
         let mut rel = repo.relations(run, None);
         let guessed = rel.items.iter().filter(|r| r.from.file == b).count();
         assert!(guessed >= 2, "by name, the local of b.rs looks like a use: {guessed}");
-        assert!(!rel.exact);
+        assert!(!rel.is_exact(RelKind::Reference));
         repo.refine(&mut rel, &[(a, 0, 7), (a, 5, 4), (b, 3, 14)]);
-        assert!(rel.exact);
+        assert!(rel.is_exact(RelKind::Reference) && rel.is_exact(RelKind::IncomingCall));
+        assert!(!rel.is_exact(RelKind::OutgoingCall) && !rel.is_exact(RelKind::Implementation));
         let uses: Vec<_> = rel
             .items
             .iter()
@@ -675,6 +765,75 @@ mod tests {
             rel.items.last().unwrap().other.map(|sym| repo.sym_name(sym).to_string()),
             Some("other".to_string())
         );
+    }
+
+    #[test]
+    fn exact_calls_and_implementations_take_the_place_of_the_guessed_ones() {
+        let repo = repo(&[
+            (
+                "src/shape.rs",
+                "pub trait Shape {\n    fn area(&self) -> u32;\n}\n\npub fn total(s: &dyn Shape) -> u32 {\n    helper(s.area()) + helper(1) + total(s)\n}\n\nfn helper(n: u32) -> u32 {\n    n\n}\n",
+            ),
+            ("src/square.rs", "pub struct Square;\n\nimpl Shape for Square {\n    fn area(&self) -> u32 {\n        4\n    }\n}\n"),
+            ("src/circle.rs", "pub struct Circle;\n\nimpl Shape for Circle {\n    fn area(&self) -> u32 {\n        3\n    }\n}\n"),
+            ("src/other.rs", "pub fn unrelated() -> u32 {\n    7\n}\n"),
+        ]);
+        let shape = file(&repo, "src/shape.rs");
+        let square = file(&repo, "src/square.rs");
+        let circle = file(&repo, "src/circle.rs");
+        let other = file(&repo, "src/other.rs");
+        let name = |sym: Option<SymRef>| sym.map(|s| repo.sym_name(s).to_string()).unwrap_or_default();
+
+        let total = repo.symbols.defs("total")[0];
+        let mut rel = repo.relations(total, None);
+        let definitions = rel.count(RelKind::Definition);
+        let calls = [
+            ((shape, 5, 23), (shape, 8, 3)),
+            ((shape, 5, 4), (shape, 8, 3)),
+            ((shape, 5, 13), (shape, 1, 7)),
+            ((shape, 5, 35), (shape, 4, 7)),
+            ((shape, 5, 30), (other, 0, 7)),
+            ((shape, 99, 0), (other, 0, 7)),
+        ];
+        repo.refine_calls(&mut rel, &calls);
+        assert!(rel.is_exact(RelKind::OutgoingCall));
+        assert!(!rel.is_exact(RelKind::Reference), "the uses are still the guessed ones");
+        assert_eq!(rel.count(RelKind::Definition), definitions);
+        let out: Vec<_> = rel
+            .items
+            .iter()
+            .filter(|r| r.kind == RelKind::OutgoingCall)
+            .map(|r| ((r.from.line, r.from.col), (r.to.file, r.to.line), name(r.other)))
+            .collect();
+        assert_eq!(out.len(), 3, "one per callee, not itself, not past the end of the file: {out:?}");
+        assert!(out.contains(&((5, 4), (shape, 8), "helper".to_string())), "a callee at its first call: {out:?}");
+        assert!(out.iter().any(|(_, to, _)| *to == (shape, 1)), "the method of the trait: {out:?}");
+        assert!(out.contains(&((5, 30), (other, 0), "unrelated".to_string())), "what the names missed: {out:?}");
+        repo.refine_calls(&mut rel, &[]);
+        assert_eq!(rel.count(RelKind::OutgoingCall), 0, "a function that calls nothing");
+
+        let trait_ = repo.symbols.defs("Shape")[0];
+        let mut rel = repo.relations(trait_, None);
+        assert!(!rel.is_exact(RelKind::Implementation));
+        repo.refine_implementations(&mut rel, &[(square, 2, 5), (circle, 2, 15), (circle, 2, 15), (shape, 0, 10)]);
+        assert!(rel.is_exact(RelKind::Implementation));
+        let found: Vec<_> = rel
+            .items
+            .iter()
+            .filter(|r| r.kind == RelKind::Implementation)
+            .map(|r| (r.from.file, r.from.line, r.other.is_some()))
+            .collect();
+        assert_eq!(found.len(), 2, "once each, and not the trait itself: {found:?}");
+        assert!(found.contains(&(square, 2, true)) && found.contains(&(circle, 2, true)), "{found:?}");
+        repo.refine_implementations(&mut rel, &[(square, 2, 5)]);
+        assert_eq!(rel.count(RelKind::Implementation), 1, "what the server does not name goes");
+
+        let area = repo.symbols.defs("area").iter().copied().find(|s| s.file == shape).unwrap();
+        let mut rel = repo.relations(area, None);
+        repo.refine_implementations(&mut rel, &[(square, 3, 7), (circle, 3, 7)]);
+        let methods: Vec<_> =
+            rel.items.iter().filter(|r| r.kind == RelKind::Implementation).map(|r| name(r.other)).collect();
+        assert_eq!(methods, ["area", "area"], "the methods that implement the one of the trait");
     }
 
     #[test]

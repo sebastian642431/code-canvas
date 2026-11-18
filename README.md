@@ -27,9 +27,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   with just the files involved.
 - Works instantly with a built-in name-based index (Rust, TypeScript/JavaScript,
   Python, Go, C-family), approximate by design. With the language's extension
-  installed (rust-analyzer, TypeScript…) the uses of the selected name become the
-  exact ones a moment later: the guesses that were another thing with the same
-  name go, the uses the names missed come.
+  installed (rust-analyzer, TypeScript…) the uses of the selected name, the calls
+  it makes and what implements it become the exact ones a moment later: the
+  guesses that were another thing with the same name go, what the names missed
+  comes. The Symbols panel says which kinds are exact and which are by name.
 
 **Dependencies**
 - Which file imports which, read from the import statements (JS/TS, C and C++, Rust,
@@ -361,7 +362,7 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Zoom that rests where text sits on whole pixels, so it never shimmers.
 - [x] **Language servers** give the exact uses of the selected name (references and
       incoming calls) in place of the ones guessed by name.
-- [ ] The same for outgoing calls and implementations.
+- [x] The same for outgoing calls (call hierarchy) and implementations.
 - [x] Dependency edges between files (imports), for the selected file or folder.
 - [ ] Dependencies: edges bundled per folder so that all of them can be drawn on a
       huge repository, arrowheads, backwards edges, arranging by namespace.

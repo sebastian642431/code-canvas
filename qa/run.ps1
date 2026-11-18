@@ -89,6 +89,13 @@ New-Item -ItemType Directory -Force -Path $fix, $out, $data, (Join-Path $Work 'c
 $prefs = $null
 if ($head.ContainsKey('prefs')) { $prefs = $head['prefs'] }
 if ($prefs) { Set-Content -LiteralPath (Join-Path $data 'prefs.json') -Value $prefs -Encoding ASCII }
+if ($head.ContainsKey('extensions')) {
+    $into = Join-Path $data 'extensions'
+    New-Item -ItemType Directory -Force -Path $into | Out-Null
+    foreach ($one in @($head['extensions'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        Copy-Item -Recurse -Path (Join-Path $PSScriptRoot "fake\$one") -Destination (Join-Path $into $one)
+    }
+}
 
 $wanted = @()
 if ($head.ContainsKey('folders')) { $wanted = @($head['folders'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
