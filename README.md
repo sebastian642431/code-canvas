@@ -102,7 +102,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - **Long lines**: a card shows up to 160 columns. With the pointer on a longer
   line, the rest of it is shown beside the card, in the same size and colours, in
   several rows when it does not fit; a click on it puts the caret there, and typing
-  beyond the edge shows it too, so the caret stays in view.
+  beyond the edge shows it too, so the caret stays in view. Or, with "Wrap long
+  lines inside their card" (Settings → General), such a line goes on in the rows
+  under it, a little indented, and the card grows taller: the number stays on its
+  first row, and clicks, carets, selections, finds and changes land on the right
+  row; Up and Down walk the rows.
 - **Several carets**: `Alt+click` adds one (or takes away the one there), `Ctrl+D`
   selects the word and then adds its next occurrence, `Ctrl+Shift+L` takes every
   one, `Ctrl+Alt+Up` / `Ctrl+Alt+Down` add one on the line above or below. Typing,
@@ -371,7 +375,8 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Grammars from extensions (highlighting is the app's own).
 - [x] The rest of a line longer than its card (160 columns) shown beside the card,
       under the pointer or the caret.
-- [ ] **Soft wrapping** for lines longer than the card width.
+- [x] **Soft wrapping** for lines longer than the card width, as an option: the
+      line goes on in the rows under it and the card grows.
 - [x] Zoom that rests where text sits on whole pixels, so it never shimmers.
 - [x] **Language servers** give the exact uses of the selected name (references and
       incoming calls) in place of the ones guessed by name.

@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use canvas_core::{SourceFile, TokenCache, Tokens, CHAR_W, CHUNK_LINES, LINE_H};
+use canvas_core::{SourceFile, TokenCache, Tokens, Wrap as LineWrap, CHAR_W, CHUNK_LINES, LINE_H};
 use glyphon::{
     Attrs, Buffer, Cache, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea, TextAtlas,
     TextBounds, TextRenderer, Viewport, Weight, Wrap,
@@ -30,6 +30,59 @@ pub struct CodeText<'a> {
     pub zoom: f32,
     pub clip: [i32; 4],
     pub numbers: Option<[i32; 3]>,
+    pub wrap: Option<&'a LineWrap>,
+}
+
+const SPACES: &str = "                                                                                ";
+
+fn cuts_of(file: &SourceFile, lines: std::ops::Range<usize>, wrap: Option<&LineWrap>) -> Vec<(usize, usize)> {
+    let mut cuts = Vec::new();
+    let Some(wrap) = wrap else { return cuts };
+    for line in lines {
+        let breaks = wrap.breaks(line);
+        if breaks.is_empty() {
+            continue;
+        }
+        let base = file.line_starts()[line] as usize;
+        let mut next = 0;
+        for (col, (byte, _)) in file.line(line).char_indices().enumerate() {
+            if breaks[next][0] as usize == col {
+                cuts.push((base + byte, (breaks[next][1] as usize).min(SPACES.len())));
+                next += 1;
+                if next == breaks.len() {
+                    break;
+                }
+            }
+        }
+    }
+    cuts
+}
+
+struct Spans<'t, 'a> {
+    text: &'t str,
+    cuts: Vec<(usize, usize)>,
+    next: usize,
+    plain: Attrs<'a>,
+    out: Vec<(&'t str, Attrs<'a>)>,
+}
+
+impl<'t, 'a> Spans<'t, 'a> {
+    fn push(&mut self, mut from: usize, to: usize, attrs: Attrs<'a>) {
+        while let Some(&(at, indent)) = self.cuts.get(self.next).filter(|(at, _)| *at < to) {
+            let at = at.max(from);
+            if at > from {
+                self.out.push((&self.text[from..at], attrs.clone()));
+            }
+            self.out.push(("\n", self.plain.clone()));
+            if indent > 0 {
+                self.out.push((&SPACES[..indent], self.plain.clone()));
+            }
+            (from, self.next) = (at, self.next + 1);
+        }
+        if to > from {
+            self.out.push((&self.text[from..to], attrs));
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,7 +181,7 @@ impl TextLayer {
         }
     }
 
-    fn shape_chunk(&mut self, file: &SourceFile, chunk: usize, tokens: &Tokens) -> Buffer {
+    fn shape_chunk(&mut self, file: &SourceFile, chunk: usize, tokens: &Tokens, wrap: Option<&LineWrap>) -> Buffer {
         let first = chunk * CHUNK_LINES;
         let last = ((chunk + 1) * CHUNK_LINES).min(file.line_count());
         let start = file.line_starts()[first] as usize;
@@ -136,32 +189,33 @@ impl TextLayer {
 
         let colors = theme::get().token_colors();
         let default = Attrs::new().family(Family::Monospace).color(theme::glyph_color(colors[8]));
-        let mut spans: Vec<(&str, Attrs)> = Vec::new();
+        let cuts = cuts_of(file, first..last, wrap);
+        let mut spans = Spans { text: file.text(), cuts, next: 0, plain: default.clone(), out: Vec::new() };
         let mut cursor = start;
         for line in first..last {
             for t in tokens.line(line - first) {
                 let (s, e) = (t.start as usize, t.end() as usize);
                 if s > cursor {
-                    spans.push((&file.text()[cursor..s], default.clone()));
+                    spans.push(cursor, s, default.clone());
                 }
                 let color = colors[theme::kind_index(t.kind) as usize];
-                spans.push((&file.text()[s..e], default.clone().color(theme::glyph_color(color))));
+                spans.push(s, e, default.clone().color(theme::glyph_color(color)));
                 cursor = e;
             }
         }
         if end > cursor {
-            spans.push((&file.text()[cursor..end], default.clone()));
+            spans.push(cursor, end, default.clone());
         }
 
         let mut buffer = Buffer::new_empty(Metrics::new(self.code_font_size, LINE_H));
         buffer.set_wrap(Wrap::None);
         buffer.set_size(None, None);
-        buffer.set_rich_text(spans, &default, Shaping::Basic, None);
+        buffer.set_rich_text(spans.out, &default, Shaping::Basic, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
         buffer
     }
 
-    fn shape_numbers(&mut self, file: &SourceFile, chunk: usize) -> Buffer {
+    fn shape_numbers(&mut self, file: &SourceFile, chunk: usize, wrap: Option<&LineWrap>) -> Buffer {
         let first = chunk * CHUNK_LINES;
         let width = canvas_core::layout::GUTTER_COLS as usize - 1;
         let mut text = String::with_capacity(CHUNK_LINES * (width + 1));
@@ -173,6 +227,9 @@ impl TextLayer {
             match number {
                 0 => text.push('\n'),
                 n => text.push_str(&format!("{n:>width$}\n")),
+            }
+            for _ in 1..wrap.map_or(1, |wrap| wrap.rows(row)) {
+                text.push('\n');
             }
         }
         let mut buffer = Buffer::new_empty(Metrics::new(self.code_font_size, LINE_H));
@@ -236,21 +293,22 @@ impl TextLayer {
             let first_chunk = c.lines.start / CHUNK_LINES;
             let last_chunk = (c.lines.end - 1) / CHUNK_LINES;
             for chunk in first_chunk..=last_chunk {
+                let row = c.wrap.map_or(chunk * CHUNK_LINES, |wrap| wrap.row(chunk * CHUNK_LINES) as usize);
+                let top = c.top + row as f32 * LINE_H * c.zoom;
                 if let Some([left, right, bottom]) = c.numbers.filter(|[left, right, _]| right > left) {
-                    let own = c.file.numbers.is_some();
+                    let own = c.file.numbers.is_some() || c.wrap.is_some();
                     let key = ChunkKey {
                         page: if own { c.page } else { u32::MAX },
                         file: if own { c.file_index as u32 } else { u32::MAX },
                         chunk: chunk as u32,
                     };
                     if !self.numbers.contains_key(&key) {
-                        let buffer = self.shape_numbers(c.file, chunk);
+                        let buffer = self.shape_numbers(c.file, chunk, c.wrap);
                         self.numbers.insert(key, Cached { buffer, last_used: frame });
                     }
                     if let Some(shaped) = self.numbers.get_mut(&key) {
                         shaped.last_used = frame;
                     }
-                    let top = c.top + (chunk * CHUNK_LINES) as f32 * LINE_H * c.zoom;
                     let bounds = TextBounds { left, top: c.clip[1], right, bottom };
                     areas_numbers.push((key, left as f32, top, c.zoom, bounds));
                 }
@@ -260,13 +318,12 @@ impl TextLayer {
                 } else if let (true, Some(cache)) = (budget > 0, tokens.as_deref_mut()) {
                     budget -= 1;
                     let toks = cache.chunk(c.file_index, c.file, chunk);
-                    let buffer = self.shape_chunk(c.file, chunk, toks);
+                    let buffer = self.shape_chunk(c.file, chunk, toks, c.wrap);
                     self.chunks.insert(key, Cached { buffer, last_used: frame });
                 } else {
                     self.pending = true;
                     continue;
                 }
-                let top = c.top + (chunk * CHUNK_LINES) as f32 * LINE_H * c.zoom;
                 let bounds = TextBounds { left: c.clip[0], top: c.clip[1], right: c.clip[2], bottom: c.clip[3] };
                 areas_code.push((key, c.left, top, c.zoom, bounds));
             }

@@ -74,7 +74,7 @@ pub fn long_line(page: &Page, view: View, area: Rect, s: f32, file: usize, line:
     let n = r.layout.file_node.get(file).filter(|&&n| n != NONE).map(|&n| &r.layout.nodes[n as usize])?;
     let f = r.repo.files.get(file)?;
     let shown = n.shown_cols();
-    if line >= f.line_count() || f.max_cols as usize <= shown {
+    if line >= f.line_count() || f.max_cols as usize <= shown || n.wrap.is_some() {
         return None;
     }
     let card_row = n.cell_rect(line as u32, 0, shown as u32);
@@ -316,9 +316,11 @@ fn body_rects(repo: &Repo, layout: &Layout, sym: SymRef) -> Vec<Rect> {
     layout.nodes[node as usize].line_rects(s.line..s.body_end)
 }
 
-fn site_rect(layout: &Layout, site: &Site) -> Option<Rect> {
-    let node = layout.file_node[site.file as usize];
-    (node != NONE).then(|| layout.nodes[node as usize].cell_rect(site.line, site.col as u32, site.len as u32))
+fn site_rects(layout: &Layout, site: &Site) -> Vec<Rect> {
+    match layout.file_node.get(site.file as usize).copied().filter(|&node| node != NONE) {
+        Some(node) => layout.nodes[node as usize].cell_rects(site.line, site.col as u32, site.len as u32),
+        None => Vec::new(),
+    }
 }
 
 fn fitted(text: &mut TextLayer, name: &str, end: &str, size: f32, bold: bool, room: f32) -> String {
@@ -388,16 +390,14 @@ fn selection_overlay(
         let color = rel_color(rel.kind);
         let opacity = filters.opacity[rel.kind.index()];
         if rel.from != rel.to && out.over.len() < MAX_MARKERS {
-            if let Some(rect) = site_rect(layout, &rel.from) {
-                if rect.intersects(world) {
-                    out.over.push(RectInstance::new(
-                        rect.expand(1.0),
-                        with_alpha(color, 0.16 * opacity),
-                        with_alpha(color, 0.9 * opacity),
-                        2.0,
-                        1.0,
-                    ));
-                }
+            for rect in site_rects(layout, &rel.from).into_iter().filter(|rect| rect.intersects(world)) {
+                out.over.push(RectInstance::new(
+                    rect.expand(1.0),
+                    with_alpha(color, 0.16 * opacity),
+                    with_alpha(color, 0.9 * opacity),
+                    2.0,
+                    1.0,
+                ));
             }
         }
         let Some(other) = rel.other else { continue };
@@ -636,11 +636,9 @@ pub fn build(
 
     if let Some(search) = &page.search {
         for (i, hit) in search.hits.iter().enumerate().take(MAX_MARKERS) {
-            if let Some(rect) = site_rect(layout, hit) {
-                if rect.intersects(&world) {
-                    let fill = if search.current == Some(i) { 0xffd84d80 } else { 0xffd84d30 };
-                    out.over.push(RectInstance::new(rect.expand(1.0), fill, 0xffd84dff, 2.0, 1.0));
-                }
+            for rect in site_rects(layout, hit).into_iter().filter(|rect| rect.intersects(&world)) {
+                let fill = if search.current == Some(i) { 0xffd84d80 } else { 0xffd84d30 };
+                out.over.push(RectInstance::new(rect.expand(1.0), fill, 0xffd84dff, 2.0, 1.0));
             }
         }
     }
@@ -656,9 +654,14 @@ pub fn build(
             let mut lit = std::collections::HashSet::new();
             for caret in editor.carets() {
                 let at = caret.at;
-                let row = n.cell_rect(at.line as u32, 0, width);
-                if row.intersects(&world) && lit.insert(at.line) {
-                    out.under.push(RectInstance::new(row, 0xffffff0a, 0, 0.0, 0.0));
+                let rows = match n.wrap.is_some() {
+                    true => n.line_rects(at.line as u32..at.line as u32 + 1),
+                    false => vec![n.cell_rect(at.line as u32, 0, width)],
+                };
+                if rows.iter().any(|row| row.intersects(&world)) && lit.insert(at.line) {
+                    for row in rows {
+                        out.under.push(RectInstance::new(row, 0xffffff0a, 0, 0.0, 0.0));
+                    }
                 }
                 if let Some((a, b)) = caret.selection() {
                     for line in a.line..=b.line {
@@ -668,8 +671,8 @@ pub fn build(
                         } else {
                             editor.display_col(crate::editor::Pos::new(line, usize::MAX)) + 1
                         };
-                        let cell = n.cell_rect(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
-                        if cell.intersects(&world) {
+                        let cells = n.cell_rects(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
+                        for cell in cells.into_iter().filter(|cell| cell.intersects(&world)) {
                             out.under.push(RectInstance::new(cell, 0x5a96ff59, 0, 0.0, 0.0));
                         }
                     }
@@ -755,9 +758,10 @@ pub fn build(
                     continue;
                 }
                 if h.kind == HunkKind::Removed {
-                    let cell = n.cell_rect(h.line.min(lines.saturating_sub(1)), 0, 1);
+                    let at = h.line.min(lines.saturating_sub(1));
+                    let cell = n.line_rects(at..at + 1).pop().unwrap_or_else(|| n.cell_rect(at, 0, 1));
                     if readable && cell.intersects(&seen) {
-                        let y = if h.line >= lines { cell.bottom() } else { cell.y };
+                        let y = if h.line >= lines { cell.bottom() } else { n.cell_rect(at, 0, 1).y };
                         let tick = Rect::new(cell.x - CARD_PAD * 0.9, y - bar * 0.5, CARD_PAD * 0.8, bar);
                         out.over.push(RectInstance::new(tick, theme::get().git_removed, 0, 0.0, 0.0));
                     }
@@ -829,14 +833,12 @@ pub fn build(
                 } else {
                     d.end_col.saturating_sub(d.col)
                 };
-                let cell = n.cell_rect(line, d.col, cols.max(1));
-                if !cell.intersects(&world) {
-                    continue;
-                }
                 let c = severity_color(d.severity);
                 let h = (2.0 * s / z).min(LINE_H * 0.3);
-                out.over.push(RectInstance::new(cell, with_alpha(c, 0.14), 0, 2.0, 0.0));
-                out.over.push(RectInstance::new(Rect::new(cell.x, cell.bottom() - h, cell.w, h), c, 0, 0.0, 0.0));
+                for cell in n.cell_rects(line, d.col, cols.max(1)).into_iter().filter(|cell| cell.intersects(&world)) {
+                    out.over.push(RectInstance::new(cell, with_alpha(c, 0.14), 0, 2.0, 0.0));
+                    out.over.push(RectInstance::new(Rect::new(cell.x, cell.bottom() - h, cell.w, h), c, 0, 0.0, 0.0));
+                }
             }
         } else {
             let side = 7.0 * s / z;
@@ -867,22 +869,24 @@ pub fn build(
                     continue;
                 }
                 let len = f.line(line as usize).chars().count() as u32;
-                let line_cell = n.cell_rect(line, 0, len.max(1));
-                if !line_cell.intersects(&world.expand(400.0 / z)) {
+                let line_cells = n.cell_rects(line, 0, len.max(1));
+                if !line_cells.iter().any(|cell| cell.intersects(&world.expand(400.0 / z))) {
                     continue;
                 }
                 drawn += 1;
                 if d.background & 0xff != 0 {
-                    let cell = if d.whole_line || d.end_line > d.line {
-                        line_cell
+                    let cells = if d.whole_line || d.end_line > d.line {
+                        line_cells
                     } else {
-                        n.cell_rect(line, d.col, d.end_col.saturating_sub(d.col).max(1))
+                        n.cell_rects(line, d.col, d.end_col.saturating_sub(d.col).max(1))
                     };
-                    out.under.push(RectInstance::new(cell, d.background, 0, 2.0, 0.0));
+                    for cell in cells {
+                        out.under.push(RectInstance::new(cell, d.background, 0, 2.0, 0.0));
+                    }
                 }
                 if !d.text.is_empty() {
                     let col = next_col.get(&d.line).copied().unwrap_or(len + 3);
-                    let at = n.cell_rect(line, col.min(canvas_core::layout::MAX_COLS), 1);
+                    let at = n.cell_rect(line, col, 1);
                     let p = view.to_screen([at.x, at.y]);
                     let text: String = d.text.chars().take(160).collect();
                     next_col.insert(d.line, col + text.chars().count() as u32 + 3);

@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 use canvas_core::layout::{Layout, NodeKind, FILE_LABEL_H};
-use canvas_core::{Rect, Repo, SourceFile, TokenCache, Tokens, BLOCK_LINES, CHUNK_LINES, LINE_H};
+use canvas_core::{Rect, Repo, SourceFile, TokenCache, Tokens, Wrap, BLOCK_LINES, CHUNK_LINES, LINE_H};
 
 use crate::gpu_util::DynBuffer;
 use crate::theme;
@@ -99,7 +99,7 @@ fn dominant(counts: &[u32; 11]) -> u32 {
     theme::kind_index(canvas_core::syntax::dominant_kind(counts))
 }
 
-fn push_blocks(fi: usize, f: &SourceFile, out: &mut Vec<CodeInstance>) {
+fn push_blocks(fi: usize, f: &SourceFile, wrap: Option<&Wrap>, out: &mut Vec<CodeInstance>) {
     let n = f.line_count();
     for (b, block) in f.analysis.blocks.iter().enumerate() {
         let line = b * BLOCK_LINES;
@@ -107,7 +107,34 @@ fn push_blocks(fi: usize, f: &SourceFile, out: &mut Vec<CodeInstance>) {
         let hi = block.hi.min(canvas_core::layout::MAX_COLS as u16);
         if hi > block.lo {
             let kind = theme::kind_index(block.kind);
-            out.push(CodeInstance::new(fi, line, kind, span, block.lo as u32, (hi - block.lo) as u32));
+            let (mut row, mut rows) = match wrap {
+                Some(wrap) => {
+                    let (first, last) = (wrap.row(line), wrap.row(line + span - 1) + wrap.rows(line + span - 1));
+                    (first as usize, (last - first) as usize)
+                }
+                None => (line, span),
+            };
+            while rows > 0 {
+                let part = rows.min(255);
+                out.push(CodeInstance::new(fi, row, kind, part, block.lo as u32, (hi - block.lo) as u32));
+                (row, rows) = (row + part, rows - part);
+            }
+        }
+    }
+}
+
+fn push_bar(fi: usize, wrap: Option<&Wrap>, line: usize, kind: u32, start: u32, end: u32, out: &mut Vec<CodeInstance>) {
+    match wrap {
+        Some(wrap) => {
+            for (row, col, cols) in wrap.pieces(line, start, end.saturating_sub(start)) {
+                out.push(CodeInstance::new(fi, row as usize, kind, 1, col, cols));
+            }
+        }
+        None => {
+            let end = end.min(canvas_core::layout::MAX_COLS);
+            if end > start {
+                out.push(CodeInstance::new(fi, line, kind, 1, start, end - start));
+            }
         }
     }
 }
@@ -139,7 +166,7 @@ impl SceneData {
                     let f = &repo.files[fi];
                     let fill = if f.note.is_some() { colors.card_note_fill } else { colors.card_fill };
                     frames.push(RectInstance::new(n.rect, fill, colors.card_border, 3.0, 1.0));
-                    push_blocks(fi, f, &mut blocks);
+                    push_blocks(fi, f, n.wrap.as_deref(), &mut blocks);
                 }
             }
         }
@@ -236,10 +263,11 @@ impl SceneGpu {
                                 let toks = tokens.chunk(fi, f, c);
                                 let cl = f.chunk_lines(c);
                                 let r = lines.start.max(cl.start)..lines.end.min(cl.end);
+                                let wrap = n.wrap.as_deref();
                                 if lod == Lod::Lines {
-                                    push_lines(fi, toks, cl.start, r, scratch);
+                                    push_lines(fi, wrap, toks, cl.start, r, scratch);
                                 } else {
-                                    push_tokens(fi, toks, cl.start, r, scratch);
+                                    push_tokens(fi, wrap, toks, cl.start, r, scratch);
                                 }
                             }
                         }
@@ -257,7 +285,14 @@ impl SceneGpu {
     }
 }
 
-fn push_lines(fi: usize, tokens: &Tokens, first: usize, lines: Range<usize>, out: &mut Vec<CodeInstance>) {
+fn push_lines(
+    fi: usize,
+    wrap: Option<&Wrap>,
+    tokens: &Tokens,
+    first: usize,
+    lines: Range<usize>,
+    out: &mut Vec<CodeInstance>,
+) {
     for line in lines {
         let toks = tokens.line(line - first);
         let mut i = 0;
@@ -272,15 +307,19 @@ fn push_lines(fi: usize, tokens: &Tokens, first: usize, lines: Range<usize>, out
                 counts[toks[i].kind as usize] += toks[i].cols as u32;
                 i += 1;
             }
-            let end = end.min(canvas_core::layout::MAX_COLS);
-            if end > start {
-                out.push(CodeInstance::new(fi, line, dominant(&counts), 1, start, end - start));
-            }
+            push_bar(fi, wrap, line, dominant(&counts), start, end, out);
         }
     }
 }
 
-fn push_tokens(fi: usize, tokens: &Tokens, first: usize, lines: Range<usize>, out: &mut Vec<CodeInstance>) {
+fn push_tokens(
+    fi: usize,
+    wrap: Option<&Wrap>,
+    tokens: &Tokens,
+    first: usize,
+    lines: Range<usize>,
+    out: &mut Vec<CodeInstance>,
+) {
     for line in lines {
         let toks = tokens.line(line - first);
         let mut i = 0;
@@ -293,10 +332,7 @@ fn push_tokens(fi: usize, tokens: &Tokens, first: usize, lines: Range<usize>, ou
                 end = toks[i].col as u32 + toks[i].cols as u32;
                 i += 1;
             }
-            let end = end.min(canvas_core::layout::MAX_COLS);
-            if end > start {
-                out.push(CodeInstance::new(fi, line, kind, 1, start, end - start));
-            }
+            push_bar(fi, wrap, line, kind, start, end, out);
         }
     }
 }

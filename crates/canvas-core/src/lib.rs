@@ -7,6 +7,7 @@ pub mod scan;
 pub mod store;
 pub mod symbols;
 pub mod syntax;
+pub mod wrap;
 
 pub use cache::TokenCache;
 pub use geom::Rect;
@@ -15,6 +16,7 @@ pub use refs::{RelKind, Relation, Relations, Site, SymRef, SymbolIndex};
 pub use scan::{Dir, Repo, ScanOptions, ScanProgress, SourceFile};
 pub use symbols::{Symbol, SymbolKind};
 pub use syntax::{Block, Lang, Token, TokenKind, Tokens, BLOCK_LINES, CHUNK_LINES};
+pub use wrap::Wrap;
 
 pub const CHAR_W: f32 = 6.0;
 pub const LINE_H: f32 = 12.0;

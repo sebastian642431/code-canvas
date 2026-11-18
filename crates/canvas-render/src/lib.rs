@@ -376,8 +376,8 @@ impl Renderer {
             stats.code_instances = sc.gpu.prepare(device, queue, sc.repo, sc.layout, sc.tokens, &world_rect, lod);
             stats.frame_instances = sc.gpu.frame_ranges.iter().map(|r| r.end - r.start).sum();
             if lod == Lod::Text {
-                let clip = sc.clip;
-                sc.layout.visit_visible(&world_rect, |_, n| {
+                let (clip, layout) = (sc.clip, sc.layout);
+                layout.visit_visible(&world_rect, |i, n| {
                     if let NodeKind::File(fi) = n.kind {
                         let f = &sc.repo.files[fi];
                         let o = n.code_origin();
@@ -391,7 +391,7 @@ impl Renderer {
                             let col_r = view.to_screen([cx + n.col_stride - FOLD_GAP - n.gutter, 0.0])[0];
                             let numbers_l = view.to_screen([cx - n.gutter, 0.0])[0];
                             let rows_top = view.to_screen([0.0, o[1]])[1];
-                            let rows = f.line_count().min((col + 1) * n.fold as usize) - col * n.fold as usize;
+                            let rows = n.column_rows(col, f.line_count());
                             let rows_bottom = view.to_screen([0.0, o[1] + rows as f32 * LINE_H])[1];
                             code_texts.push(CodeText {
                                 page: sc.page,
@@ -412,6 +412,7 @@ impl Renderer {
                                     (col_l - view.zoom * CHAR_W * 0.5).min(clip[2]) as i32,
                                     br[1].min(rows_bottom).min(clip[3]) as i32,
                                 ]),
+                                wrap: layout.nodes[i].wrap.as_deref(),
                             });
                         }
                     }

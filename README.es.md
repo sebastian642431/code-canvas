@@ -75,6 +75,11 @@ muy grandes. Código abierto: cualquiera puede aportar.
   línea más larga, el resto aparece al lado de la tarjeta, del mismo tamaño y con los
   mismos colores, en varias filas si no entra. Un clic ahí pone el cursor en ese lugar,
   y si escribís más allá del borde también aparece, así el cursor no se pierde de vista.
+  O, si prendés "Wrap long lines inside their card" (Settings → General), esa línea
+  sigue en las filas de abajo, un poco corrida hacia adentro, y la tarjeta se estira
+  para abajo: el número queda solo en la primera fila, y los clics, los cursores, lo
+  seleccionado, lo que encontrás y los cambios caen en la fila que corresponde; las
+  flechas de arriba y abajo van fila por fila.
 - **Varios cursores**: `Alt+clic` pone otro cursor (o saca el que está ahí), `Ctrl+D`
   selecciona la palabra y después suma la siguiente igual, `Ctrl+Shift+L` las agarra todas
   y `Ctrl+Alt+↑` / `Ctrl+Alt+↓` suman uno en la línea de arriba o de abajo. Lo que

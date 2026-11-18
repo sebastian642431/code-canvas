@@ -24,6 +24,7 @@ pub struct Prefs {
     pub autosave: bool,
     pub dock_right: bool,
     pub trails: bool,
+    pub wrap: bool,
 }
 
 impl Default for Prefs {
@@ -50,6 +51,7 @@ impl Default for Prefs {
             autosave: true,
             dock_right: false,
             trails: true,
+            wrap: false,
         }
     }
 }

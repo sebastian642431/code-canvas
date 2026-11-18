@@ -25,7 +25,8 @@ to run things. These notes were rescued from the comments the code used to have.
   [scan.rs](#cratescanvas-coresrcscanrs) ·
   [store.rs](#cratescanvas-coresrcstorers) ·
   [symbols.rs](#cratescanvas-coresrcsymbolsrs) ·
-  [syntax.rs](#cratescanvas-coresrcsyntaxrs)
+  [syntax.rs](#cratescanvas-coresrcsyntaxrs) ·
+  [wrap.rs](#cratescanvas-coresrcwraprs)
 - [canvas-render](#canvas-render):
   [lib.rs](#cratescanvas-rendersrclibrs) ·
   [scene.rs](#cratescanvas-rendersrcsceners) ·
@@ -240,7 +241,9 @@ Resolution rules per language:
 - `Node::fold` is how many lines a column of the card holds before the text goes
   on in the next column: `FOLD_LINES` for every file, unless `SourceFile::fold`
   says less (`rows_per_column`). The shader gets it per file in the fourth value
-  of its origin. It is what puts the two sides of a diff next to each other.
+  of its origin. It is what puts the two sides of a diff next to each other. On a
+  wrapped card (`Node::wrap`, below) it counts *rows*: those of its tallest
+  column.
 - `FOLD_LINES` (2048) must stay a multiple of `CHUNK_LINES` and `BLOCK_LINES`, so
   chunks and blocks never straddle two columns of a folded file. The shader has
   its own copy, see [shaders](#cratescanvas-rendersrcshaders).
@@ -248,7 +251,21 @@ Resolution rules per language:
   newspaper, so one huge data file cannot stretch the whole canvas.
 - `MAX_COLS` (160): a card grows with its longest line up to that; longer lines
   are clipped, and the rest of one is shown beside its card under the pointer
-  or the caret (`rest_of_line`, below). Soft wrapping is the planned fix.
+  or the caret (`rest_of_line`, below), unless they are wrapped.
+- **Wrapping** (`set_wrap`, `Prefs::wrap`, off by default) is decided per card
+  when the layout is built (`wrap_of`): a text file wider than `MAX_COLS` that
+  is not a side-by-side diff gets a `Wrap` in `Node::wrap`, made once from its
+  text (read from disk for a moment if it was let go), never per frame. Every
+  place-to-cell function of `Node` (`cell_rect`, `cell_rects`, `line_rects`,
+  `cell_at`, `visible_lines`, `column_rows`, `first_row`) goes through it, so
+  whatever is drawn at a line and column (carets, selections, finds, washes,
+  problems, decorations, relation ends, assistant marks) lands on its row
+  without knowing. What spans columns must ask `cell_rects`: one rectangle per
+  row it crosses. Rows are *virtual*: column `k` of a long file starts at row
+  `k × fold`, so the shader's arithmetic and `FOLD_LINES` columns of lines stay
+  as they were; a shorter column just leaves rows empty at its foot.
+  `Page::show_edit` makes the edited file's `Wrap` again on each edit, and lays
+  the folder out again only when the card's height changes.
 - `rest_of_line` is the geometry of that rest, in pixels of the screen: rows that
   start where the card cuts the line (`Node::shown_cols`) and go on to the right
   edge of the canvas, wrapping under the first row when the rest is wider. With
@@ -447,6 +464,26 @@ the same data types.
 - A block comment's opener is consumed before looking for its close, so `/*/` is
   not taken as open plus close. In Rust, `'a` is a lifetime and `'a'` a char.
 
+### crates/canvas-core/src/wrap.rs
+
+- `Wrap` is where the rows of a wrapped file begin: for each line, the column
+  each further row starts at and how far it is indented (`breaks`), and the
+  first of them (`first`, an index per line, so a line's row is found without a
+  search). Only lines wider than `width` have any. A card numbers *lines*
+  everywhere else; this is the one place that knows rows.
+- A row breaks after a blank, a comma or a semicolon in its second half, else
+  at the width. Rows after the first are indented as the line is, plus
+  `WRAP_INDENT` (2), never more than a quarter of the width.
+- `place` (line, column → row, column on screen) and `line_at` + `col_at` (back)
+  are exact inverses for every column of a line (tested). A column of a row's
+  indent is the row's first character; past the end of a row that is not the
+  last is the start of the next.
+- `pieces` cuts a span of a line into one piece per row; it starts at the row
+  of the span's first column (a minified line has thousands of rows, and it is
+  called for every token bar each frame).
+- `step` is Up and Down by rows: the goal is a column *on screen*, so the caret
+  stays under where it was as it goes through the rows of one line.
+
 ---
 
 ## canvas-render
@@ -456,7 +493,8 @@ the same data types.
 - Line numbers are one shaped block per chunk, shared by every file: lines 129 to
   256 read the same in all of them. A file with `SourceFile::numbers` (a card
   showing a diff: the line of the real file each row is, 0 for none) gets blocks
-  of its own.
+  of its own, and so does a wrapped card (`CodeText::wrap`): a number, then a
+  blank for each further row of its line.
 - Code text is shaped in chunks of `CHUNK_LINES` lines that know nothing about
   columns, so each column is clipped to its own rows as well as to its width: a
   chunk that straddles the end of a column would otherwise show its next lines in
@@ -489,6 +527,10 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 - `SceneData` is pure data so it can be built on the scan thread; only the upload
   (`SceneGpu::new`) runs on the UI thread.
 - `push_lines` merges tokens separated by small gaps into one bar.
+- On a wrapped card the instances carry rows, not lines: `push_bar` cuts a bar
+  into one per row (`Wrap::pieces`) and `push_blocks` stretches a block over the
+  rows of its lines, in pieces of at most 255 (the span has 8 bits). The shader
+  is the same.
 
 ### crates/canvas-render/src/shaders
 
@@ -537,6 +579,11 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
   and colours are the canvas's own. It goes with the interface text, after the
   chips, so it is over the strip's background. Nothing is drawn while the chunk
   is not shaped yet.
+- A wrapped chunk is shaped with a line break and the row's indent put in where
+  each row starts (`cuts_of`, `Spans`), cutting a token in two when it must; the
+  tokens are the line's own, so a string or a comment keeps its colour on every
+  row. The chunk is drawn from the row of its first line. Turning wrapping on or
+  off drops the shaped text of every page (`Action::SetPrefs`).
 
 ### crates/canvas-render/src/theme.rs
 
@@ -1263,6 +1310,9 @@ Camera
     whole group, and the first remembers every caret as it was
     (`others_before`). Ranges that would overlap are cut at the end of the one
     before. With one caret it is plain `replace`.
+  - Up, Down, Page Up and Page Down on a wrapped card go by rows
+    (`vertical_in` with the card's `Wrap`, from `Page::edited_wrap`): the goal
+    column is then one on screen. Without a `Wrap` it is plain `vertical`.
   - Movements run the one-caret code once per caret (`each`), then `settle`
     sorts the carets and merges those that overlap or meet (a caret at the edge
     of a selection joins it). A click, Ctrl+Home/End, select all, a double
@@ -1620,6 +1670,10 @@ Details:
   over the canvas, with the card's border, as the last chip; the line in the
   card gets the faint wash of the edited line. With the caret beyond the cut,
   the caret is drawn in the strip too (the one on the card stays at the edge).
+  A wrapped card cuts nothing, so it never has one.
+- On a wrapped card the edited line's wash covers all its rows, and a selection,
+  a match, a problem or a decoration that crosses the end of a row is one
+  rectangle per row (`Node::cell_rects`).
 
 ### crates/code-canvas/src/page.rs
 
@@ -1804,6 +1858,7 @@ Details:
 | `unwanted` | Extensions offered for a language and answered "Do not ask again" (`App::offer_checker`). |
 | `share_name`, `share_writers` | The name the others see in a shared session, and whether those who join can edit from the start. |
 | `line_numbers` | Number the lines of every card (`canvas_core::layout::set_line_numbers`). |
+| `wrap` | Wrap lines wider than their card into the rows under them instead of cutting them (`canvas_core::layout::set_wrap`, off by default). |
 | `skip_dirs`, `skip_files` | The names of folders and files a scan never reads, when they are not the usual ones of `ScanOptions::default` (absent: the usual ones). `page::scan_options` is where every scan gets them; changing them reads the open folders again. |
 
 ### qa
@@ -1840,7 +1895,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `drop` | `drop <path>` | What dropping that file on the window does: a copy in the selected folder. |
 | `mark` | `mark <name>` | Leave an empty file `marks/<name>` in the data directory. `scripts/screenshot.ps1 -Marks` takes a picture at each. |
 | `move` | `move <panel> left\|right [panel to sit before]` | Move an icon to a bar. `<panel>` is a key (`files`, `symbols`, `media`...), a view id or an extension id. |
-| `click` | `click <x> <y>` | A click on the canvas, in physical pixels of the window. |
+| `click` | `click <x> <y>`, `click <path> <line> <column>` | A click on the canvas, in physical pixels of the window, or in the middle of a cell of a card (1-based, as `hover`): on a wrapped card that is the row the column is on. |
 | `hover` | `hover <x> <y>`, `hover <path> <line> <column>` | The pointer resting on the canvas, in physical pixels or on a cell of a card (1-based; a column past the card's edge is where it would be if the card went on): what is under it reacts (the rest of a long line). |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
 | `folders` | `folders` | Show the list of opened folders. |

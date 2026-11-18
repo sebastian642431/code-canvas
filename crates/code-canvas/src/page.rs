@@ -839,9 +839,21 @@ impl Page {
             self.curves_dirty = true;
         }
         self.search = None;
-        if before != after {
+        let node = r.layout.file_node.get(index).copied().filter(|&n| n != canvas_core::layout::NONE);
+        let wrap = canvas_core::layout::wrap_of(&r.repo.files[index]);
+        let rows = |wrap: &Option<Arc<canvas_core::Wrap>>| wrap.as_ref().map(|wrap| wrap.per());
+        let regrown = node.is_some_and(|n| rows(&r.layout.nodes[n as usize].wrap) != rows(&wrap));
+        if before != after || regrown {
             self.relayout(renderer, device, filters);
+        } else if let Some(n) = node {
+            r.layout.nodes[n as usize].wrap = wrap;
         }
+    }
+
+    pub fn edited_wrap(&self) -> Option<Arc<canvas_core::Wrap>> {
+        let (editor, r) = (self.editor()?, self.ready()?);
+        let node = *r.layout.file_node.get(r.repo.file_index(&editor.rel_path)?)?;
+        r.layout.nodes.get(node as usize)?.wrap.clone()
     }
 
     pub fn discarded(&self, only: Option<&str>) -> Vec<(String, crate::git::Back)> {

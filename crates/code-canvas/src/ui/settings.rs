@@ -87,7 +87,7 @@ impl SettingsView {
 const HEAD: f32 = 46.0;
 const NAV: f32 = 190.0;
 
-const EDITING: [(&str, &str); 7] = [
+const EDITING: [(&str, &str); 8] = [
     (
         "Show newer versions of dependencies",
         "In package.json and Cargo.toml. Asks npm and crates.io: only package names are sent.",
@@ -109,6 +109,10 @@ const EDITING: [(&str, &str); 7] = [
     (
         "Offer code while typing",
         "What the language's extension knows fits there (rust-analyzer, TypeScript and the like). Enter or Tab takes it.",
+    ),
+    (
+        "Wrap long lines inside their card",
+        "A line wider than its card goes on in the rows under it, a little indented, and the card grows taller. Off, it is cut at the edge and the rest shows beside the card.",
     ),
 ];
 
@@ -325,6 +329,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.follow_chat, EDITING[2]);
             option(ui, f, &mut next.follow_changes, EDITING[3]);
             option(ui, f, &mut next.line_numbers, EDITING[4]);
+            option(ui, f, &mut next.wrap, EDITING[7]);
             option(ui, f, &mut next.autosave, EDITING[6]);
         });
     }

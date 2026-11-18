@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::geom::Rect;
 use crate::refs::Site;
-use crate::scan::{Dir, Repo};
+use crate::scan::{Dir, Repo, SourceFile};
+use crate::wrap::Wrap;
 use crate::{CHAR_W, LINE_H};
 
 pub const CARD_PAD: f32 = 6.0;
@@ -19,18 +22,37 @@ pub const FOLD_GAP: f32 = 24.0;
 pub const GUTTER_COLS: u32 = 6;
 pub const NONE: u32 = u32::MAX;
 
-static LINE_NUMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static LINE_NUMBERS: AtomicBool = AtomicBool::new(true);
+static WRAP: AtomicBool = AtomicBool::new(false);
 
 pub fn set_line_numbers(on: bool) {
-    LINE_NUMBERS.store(on, std::sync::atomic::Ordering::Relaxed);
+    LINE_NUMBERS.store(on, Ordering::Relaxed);
 }
 
-fn gutter_of(f: &crate::scan::SourceFile) -> f32 {
-    let numbered = f.note.as_ref().is_none_or(|note| note.starts_with("truncated"));
-    match numbered && LINE_NUMBERS.load(std::sync::atomic::Ordering::Relaxed) {
+pub fn set_wrap(on: bool) {
+    WRAP.store(on, Ordering::Relaxed);
+}
+
+fn is_text(f: &SourceFile) -> bool {
+    f.note.as_ref().is_none_or(|note| note.starts_with("truncated"))
+}
+
+fn gutter_of(f: &SourceFile) -> f32 {
+    match is_text(f) && LINE_NUMBERS.load(Ordering::Relaxed) {
         true => GUTTER_COLS as f32 * CHAR_W,
         false => 0.0,
     }
+}
+
+pub fn wrap_of(f: &SourceFile) -> Option<Arc<Wrap>> {
+    wrap_if(f, WRAP.load(Ordering::Relaxed))
+}
+
+fn wrap_if(f: &SourceFile, on: bool) -> Option<Arc<Wrap>> {
+    if !on || !is_text(f) || f.fold != 0 || f.max_cols <= MAX_COLS {
+        return None;
+    }
+    f.peek(|text, starts| Wrap::of(text, starts, MAX_COLS)).map(Arc::new)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -58,6 +80,7 @@ pub struct Node {
     pub col_stride: f32,
     pub fold: u32,
     pub gutter: f32,
+    pub wrap: Option<Arc<Wrap>>,
     pub collapsed: bool,
     pub files: u32,
     pub lines: u64,
@@ -83,16 +106,46 @@ impl Node {
         ((self.col_stride - FOLD_GAP - self.gutter) / CHAR_W).round().max(0.0) as usize
     }
 
-    pub fn cell_rect(&self, line: u32, col: u32, cols: u32) -> Rect {
+    fn row_rect(&self, row: u32, col: u32, cols: u32) -> Rect {
         let o = self.code_origin();
-        let fold = line as usize / self.fold as usize;
-        let row = line as usize % self.fold as usize;
+        let per = self.fold.max(1) as usize;
+        let (fold, row) = (row as usize / per, row as usize % per);
         Rect::new(
             o[0] + fold as f32 * self.col_stride + col.min(MAX_COLS) as f32 * CHAR_W,
             o[1] + row as f32 * LINE_H,
             cols as f32 * CHAR_W,
             LINE_H,
         )
+    }
+
+    pub fn cell_rect(&self, line: u32, col: u32, cols: u32) -> Rect {
+        let (row, col) = match &self.wrap {
+            Some(wrap) => wrap.place(line as usize, col),
+            None => (line, col),
+        };
+        self.row_rect(row, col, cols)
+    }
+
+    pub fn cell_rects(&self, line: u32, col: u32, cols: u32) -> Vec<Rect> {
+        let pieces: Vec<_> = match &self.wrap {
+            Some(wrap) => wrap.pieces(line as usize, col, cols).collect(),
+            None => Vec::new(),
+        };
+        match pieces.is_empty() {
+            true => vec![self.cell_rect(line, col, cols)],
+            false => pieces.into_iter().map(|(row, col, cols)| self.row_rect(row, col, cols)).collect(),
+        }
+    }
+
+    pub fn first_row(&self, line: usize) -> usize {
+        self.wrap.as_ref().map_or(line, |wrap| wrap.row(line) as usize)
+    }
+
+    pub fn column_rows(&self, col: usize, line_count: usize) -> usize {
+        match &self.wrap {
+            Some(wrap) => wrap.column_rows(col) as usize,
+            None => line_count.min((col + 1) * self.fold as usize).saturating_sub(col * self.fold as usize),
+        }
     }
 
     pub fn line_rects(&self, lines: Range<u32>) -> Vec<Rect> {
@@ -102,6 +155,21 @@ impl Node {
         }
         let o = self.code_origin();
         let width = (self.col_stride - FOLD_GAP - self.gutter).max(CHAR_W);
+        if let Some(wrap) = &self.wrap {
+            let (a, b) = (lines.start as usize, (lines.end as usize).min(wrap.lines()));
+            let per = self.fold.max(1);
+            for fold in (a < b).then(|| a / FOLD_LINES..=(b - 1) / FOLD_LINES).into_iter().flatten() {
+                let (la, lb) = (a.max(fold * FOLD_LINES), b.min((fold + 1) * FOLD_LINES));
+                let (ra, rb) = (wrap.row(la), wrap.row(lb - 1) + wrap.rows(lb - 1));
+                out.push(Rect::new(
+                    o[0] + fold as f32 * self.col_stride,
+                    o[1] + (ra % per) as f32 * LINE_H,
+                    width,
+                    (rb - ra) as f32 * LINE_H,
+                ));
+            }
+            return out;
+        }
         let per = self.fold as usize;
         let (first, last) = (lines.start as usize / per, (lines.end as usize - 1) / per);
         for fold in first..=last {
@@ -132,8 +200,13 @@ impl Node {
         if row >= self.fold as usize {
             return None;
         }
+        let col = (in_col / CHAR_W) as u32;
+        if let Some(wrap) = &self.wrap {
+            let (line, sub) = wrap.line_at((fold * self.fold as usize + row) as u32)?;
+            return (line < line_count).then(|| (line as u32, wrap.col_at(line, sub, col)));
+        }
         let line = fold * self.fold as usize + row;
-        (line < line_count).then_some((line as u32, (in_col / CHAR_W) as u32))
+        (line < line_count).then_some((line as u32, col))
     }
 
     pub fn visible_lines(&self, view: &Rect, line_count: usize) -> Vec<(usize, Range<usize>)> {
@@ -145,14 +218,20 @@ impl Node {
         if first >= last {
             return out;
         }
-        for c in 0..line_count.div_ceil(per).max(1) {
+        let lines_per = if self.wrap.is_some() { FOLD_LINES } else { per };
+        for c in 0..line_count.div_ceil(lines_per).max(1) {
             let x0 = o[0] + c as f32 * self.col_stride;
             let x1 = x0 + self.col_stride - FOLD_GAP - self.gutter;
             if x1 < view.x || x0 > view.right() {
                 continue;
             }
-            let base = c * per;
-            let r = (base + first).min(line_count)..(base + last).min(line_count);
+            let r = match &self.wrap {
+                Some(wrap) => {
+                    let r = wrap.lines_in(c, first as u32..last as u32);
+                    r.start.min(line_count)..r.end.min(line_count)
+                }
+                None => (c * per + first).min(line_count)..(c * per + last).min(line_count),
+            };
             if !r.is_empty() {
                 out.push((c, r));
             }
@@ -177,6 +256,7 @@ struct Laid {
     name: String,
     rel_path: String,
     col_stride: f32,
+    wrap: Option<Arc<Wrap>>,
     collapsed: bool,
     files: u32,
     lines: u64,
@@ -185,13 +265,13 @@ struct Laid {
     children: Vec<(f32, f32, Laid)>,
 }
 
-fn card_size(repo: &Repo, idx: usize) -> (f32, f32, f32) {
+fn card_size(repo: &Repo, idx: usize, wrap: Option<&Wrap>) -> (f32, f32, f32) {
     let f = &repo.files[idx];
     let col_w = f.max_cols.clamp(MIN_COLS, MAX_COLS) as f32 * CHAR_W + gutter_of(f);
     let lines = f.line_count().max(1);
     let per = rows_per_column(f.fold);
     let folds = lines.div_ceil(per) as f32;
-    let rows = lines.min(per) as f32;
+    let rows = wrap.map_or(lines.min(per), |wrap| wrap.per() as usize) as f32;
     let w = folds * col_w + (folds - 1.0) * FOLD_GAP;
     (w + CARD_PAD * 2.0, rows * LINE_H + CARD_PAD * 2.0, col_w + FOLD_GAP)
 }
@@ -236,6 +316,7 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
             name: dir.name.clone(),
             rel_path: dir.rel_path.clone(),
             col_stride: 0.0,
+            wrap: None,
             collapsed: true,
             files: inner_files.len() as u32,
             lines,
@@ -259,8 +340,9 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
     }
 
     for &fi in &own_files {
-        let (w, h, col_stride) = card_size(repo, fi);
         let f = &repo.files[fi];
+        let wrap = wrap_of(f);
+        let (w, h, col_stride) = card_size(repo, fi, wrap.as_deref());
         items.push(Laid {
             w,
             h: h + FILE_LABEL_H,
@@ -268,6 +350,7 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
             name: f.name.clone(),
             rel_path: f.rel_path.clone(),
             col_stride,
+            wrap,
             collapsed: false,
             files: 1,
             lines: f.line_count() as u64,
@@ -301,6 +384,7 @@ fn lay_dir(dir: &Dir, repo: &Repo, filter: &LayoutFilter, is_root: bool) -> Opti
         name: dir.name.clone(),
         rel_path: dir.rel_path.clone(),
         col_stride: 0.0,
+        wrap: None,
         collapsed: false,
         files,
         lines,
@@ -402,6 +486,7 @@ fn flatten(l: Laid, x: f32, y: f32, depth: u16, parent: Option<u32>, out: &mut L
         col_stride: l.col_stride,
         fold: FOLD_LINES as u32,
         gutter: 0.0,
+        wrap: l.wrap,
         collapsed: l.collapsed,
         files: l.files,
         lines: l.lines,
@@ -429,8 +514,9 @@ impl Layout {
         flatten(laid, 0.0, 0.0, 0, None, &mut out);
         let Layout { nodes, file_node, .. } = &mut out;
         for (file, &node) in file_node.iter().enumerate().filter(|(_, node)| **node != NONE) {
-            nodes[node as usize].fold = rows_per_column(repo.files[file].fold) as u32;
-            nodes[node as usize].gutter = gutter_of(&repo.files[file]);
+            let n = &mut nodes[node as usize];
+            n.fold = n.wrap.as_ref().map_or(rows_per_column(repo.files[file].fold) as u32, |wrap| wrap.per());
+            n.gutter = gutter_of(&repo.files[file]);
         }
         out
     }
@@ -702,6 +788,37 @@ mod tests {
             assert_eq!(n.cell_at([r.x + 1.0, r.y + 1.0], 5000), Some((line, col)));
         }
         assert_eq!(n.line_rects(2040..2060).len(), 2);
+    }
+
+    #[test]
+    fn a_wrapped_card_is_taller_and_its_cells_are_on_its_rows() {
+        let text = format!("short\n{}\nend\n", "x".repeat(400));
+        let repo = temp_repo("wrap", &[("long.txt", text)]);
+        let layout = Layout::build(&repo);
+        let mut n = layout.nodes[layout.file_node[0] as usize].clone();
+        assert!(n.wrap.is_none(), "off unless asked for");
+        assert!(wrap_if(&repo.files[0], false).is_none());
+        let wrap = wrap_if(&repo.files[0], true).expect("a line of 400 columns wraps");
+        let (_, cut, _) = card_size(&repo, 0, None);
+        let (_, tall, _) = card_size(&repo, 0, Some(&wrap));
+        assert_eq!(tall - cut, 2.0 * LINE_H, "400 columns take three rows of 160");
+
+        (n.fold, n.wrap) = (wrap.per(), Some(wrap));
+        let o = n.code_origin();
+        assert_eq!(n.cell_rect(1, 0, 1).y, o[1] + LINE_H);
+        let r = n.cell_rect(1, 170, 1);
+        assert_eq!((r.x, r.y), (o[0] + 12.0 * CHAR_W, o[1] + 2.0 * LINE_H), "indented on the next row");
+        assert_eq!(n.cell_rect(2, 0, 1).y, o[1] + 4.0 * LINE_H, "the next line is under the rest");
+        for (line, col) in [(0u32, 0u32), (1, 5), (1, 159), (1, 160), (1, 300), (1, 399), (2, 2)] {
+            let r = n.cell_rect(line, col, 1);
+            assert_eq!(n.cell_at([r.x + 1.0, r.y + 1.0], 3), Some((line, col)), "{line}:{col} there and back");
+        }
+        assert_eq!(n.cell_rects(1, 150, 20).len(), 2, "a span across a break is two rectangles");
+        let whole = n.line_rects(1..2);
+        assert_eq!((whole.len(), whole[0].h), (1, 3.0 * LINE_H), "a line's wash covers all its rows");
+        let view = Rect::new(n.rect.x, o[1] + 2.5 * LINE_H, n.rect.w, LINE_H);
+        assert_eq!(n.visible_lines(&view, 3), vec![(0, 1..2)]);
+        assert_eq!((n.column_rows(0, 3), n.first_row(2)), (5, 4));
     }
 
     #[test]
