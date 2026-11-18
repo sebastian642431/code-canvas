@@ -1290,12 +1290,16 @@ impl Extensions {
     }
 
     pub fn install(&mut self, namespace: &str, name: &str) {
+        self.install_exact(namespace, name, None);
+    }
+
+    pub fn install_exact(&mut self, namespace: &str, name: &str, version: Option<String>) {
         let id = format!("{namespace}.{name}").to_lowercase();
         if !self.installing.insert(id.clone()) {
             return;
         }
         let (namespace, name, dir) = (namespace.to_string(), name.to_string(), self.dir.clone());
-        self.job(move || Job::Installed(id, market::install(&namespace, &name, &dir)));
+        self.job(move || Job::Installed(id, market::install(&namespace, &name, version.as_deref(), &dir)));
     }
 
     pub fn install_vsix(&mut self, file: PathBuf) {

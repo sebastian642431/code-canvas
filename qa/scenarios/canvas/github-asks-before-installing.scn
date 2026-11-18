@@ -1,0 +1,30 @@
+title: Settings brought from GitHub that list extensions this computer lacks, or set a command for commit messages, ask first, naming each version and whether its publisher is verified, and nothing is installed or run when the answer is no
+folders: rust-small
+github: settings-new-extensions.json
+openvsx: on
+expect-log: asking: Run this command for commit messages\? \(evil-command --steal\)
+expect-log: asking: Install the extensions kept on GitHub\? \(qa-tools\.bru-lite@1\.2\.0  verified publisher \| qa-tools\.lint-plus@3\.0\.1  NOT verified\)
+expect-log: the command for commit messages from GitHub is not used
+expect-log: the extensions GitHub lists are not installed
+forbid-log: installing qa-tools
+forbid-log: installed qa-tools
+expect-file: ../data/prefs.json :: "status": false
+expect-file: ../data/github.json :: "declined": \[\s*"qa-tools\.bru-lite",\s*"qa-tools\.lint-plus"\s*\]
+absent-file: ../data/commit.json
+absent-file: ../data/extensions/qa-tools.bru-lite-1.2.0
+absent-file: ../data/extensions/qa-tools.lint-plus-3.0.1
+
+wait 2500
+account signin
+wait 5000
+mark asked-command
+wait 600
+answer Keep mine
+wait 2000
+mark asked-install
+wait 600
+answer Not now
+wait 6000
+mark after
+wait 600
+quit

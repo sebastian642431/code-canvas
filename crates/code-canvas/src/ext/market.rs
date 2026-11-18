@@ -317,8 +317,9 @@ fn platform() -> String {
     format!("{os}-{arch}")
 }
 
-pub fn install(namespace: &str, name: &str, dir: &Path) -> Result<PathBuf, String> {
-    let meta = get_json(&format!("{}/{}/{}/latest", api(), encode(namespace), encode(name)))?;
+pub fn install(namespace: &str, name: &str, version: Option<&str>, dir: &Path) -> Result<PathBuf, String> {
+    let which = version.map(encode).unwrap_or_else(|| "latest".to_string());
+    let meta = get_json(&format!("{}/{}/{}/{which}", api(), encode(namespace), encode(name)))?;
     if let Some(error) = meta.get("error").and_then(Value::as_str) {
         return Err(error.to_string());
     }

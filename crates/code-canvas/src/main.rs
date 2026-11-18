@@ -96,7 +96,10 @@ fn install_extensions(args: &[String]) -> i32 {
     for what in &mut wanted {
         let done = match what.split_once('.') {
             _ if what.to_lowercase().ends_with(".vsix") => ext::market::install_vsix(what.as_ref(), &dir),
-            Some((namespace, name)) => ext::market::install(namespace, name, &dir),
+            Some((namespace, name)) => match name.split_once('@') {
+                Some((name, version)) => ext::market::install(namespace, name, Some(version), &dir),
+                None => ext::market::install(namespace, name, None, &dir),
+            },
             None => Err("expected publisher.name or a .vsix file".to_string()),
         };
         match done {

@@ -240,7 +240,7 @@ class Fake(BaseHTTPRequestHandler):
         rest = parts[2:]
         if not rest:
             return self.json(200, details(name))
-        if rest == ["latest"]:
+        if rest == ["latest"] or rest == [e["version"]]:
             return self.json(200, details(name))
         if rest == ["versions"]:
             return self.json(200, {"offset": 0, "totalSize": 2, "versions": {"0.0.1": f"{API}/qa-tools/{name}/0.0.1"}})

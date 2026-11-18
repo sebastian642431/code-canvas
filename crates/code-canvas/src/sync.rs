@@ -20,6 +20,56 @@ pub struct State {
     pub user: String,
     pub gist: String,
     pub synced: String,
+    pub declined: Vec<String>,
+}
+
+#[derive(Default, Debug, PartialEq)]
+pub struct Changes {
+    pub install: Vec<String>,
+    pub enable: Vec<String>,
+    pub disable: Vec<String>,
+}
+
+pub fn changes(wanted: &Extensions, here: &[(String, bool)], declined: &[String]) -> Changes {
+    let has = |id: &str| here.iter().any(|(own, _)| own == id);
+    let mut out = Changes::default();
+    for id in &wanted.installed {
+        if !has(id)
+            && !declined.contains(id)
+            && id.split_once('.').is_some_and(|(ns, n)| !ns.is_empty() && !n.is_empty())
+        {
+            out.install.push(id.clone());
+        }
+    }
+    for (id, enabled) in here {
+        match (enabled, wanted.disabled.contains(id)) {
+            (false, false) if wanted.installed.contains(id) => out.enable.push(id.clone()),
+            (true, true) => out.disable.push(id.clone()),
+            _ => {}
+        }
+    }
+    out
+}
+
+pub fn command_change(here: &crate::commit_ai::Settings, there: Option<&str>) -> Option<String> {
+    let there: crate::commit_ai::Settings = serde_json::from_str(there?).ok()?;
+    let command = there.custom.trim();
+    (!command.is_empty() && command != here.custom.trim()).then(|| command.to_string())
+}
+
+pub type Looked = (String, Result<(String, bool), String>);
+
+pub fn offer_lines(found: &[Looked], enable: &[String]) -> Vec<String> {
+    let mut lines: Vec<String> = found
+        .iter()
+        .map(|(id, about)| match about {
+            Ok((version, true)) => format!("{id}@{version}  verified publisher"),
+            Ok((version, false)) => format!("{id}@{version}  NOT verified"),
+            Err(why) => format!("{id}  not installable: {why}"),
+        })
+        .collect();
+    lines.extend(enable.iter().map(|id| format!("turn on {id}")));
+    lines
 }
 
 pub fn load_state() -> State {
@@ -94,8 +144,8 @@ pub fn plan(here: &Files, there: Option<&Files>, last: &str) -> Plan {
     }
 }
 
-pub fn write_down(files: &Files) -> Extensions {
-    for name in KEPT {
+pub fn write_down(files: &Files, held: &[&str]) -> Extensions {
+    for name in KEPT.into_iter().filter(|name| !held.contains(name)) {
         if let Some(text) = files.get(name).filter(|text| serde_json::from_str::<Value>(text).is_ok()) {
             if let Err(why) = std::fs::write(data(name), text) {
                 log::warn!("{name} from GitHub could not be written: {why}");
@@ -114,7 +164,20 @@ pub fn keep_token(token: &str) {
 
 pub fn token() -> Option<String> {
     let sealed = std::fs::read(data("github.token")).ok()?;
-    String::from_utf8(unprotect(&sealed)?).ok().filter(|token| !token.is_empty())
+    let (open, old) = unseal(&sealed)?;
+    let token = String::from_utf8(open).ok().filter(|token| !token.is_empty())?;
+    if old {
+        log::info!("the GitHub sign-in is sealed again, tied to Code Canvas");
+        keep_token(&token);
+    }
+    Some(token)
+}
+
+fn unseal(sealed: &[u8]) -> Option<(Vec<u8>, bool)> {
+    match unprotect(sealed) {
+        Some(open) => Some((open, false)),
+        None => unprotect_old(sealed).map(|open| (open, true)),
+    }
 }
 
 #[cfg(windows)]
@@ -156,10 +219,14 @@ mod sealed {
         fn LocalFree(memory: *mut c_void) -> *mut c_void;
     }
 
-    fn run(bytes: &[u8], seal: bool) -> Option<Vec<u8>> {
+    const ENTROPY: &[u8] = b"code-canvas/github-sign-in/1";
+
+    fn run(bytes: &[u8], seal: bool, entropy: Option<&[u8]>) -> Option<Vec<u8>> {
         let input = Blob { len: bytes.len() as u32, data: bytes.as_ptr() as *mut u8 };
         let mut out = Blob { len: 0, data: std::ptr::null_mut() };
-        let (none, blob) = (std::ptr::null::<c_void>(), std::ptr::null::<Blob>());
+        let salt = entropy.map(|e| Blob { len: e.len() as u32, data: e.as_ptr() as *mut u8 });
+        let blob = salt.as_ref().map_or(std::ptr::null::<Blob>(), |salt| salt as *const Blob);
+        let none = std::ptr::null::<c_void>();
         let done = unsafe {
             match seal {
                 true => CryptProtectData(&input, std::ptr::null(), blob, none, none, NO_UI, &mut out),
@@ -175,11 +242,20 @@ mod sealed {
     }
 
     pub fn protect(bytes: &[u8]) -> Option<Vec<u8>> {
-        run(bytes, true)
+        run(bytes, true, Some(ENTROPY))
     }
 
     pub fn unprotect(bytes: &[u8]) -> Option<Vec<u8>> {
-        run(bytes, false)
+        run(bytes, false, Some(ENTROPY))
+    }
+
+    pub fn unprotect_old(bytes: &[u8]) -> Option<Vec<u8>> {
+        run(bytes, false, None)
+    }
+
+    #[cfg(test)]
+    pub fn protect_old(bytes: &[u8]) -> Option<Vec<u8>> {
+        run(bytes, true, None)
     }
 }
 
@@ -192,9 +268,13 @@ mod sealed {
     pub fn unprotect(bytes: &[u8]) -> Option<Vec<u8>> {
         Some(bytes.to_vec())
     }
+
+    pub fn unprotect_old(_bytes: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
 }
 
-use sealed::{protect, unprotect};
+use sealed::{protect, unprotect, unprotect_old};
 
 #[cfg(test)]
 mod tests {
@@ -234,5 +314,71 @@ mod tests {
         if cfg!(windows) {
             assert_ne!(sealed, b"gho_example".to_vec(), "never kept as it is");
         }
+        assert_eq!(unseal(&sealed), Some((b"gho_example".to_vec(), false)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_sign_in_sealed_before_is_still_read_and_sealed_again_for_the_app_alone() {
+        let old = sealed::protect_old(b"gho_old").unwrap();
+        assert_eq!(unprotect(&old), None, "the new seal needs the app's own entropy");
+        assert_eq!(unseal(&old), Some((b"gho_old".to_vec(), true)), "read, and to be sealed again");
+        let new = protect(b"gho_old").unwrap();
+        assert_eq!(unprotect_old(&new), None, "what any program of the user could open no longer opens it");
+    }
+
+    fn wanted(installed: &[&str], disabled: &[&str]) -> Extensions {
+        let list = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
+        Extensions { installed: list(installed), disabled: list(disabled) }
+    }
+
+    #[test]
+    fn what_github_brings_is_split_into_what_to_ask_and_what_to_do() {
+        let here = vec![("a.on".to_string(), true), ("b.off".to_string(), false), ("c.on".to_string(), true)];
+        let there = wanted(&["a.on", "b.off", "c.on", "d.new", "e.new", "nodot"], &["c.on"]);
+        let got = changes(&there, &here, &["e.new".to_string()]);
+        assert_eq!(got.install, vec!["d.new"], "declined before, it is not asked again");
+        assert_eq!(got.enable, vec!["b.off"]);
+        assert_eq!(got.disable, vec!["c.on"]);
+        let none = changes(&wanted(&["a.on"], &[]), &[("a.on".to_string(), true)], &[]);
+        assert_eq!(none, Changes::default());
+        let gone = changes(&wanted(&[], &[]), &[("x.off".to_string(), false)], &[]);
+        assert!(gone.enable.is_empty(), "one GitHub does not list is left as it is");
+    }
+
+    #[test]
+    fn a_new_command_for_commit_messages_is_asked_about() {
+        let mut here = crate::commit_ai::Settings::default();
+        assert_eq!(
+            command_change(&here, Some(r#"{"provider":"custom","custom":"evil.exe --x"}"#)),
+            Some("evil.exe --x".into())
+        );
+        here.custom = "evil.exe --x".into();
+        assert_eq!(
+            command_change(&here, Some(r#"{"provider":"custom","custom":" evil.exe --x "}"#)),
+            None,
+            "the same one"
+        );
+        assert_eq!(command_change(&here, Some(r#"{"provider":"claude"}"#)), None, "no command at all");
+        assert_eq!(command_change(&here, Some("not json")), None);
+        assert_eq!(command_change(&here, None), None);
+    }
+
+    #[test]
+    fn the_question_names_each_extension_its_version_and_publisher() {
+        let found = vec![
+            ("acme.good".to_string(), Ok(("1.2.3".to_string(), true))),
+            ("acme.new".to_string(), Ok(("0.1.0".to_string(), false))),
+            ("acme.gone".to_string(), Err("not found".to_string())),
+        ];
+        assert_eq!(
+            offer_lines(&found, &["acme.off".to_string()]),
+            [
+                "acme.good@1.2.3  verified publisher",
+                "acme.new@0.1.0  NOT verified",
+                "acme.gone  not installable: not found",
+                "turn on acme.off"
+            ]
+        );
     }
 }

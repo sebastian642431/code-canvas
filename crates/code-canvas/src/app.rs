@@ -2246,6 +2246,8 @@ impl App {
             (ui::Asked::Exit, ui::Answer::Cancel) => self.restart_as = None,
             (ui::Asked::Sync, ui::Answer::Yes) => self.sync_answered(true),
             (ui::Asked::Sync, ui::Answer::Other) => self.sync_answered(false),
+            (ui::Asked::SyncInstall, answer) => self.sync_install_answered(answer),
+            (ui::Asked::SyncCommand, answer) => self.sync_command_answered(answer),
             (ui::Asked::Trust { folder, shared }, answer) => self.trust_answered(&folder, shared, answer),
             _ => {}
         }

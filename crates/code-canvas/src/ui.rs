@@ -4152,6 +4152,8 @@ pub enum Asked {
     Overwrite { folder: std::path::PathBuf, path: String },
     Share { join: bool },
     Sync,
+    SyncInstall,
+    SyncCommand,
     Trust { folder: std::path::PathBuf, shared: bool },
     Exit,
 }
@@ -4319,9 +4321,18 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
                     .show(ui, |ui| {
                         ui.set_width(WIDTH - 24.0);
                         ui.spacing_mut().item_spacing.y = 3.0;
-                        for item in ask.items.iter().take(SHOWN) {
+                        let row = |ui: &mut egui::Ui, item: &String| {
                             let text = RichText::new(item).font(FontId::monospace(12.0)).color(pal().text);
                             ui.add(egui::Label::new(text).truncate());
+                        };
+                        if matches!(ask.about, Asked::SyncInstall) {
+                            egui::ScrollArea::vertical().max_height(SHOWN as f32 * 18.0).show(ui, |ui| {
+                                ask.items.iter().for_each(|item| row(ui, item));
+                            });
+                            return;
+                        }
+                        for item in ask.items.iter().take(SHOWN) {
+                            row(ui, item);
                         }
                         if ask.items.len() > SHOWN {
                             let more = format!("… and {} more", ask.items.len() - SHOWN);

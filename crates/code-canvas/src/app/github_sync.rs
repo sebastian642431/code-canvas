@@ -16,9 +16,15 @@ enum Heard {
     SignInFailed(String),
     Remote(Result<Option<Gist>, Refused>),
     Sent(Result<Gist, Refused>, String),
+    Described(Vec<sync::Looked>, Vec<String>),
 }
 
 pub(super) struct GitHub {
+    asks: std::collections::VecDeque<ui::Ask>,
+    describing: bool,
+    offer: Vec<(String, String)>,
+    enable: Vec<String>,
+    held_commit: Option<String>,
     tx: Sender<Heard>,
     rx: Receiver<Heard>,
     started: bool,
@@ -34,6 +40,11 @@ impl Default for GitHub {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
         GitHub {
+            asks: Default::default(),
+            describing: false,
+            offer: Vec::new(),
+            enable: Vec::new(),
+            held_commit: None,
             tx,
             rx,
             started: false,
@@ -54,7 +65,12 @@ fn send(tx: &Sender<Heard>, heard: Heard) {
 
 impl App {
     fn snapshot(&self) -> Files {
-        let installed = self.ext.installed.iter().map(|e| e.id.clone()).collect();
+        let mut installed: Vec<String> = self.ext.installed.iter().map(|e| e.id.clone()).collect();
+        for id in &self.github.state.declined {
+            if !installed.contains(id) {
+                installed.push(id.clone());
+            }
+        }
         let disabled = self.ext.installed.iter().filter(|e| !e.enabled).map(|e| e.id.clone()).collect();
         sync::snapshot(installed, disabled)
     }
@@ -154,7 +170,9 @@ impl App {
     }
 
     pub(super) fn take_from_github(&mut self, gist: Gist) {
-        let wanted = sync::write_down(&gist.files);
+        let command = sync::command_change(&self.ui.commit_ai, gist.files.get("commit.json").map(String::as_str));
+        let held: &[&str] = if command.is_some() { &["commit.json"] } else { &[] };
+        let wanted = sync::write_down(&gist.files, held);
         self.apply(Action::SetPrefs(crate::prefs::load()));
         let mut theme = crate::themes::load();
         theme.from_extension = theme_of_extension(&self.ext, &theme.theme);
@@ -163,31 +181,88 @@ impl App {
         self.ui.key_file = crate::keys::load();
         self.ui.keys = Keymap::new(&self.ui.key_file);
         self.ui.commit_ai = crate::commit_ai::load();
-        let missing: Vec<String> = wanted.installed.iter().filter(|id| !self.ext.is_installed(id)).cloned().collect();
-        for id in missing {
-            if let Some((namespace, name)) = id.split_once('.') {
-                self.ext.install(namespace, name);
-            }
+        self.github.state.declined.retain(|id| wanted.installed.contains(id));
+        let here: Vec<(String, bool)> = self.ext.installed.iter().map(|e| (e.id.clone(), e.enabled)).collect();
+        let changes = sync::changes(&wanted, &here, &self.github.state.declined);
+        for id in &changes.disable {
+            self.ext.set_enabled(id, false);
         }
-        let changes: Vec<(String, bool)> = self
-            .ext
-            .installed
-            .iter()
-            .filter(|e| e.enabled == wanted.disabled.contains(&e.id))
-            .map(|e| (e.id.clone(), !wanted.disabled.contains(&e.id)))
-            .collect();
-        for (id, enabled) in changes {
-            self.ext.set_enabled(&id, enabled);
+        if let (Some(command), Some(text)) = (command, gist.files.get("commit.json")) {
+            log::info!("the command for commit messages from GitHub waits for an answer");
+            self.github.held_commit = Some(text.clone());
+            let ask = ui::Ask::new(
+                ui::Asked::SyncCommand,
+                "Run this command for commit messages?",
+                "The settings kept on GitHub set a command of their own to write commit messages. It would run on this computer each time one is written. Use it only if you set it yourself.".to_string(),
+            )
+            .choice("Keep mine", ui::ChoiceLook::Main, ui::Answer::Other)
+            .choice("Use it", ui::ChoiceLook::Danger, ui::Answer::Yes);
+            self.github.asks.push_back(ui::Ask { items: vec![command], ..ask });
+        }
+        if !changes.install.is_empty() || !changes.enable.is_empty() {
+            log::info!(
+                "GitHub lists extensions to install {:?} and to turn on {:?}: asking",
+                changes.install,
+                changes.enable
+            );
+            self.github.describing = true;
+            let (tx, install, enable) = (self.github.tx.clone(), changes.install, changes.enable);
+            std::thread::spawn(move || {
+                let found = install
+                    .into_iter()
+                    .map(|id| {
+                        let (namespace, name) = id.split_once('.').unwrap_or_default();
+                        let about = ext::market::details(namespace, name).map(|d| (d.item.version, d.item.verified));
+                        (id, about)
+                    })
+                    .collect();
+                send(&tx, Heard::Described(found, enable));
+            });
         }
         self.github.state.gist = gist.id;
         self.github.state.synced = sync::digest(&gist.files);
         sync::save_state(&self.github.state);
         self.ui.account.synced = "Brought from GitHub".into();
-        self.ext.notice(
-            ext::Level::Info,
-            "GitHub",
-            "The settings and extensions kept on GitHub are on this computer now.",
-        );
+        self.ext.notice(ext::Level::Info, "GitHub", "The settings kept on GitHub are on this computer now.");
+    }
+
+    pub(super) fn sync_install_answered(&mut self, answer: ui::Answer) {
+        let offer = std::mem::take(&mut self.github.offer);
+        let enable = std::mem::take(&mut self.github.enable);
+        if answer != ui::Answer::Yes {
+            log::info!("the extensions GitHub lists are not installed: {offer:?}");
+            self.github.state.declined.extend(offer.into_iter().map(|(id, _)| id));
+            sync::save_state(&self.github.state);
+            return;
+        }
+        for (id, version) in offer {
+            if let Some((namespace, name)) = id.split_once('.') {
+                log::info!("installing {id}@{version}, as GitHub lists it");
+                self.ext.install_exact(namespace, name, Some(version));
+            }
+        }
+        for id in enable {
+            self.ext.set_enabled(&id, true);
+        }
+    }
+
+    pub(super) fn sync_command_answered(&mut self, answer: ui::Answer) {
+        let Some(text) = self.github.held_commit.take() else { return };
+        if answer != ui::Answer::Yes {
+            log::info!("the command for commit messages from GitHub is not used");
+            return;
+        }
+        if let Err(why) = std::fs::write(crate::session::data_dir().join("commit.json"), text) {
+            log::warn!("commit.json from GitHub could not be written: {why}");
+        }
+        self.ui.commit_ai = crate::commit_ai::load();
+    }
+
+    fn deciding(&self) -> bool {
+        let shown = self.ui.ask.as_ref().map(|ask| &ask.about);
+        self.github.describing
+            || !self.github.asks.is_empty()
+            || matches!(shown, Some(ui::Asked::SyncInstall | ui::Asked::SyncCommand))
     }
 
     pub(super) fn sync_answered(&mut self, take: bool) {
@@ -261,10 +336,35 @@ impl App {
                         Err(why) => self.ui.account.synced = format!("Could not send to GitHub: {why}"),
                     }
                 }
+                Heard::Described(found, enable) => {
+                    self.github.describing = false;
+                    let lines = sync::offer_lines(&found, &enable);
+                    self.github.offer = found
+                        .into_iter()
+                        .filter_map(|(id, about)| about.ok().map(|(version, _)| (id, version)))
+                        .collect();
+                    self.github.enable = enable;
+                    let ask = ui::Ask::new(
+                        ui::Asked::SyncInstall,
+                        "Install the extensions kept on GitHub?",
+                        "The settings kept on GitHub list extensions this computer does not have or has turned off. An extension runs code with your permissions: say yes only if you added these yourself.".to_string(),
+                    )
+                    .choice("Not now", ui::ChoiceLook::Main, ui::Answer::Other)
+                    .choice("Install them", ui::ChoiceLook::Danger, ui::Answer::Yes);
+                    self.github.asks.push_back(ui::Ask { items: lines, ..ask });
+                }
+            }
+        }
+        if self.ui.ask.is_none() {
+            if let Some(ask) = self.github.asks.pop_front() {
+                log::info!("asking: {} ({})", ask.title, ask.items.join(" | "));
+                self.ui.ask = Some(ask);
+                changed = true;
             }
         }
         let due = self.github.looked.is_none_or(|at| at.elapsed() > LOOK_EVERY);
-        let ready = self.github.token.is_some() && !self.github.busy && self.github.pending.is_none();
+        let ready =
+            self.github.token.is_some() && !self.github.busy && self.github.pending.is_none() && !self.deciding();
         if due && ready && self.ext.installing.is_empty() && !self.github.state.synced.is_empty() {
             self.github.looked = Some(Instant::now());
             let here = self.snapshot();

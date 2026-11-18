@@ -3061,7 +3061,12 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     names no person. Without it the window says the version cannot sign in.
   - The sign-in is kept in `github.token` in the data folder, sealed with
     Windows' DPAPI for that Windows user (`sync::keep_token`); it is never
-    written as it is, never logged, never in the repository.
+    written as it is, never logged, never in the repository. The seal takes an
+    entropy of the app's own (`ENTROPY` in `sync::sealed`), so another program
+    of the same user cannot open it with a plain `CryptUnprotectData`; a token
+    sealed before without it is still read once (`unseal`) and sealed again with
+    it. The entropy is in the program, so this stops casual readers, not a
+    program that reads it from there.
   - **Settings sync** (`sync.rs`): `prefs.json`, `theme.json`,
     `keybindings.json`, `commit.json` and the list of extensions installed and
     switched off (`extensions.json`) go to a secret gist of the person's own,
@@ -3072,8 +3077,22 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     side wins; a computer never set up takes GitHub's; both changed asks
     (`Asked::Sync`). Afterwards every 4 seconds what changed here is sent,
     not while extensions are being installed. Taking GitHub's writes the
-    files and loads them again, installs the missing extensions and switches
-    the others on or off.
+    files and loads them again and switches off what GitHub has off.
+  - **Whoever holds the gist must not be able to run code here.** So taking
+    GitHub's never installs or switches on an extension, nor adopts a new
+    command for commit messages, by itself (`sync::changes`,
+    `sync::command_change`): the extensions to install are looked up in the
+    registry first and asked about by name, version and whether the publisher
+    is verified (`Asked::SyncInstall`, `sync::offer_lines`; the list scrolls
+    instead of ending in "… and N more"), and installed at exactly the version
+    shown; a `custom` command different from this computer's is shown and
+    asked about (`Asked::SyncCommand`) and `commit.json` is left as it is until
+    then. In both, the button Enter presses is the one that changes nothing.
+    One question at a time (`GitHub::asks`); nothing is sent to GitHub
+    while one waits (`deciding`). Extensions declined are kept in
+    `State::declined` and still counted in what this computer sends, so the
+    gist keeps them for the other computers and the question is not asked again
+    at every look; one the gist no longer lists is forgotten.
   - The scenarios sign in to a GitHub of their own on this computer
     (`qa/fake/github.py`, header `github:`); the app is pointed at it with
     `CODE_CANVAS_GITHUB_SITE`, `CODE_CANVAS_GITHUB_API` and

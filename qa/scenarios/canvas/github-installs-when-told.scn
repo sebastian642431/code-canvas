@@ -1,0 +1,20 @@
+title: Settings brought from GitHub install the extensions they list, at the version shown, and use their command for commit messages once the questions are answered yes
+folders: rust-small
+github: settings-new-extensions.json
+openvsx: on
+expect-log: installing qa-tools\.bru-lite@1\.2\.0, as GitHub lists it
+expect-log: installing qa-tools\.lint-plus@3\.0\.1, as GitHub lists it
+expect-file: ../data/commit.json :: evil-command --steal
+expect-file: ../data/extensions/qa-tools.bru-lite-1.2.0/package.json :: bru-lite
+expect-file: ../data/extensions/qa-tools.lint-plus-3.0.1/package.json :: lint-plus
+
+wait 2500
+account signin
+wait 5000
+answer Use it
+wait 2000
+answer Install them
+wait 6000
+mark installed
+wait 600
+quit
