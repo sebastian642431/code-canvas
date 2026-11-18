@@ -46,6 +46,10 @@ term report
 term copy
 wait 1500
 term report
+ui drag 1350 68 900 200
+wait 900
+mark f-dragged-by-its-title
+wait 400
 console exit
 wait 2500
 mark b-the-shell-ended

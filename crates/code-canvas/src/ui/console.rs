@@ -531,28 +531,12 @@ fn rename_field(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, 
 
 fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u64) {
     let front = st.console.front(card);
-    let alone = st.console.of_card(card).count() == 1;
     let filled = st.console.filled == Some(card);
-    let keys = (st.keys.label(Command::NewConsole), st.keys.label(Command::SplitConsole));
+    let keys = st.keys.label(Command::SplitConsole);
     let crossed = ui.ctx().data(|data| data.get_temp::<bool>(egui::Id::unique(super::CARD_X))).unwrap_or(false);
     let place = Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 2 }).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Console").size(14.0).color(pal().text));
-            let renaming = st.console.renaming.as_ref().map(|(id, _)| *id);
-            match (alone, front) {
-                (true, Some(id)) if renaming == Some(id) => rename_field(ui, st, actions, id, 140.0),
-                (true, Some(id)) => {
-                    let title = st.console.tab(id).map(|tab| tab.title()).unwrap_or_default();
-                    let label = egui::Label::new(RichText::new(title).size(12.5).color(pal().text_faint))
-                        .truncate()
-                        .sense(Sense::click());
-                    let shown = ui.add_sized(Vec2::new((ui.available_width() - 190.0).max(20.0), 20.0), label);
-                    if shown.on_hover_text("Double-click to rename").double_clicked() {
-                        actions.push(Action::Console(ConsoleOp::Renaming(Some(id))));
-                    }
-                }
-                _ => {}
-            }
+            ui.add(egui::Label::new(RichText::new("Console").size(14.0).color(pal().text)).selectable(false));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 if crossed {
@@ -580,31 +564,186 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: 
                 if head_button(ui, codicon("trash"), "Kill the console", 24.0, false).0 {
                     actions.push(Action::Console(ConsoleOp::Kill(front)));
                 }
-                let tip = format!("Split the console ({})", keys.1);
+                let tip = format!("Split the console ({keys})");
                 if head_button(ui, codicon("split-horizontal"), &tip, 24.0, false).0 {
                     actions.push(Action::Console(ConsoleOp::Split { tab: front, profile: None }));
-                }
-                let profiles =
-                    st.console.menu.as_ref().is_some_and(|menu| menu.card == card && menu.kind == MenuKind::New);
-                let (clicked, rect) =
-                    head_button(ui, codicon("chevron-down"), "Pick the kind of console", 16.0, profiles);
-                if clicked {
-                    open_menu(
-                        st,
-                        card,
-                        MenuKind::New,
-                        MenuPage::Main,
-                        Pos2::new(rect.right() - 240.0, rect.bottom() + 4.0),
-                    );
-                }
-                let tip = format!("New console ({})", keys.0);
-                if head_button(ui, codicon("add"), &tip, 24.0, false).0 {
-                    actions.push(Action::Console(ConsoleOp::New { card: Some(card), profile: None, dir: None }));
                 }
             });
         });
     });
     st.console.heads.insert(card, place.response.rect);
+}
+
+struct Tab {
+    id: u64,
+    group: u64,
+    title: String,
+    icon: &'static str,
+    color: Option<u8>,
+    news: bool,
+    broke: bool,
+    ended: bool,
+}
+
+/// The consoles of the card as tabs under its title, each a chip like the folder's in the files panel, with the
+/// button for a new console and the menu of its kinds after them.
+fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u64) {
+    const HIGH: f32 = 26.0;
+    const GAP: f32 = 4.0;
+    const WIDEST: f32 = 190.0;
+    const NARROWEST: f32 = 46.0;
+    let shown = st.console.shown(card);
+    let all: Vec<Tab> = st
+        .console
+        .of_card(card)
+        .map(|tab| {
+            let icon = tab.icon.as_deref().map(codicon).unwrap_or_else(|| {
+                codicon(st.console.profile(&tab.profile).map_or("terminal", |profile| profile.icon()))
+            });
+            let (title, ended) = (tab.title(), tab.ended());
+            Tab { id: tab.id, group: tab.group, title, icon, color: tab.color, news: tab.news, broke: tab.broke, ended }
+        })
+        .collect();
+    let row = Frame::NONE.inner_margin(Margin { left: 10, right: 8, top: 2, bottom: 2 }).show(ui, |ui| {
+        let (strip, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HIGH), Sense::hover());
+        strip
+    });
+    let strip = row.inner;
+    let font = FontId::proportional(12.5);
+    let wants: Vec<f32> = all
+        .iter()
+        .map(|tab| {
+            let text = ui.painter().layout_no_wrap(tab.title.clone(), font.clone(), pal().text).size().x;
+            (text + 52.0).clamp(NARROWEST, WIDEST)
+        })
+        .collect();
+    let buttons = 50.0;
+    let room = (strip.width() - buttons - GAP * all.len() as f32).max(NARROWEST);
+    let total: f32 = wants.iter().sum();
+    let scale = if total > room { room / total } else { 1.0 };
+    let renaming = st.console.renaming.as_ref().map(|(id, _)| *id);
+    let quiet = ui.memory(|memory| memory.focused().is_none());
+    let (f2, delete) = ui.input(|input| (input.key_pressed(egui::Key::F2), input.key_pressed(egui::Key::Delete)));
+    let mut x = strip.left();
+    for (i, (tab, want)) in all.iter().zip(&wants).enumerate() {
+        let width = (want * scale).max(NARROWEST);
+        if x + width > strip.right() - buttons {
+            break;
+        }
+        let rect = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(width, HIGH));
+        let mate = all.get(i + 1).is_some_and(|next| next.group == tab.group);
+        x += width + if mate { 1.0 } else { GAP };
+        let resp = ui.interact(rect, egui::Id::unique(("console tab", tab.id)), Sense::click());
+        let front = shown.contains(&tab.id);
+        let hovered = resp.hovered();
+        let fill = if front {
+            pal().raised
+        } else if hovered {
+            pal().hover
+        } else {
+            Color32::TRANSPARENT
+        };
+        let edge = if front { pal().border_strong } else { Color32::TRANSPARENT };
+        ui.painter().rect(rect, 7.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        let painter = ui.painter().with_clip_rect(rect.shrink(1.0));
+        let mid = rect.center().y;
+        let glyph_color = if tab.ended { pal().text_faint } else { tint(tab.color) };
+        let icon_at = Pos2::new(rect.left() + 15.0, mid);
+        painter.text(icon_at, Align2::CENTER_CENTER, tab.icon, FontId::proportional(13.5), glyph_color);
+        let dot = if tab.broke {
+            Some(red())
+        } else if tab.news {
+            Some(pal().accent)
+        } else {
+            None
+        };
+        let close = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(18.0));
+        let closing = (hovered || front) && width > 70.0;
+        let left = rect.left() + 28.0;
+        let right = if closing || dot.is_some() { close.left() - 2.0 } else { rect.right() - 8.0 };
+        if renaming == Some(tab.id) {
+            let field = Rect::from_min_max(
+                Pos2::new(left - 2.0, rect.top() + 2.0),
+                Pos2::new(rect.right() - 4.0, rect.bottom() - 2.0),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
+                rename_field(ui, st, actions, tab.id, field.width() - 4.0);
+            });
+        } else if width > 60.0 {
+            let color = if tab.ended {
+                pal().text_faint
+            } else if front {
+                pal().text
+            } else {
+                pal().text_dim
+            };
+            text_fit(&painter, Pos2::new(left, mid), &tab.title, font.clone(), color, right - left);
+        }
+        let mut closed = false;
+        if closing && renaming != Some(tab.id) {
+            let cross = ui.interact(close, egui::Id::unique(("console tab close", tab.id)), Sense::click());
+            if cross.hovered() {
+                ui.painter().rect_filled(close, 5.0, pal().border_strong);
+            }
+            let color = if cross.hovered() { pal().text } else { pal().text_faint };
+            painter.text(close.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(12.0), color);
+            closed = cross.on_hover_text("End this console").clicked();
+        } else if let Some(dot) = dot {
+            painter.circle_filled(close.center(), 3.5, dot);
+        }
+        if closing && !closed {
+            if let Some(dot) = dot {
+                painter.circle_filled(Pos2::new(rect.right() - 4.0, rect.top() + 4.0), 3.0, dot);
+            }
+        }
+        if closed {
+            actions.push(Action::Console(ConsoleOp::Kill(Some(tab.id))));
+            continue;
+        }
+        let tip = match (tab.broke, tab.news) {
+            (true, _) => format!("{}\nSomething in it ended with an error", tab.title),
+            (false, true) => format!("{}\nIt printed something new", tab.title),
+            _ => format!("{}\nDouble-click to rename, right click for more", tab.title),
+        };
+        let resp = resp.on_hover_text(tip);
+        if resp.double_clicked() {
+            actions.push(Action::Console(ConsoleOp::Renaming(Some(tab.id))));
+        } else if resp.clicked() {
+            actions.push(Action::Console(ConsoleOp::Front(tab.id)));
+        }
+        if resp.secondary_clicked() {
+            let at = resp.interact_pointer_pos().unwrap_or(rect.left_bottom());
+            st.console.menu = Some(Menu { card, kind: MenuKind::Tab(tab.id), page: MenuPage::Main, at, place: None });
+        }
+        if hovered && quiet && f2 {
+            actions.push(Action::Console(ConsoleOp::Renaming(Some(tab.id))));
+        }
+        if hovered && quiet && delete {
+            actions.push(Action::Console(ConsoleOp::Kill(Some(tab.id))));
+        }
+    }
+    let keys = st.keys.label(Command::NewConsole);
+    let mut at = x.max(strip.left());
+    let add = Rect::from_min_size(Pos2::new(at, strip.top() + 1.0), Vec2::new(24.0, 24.0));
+    at += 24.0;
+    let pick = Rect::from_min_size(Pos2::new(at, strip.top() + 1.0), Vec2::new(18.0, 24.0));
+    let profiles = st.console.menu.as_ref().is_some_and(|menu| menu.card == card && menu.kind == MenuKind::New);
+    let new = ui.interact(add, egui::Id::unique(("console new", card)), Sense::click());
+    let kinds = ui.interact(pick, egui::Id::unique(("console kinds", card)), Sense::click());
+    for (rect, resp, glyph, on) in [(add, &new, "add", false), (pick, &kinds, "chevron-down", profiles)] {
+        if resp.hovered() || on {
+            ui.painter().rect_filled(rect, 6.0, pal().hover);
+        }
+        let color = if resp.hovered() || on { pal().text } else { pal().text_dim };
+        let size = if glyph == "add" { 14.0 } else { 12.0 };
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, codicon(glyph), FontId::proportional(size), color);
+    }
+    if new.on_hover_text(format!("New console ({keys})")).clicked() {
+        actions.push(Action::Console(ConsoleOp::New { card: Some(card), profile: None, dir: None }));
+    }
+    if kinds.on_hover_text("Pick the kind of console").clicked() {
+        open_menu(st, card, MenuKind::New, MenuPage::Main, Pos2::new(pick.left(), pick.bottom() + 4.0));
+    }
 }
 
 fn message(ui: &mut egui::Ui, rect: Rect, text: &str, button: &str) -> bool {
@@ -673,18 +812,10 @@ pub fn console_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Acti
         return;
     }
     st.console.seen(card);
+    tabs(ui, st, actions, card);
     let body = ui.available_rect_before_wrap();
     ui.allocate_rect(body, Sense::hover());
-    let listed = ids.len() > 1;
-    let list_width = match (listed, body.width() > 520.0) {
-        (false, _) => 0.0,
-        (true, true) => 156.0,
-        (true, false) => 40.0,
-    };
-    let room = Rect::from_min_max(
-        body.min + Vec2::new(8.0, 4.0),
-        Pos2::new(body.right() - list_width - 8.0, body.bottom() - 8.0),
-    );
+    let room = Rect::from_min_max(body.min + Vec2::new(8.0, 4.0), Pos2::new(body.right() - 8.0, body.bottom() - 8.0));
     let shown = st.console.shown(card);
     let current = st.console.current;
     const GAP: f32 = 6.0;
@@ -695,141 +826,7 @@ pub fn console_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Acti
         let rect = Rect::from_min_size(Pos2::new(left, room.top()), Vec2::new(width, room.height()));
         pane(ui, st, actions, *id, rect, shown.len() > 1 && current == Some(*id));
     }
-    if listed {
-        let column = Rect::from_min_max(
-            Pos2::new(body.right() - list_width - 4.0, room.top()),
-            Pos2::new(body.right() - 6.0, room.bottom()),
-        );
-        list(ui, st, actions, card, column);
-    }
     menu(ui.ctx(), st, actions, card);
-}
-
-struct Row {
-    id: u64,
-    group: u64,
-    title: String,
-    icon: &'static str,
-    color: Option<u8>,
-    news: bool,
-    broke: bool,
-    ended: bool,
-}
-
-/// The consoles of the card, one under the other beside their screens, as VS Code shows its terminals: a group of
-/// consoles split side by side is marked by a bracket.
-fn list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u64, column: Rect) {
-    const ROW: f32 = 26.0;
-    let narrow = column.width() < 80.0;
-    let shown = st.console.shown(card);
-    let rows: Vec<Row> = st
-        .console
-        .of_card(card)
-        .map(|tab| {
-            let icon = tab.icon.as_deref().map(codicon).unwrap_or_else(|| {
-                codicon(st.console.profile(&tab.profile).map_or("terminal", |profile| profile.icon()))
-            });
-            let (title, ended) = (tab.title(), tab.ended());
-            Row { id: tab.id, group: tab.group, title, icon, color: tab.color, news: tab.news, broke: tab.broke, ended }
-        })
-        .collect();
-    let line =
-        Rect::from_min_max(Pos2::new(column.left(), column.top()), Pos2::new(column.left() + 1.0, column.bottom()));
-    ui.painter().rect_filled(line, 0.0, pal().border);
-    let renaming = st.console.renaming.as_ref().map(|(id, _)| *id);
-    let quiet = ui.memory(|memory| memory.focused().is_none());
-    let (f2, delete) = ui.input(|input| (input.key_pressed(egui::Key::F2), input.key_pressed(egui::Key::Delete)));
-    for (i, row) in rows.iter().enumerate() {
-        let Row { id, group, title, icon, color, news, broke, ended } = row;
-        let rect = Rect::from_min_size(
-            Pos2::new(column.left() + 5.0, column.top() + i as f32 * ROW),
-            Vec2::new(column.width() - 5.0, ROW - 2.0),
-        );
-        if rect.bottom() > column.bottom() {
-            break;
-        }
-        let resp = ui.interact(rect, egui::Id::unique(("console row", *id)), Sense::click());
-        let front = shown.contains(id);
-        if front || resp.hovered() {
-            ui.painter().rect_filled(rect, 5.0, if front { pal().raised } else { pal().hover });
-        }
-        let painter = ui.painter().with_clip_rect(rect);
-        let mid = rect.center().y;
-        let mates: Vec<u64> = rows.iter().filter(|row| row.group == *group).map(|row| row.id).collect();
-        let mut x = rect.left() + 4.0;
-        if mates.len() > 1 && !narrow {
-            let at = mates.iter().position(|mate| mate == id).unwrap_or_default();
-            let mark = match at {
-                0 => "┌",
-                at if at + 1 == mates.len() => "└",
-                _ => "├",
-            };
-            painter.text(Pos2::new(x, mid), Align2::LEFT_CENTER, mark, FontId::monospace(13.0), pal().text_faint);
-            x += 10.0;
-        }
-        let glyph_color = if *ended { pal().text_faint } else { tint(*color) };
-        let glyph_at = if narrow { Pos2::new(rect.center().x - 3.0, mid) } else { Pos2::new(x + 7.0, mid) };
-        painter.text(glyph_at, Align2::CENTER_CENTER, *icon, FontId::proportional(14.0), glyph_color);
-        let dot = if *broke {
-            Some(red())
-        } else if *news {
-            Some(pal().accent)
-        } else {
-            None
-        };
-        if narrow {
-            if let Some(dot) = dot {
-                painter.circle_filled(Pos2::new(rect.right() - 6.0, rect.top() + 6.0), 3.0, dot);
-            }
-        } else {
-            let right = rect.right() - if dot.is_some() { 16.0 } else { 6.0 };
-            let left = x + 18.0;
-            if renaming == Some(*id) {
-                ui.scope_builder(
-                    egui::UiBuilder::new().max_rect(Rect::from_min_max(
-                        Pos2::new(left, rect.top() + 1.0),
-                        Pos2::new(rect.right() - 2.0, rect.bottom() - 1.0),
-                    )),
-                    |ui| {
-                        rename_field(ui, st, actions, *id, rect.right() - left - 4.0);
-                    },
-                );
-            } else {
-                let color = if *ended {
-                    pal().text_faint
-                } else if front {
-                    pal().text
-                } else {
-                    pal().text_dim
-                };
-                text_fit(&painter, Pos2::new(left, mid), title, FontId::proportional(12.5), color, right - left);
-            }
-            if let Some(dot) = dot {
-                painter.circle_filled(Pos2::new(rect.right() - 9.0, mid), 3.5, dot);
-            }
-        }
-        let tip = match (broke, news) {
-            (true, _) => format!("{title}\nSomething in it ended with an error"),
-            (false, true) => format!("{title}\nIt printed something new"),
-            _ => title.clone(),
-        };
-        let resp = resp.on_hover_text(tip);
-        if resp.double_clicked() {
-            actions.push(Action::Console(ConsoleOp::Renaming(Some(*id))));
-        } else if resp.clicked() {
-            actions.push(Action::Console(ConsoleOp::Front(*id)));
-        }
-        if resp.secondary_clicked() {
-            let at = resp.interact_pointer_pos().unwrap_or(rect.left_bottom());
-            st.console.menu = Some(Menu { card, kind: MenuKind::Tab(*id), page: MenuPage::Main, at, place: None });
-        }
-        if resp.hovered() && quiet && f2 {
-            actions.push(Action::Console(ConsoleOp::Renaming(Some(*id))));
-        }
-        if resp.hovered() && quiet && delete {
-            actions.push(Action::Console(ConsoleOp::Kill(Some(*id))));
-        }
-    }
 }
 
 fn back_row(ui: &mut egui::Ui, page: &mut MenuPage) {
