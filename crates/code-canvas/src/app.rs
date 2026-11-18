@@ -300,10 +300,21 @@ impl App {
         let mut ext = Extensions::new(session::data_dir(), waker);
         chosen.from_extension = theme_of_extension(&ext, &chosen.theme);
         canvas_render::theme::set(chosen.resolve());
-        if std::env::var_os("CODE_CANVAS_SCRIPT").is_none() && std::env::var_os("CODE_CANVAS_BENCH").is_none() {
-            ext.install_defaults();
-        }
+        let unattended = (std::env::var_os("CODE_CANVAS_SCRIPT").is_some()
+            || std::env::var_os("CODE_CANVAS_BENCH").is_some())
+            && std::env::var_os("CODE_CANVAS_OFFER_DEFAULTS").is_none();
+        let defaults = if unattended { Vec::new() } else { ext.defaults_wanted() };
         let mut ui = UiState::default();
+        if !defaults.is_empty() {
+            let ask = ui::Ask::new(
+                ui::Asked::Defaults,
+                "Install the extensions Code Canvas comes with?",
+                "They come from Open VSX, at the version and with the checksum this version of Code Canvas names. Each runs code with your permissions. They can also be installed later from the Extensions panel.".to_string(),
+            )
+            .choice("Install them", ui::ChoiceLook::Main, ui::Answer::Yes)
+            .choice("Not now", ui::ChoiceLook::Plain, ui::Answer::Other);
+            ui.ask = Some(ui::Ask { items: defaults.iter().map(|p| p.line()).collect(), danger: false, ..ask });
+        }
         ui.theme = chosen;
         ui.prefs = crate::prefs::load();
         canvas_core::layout::set_line_numbers(ui.prefs.line_numbers);
@@ -2247,6 +2258,8 @@ impl App {
             (ui::Asked::Sync, ui::Answer::Yes) => self.sync_answered(true),
             (ui::Asked::Sync, ui::Answer::Other) => self.sync_answered(false),
             (ui::Asked::SyncInstall, answer) => self.sync_install_answered(answer),
+            (ui::Asked::Defaults, ui::Answer::Yes) => self.ext.install_defaults(),
+            (ui::Asked::Defaults, ui::Answer::Other) => self.ext.decline_defaults(),
             (ui::Asked::SyncCommand, answer) => self.sync_command_answered(answer),
             (ui::Asked::Trust { folder, shared }, answer) => self.trust_answered(&folder, shared, answer),
             _ => {}

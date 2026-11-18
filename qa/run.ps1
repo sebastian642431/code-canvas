@@ -175,6 +175,8 @@ if ($head.ContainsKey('openvsx')) {
     Start-Sleep -Milliseconds 800
     $env:CODE_CANVAS_OPEN_VSX = "http://127.0.0.1:$port/api"
 }
+Remove-Item 'Env:CODE_CANVAS_OFFER_DEFAULTS' -ErrorAction SilentlyContinue
+if ($head['defaults'] -eq 'offered') { $env:CODE_CANVAS_OFFER_DEFAULTS = '1' }
 $problems = @()
 $seen = @{}
 $pictures = 0
@@ -284,6 +286,7 @@ if ($fakeOpenVsx) {
     try { & taskkill /PID $fakeOpenVsx.Id /T /F | Out-Null } catch {}
     Remove-Item 'Env:CODE_CANVAS_OPEN_VSX' -ErrorAction SilentlyContinue
 }
+Remove-Item 'Env:CODE_CANVAS_OFFER_DEFAULTS' -ErrorAction SilentlyContinue
 
 if ($fakeRegistry) {
     try { & taskkill /PID $fakeRegistry.Id /T /F | Out-Null } catch {}

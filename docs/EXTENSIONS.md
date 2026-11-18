@@ -55,9 +55,12 @@ kept per folder, and *Restricted mode* in the status bar asks again. Folders tha
 were open before this existed count as trusted. A shared folder is not given to
 the extensions at all until trusted, and that trust lasts for the session.
 
-A new installation gets four by itself, once (`ext::DEFAULTS`): Claude Code,
-Prettier, ESLint and the Symbols file icons. Removing one is respected: it does
-not come back.
+A new installation offers four, once (`ext::DEFAULTS`): Claude Code, Prettier,
+ESLint and the Symbols file icons, each at an exact version whose file must have
+the checksum the app knows. Nothing is installed until you say yes; "Not now"
+is respected, and so is removing one: it does not come back. Whatever is
+installed from the registry must be the extension asked for (same publisher and
+name in its package.json) and stay within a size once unpacked.
 
 **Colour themes** work: every theme an extension declares (`contributes.themes`)
 is listed in the settings next to the built-in ones. The app has far fewer

@@ -4154,6 +4154,7 @@ pub enum Asked {
     Sync,
     SyncInstall,
     SyncCommand,
+    Defaults,
     Trust { folder: std::path::PathBuf, shared: bool },
     Exit,
 }

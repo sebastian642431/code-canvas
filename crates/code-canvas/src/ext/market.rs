@@ -302,7 +302,7 @@ pub fn size_words(bytes: u64) -> String {
     }
 }
 
-fn platform() -> String {
+pub fn platform() -> String {
     let os = match std::env::consts::OS {
         "windows" => "win32",
         "macos" => "darwin",
@@ -317,7 +317,26 @@ fn platform() -> String {
     format!("{os}-{arch}")
 }
 
+const MAX_UNPACKED: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ENTRIES: usize = 100_000;
+
+pub struct Wanted<'a> {
+    pub namespace: &'a str,
+    pub name: &'a str,
+    pub version: Option<&'a str>,
+    pub sha256: Option<&'a str>,
+}
+
 pub fn install(namespace: &str, name: &str, version: Option<&str>, dir: &Path) -> Result<PathBuf, String> {
+    install_wanted(&Wanted { namespace, name, version, sha256: None }, dir)
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, bytes).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn install_wanted(wanted: &Wanted, dir: &Path) -> Result<PathBuf, String> {
+    let (namespace, name, version) = (wanted.namespace, wanted.name, wanted.version);
     let which = version.map(encode).unwrap_or_else(|| "latest".to_string());
     let meta = get_json(&format!("{}/{}/{}/{which}", api(), encode(namespace), encode(name)))?;
     if let Some(error) = meta.get("error").and_then(Value::as_str) {
@@ -332,16 +351,45 @@ pub fn install(namespace: &str, name: &str, version: Option<&str>, dir: &Path) -
         .ok_or("the registry lists no download for this extension")?;
     let mut response = ureq::get(&url).call().map_err(|e| e.to_string())?;
     let bytes = response.body_mut().with_config().limit(MAX_VSIX).read_to_vec().map_err(|e| e.to_string())?;
-    install_vsix_bytes(&bytes, dir)
+    if let Some(expected) = wanted.sha256 {
+        let got = sha256_hex(&bytes);
+        if !got.eq_ignore_ascii_case(expected) {
+            return Err(format!("what was downloaded is not the file expected (SHA-256 {got}, not {expected})"));
+        }
+    }
+    install_vsix_bytes(&bytes, dir, Some(wanted))
 }
 
 pub fn install_vsix(file: &Path, dir: &Path) -> Result<PathBuf, String> {
     let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
-    install_vsix_bytes(&bytes, dir)
+    install_vsix_bytes(&bytes, dir, None)
 }
 
-fn install_vsix_bytes(bytes: &[u8], dir: &Path) -> Result<PathBuf, String> {
+fn install_vsix_bytes(bytes: &[u8], dir: &Path, wanted: Option<&Wanted>) -> Result<PathBuf, String> {
+    unpack_within(bytes, dir, wanted, (MAX_ENTRIES, MAX_UNPACKED))
+}
+
+fn unpack_within(
+    bytes: &[u8],
+    dir: &Path,
+    wanted: Option<&Wanted>,
+    (most_entries, most_bytes): (usize, u64),
+) -> Result<PathBuf, String> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a .vsix file: {e}"))?;
+    if zip.len() > most_entries {
+        return Err(format!("it holds {} files, more than the {most_entries} an extension may", zip.len()));
+    }
+    let mut declared: u64 = 0;
+    for i in 0..zip.len() {
+        declared = declared.saturating_add(zip.by_index_raw(i).map_err(|e| e.to_string())?.size());
+    }
+    if declared > most_bytes {
+        return Err(format!(
+            "it unpacks to {}, more than the {} an extension may",
+            size_words(declared),
+            size_words(most_bytes)
+        ));
+    }
     let manifest: Value = {
         let mut entry = zip.by_name("extension/package.json").map_err(|_| "no extension/package.json inside")?;
         let mut body = String::new();
@@ -354,12 +402,22 @@ fn install_vsix_bytes(bytes: &[u8], dir: &Path) -> Result<PathBuf, String> {
     if !safe(&publisher) || !safe(&name) || !safe(&version) || publisher.starts_with('.') {
         return Err("package.json has no valid publisher, name and version".into());
     }
+    if let Some(wanted) = wanted {
+        let asked = format!("{}.{}", wanted.namespace, wanted.name);
+        if !publisher.eq_ignore_ascii_case(wanted.namespace) || !name.eq_ignore_ascii_case(wanted.name) {
+            return Err(format!("the registry sent {publisher}.{name} for {asked}: it was not installed"));
+        }
+        if wanted.version.is_some_and(|v| v != version) {
+            return Err(format!("the registry sent version {version} of {asked}, not the one asked for"));
+        }
+    }
     let id = format!("{publisher}.{name}").to_lowercase();
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let staging = dir.join(format!(".installing-{id}"));
     let _ = std::fs::remove_dir_all(&staging);
 
     let unpack = |zip: &mut zip::ZipArchive<Cursor<&[u8]>>| -> Result<(), String> {
+        let mut left = most_bytes;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
             let Some(path) = entry.enclosed_name() else { continue };
@@ -376,7 +434,11 @@ fn install_vsix_bytes(bytes: &[u8], dir: &Path) -> Result<PathBuf, String> {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
             let mut file = std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-            std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+            let wrote = std::io::copy(&mut (&mut entry).take(left + 1), &mut file).map_err(|e| e.to_string())?;
+            if wrote > left {
+                return Err(format!("it unpacks to more than the {} an extension may", size_words(most_bytes)));
+            }
+            left -= wrote;
             #[cfg(unix)]
             if let Some(mode) = entry.unix_mode() {
                 use std::os::unix::fs::PermissionsExt;
@@ -451,14 +513,14 @@ mod tests {
             ("extension/package.json", manifest),
             ("extension/out/main.js", "exports.activate = () => {}"),
         ]);
-        let target = install_vsix_bytes(&bytes, &dir).unwrap();
+        let target = install_vsix_bytes(&bytes, &dir, None).unwrap();
         assert_eq!(target, dir.join("acme.demo-1.2.3"));
         assert!(target.join("out/main.js").is_file());
         assert!(!target.join("extension.vsixmanifest").exists());
         assert_eq!(dir_id(&target).as_deref(), Some("acme.demo"));
 
         let newer = vsix(&[("extension/package.json", &manifest.replace("1.2.3", "2.0.0"))]);
-        install_vsix_bytes(&newer, &dir).unwrap();
+        install_vsix_bytes(&newer, &dir, None).unwrap();
         assert_eq!(installed_dirs(&dir), vec![dir.join("acme.demo-2.0.0")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -466,11 +528,48 @@ mod tests {
     #[test]
     fn rejects_bad_archives() {
         let dir = temp("bad");
-        assert!(install_vsix_bytes(b"not a zip", &dir).is_err());
-        assert!(install_vsix_bytes(&vsix(&[("readme.md", "hi")]), &dir).is_err());
+        assert!(install_vsix_bytes(b"not a zip", &dir, None).is_err());
+        assert!(install_vsix_bytes(&vsix(&[("readme.md", "hi")]), &dir, None).is_err());
         let evil = vsix(&[("extension/package.json", r#"{"publisher":"..","name":"x","version":"1"}"#)]);
-        assert!(install_vsix_bytes(&evil, &dir).is_err());
+        assert!(install_vsix_bytes(&evil, &dir, None).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_the_registry_sends_must_be_what_was_asked_for() {
+        let dir = temp("asked");
+        let manifest = r#"{"publisher":"Acme","name":"demo","version":"1.2.3"}"#;
+        let bytes = vsix(&[("extension/package.json", manifest)]);
+        let asked = |namespace, name, version| Wanted { namespace, name, version, sha256: None };
+        let other = install_vsix_bytes(&bytes, &dir, Some(&asked("acme", "other", None)));
+        assert_eq!(other, Err("the registry sent Acme.demo for acme.other: it was not installed".to_string()));
+        let imposter = install_vsix_bytes(&bytes, &dir, Some(&asked("evil", "demo", None)));
+        assert!(imposter.is_err(), "another publisher");
+        let older = install_vsix_bytes(&bytes, &dir, Some(&asked("acme", "demo", Some("1.2.2"))));
+        assert!(older.unwrap_err().contains("version 1.2.3"));
+        assert!(installed_dirs(&dir).is_empty(), "nothing was put in place");
+        let right = install_vsix_bytes(&bytes, &dir, Some(&asked("ACME", "Demo", Some("1.2.3"))));
+        assert_eq!(right, Ok(dir.join("acme.demo-1.2.3")), "case does not matter");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_that_unpacks_too_big_or_into_too_many_files_is_refused() {
+        let dir = temp("limits");
+        let manifest = r#"{"publisher":"acme","name":"big","version":"1.0.0"}"#;
+        let zeros = "0".repeat(5000);
+        let bytes =
+            vsix(&[("extension/package.json", manifest), ("extension/a.txt", &zeros), ("extension/b.txt", &zeros)]);
+        assert!(unpack_within(&bytes, &dir, None, (2, 1 << 20)).unwrap_err().contains("3 files"));
+        assert!(unpack_within(&bytes, &dir, None, (10, 8000)).unwrap_err().contains("unpacks to"));
+        assert!(!dir.join(".installing-acme.big").exists(), "nothing is left half unpacked");
+        assert!(unpack_within(&bytes, &dir, None, (10, 20_000)).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_is_checked_against_its_sha256() {
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     #[test]

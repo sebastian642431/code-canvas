@@ -93,6 +93,7 @@ to run things. These notes were rescued from the comments the code used to have.
 | `CODE_CANVAS_NO_VSYNC` | `app.rs` | See "Measuring" in [ARCHITECTURE.md](ARCHITECTURE.md). |
 | `CODE_CANVAS_PRETEND_VERSION` | `update::current` | Replaces the version of this build, to see how an offered update looks without waiting for a release. |
 | `CODE_CANVAS_CHECK_UPDATES` | `App::new` | Lets a quiet run look for updates anyway (for testing the updater). |
+| `CODE_CANVAS_OFFER_DEFAULTS` | `App::new` | Lets a quiet run offer the default extensions anyway (the QA header `defaults: offered`). |
 | `CODE_CANVAS_REGISTRY` | `versions::registries::reach` | Sends every request for the latest versions of dependencies to `<this>/<host>/<path>` instead of `https://<host>/<path>`: the QA runner points it at `qa/fake/registry.py`. |
 | `NPM_CONFIG_USERCONFIG` | `versions::npmrc` | npm's own: the user's `.npmrc` (`~/.npmrc` otherwise). The QA runner points it at a file of the run that does not exist. |
 | `CODEX_HOME` | `codex::home` | Codex's own: where its sessions are (`~/.codex` otherwise). The QA runner points it at a folder of the run. |
@@ -1667,10 +1668,26 @@ Camera
 - `MAX_VSIX` = 400 MiB: extensions that bundle a language server are big.
 - Unpacking uses `enclosed_name`, which refuses entries whose path would leave the
   folder.
+- **What is unpacked has ceilings** (`unpack_within`): at most 100,000 files and
+  2 GiB once unpacked (Claude Code, the biggest, is 368 MB in 47 files), checked
+  against what the archive declares before anything is written, and again while
+  writing, since a declared size can lie. A refused archive leaves nothing behind.
+- **What the registry sends must be what was asked for** (`install_wanted`,
+  `Wanted`): its package.json's `publisher` and `name` must be the namespace and
+  name asked for (case aside), and its `version` the version asked for when one
+  was; otherwise nothing is installed and the error says what came instead. With
+  a `sha256` the downloaded file must have that SHA-256 (`sha256_hex`). A `.vsix`
+  picked from the disk is taken as it is: the person chose that file.
+- The extensions the app comes with are pinned (`ext::DEFAULTS`, `Pinned`): an
+  exact version and the SHA-256 of its file on Open VSX, one per platform build
+  (`sha256_for`; Claude Code ships one per platform). A platform with no checksum
+  listed still gets the exact version and the checks above. Updating one means
+  changing its version and checksums together (the `.sha256` file next to each
+  download on Open VSX gives them).
 - Installing replaces other versions of the same extension.
 - An extension is identified by `publisher.name` in lower case
   (`MarketItem::id`, `dir_id`).
-- `install` takes the latest version, in the build for this platform (`platform`,
+- `install` takes the latest version (or the one given), in the build for this platform (`platform`,
   e.g. `win32-x64`) when the extension ships one per platform. `search` with an
   empty query lists the most downloaded.
 - `api()` is Open VSX, or `CODE_CANVAS_OPEN_VSX` (the QA runs' own registry,
@@ -1722,7 +1739,10 @@ Tabs
 Default extensions
 
 - `DEFAULTS` and what they are: [EXTENSIONS.md](EXTENSIONS.md).
-  `defaults_to_install` offers each one once. `defaults.json` lists those this
+  Nothing is installed before the person says so: `App::new` asks
+  (`Asked::Defaults`) with each one's exact version, "Install them" runs
+  `install_defaults`, "Not now" counts them as offered (`decline_defaults`), and
+  Escape asks again at the next start. `defaults_to_install` offers each one once. `defaults.json` lists those this
   installation already got; one already installed by hand counts as got; one that
   failed to arrive (no network) is tried again; one the user removed afterwards
   does not come back.

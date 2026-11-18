@@ -119,11 +119,65 @@ pub fn held_back(installed: &[Installed]) -> impl Iterator<Item = &Installed> {
     installed.iter().filter(|e| e.enabled && e.has_code && e.untrusted != Untrusted::Supported)
 }
 
-pub const DEFAULTS: &[(&str, &str)] = &[
-    ("Anthropic", "claude-code"),
-    ("esbenp", "prettier-vscode"),
-    ("dbaeumer", "vscode-eslint"),
-    ("miguelsolorio", "symbols"),
+pub struct Pinned {
+    pub namespace: &'static str,
+    pub name: &'static str,
+    pub version: &'static str,
+    pub verified: bool,
+    pub sha256: &'static [(&'static str, &'static str)],
+}
+
+impl Pinned {
+    pub fn id(&self) -> String {
+        format!("{}.{}", self.namespace, self.name).to_lowercase()
+    }
+
+    pub fn sha256_for(&self, platform: &str) -> Option<&'static str> {
+        self.sha256.iter().find(|(built, _)| *built == platform || *built == "universal").map(|(_, sum)| *sum)
+    }
+
+    pub fn line(&self) -> String {
+        let who = if self.verified { "verified publisher" } else { "NOT verified" };
+        format!("{}.{}@{}  {who}", self.namespace, self.name, self.version)
+    }
+}
+
+pub const DEFAULTS: &[Pinned] = &[
+    Pinned {
+        namespace: "Anthropic",
+        name: "claude-code",
+        version: "2.1.325",
+        verified: true,
+        sha256: &[
+            ("win32-x64", "e016f2027a828430d66c9b20659831515842687ceb6a5309765a99fba5bf3136"),
+            ("win32-arm64", "b9d1bcbfa45933c962bc0de41b14e69ac9e8101a3712297bc6466bbcf559d7bf"),
+            ("linux-x64", "1d64c4dd161af8196c6e1d81acdf15e67eaa0fa39e9e8d05e6de7498ffbffbad"),
+            ("linux-arm64", "4e5c3db5039559fcb2425718d6b40a4e7b4f4a8cd4a59f2d0aa4c13411de30f8"),
+            ("darwin-x64", "e4eb91913b8133c10f0b5b618466934724fd7877e63d685a3e4fea931e2e3453"),
+            ("darwin-arm64", "0616d6fd5556934be98e9d684de4a7207df9d89d6e79d00287cfe37c398f0ee2"),
+        ],
+    },
+    Pinned {
+        namespace: "esbenp",
+        name: "prettier-vscode",
+        version: "12.4.0",
+        verified: true,
+        sha256: &[("universal", "fb730ea4306d09cdc0a3aaa9e9baae28058cc97a4fbfce8b056b377a0639a9fe")],
+    },
+    Pinned {
+        namespace: "dbaeumer",
+        name: "vscode-eslint",
+        version: "3.0.34",
+        verified: true,
+        sha256: &[("universal", "ca5334d46f6a39079e751ef4601bfc9f86bc3a46483e87291ec609239d161308")],
+    },
+    Pinned {
+        namespace: "miguelsolorio",
+        name: "symbols",
+        version: "0.0.26",
+        verified: true,
+        sha256: &[("universal", "4607d914804c262ed8a722f3d024befe33174f777ed64fb2dbaf4f8bfaec49a3")],
+    },
 ];
 
 fn defaults_to_install(
@@ -1262,25 +1316,50 @@ impl Extensions {
         })
     }
 
-    pub fn install_defaults(&mut self) {
+    pub fn defaults_wanted(&mut self) -> Vec<&'static Pinned> {
         self.offered = std::fs::read_to_string(self.dir.join("defaults.json"))
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let before = self.offered.len();
         let installed: HashSet<&str> = self.installed.iter().map(|e| e.id.as_str()).collect();
-        let wanted = defaults_to_install(DEFAULTS, &mut self.offered, &|id| installed.contains(id));
+        let pairs: Vec<(&str, &str)> = DEFAULTS.iter().map(|p| (p.namespace, p.name)).collect();
+        let wanted = defaults_to_install(&pairs, &mut self.offered, &|id| installed.contains(id));
         if self.offered.len() != before {
             self.save_offered();
         }
+        DEFAULTS.iter().filter(|p| wanted.iter().any(|(ns, n)| ns == p.namespace && n == p.name)).collect()
+    }
+
+    pub fn install_defaults(&mut self) {
+        let wanted = self.defaults_wanted();
         if wanted.is_empty() {
             return;
         }
-        let names: Vec<&str> = wanted.iter().map(|(_, name)| name.as_str()).collect();
+        let names: Vec<&str> = wanted.iter().map(|p| p.name).collect();
         self.notice(Level::Info, "Extensions", format!("getting the ones the app comes with: {}", names.join(", ")));
-        for (namespace, name) in &wanted {
-            self.install(namespace, name);
+        for pinned in wanted {
+            let id = pinned.id();
+            if !self.installing.insert(id.clone()) {
+                continue;
+            }
+            let dir = self.dir.clone();
+            let sha256 = pinned.sha256_for(&market::platform());
+            let wanted = market::Wanted {
+                namespace: pinned.namespace,
+                name: pinned.name,
+                version: Some(pinned.version),
+                sha256,
+            };
+            self.job(move || Job::Installed(id, market::install_wanted(&wanted, &dir)));
         }
+    }
+
+    pub fn decline_defaults(&mut self) {
+        for pinned in self.defaults_wanted() {
+            self.offered.insert(pinned.id());
+        }
+        self.save_offered();
     }
 
     fn save_offered(&self) {
@@ -1759,7 +1838,7 @@ impl Extensions {
                         Ok(dir) => {
                             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             self.notice(Level::Info, "Extensions", format!("installed {name}"));
-                            let ours = DEFAULTS.iter().any(|(ns, n)| format!("{ns}.{n}").to_lowercase() == label);
+                            let ours = DEFAULTS.iter().any(|p| p.id() == label);
                             if ours && self.offered.insert(label.clone()) {
                                 self.save_offered();
                             }
@@ -2365,6 +2444,21 @@ mod tests {
         );
         assert_eq!(manifest_views(&manifest, &nls), vec!["Pull Requests", "Issues"]);
         assert!(manifest_commands(&json!({}), &nls).is_empty());
+    }
+
+    #[test]
+    fn the_extensions_the_app_comes_with_are_pinned_to_a_version_and_a_checksum() {
+        for pinned in DEFAULTS {
+            assert!(pinned.version.split('.').all(|n| n.parse::<u32>().is_ok()), "{}", pinned.id());
+            for platform in ["win32-x64", "win32-arm64", "linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"] {
+                let sum = pinned.sha256_for(platform).unwrap_or_else(|| panic!("{} on {platform}", pinned.id()));
+                assert!(sum.len() == 64 && sum.chars().all(|c| c.is_ascii_hexdigit()), "{}", pinned.id());
+            }
+        }
+        assert!(DEFAULTS[0].sha256_for("win32-x64") != DEFAULTS[0].sha256_for("linux-x64"), "one build per platform");
+        assert!(DEFAULTS[0].sha256_for("web").is_none(), "no build, no checksum to fall back on");
+        assert_eq!(DEFAULTS[1].line(), "esbenp.prettier-vscode@12.4.0  verified publisher");
+        assert!(DEFAULTS.iter().any(|p| p.id() == "anthropic.claude-code"));
     }
 
     #[test]

@@ -1,0 +1,25 @@
+title: The first start asks before installing the extensions the app comes with, naming each one's exact version, and "Not now" installs none and does not ask again
+folders: rust-small
+defaults: offered
+expect-log: script: Answer\("Not now"\)
+forbid-log: getting the ones the app comes with
+expect-file: ../data/extensions/defaults.json :: anthropic\.claude-code
+expect-file: ../data/extensions/defaults.json :: esbenp\.prettier-vscode
+expect-file: ../data/extensions/defaults.json :: dbaeumer\.vscode-eslint
+expect-file: ../data/extensions/defaults.json :: miguelsolorio\.symbols
+again-forbid-log: getting the ones the app comes with
+
+wait 2500
+mark asked
+wait 600
+answer Not now
+wait 1500
+mark after
+wait 600
+quit
+
+=== again
+wait 3000
+mark again
+wait 600
+quit
