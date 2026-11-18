@@ -66,6 +66,7 @@ pub enum Step {
     Minimize(bool),
     Delete(String),
     Console(String),
+    Term(String),
     Account(String),
     Rename(String),
     Ignored(String),
@@ -156,6 +157,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "restore" => Step::Minimize(false),
         "delete" => Step::Delete(arg.into()),
         "console" => Step::Console(arg.into()),
+        "term" => Step::Term(arg.into()),
         "rename" => Step::Rename(arg.into()),
         "ignored" => Step::Ignored(arg.into()),
         "menu" => {

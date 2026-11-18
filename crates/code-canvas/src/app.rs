@@ -26,6 +26,7 @@ use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState
 mod assistants;
 mod github_sync;
 mod sharing;
+mod term_steps;
 
 struct Gfx {
     renderer: Renderer,
@@ -4186,6 +4187,7 @@ impl App {
                     None => log::warn!("script: the console has no shell to type '{said}' into"),
                 }
             }
+            Step::Term(what) => self.term_step(&what),
             Step::Rename(path) => {
                 let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                 self.ui.naming = Some(ui::Naming { kind: ui::NamingKind::Rename, path, text: name, focus: true });

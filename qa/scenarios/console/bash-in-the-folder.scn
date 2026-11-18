@@ -1,8 +1,15 @@
-title: The console is bash in the open folder: what is typed there happens on disk, and its screen shows what the shell says
+title: The console is bash in the open folder: what is typed there happens on disk, its screen shows what the shell says, and what the mouse selects there is copied and pasted like in Windows Terminal
 folders: git-changes
-limit: 50
+limit: 70
 expect-log: console: .*bash.* in .*git-changes
 expect-file: git-changes\from-console.txt :: ^made by the console
+expect-log: script: console selection "first-42\\nsecond-55"
+expect-log: console: copied 18 characters
+expect-log: script: console clipboard "first-42\\nsecond-55"
+expect-log: script: console selection "and-more"
+expect-log: script: console clipboard "and-more"
+expect-log: script: console line at the cursor "\$ and-more"
+expect-log: script: console line at the cursor "\$"
 forbid-log: WARN.*script
 forbid-log: console: .* did not start
 
@@ -13,6 +20,32 @@ console git status --short
 wait 3000
 mark a-console-after-two-commands
 wait 500
+console echo first-$((40+2)) && echo second-$((50+5)) and-more
+wait 2500
+term drag first-42 second-55
+wait 800
+mark c-two-lines-selected
+wait 500
+term report
+term copy
+wait 800
+term report
+term click and-more 2
+wait 800
+mark d-a-word-double-clicked
+wait 500
+term report
+term right and-more
+wait 800
+term report
+term right
+wait 1500
+mark e-pasted-by-a-right-click
+wait 500
+term report
+term copy
+wait 1500
+term report
 console exit
 wait 2500
 mark b-the-shell-ended

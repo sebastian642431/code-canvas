@@ -2,7 +2,7 @@ use egui::{Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, 
 
 use super::{ask_button, pal, panel_title, small_icon, Action, ChoiceLook, UiState};
 use crate::icons;
-use crate::term::Terminal;
+use crate::term::{self, Mouse, Selection, Spot, Terminal, Unit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsoleOp {
@@ -36,17 +36,20 @@ fn shade(color: vt100::Color, plain: Color32) -> Color32 {
     }
 }
 
+/// What pasting `text` sends: lines end with Enter, and the whole is marked as pasted when the shell asked for that.
+fn pasted(text: &str, screen: &vt100::Screen) -> Vec<u8> {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    match screen.bracketed_paste() {
+        true => format!("\x1b[200~{text}\x1b[201~").into_bytes(),
+        false => text.into_bytes(),
+    }
+}
+
 fn typed(event: &egui::Event, screen: &vt100::Screen) -> Vec<u8> {
     use egui::{Event, Key};
     match event {
         Event::Text(text) => text.as_bytes().to_vec(),
-        Event::Paste(text) => {
-            let text = text.replace("\r\n", "\r").replace('\n', "\r");
-            match screen.bracketed_paste() {
-                true => format!("\x1b[200~{text}\x1b[201~").into_bytes(),
-                false => text.into_bytes(),
-            }
-        }
+        Event::Paste(text) => pasted(text, screen),
         Event::Copy => vec![3],
         Event::Cut => vec![24],
         Event::Key { key, pressed: true, modifiers, .. } => {
@@ -85,7 +88,14 @@ fn typed(event: &egui::Event, screen: &vt100::Screen) -> Vec<u8> {
     }
 }
 
-fn row_of(screen: &vt100::Screen, row: u16, cols: u16, font: &FontId) -> egui::text::LayoutJob {
+/// One row of the screen as a laid out line; the cells of `chosen` (columns, start to end) on the selection's colour.
+fn row_of(
+    screen: &vt100::Screen,
+    row: u16,
+    cols: u16,
+    font: &FontId,
+    chosen: std::ops::Range<u16>,
+) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let (text, ground) = (pal().text, Color32::TRANSPARENT);
     for col in 0..cols {
@@ -96,6 +106,9 @@ fn row_of(screen: &vt100::Screen, row: u16, cols: u16, font: &FontId) -> egui::t
         let (mut front, mut back) = (shade(cell.fgcolor(), text), shade(cell.bgcolor(), ground));
         if cell.inverse() {
             (front, back) = (if back == ground { pal().well } else { back }, front);
+        }
+        if chosen.contains(&col) {
+            (front, back) = (text, pal().selection);
         }
         if cell.dim() {
             front = front.gamma_multiply(0.6);
@@ -113,16 +126,103 @@ fn row_of(screen: &vt100::Screen, row: u16, cols: u16, font: &FontId) -> egui::t
     job
 }
 
-fn screen(ui: &mut egui::Ui, term: &mut Terminal, focus: &mut bool, wheel: &mut f32) {
+/// Copies the selection and lets it go; false when nothing is selected.
+fn copy_selection(term: &mut Terminal) -> bool {
+    let text = term.selected_text();
+    term.selection = None;
+    if text.is_empty() {
+        return false;
+    }
+    term::copy(&text);
+    log::info!("console: copied {} characters", text.chars().count());
+    true
+}
+
+/// The mouse on the screen: a press starts a selection (two in a row a word, three a line, Shift grows the one there
+/// is), dragging grows it and scrolls when it goes past the top or the bottom, a click alone lets it go. A right
+/// click copies the selection like Windows Terminal, or pastes when nothing is selected.
+fn pointer(ui: &egui::Ui, resp: &egui::Response, term: &mut Terminal, mouse: &mut Mouse, inner: Rect, cell: Vec2) {
+    let (rows, cols) = term.size();
+    let spot_at = |term: &Terminal, pos: Pos2, unit: Unit| {
+        let row = ((pos.y - inner.top()) / cell.y).floor().clamp(0.0, f32::from(rows) - 1.0) as usize;
+        let x = (pos.x - inner.left()) / cell.x;
+        let col = match unit {
+            Unit::Cell => x.round().clamp(0.0, f32::from(cols)),
+            _ => x.floor().clamp(0.0, f32::from(cols) - 1.0),
+        };
+        Spot::new(term.top() + row, col as u16)
+    };
+    let (pressed, down, at, time, shift) = ui.input(|input| {
+        let pointer = &input.pointer;
+        (pointer.primary_pressed(), pointer.primary_down(), pointer.latest_pos(), input.time, input.modifiers.shift)
+    });
+    if let (true, true, Some(pos)) = (pressed, resp.contains_pointer(), at) {
+        let on = spot_at(term, pos, Unit::Word);
+        let again = time - mouse.last < 0.45 && mouse.at == Some(on);
+        mouse.clicks = if again { mouse.clicks % 3 + 1 } else { 1 };
+        (mouse.last, mouse.at, mouse.dragging) = (time, Some(on), true);
+        let unit = [Unit::Cell, Unit::Word, Unit::Line][usize::from(mouse.clicks - 1)];
+        term.selection = match term.selection {
+            Some(mut selection) if shift && mouse.clicks == 1 => {
+                selection.head = spot_at(term, pos, selection.unit);
+                Some(selection)
+            }
+            _ => Some(Selection::new(spot_at(term, pos, unit), unit)),
+        };
+        resp.request_focus();
+    }
+    if mouse.dragging {
+        if let Some(pos) = at {
+            let past = match pos.y {
+                y if y < inner.top() => 1,
+                y if y > inner.bottom() => -1,
+                _ => 0,
+            };
+            if down && past != 0 {
+                term.scroll(past);
+                ui.ctx().request_repaint();
+            }
+            if let Some(unit) = term.selection.map(|selection| selection.unit) {
+                let head = spot_at(term, pos, unit);
+                if let Some(selection) = term.selection.as_mut() {
+                    selection.head = head;
+                }
+            }
+        }
+        if !down {
+            mouse.dragging = false;
+            if term.selected().is_none() {
+                term.selection = None;
+            }
+        }
+    }
+    if resp.secondary_clicked() {
+        resp.request_focus();
+        if !copy_selection(term) {
+            if let Some(text) = term::clipboard().filter(|text| !text.is_empty()) {
+                let bytes = pasted(&text, term.screen());
+                term.send(&bytes);
+            }
+        }
+    }
+}
+
+fn screen(ui: &mut egui::Ui, term: &mut Terminal, focus: &mut bool, wheel: &mut f32, mouse: &mut Mouse) {
     let font = FontId::monospace(13.0);
     let (wide, tall) = ui.fonts_mut(|fonts| (fonts.glyph_width(&font, 'M'), fonts.row_height(&font)));
     let all = ui.available_rect_before_wrap().shrink2(Vec2::new(8.0, 6.0));
-    let resp = ui.allocate_rect(all, Sense::click());
+    ui.allocate_rect(all, Sense::hover());
+    // An id of its own: the keyboard stays with the screen whatever is drawn before it from one frame to the next.
+    let resp = ui.interact(all, ui.scope_id().with("console screen"), Sense::click_and_drag());
     ui.painter().rect_filled(all, 8.0, pal().well);
     let inner = all.shrink2(Vec2::new(8.0, 6.0));
     let cols = (inner.width() / wide.max(1.0)).floor().clamp(8.0, 400.0) as u16;
     let rows = (inner.height() / tall.max(1.0)).floor().clamp(2.0, 300.0) as u16;
     term.resize(rows, cols);
+    mouse.place = Some((inner.min, Vec2::new(wide, tall)));
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
 
     if resp.clicked() || std::mem::take(focus) {
         resp.request_focus();
@@ -130,22 +230,52 @@ fn screen(ui: &mut egui::Ui, term: &mut Terminal, focus: &mut bool, wheel: &mut 
     if resp.clicked_elsewhere() {
         resp.surrender_focus();
     }
+    pointer(ui, &resp, term, mouse, inner, Vec2::new(wide, tall));
+    // Keys only come while the window has the keyboard: what counts for taking them is that the screen has the focus
+    // of the interface (a script's keys come to a window in the background too); the caret shows both.
     let focused = resp.has_focus();
-    if focused {
+    if ui.memory(|memory| memory.has_focus(resp.id)) {
         let keep = egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true };
         ui.memory_mut(|memory| memory.set_focus_lock_filter(resp.id, keep));
         let events = ui.input(|input| input.events.clone());
         for event in &events {
+            use egui::{Event, Key};
             let pages = match event {
-                egui::Event::Key { key: egui::Key::PageUp, pressed: true, modifiers, .. } if modifiers.shift => 1,
-                egui::Event::Key { key: egui::Key::PageDown, pressed: true, modifiers, .. } if modifiers.shift => -1,
+                Event::Key { key: Key::PageUp, pressed: true, modifiers, .. } if modifiers.shift => 1,
+                Event::Key { key: Key::PageDown, pressed: true, modifiers, .. } if modifiers.shift => -1,
                 _ => 0,
             };
             if pages != 0 {
                 term.scroll(pages * (rows as isize - 1));
                 continue;
             }
+            // Ctrl+C copies what is selected and is the interrupt when nothing is; Ctrl+Shift+C only copies, and
+            // Ctrl+Shift+V pastes (Ctrl+V comes as a paste already). Escape lets a selection go.
+            let shifted = |want: Key| {
+                matches!(event, Event::Key { key, pressed: true, modifiers, .. }
+                    if *key == want && modifiers.ctrl && modifiers.shift && !modifiers.alt)
+            };
+            let escape = matches!(event, Event::Key { key: Key::Escape, pressed: true, .. });
+            if matches!(event, Event::Copy) || shifted(Key::C) || (escape && term.selection.is_some()) {
+                let had = match escape {
+                    true => std::mem::take(&mut term.selection).is_some(),
+                    false => copy_selection(term),
+                };
+                if had || !matches!(event, Event::Copy) {
+                    continue;
+                }
+            }
+            if shifted(Key::V) {
+                if let Some(text) = term::clipboard() {
+                    let bytes = pasted(&text, term.screen());
+                    term.send(&bytes);
+                }
+                continue;
+            }
             let bytes = typed(event, term.screen());
+            if !bytes.is_empty() {
+                term.selection = None;
+            }
             term.send(&bytes);
         }
     }
@@ -159,9 +289,18 @@ fn screen(ui: &mut egui::Ui, term: &mut Terminal, focus: &mut bool, wheel: &mut 
     }
 
     let painter = ui.painter().with_clip_rect(all);
+    let (chosen, top) = (term.selected(), term.top());
     let shown = term.screen();
     for row in 0..rows {
-        let job = row_of(shown, row, cols, &font);
+        let line = top + usize::from(row);
+        let span = match chosen {
+            Some((from, to)) if (from.line..=to.line).contains(&line) => {
+                let start = if line == from.line { from.col } else { 0 };
+                start..if line == to.line { to.col } else { cols }
+            }
+            _ => 0..0,
+        };
+        let job = row_of(shown, row, cols, &font, span);
         let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
         painter.galley(Pos2::new(inner.left(), inner.top() + row as f32 * tall), galley, pal().text);
     }
@@ -250,5 +389,5 @@ pub fn console_panel(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Acti
             });
         });
     }
-    screen(ui, term, &mut console.focus, &mut console.wheel);
+    screen(ui, term, &mut console.focus, &mut console.wheel, &mut console.mouse);
 }

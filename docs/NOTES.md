@@ -2383,6 +2383,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it draws (or rubs out) with the pencil, selects code with the pointer over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
+| `term` | `term drag <text> <text>`, `term click <text> [times]`, `term right [text]`, `term copy`, `term report` | The mouse on the console's screen, aimed at text shown there (the lowest row it is on; no spaces in it): a drag from the start of one text to the end of the other, one or more clicks on a text, a right click on a text or the middle. `copy` is Ctrl+C. `report` logs "script: console selection \"…\"", "script: console clipboard \"…\"" (the run's own) and "script: console line at the cursor \"…\"". |
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `colours` | `colours <path> <line>` | Logs "script: colours of <path> line N: keyword let · ident x · …": the kind of each token of that line (1-based) as the canvas draws it, from a grammar or the app's own. |
@@ -3075,15 +3076,38 @@ in the folder that is open.
   keeps the app's own shortcuts quiet (`on_key` returns while something is
   being typed into), and Tab, the arrows and Escape are kept from moving the
   focus (`set_focus_lock_filter`). `typed` turns a key into what a terminal
-  sends. Ctrl+C arrives from egui as "copy": with nothing selected it is the
-  interrupt. The commands of scope `Anywhere` still run (the palette, go to
-  file, the console's own key).
+  sends. The commands of scope `Anywhere` still run (the palette, go to
+  file, the console's own key). Keys are taken when the screen has egui's
+  focus even if the window has not (`Memory::has_focus`, not
+  `Response::has_focus`): a real key only comes to a window that has the
+  keyboard, and a script's come to one in the background.
+- **Selecting and copying, as in Windows Terminal** (`term::Selection`,
+  `ui/console.rs` `pointer`): dragging selects, two clicks a word (letters,
+  digits and what paths are made of, `/ . - :`; a bracket, quote or comma is
+  one alone), three a whole line, Shift+click grows it; dragging past the top
+  or the bottom scrolls. Ctrl+C (or Ctrl+Shift+C) copies the selection and
+  lets it go; with nothing selected Ctrl+C is the interrupt. A right click
+  copies the selection, or pastes the clipboard when there is none (the same
+  bytes as Ctrl+V, bracketed when the shell asked). Ctrl+Shift+V pastes too;
+  Escape or typing lets a selection go.
+- A selection is held by line numbers that count every line since the shell
+  started (`Spot::line`): the rows that fall off the top of the 5000 kept are
+  counted by vt100's `on_scroll` callback (`Dropped`), so a selection stays on
+  its text while output comes and in the scrollback. It goes with a resize, a
+  switch of screen, a cleared scrollback, or when all of it fell off.
+  `term::text` is what is copied: a wrapped line goes on without a break, the
+  spaces at the end of every line and the empty lines at the end are left out.
+  vt100 only shows the scrollback through what is in view, so `Lines::row`
+  looks there for a moment and puts the view back.
+- **A scripted run has a clipboard of its own** (`term::copy`,
+  `term::clipboard`): a scenario never reads or replaces what the person at
+  the computer copied.
 - Shift+PageUp, Shift+PageDown and the wheel look at what scrolled away; typing
   comes back.
 - "Open in terminal" of the files menu starts the console's shell there. It used
   to start a window of another program.
-- Not there yet: several consoles, selecting text with the mouse, a console of
-  the one who shares for those who join.
+- Not there yet: several consoles, a console of the one who shares for those
+  who join.
 
 ### crates/code-canvas/src/update.rs
 
