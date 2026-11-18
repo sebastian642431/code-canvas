@@ -89,7 +89,18 @@ pub enum Doing {
     Leaving,
 }
 
+const DOINGS: [Doing; 7] =
+    [Doing::Reading, Doing::Editing, Doing::Searching, Doing::Running, Doing::Thinking, Doing::Waiting, Doing::Leaving];
+
 impl Doing {
+    pub fn code(self) -> u8 {
+        DOINGS.iter().position(|doing| *doing == self).unwrap_or(4) as u8
+    }
+
+    pub fn of_code(code: u8) -> Doing {
+        DOINGS.get(code as usize).copied().unwrap_or(Doing::Thinking)
+    }
+
     pub fn said(self) -> &'static str {
         match self {
             Doing::Reading => "reading",
@@ -118,6 +129,7 @@ pub struct Agent {
     pub at: Instant,
     pub moved: u64,
     pub trail: Vec<Step>,
+    pub from: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -516,7 +528,7 @@ impl Agents {
     }
 
     fn agent(&mut self, key: &str, session: &str, role: &str) -> &mut Agent {
-        if let Some(at) = self.list.iter().position(|agent| agent.key == key) {
+        if let Some(at) = self.list.iter().position(|agent| agent.key == key && agent.from.is_none()) {
             return &mut self.list[at];
         }
         let avatar = self.face_of(key);
@@ -539,6 +551,7 @@ impl Agents {
             at: Instant::now(),
             moved: 0,
             trail: Vec::new(),
+            from: None,
         });
         self.list.last_mut().unwrap()
     }

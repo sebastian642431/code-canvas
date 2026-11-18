@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ot::TextOp;
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 47800;
 const MAGIC: &[u8; 5] = b"CCSH1";
 const LARGEST: usize = 16 << 20;
@@ -56,6 +56,69 @@ impl Seen {
     }
 }
 
+pub const MOST_HELPERS: usize = 24;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Place {
+    pub folder: u32,
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Track {
+    pub doing: u8,
+    pub at: Place,
+    pub lines: Option<(u32, u32)>,
+    pub note: String,
+    pub ago: u32,
+    pub moved: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Helper {
+    pub key: String,
+    pub avatar: u8,
+    pub role: String,
+    pub task: String,
+    pub doing: u8,
+    pub note: String,
+    pub at: Option<Place>,
+    pub lines: Option<(u32, u32)>,
+    pub find: Option<String>,
+    pub ago: u32,
+    pub moved: u64,
+    pub trail: Vec<Track>,
+}
+
+impl Place {
+    fn sane(&self) -> bool {
+        self.path.is_empty() || safe_path(self.path.trim_end_matches('/'))
+    }
+}
+
+impl Helper {
+    pub fn sane(list: &[Helper]) -> bool {
+        let short = |text: &str| text.len() <= LONGEST_NAME;
+        let few = |lines: &Option<(u32, u32)>| lines.is_none_or(|(_, count)| count <= 400);
+        list.len() <= MOST_HELPERS
+            && list.iter().all(|helper| {
+                [&helper.key, &helper.role, &helper.task, &helper.note].iter().all(|text| short(text))
+                    && helper.find.as_deref().is_none_or(short)
+                    && helper.at.as_ref().is_none_or(Place::sane)
+                    && few(&helper.lines)
+                    && helper.trail.len() <= 2 * crate::agents::TRAIL
+                    && helper.trail.iter().all(|track| track.at.sane() && short(&track.note) && few(&track.lines))
+            })
+    }
+
+    pub fn older(&mut self, by: u32) {
+        self.ago = self.ago.saturating_add(by);
+        for track in &mut self.trail {
+            track.ago = track.ago.saturating_add(by);
+        }
+    }
+}
+
 pub fn turns_text(c: char) -> bool {
     matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
@@ -81,12 +144,13 @@ pub enum Msg {
     FolderGone { id: u32 },
     Gone { folder: u32, path: String },
     Edit { folder: u32, path: String, epoch: u32, number: u64, seen: u64, op: TextOp },
-    Save { folder: u32, path: String },
+    Save { folder: u32, path: String, format: bool },
     Make { folder: u32, path: String, text: String },
     Drop { folder: u32, path: String },
     Again { folder: u32, path: String },
     Seen { who: u32, at: Seen },
     Come { who: u32 },
+    Agents { who: u32, list: Vec<Helper> },
     Said { folder: u32, path: String, epoch: u32, seen: u64 },
     Bye { why: String },
 }
@@ -305,7 +369,7 @@ mod tests {
         let secret = [3u8; 16];
         let ((mut guest_out, mut guest_in), (mut host_out, mut host_in)) = pair(&secret, &secret);
         let long = Msg::File { folder: 1, path: "src/a.rs".into(), text: "fn main() {}\n".repeat(400), epoch: 0 };
-        let short = Msg::Save { folder: 1, path: "src/a.rs".into() };
+        let short = Msg::Save { folder: 1, path: "src/a.rs".into(), format: true };
         let mut wire = Vec::new();
         write_msg(&mut wire, &mut guest_out, &long).unwrap();
         write_msg(&mut wire, &mut guest_out, &short).unwrap();

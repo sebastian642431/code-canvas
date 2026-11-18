@@ -3575,10 +3575,14 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         cut(ui, at, 12.0);
         let lifted = if resp.hovered() { Vec2::new(0.0, -2.0) } else { Vec2::ZERO };
         face(ui.painter(), &st.faces, agent.avatar, at + lifted, 11.0, c(agent.color), agent.quiet, agent.followed);
+        if let Some((owner, color)) = &agent.owner {
+            owner_badge(ui.painter(), at + lifted + Vec2::new(9.0, 9.0), 5.5, owner, c(*color));
+        }
         let how = if agent.followed { "You follow it. Click to stop." } else { "Click to follow it on the canvas." };
+        let whose = agent.owner.as_ref().map(|(owner, _)| format!(", of {owner}")).unwrap_or_default();
         if resp
             .on_hover_text(format!(
-                "{} · {}
+                "{} · {}{whose}
 {}
 {how}",
                 agent.name, agent.role, agent.said
@@ -3661,6 +3665,7 @@ pub struct AgentView {
     pub avatar: usize,
     pub quiet: bool,
     pub followed: bool,
+    pub owner: Option<(String, u32)>,
 }
 
 pub struct AgentMark {
@@ -3672,6 +3677,7 @@ pub struct AgentMark {
     pub lines: Vec<Rect>,
     pub busy: bool,
     pub quiet: bool,
+    pub owner: Option<(String, u32)>,
 }
 
 pub struct AgentTrail {
@@ -3749,6 +3755,13 @@ fn face(
             painter.circle_filled(center, radius, color);
         }
     }
+}
+
+fn owner_badge(painter: &egui::Painter, at: Pos2, radius: f32, owner: &str, color: Color32) {
+    painter.circle_filled(at, radius + 1.5, pal().card);
+    painter.circle_filled(at, radius, color);
+    let font = FontId::proportional(radius * 1.25);
+    painter.text(at, Align2::CENTER_CENTER, initial(owner), font, readable_on(color));
 }
 
 fn ago(age: std::time::Duration) -> String {
@@ -3861,7 +3874,11 @@ fn agent_marks(ctx: &egui::Context, painter: &egui::Painter, st: &mut UiState, c
             painter.circle_stroke(center, 17.0 + beat * 4.0, Stroke::new(2.0, color.gamma_multiply(0.75 - beat * 0.5)));
         }
         face(painter, &st.faces, mark.avatar, center, 14.0, color, mark.quiet, false);
-        let tag = if mark.quiet { mark.name.clone() } else { format!("{} · {}", mark.name, mark.said) };
+        let mut tag = if mark.quiet { mark.name.clone() } else { format!("{} · {}", mark.name, mark.said) };
+        if let Some((owner, of)) = &mark.owner {
+            owner_badge(painter, center + Vec2::new(12.0, 12.0), 7.0, owner, c(*of));
+            tag = format!("{tag} ({owner})");
+        }
         let tint = if mark.quiet { color.gamma_multiply(0.55) } else { color };
         name_tag(painter, center + Vec2::new(-14.0, 18.0), &tag, tint);
     }
@@ -3876,7 +3893,11 @@ fn following_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &
     let (name, color, stop) = match (person, agent) {
         (Some(person), _) => (person.name.clone(), person.color, Action::Share(ShareOp::Follow(None))),
         (None, Some(agent)) => {
-            (format!("{} ({})", agent.name, agent.role), agent.color, Action::Agent(AgentOp::Follow(None)))
+            let name = match &agent.owner {
+                Some((owner, _)) => format!("{} ({}, of {owner})", agent.name, agent.role),
+                None => format!("{} ({})", agent.name, agent.role),
+            };
+            (name, agent.color, Action::Agent(AgentOp::Follow(None)))
         }
         (None, None) => return,
     };

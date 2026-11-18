@@ -1,0 +1,38 @@
+title: The host's assistant shows on the guest's canvas where it works, marked as the host's, and the guest follows it; the guest's own assistant shows on the host's; one working outside the shared folders is not sent
+folders: share-text
+limit: 80
+expect-log: share: share-text is shared, 4 files
+expect-log: share: 1 of the assistants of Beto on the canvas
+guest-expect-log: share: 1 of the assistants of .+ on the canvas
+forbid-log: share: 2 of the assistants
+
+wait 3000
+share start writers
+wait 6000
+agent {"agent":"h1","name":"Codex","task":"Tidy the notes","action":"read","path":"{FIX}/share-text/notes.txt","line":3,"lines":4,"note":"looking for typos"}
+agent {"agent":"h2","name":"Codex","task":"Something private","action":"read","path":"{WORK}/elsewhere/secret.txt","line":1}
+wait 5000
+agent {"agent":"h1","name":"Codex","task":"Tidy the notes","action":"edit","path":"{FIX}/share-text/src/lib.rs","line":5,"lines":3}
+wait 6000
+fit
+wait 1500
+mark host-sees-the-guests-assistant
+wait 6000
+quit
+wait 1500
+=== guest
+wait 2500
+share join {INVITE} Beto
+wait 6000
+fit
+wait 1500
+mark sees-the-hosts-assistant
+wait 1000
+agent Tidy the notes
+wait 5000
+mark follows-the-hosts-assistant
+wait 1000
+agent {"agent":"g1","name":"Claude Code","task":"Write the docs","action":"edit","path":"docs/deep/inner.txt","line":1,"lines":2}
+wait 8000
+quit
+wait 1500

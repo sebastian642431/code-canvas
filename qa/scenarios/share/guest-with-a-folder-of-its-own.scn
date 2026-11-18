@@ -1,4 +1,5 @@
 title: A guest that has a folder of its own open joins and leaves: its folder stays, is not shared, and its unsaved text is still asked about on closing
+prefs: {"autosave": false}
 folders: share-text
 fixtures: share-second
 limit: 75

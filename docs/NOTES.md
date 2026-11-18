@@ -1929,7 +1929,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `account` | `account signin\|cancel\|sync\|signout\|menu` | The GitHub account: start signing in, give up, sync now, sign out, open its menu. |
 | `tool` | `tool move\|edit\|draw\|rub\|clear\|colour <n>\|width <n>` | The pointer (`edit`), the hand (`move`) or the pencil (`draw`) of the toolbar; `rub` is the pencil rubbing out, `clear` takes away everything drawn, `colour` and `width` pick one of the pencil's by its place. `edit <path>` puts a caret whatever the tool is. |
 | `diff` | `diff on\|off\|split\|together\|fold\|unfold`, `diff around <lines>` | Show what changed inside the changed files: removed lines above the new ones or old and new side by side, with or without the unchanged lines folded, and how many of them stay around a change. |
-| `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived; or follow the one with that name. |
+| `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived (a relative `path` is of the folder in front, such as a guest's shared one); or follow the one with that name. |
 | `workspace` | `workspace put\|off\|forget <folder>`, `workspace all` | Put a folder of the workspace on the canvas, take it off, forget it, or put them all. |
 | `share` | `share start [writers]`, `share stop`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. |
 | `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
@@ -2060,6 +2060,10 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   with `Step::left`, and the tip of the one under the pointer. With trails on
   screen it asks for a frame every 20 s, so they fade with nothing else happening.
   `Prefs::trails` turns it off.
+- **Assistants of others in a shared session** are in the same `Agents::list`
+  with `Agent::from` set to the person they belong to (see the share section):
+  `Agents::agent` never takes one of them for one heard here, and only the ones
+  with no `from` are sent to the others.
 
 ### crates/code-canvas/src/share
 
@@ -2108,8 +2112,23 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   the host until someone saves, which is `Msg::Save` from a guest. At a guest
   with no editor the kept text is written to the file and the watcher shows it;
   with one, the file is written too, told to the watcher as its own
-  (`Watcher::expect`), and the editor counts as saved. Files not saved of a
-  shared folder do not hold the guest's app from closing (`App::unsaved`).
+  (`Watcher::expect`), and the editor counts as saved, **unless it had text of
+  the guest's own not saved yet**: then it stays not saved (`Sharing::typed`,
+  noted before the first edit of a pass is applied, `Editor::written_as` in
+  `share_settle`). Before, an edit from the host (another program appending
+  to the file there) made the guest's editor "saved", its `Ctrl+S` did nothing,
+  no `Msg::Save` went, and what the guest typed was never written on the
+  host's disk. Files not saved of a shared folder do not hold the guest's app
+  from closing (`App::unsaved`), but the guest's saving while typing does save
+  them (`share_unsaved`, added to what autosave saves), which sends a save to
+  the host like `Ctrl+S`. `Msg::Save` says whether to format (`Ctrl+S` does,
+  autosave and a file changed on the guest's disk do not).
+- **A guest's save keeps what another program wrote on the host's disk.** The
+  host's editor takes in what changed on disk under the text not saved
+  (`Editor::take_in`), as for its own files; and when `Msg::Save` comes before
+  the watcher has said so, `Event::Save` reads the file, and if it is not what
+  the editor read (`Editor::read_as`), takes it in first (`on_disk_changes`),
+  then saves. The text taken in reaches everyone as one more edit.
 - **Readers**: `Page::read_only` refuses to start editing and to make, rename
   or delete files, and the host refuses the edits anyway (`Session::edit`),
   sending the file back. Nothing a reader's disk does is sent: a file changed
@@ -2189,8 +2208,35 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
 - `Link::waiting` is let go when the other side says what it has (`Msg::Said`,
   every `SAID_EVERY` edits it receives without sending): someone who only reads
   made the other keep every edit of the session.
-- The wire has a version (3 now: `Make` and `Drop` came with it): an app of
-  another version is told so, instead of failing on a message it does not know.
+- The wire has a version (4 now: `Agents`, and `format` in `Save`; 3 brought
+  `Make` and `Drop`): an app of another version is told so, instead of failing
+  on a message it does not know.
+- **Everyone's assistants on everyone's canvas** (`share_agents_out`,
+  `share_agents_in`). Each app sends `Msg::Agents` with the list of its own
+  assistants (`Agent::from` is `None`) that are at or have been in a shared
+  folder: a `Helper` per assistant, its place and trail as a folder id and a
+  path in it (`Place`, `share_place_of`), what it does as `Doing::code`, and
+  how long ago each thing was heard in milliseconds (`ago`, so no two clocks
+  need to agree). Steps outside the shared folders are left out, and so is an
+  assistant with nothing in them. It is sent only when the list without the
+  ages changed, at most every `AGENTS_EVERY` (400 ms), and again after
+  `AGENTS_AGAIN` (8 s) if someone was heard since, so a remote one does not
+  turn quiet while it works. A list is a few hundred bytes.
+- The host passes a guest's list on to the others (`who` is the sender's
+  number, which the host sets itself), keeps the last list of each and its own
+  (`Session::agents`, `own_agents`), and gives them to who joins, after the
+  people (`agents_to`), with the ages grown by the time they were kept. A list
+  that is not `Helper::sane` (too many, long texts, a path that is not safe) is
+  dropped; one of someone who left goes with them (`Event::Agents`).
+- On arriving, every remote assistant becomes an `Agent` like the ones heard
+  here, with `from` the person's number, key `<who>:<key>`, its place a path
+  under the page of that folder here and `at` set back by `ago`: drawing,
+  following, the trail and the search of an edited line need nothing else.
+  They are made anew from `Session::agents` on each list, on `FolderReady` and
+  `FolderGone`, and all go when the session ends. `share_owner` gives the
+  person's name and colour: a small circle with their initial on the face (in
+  the rail and on the canvas), their name after the tag, in the tooltip and in
+  the following bar.
 - A guest's folder is held by a file it keeps open (`.held`); a second app
   starting cleans only the folders nobody holds.
 - One thread reads each connection and one writes it, so the app never waits on

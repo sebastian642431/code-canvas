@@ -4,12 +4,14 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::share::ot::TextOp;
-use crate::share::{self, Caret, Event, Invite, Seen, Session};
+use crate::share::{self, Caret, Event, Helper, Invite, Place, Seen, Session, Track};
 use crate::ui::{PeerMark, PersonView, ShareMode, ShareOp};
 
 const MOST_FILES: usize = 20_000;
 const SEEN_EVERY: Duration = Duration::from_millis(70);
 const LOOKED_OVER_EVERY: Duration = Duration::from_secs(2);
+const AGENTS_EVERY: Duration = Duration::from_millis(400);
+const AGENTS_AGAIN: Duration = Duration::from_secs(8);
 
 pub(super) struct Sharing {
     pub session: Option<Session>,
@@ -23,6 +25,9 @@ pub(super) struct Sharing {
     settle: Vec<(u32, String)>,
     made: HashMap<(u32, String), u64>,
     mirrored: HashMap<(u32, String), u64>,
+    typed: HashSet<(u32, String)>,
+    agents_said: Option<Vec<Helper>>,
+    agents_at: Instant,
     _held: Option<std::fs::File>,
     said: Option<Seen>,
     said_at: Instant,
@@ -46,6 +51,9 @@ impl Default for Sharing {
             settle: Vec::new(),
             made: HashMap::new(),
             mirrored: HashMap::new(),
+            typed: HashSet::new(),
+            agents_said: None,
+            agents_at: Instant::now(),
             _held: None,
             said: None,
             said_at: Instant::now(),
@@ -268,6 +276,7 @@ impl App {
         drop(session);
         let dir = self.sharing.dir.take();
         self.sharing = Sharing::default();
+        self.agents.list.retain(|agent| agent.from.is_none());
         if !host {
             for i in (0..self.pages.len()).rev() {
                 if self.pages[i].shared.is_some() {
@@ -497,7 +506,7 @@ impl App {
         for (folder, rel, text) in written {
             log::info!("share: {rel} changed on this side, the others get it");
             session.changed(folder, &rel, &text);
-            session.saved(folder, &rel);
+            session.saved(folder, &rel, false);
         }
         for (folder, rel, text) in made {
             log::info!("share: {rel} is new on this side, the one sharing gets it");
@@ -534,7 +543,12 @@ impl App {
     fn share_remote_edit(&mut self, folder: u32, rel: &str, op: &TextOp) {
         let Some(index) = self.share_page(folder) else { return };
         let Some(host) = self.sharing.session.as_ref().map(|session| session.host) else { return };
-        self.sharing.settle.push((folder, rel.to_string()));
+        let key = (folder, rel.to_string());
+        let first = !self.sharing.settle.contains(&key);
+        if !host && first && self.pages[index].editors.get(rel).is_some_and(|editor| editor.dirty) {
+            self.sharing.typed.insert(key.clone());
+        }
+        self.sharing.settle.push(key);
         let (id, path) = (self.pages[index].id, self.pages[index].root.join(rel));
         if !self.pages[index].editors.contains_key(rel) {
             if !host {
@@ -579,7 +593,7 @@ impl App {
                 editor.become_text(&text);
             }
             if !host {
-                editor.mark_saved();
+                editor.written_as(self.sharing.typed.remove(&(folder, rel.clone())));
             }
             self.sharing.revs.insert((id, rel.clone()), editor.rev);
             if !host {
@@ -633,8 +647,9 @@ impl App {
                 if let Some(index) = self.share_page(folder) {
                     let id = self.pages[index].id;
                     if let Some(editor) = self.pages[index].editors.get_mut(&path) {
+                        let typed = editor.dirty;
                         editor.become_text(&text);
-                        editor.mark_saved();
+                        editor.written_as(typed);
                         self.sharing.revs.insert((id, path.clone()), editor.rev);
                         if let Some(g) = self.gfx.as_mut() {
                             g.renderer.text.drop_page(id);
@@ -653,7 +668,9 @@ impl App {
                     page.read_only = !writer;
                 }
                 self.workspace.retain(|known| known.path != root);
+                self.share_agents_in();
             }
+            Event::Agents(_) => self.share_agents_in(),
             Event::FolderGone(id) => {
                 if let Some(index) = self.share_page(id) {
                     let root = self.pages[index].root.clone();
@@ -663,6 +680,7 @@ impl App {
                     self.workspace.retain(|known| known.path != root);
                     let _ = std::fs::remove_dir_all(root);
                 }
+                self.share_agents_in();
             }
             Event::Gone { folder, path } => {
                 let root = self.share_page(folder).map(|index| self.pages[index].root.clone());
@@ -671,10 +689,16 @@ impl App {
                 }
             }
             Event::Edit { folder, path, op, .. } => self.share_remote_edit(folder, &path, &op),
-            Event::Save { folder, path, .. } => {
-                if let Some(index) = self.share_page(folder) {
-                    self.save_file(index, &path, true);
+            Event::Save { folder, path, format, .. } => {
+                let Some(index) = self.share_page(folder) else { return };
+                let file = self.pages[index].root.join(&path);
+                let disk = std::fs::read_to_string(&file).ok().map(|text| share::body(&text));
+                let editor = self.pages[index].editors.get(&path);
+                if disk.zip(editor).is_some_and(|(disk, editor)| editor.dirty && !editor.read_as(&disk)) {
+                    log::info!("share: {path} changed on disk before it was saved: what is there is taken in first");
+                    self.on_disk_changes(crate::watch::Batch { files: vec![file], git: Vec::new() });
                 }
+                self.save_file(index, &path, format);
             }
             Event::Make { folder, path, text, by } => {
                 let Some(index) = self.share_page(folder) else { return };
@@ -831,6 +855,7 @@ impl App {
             self.sharing.said_at = Instant::now();
         }
         self.share_follow();
+        self.share_agents_out();
         let mut refused = false;
         for page in &mut self.pages {
             refused |= std::mem::take(&mut page.refused_edit);
@@ -928,5 +953,136 @@ impl App {
                 me: person.id == session.me,
             })
             .collect();
+    }
+
+    pub(super) fn share_unsaved(&self) -> Vec<(usize, String)> {
+        if !self.sharing.session.as_ref().is_some_and(|session| !session.host && session.writer()) {
+            return Vec::new();
+        }
+        let mut unsaved = Vec::new();
+        for (index, page) in self.pages.iter().enumerate().filter(|(_, page)| page.shared.is_some()) {
+            let dirty = page.editors.values().filter(|editor| editor.dirty);
+            unsaved.extend(dirty.map(|editor| (index, editor.rel_path.clone())));
+        }
+        unsaved
+    }
+
+    fn share_place_of(&self, path: &std::path::Path) -> Option<Place> {
+        let key = |path: &std::path::Path| ext::path_key(path.to_string_lossy().trim_end_matches(['/', '\\']));
+        if let Some(page) = self.pages.iter().find(|page| key(&page.root) == key(path)) {
+            return Some(Place { folder: self.share_folder_of(page)?, path: String::new() });
+        }
+        let (index, rel) = self.locate_file(path)?;
+        let folder = self.share_folder_of(&self.pages[index])?;
+        let rel = rel.trim_end_matches('/').to_string();
+        share::wire::safe_path(&rel).then_some(Place { folder, path: rel })
+    }
+
+    pub(super) fn share_owner(&self, agent: &crate::agents::Agent) -> Option<(String, u32)> {
+        let person = self.sharing.session.as_ref()?.person(agent.from?)?;
+        Some((person.name.clone(), share::COLORS[person.color as usize % share::COLORS.len()]))
+    }
+
+    fn share_agents_out(&mut self) {
+        let Some(session) = self.sharing.session.as_ref() else { return };
+        let since = self.sharing.agents_at.elapsed();
+        if !session.connected || since < AGENTS_EVERY {
+            return;
+        }
+        let ago = |at: Instant| at.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        let mut list = Vec::new();
+        for agent in self.agents.list.iter().filter(|agent| agent.from.is_none()) {
+            let trail: Vec<Track> = agent
+                .trail
+                .iter()
+                .filter_map(|step| {
+                    Some(Track {
+                        doing: step.doing.code(),
+                        at: self.share_place_of(&step.path)?,
+                        lines: step.lines,
+                        note: step.note.clone(),
+                        ago: ago(step.at),
+                        moved: step.moved,
+                    })
+                })
+                .collect();
+            let at = agent.path.as_deref().and_then(|path| self.share_place_of(path));
+            if at.is_none() && trail.is_empty() {
+                continue;
+            }
+            list.push(Helper {
+                key: agent.key.clone(),
+                avatar: (agent.avatar % crate::agents::FACES) as u8,
+                role: agent.role.clone(),
+                task: agent.task.clone(),
+                doing: agent.doing.code(),
+                note: agent.note.clone(),
+                at,
+                lines: agent.lines,
+                find: agent.find.clone(),
+                ago: ago(agent.at),
+                moved: agent.moved,
+                trail,
+            });
+            if list.len() == share::wire::MOST_HELPERS {
+                break;
+            }
+        }
+        let mut ageless = list.clone();
+        ageless.iter_mut().for_each(|helper| helper.older(u32::MAX));
+        let heard = list.iter().any(|helper| (helper.ago as u128) < since.as_millis());
+        let changed = self.sharing.agents_said.as_ref() != Some(&ageless);
+        let again = heard && since >= AGENTS_AGAIN;
+        if !changed && !again {
+            return;
+        }
+        self.sharing.agents_said = Some(ageless);
+        self.sharing.agents_at = Instant::now();
+        if let Some(session) = self.sharing.session.as_mut() {
+            session.tell_agents(list);
+        }
+    }
+
+    fn share_agents_in(&mut self) {
+        self.agents.list.retain(|agent| agent.from.is_none());
+        let Some(session) = self.sharing.session.as_ref() else { return };
+        let path_of = |at: &Place| {
+            let root = &self.pages[self.share_page(at.folder)?].root;
+            Some(if at.path.is_empty() { root.clone() } else { root.join(&at.path) })
+        };
+        let mut came = Vec::new();
+        for (who, (when, list)) in &session.agents {
+            let back = |ago: u32| when.checked_sub(Duration::from_millis(ago as u64)).unwrap_or(*when);
+            for helper in list {
+                let trail = helper.trail.iter().filter_map(|track| {
+                    Some(crate::agents::Step {
+                        doing: crate::agents::Doing::of_code(track.doing),
+                        path: path_of(&track.at)?,
+                        lines: track.lines,
+                        note: track.note.clone(),
+                        at: back(track.ago),
+                        moved: track.moved,
+                    })
+                });
+                came.push(crate::agents::Agent {
+                    key: format!("{who}:{}", helper.key),
+                    session: format!("{who}:"),
+                    avatar: helper.avatar as usize % crate::agents::FACES,
+                    role: helper.role.clone(),
+                    task: helper.task.clone(),
+                    doing: crate::agents::Doing::of_code(helper.doing),
+                    note: helper.note.clone(),
+                    path: helper.at.as_ref().and_then(path_of),
+                    lines: helper.lines,
+                    find: helper.find.clone(),
+                    at: back(helper.ago),
+                    moved: helper.moved,
+                    trail: trail.collect(),
+                    from: Some(*who),
+                });
+            }
+        }
+        self.agents.list.extend(came);
+        self.request_redraw();
     }
 }

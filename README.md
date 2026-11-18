@@ -190,7 +190,14 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   formatter, git) reaches them as well.
 - **To look or to edit**: each one who joins only looks until you let them edit,
   one by one or everyone by default. A reader's keys change nothing. `Ctrl+S` of
-  someone who edits saves the file where it lives, on your computer.
+  someone who edits saves the file where it lives, on your computer, and so does
+  their saving while typing. What another program wrote to that file in the
+  meantime stays, with what they typed.
+- **Everyone's assistants on everyone's canvas**: the assistants at work on the
+  shared folders, yours and theirs, show for everyone with their face, what they
+  do, the lines they read or edit and their trail, with a small circle in the
+  colour of whose they are. Click one to follow it, as with your own. An
+  assistant working outside the shared folders is not sent.
 - **Where everyone is**: each person's pointer and caret with their name, in
   their colour, and the outline of what their window shows. Click their circle
   at the top to **follow** them: your canvas goes where theirs goes until you
@@ -404,8 +411,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] The folders and files never read can be chosen (Settings, "Never read").
 - [x] Assistants shown on the canvas as they work, each with its own face; following one;
       a trail of where each one has been.
-- [ ] Assistants of a shared session shown to those who joined; other assistants
-      connected out of the box (Codex).
+- [x] Assistants of a shared session shown to everyone in it, the host's and each
+      guest's, and followed from any canvas.
+- [ ] Other assistants connected out of the box (Codex).
 - [x] A workspace: folders dragged onto the canvas and taken off it.
 - [x] Sharing a session: others see and edit your folders live from their own app,
       as readers or writers, with everyone's pointer, caret and view, and following.
