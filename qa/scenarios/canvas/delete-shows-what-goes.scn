@@ -1,0 +1,32 @@
+title: The question before deleting shows what is about to go: a picture, a video, code, what a folder holds
+folders: media
+expect-log: script: Answer
+
+wait 3500
+delete img/checks.png
+wait 1200
+mark picture
+wait 500
+answer Cancel
+wait 400
+delete video/clip.mp4
+wait 2500
+mark video
+wait 500
+answer Cancel
+wait 600
+mark after-video
+wait 500
+delete src/lib.rs
+wait 600
+mark code
+wait 500
+answer Cancel
+wait 400
+delete img
+wait 600
+mark folder
+wait 500
+answer Cancel
+wait 400
+quit

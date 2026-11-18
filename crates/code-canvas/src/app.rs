@@ -234,6 +234,7 @@ pub struct App {
     playing: Option<PathBuf>,
     player_shown: bool,
     inking: bool,
+    peeking: bool,
     still: Still,
     commit_from: Option<Place>,
     sharing: sharing::Sharing,
@@ -361,6 +362,7 @@ impl App {
             playing: None,
             player_shown: false,
             inking: false,
+            peeking: false,
             still: Default::default(),
             commit_from: None,
             sharing: Default::default(),
@@ -670,6 +672,7 @@ impl App {
                     .choice("Delete", ui::ChoiceLook::Danger, ui::Answer::Yes)
                     .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
                 ask.items = vec![path];
+                ask.preview = self.preview_of(&p);
                 self.ui.ask = Some(ask);
             }),
         };
@@ -677,6 +680,46 @@ impl App {
             self.ext.notice(ext::Level::Error, "files", why);
         }
         self.request_redraw();
+    }
+
+    fn preview_of(&mut self, file: &Path) -> Option<ui::Preview> {
+        const LINES: usize = 12;
+        const WIDE: usize = 160;
+        const READ: u64 = 2 << 20;
+        let shown = |mut lines: Vec<String>| {
+            let more = lines.len().saturating_sub(LINES);
+            lines.truncate(LINES);
+            (!lines.is_empty()).then_some(ui::Preview::Text { lines, more })
+        };
+        if file.is_dir() {
+            let inside = std::fs::read_dir(file).ok()?.flatten();
+            let mut names: Vec<(bool, String)> = inside
+                .map(|entry| (!entry.path().is_dir(), entry.file_name().to_string_lossy().into_owned()))
+                .collect();
+            names.sort_by_key(|(is_file, name)| (*is_file, name.to_lowercase()));
+            return shown(names.into_iter().map(|(is_file, name)| if is_file { name } else { name + "/" }).collect());
+        }
+        match canvas_core::scan::media_kind(&file.to_string_lossy()) {
+            Some("picture") => Some(ui::Preview::Picture(file.to_path_buf())),
+            Some(_) => {
+                let kind = crate::media::kind(file)?;
+                self.webviews.allow_file(file);
+                self.webviews.set_html(crate::media::PEEK, crate::media::page(file, kind, false));
+                self.peeking = true;
+                Some(ui::Preview::Plays(file.to_path_buf()))
+            }
+            None => {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::fs::File::open(file).ok()?.take(READ).read_to_end(&mut bytes).ok()?;
+                if bytes.contains(&0) {
+                    return None;
+                }
+                let text = String::from_utf8_lossy(&bytes);
+                let short = |line: &str| line.replace('\t', "    ").chars().take(WIDE).collect::<String>();
+                shown(text.lines().map(short).collect())
+            }
+        }
     }
 
     fn open_folder(&mut self, path: PathBuf, saved: Option<PageSession>) {
@@ -2179,7 +2222,7 @@ impl App {
         let played = canvas_core::scan::media_kind(&path.to_string_lossy()).is_some_and(|what| what != "picture");
         if played && self.playing.as_deref() != Some(path) {
             self.webviews.allow_file(path);
-            self.webviews.set_html(crate::media::PLAYER, crate::media::page(path, kind));
+            self.webviews.set_html(crate::media::PLAYER, crate::media::page(path, kind, true));
             self.playing = Some(path.to_path_buf());
             self.still = Default::default();
         }
@@ -4531,6 +4574,15 @@ impl App {
         }
         self.place_pictures();
         self.place_doodles();
+        let asked = self.ui.ask.as_ref().and_then(|ask| ask.preview.clone());
+        self.ui.ask_picture = match &asked {
+            Some(ui::Preview::Picture(file)) => self.pictures.get(file),
+            _ => None,
+        };
+        if self.peeking && !matches!(asked, Some(ui::Preview::Plays(_))) {
+            self.webviews.close(crate::media::PEEK);
+            self.peeking = false;
+        }
         let standing = self.stand_still();
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
@@ -4599,6 +4651,8 @@ impl App {
                 self.webviews.run_in(crate::media::PLAYER, quiet);
             }
             places.extend(player.map(|at| (crate::media::PLAYER.to_string(), at, None)));
+            let peek = self.ui.ask_page.filter(|_| self.peeking);
+            places.extend(peek.map(|at| (crate::media::PEEK.to_string(), scaled(&at), None)));
             let (area, far) = (self.canvas, 1.0e6);
             let beyond = [
                 Rect::new(area.x - far, -far, far, 2.0 * far),
@@ -4613,6 +4667,8 @@ impl App {
                     let mut covers: Vec<Rect> = covers.iter().map(scaled).collect();
                     if handle == crate::media::PLAYER {
                         covers.extend(beyond);
+                    } else if handle == crate::media::PEEK {
+                        covers.clear();
                     }
                     (handle.as_str(), *at, covers)
                 })

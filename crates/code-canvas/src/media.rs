@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 pub const HANDLE: &str = "media-viewer";
 pub const PLAYER: &str = "canvas-player";
+pub const PEEK: &str = "ask-preview";
 
 const FILES: &str = "https://ccres.localhost/file/";
 
@@ -127,8 +128,9 @@ pub fn file_of(url: &str) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8(bytes).ok()?))
 }
 
-pub fn page(path: &Path, kind: Kind) -> String {
+pub fn page(path: &Path, kind: Kind, starts: bool) -> String {
     let url = escape(&file_url(path));
+    let how = if starts { r#"controls autoplay preload="metadata""# } else { r#"controls preload="auto""# };
     let body = match kind {
         Kind::Image => format!(
             r#"<img id="media" src="{url}" alt="" title="Click: real size / fit">
@@ -142,9 +144,9 @@ pub fn page(path: &Path, kind: Kind) -> String {
 </script>"#
         ),
         Kind::Video => {
-            format!(r#"<video id="media" src="{url}" controls autoplay preload="metadata"></video>{WHEEL}{STILL}"#)
+            format!(r#"<video id="media" src="{url}" {how}></video>{WHEEL}{STILL}"#)
         }
-        Kind::Audio => format!(r#"<audio id="media" src="{url}" controls autoplay preload="metadata"></audio>{WHEEL}"#),
+        Kind::Audio => format!(r#"<audio id="media" src="{url}" {how}></audio>{WHEEL}"#),
         Kind::Pdf => format!(r#"<iframe id="media" class="page" src="{url}"></iframe>"#),
     };
     format!(
@@ -184,9 +186,10 @@ mod tests {
     fn pages_point_at_the_file_safely() {
         let url = file_url(Path::new("C:\\My Files\\a&b \"x\".png"));
         assert_eq!(url, "https://ccres.localhost/file/C%3A/My%20Files/a%26b%20%22x%22.png");
-        let html = page(Path::new("C:/v/clip one.mp4"), Kind::Video);
+        let html = page(Path::new("C:/v/clip one.mp4"), Kind::Video, true);
         assert!(html.contains(r#"<video id="media" src="https://ccres.localhost/file/C%3A/v/clip%20one.mp4" controls"#));
-        assert!(page(Path::new("a.png"), Kind::Image).contains("<img"));
+        assert!(page(Path::new("a.png"), Kind::Image, true).contains("<img"));
+        assert!(html.contains("autoplay") && !page(Path::new("a.mp4"), Kind::Video, false).contains("autoplay"));
     }
 
     #[test]

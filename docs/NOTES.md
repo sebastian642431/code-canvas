@@ -938,6 +938,10 @@ Graphics and the frame
   `note_covers` leaves the cards out of `UiState::covers`, and
   `ui::covers_of` gives each page the covers plus every card but its own. A
   card still covers what plays on the canvas under it.
+- `progressBar-background` is given the accent by name. Guessed from its name
+  it was a background, so the colour of the card: the bar of the weekly usage
+  of Claude Code was filled with the colour of what it stood on, and only the
+  orange one (above 90%) could be seen.
 - The interface font has no arrows: keys are named in words (`Chord::label`:
   Left, Right, Up, Down) and arrows in text come from the icon font.
 - Deep rows of the explorer keep their names: the indent of a level shrinks
@@ -2030,12 +2034,26 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     round corners are the ground painted over its square ones (`enclose`,
     `corner`: a fan of triangles from the corner to the arc), with the border
     drawn last.
-  - There is no status bar. What it said is a small card at the bottom right of
-    the canvas (`status_pill`): what is under the pointer, what extensions
-    report, problems, what is not saved, the branch, an update. The version is
-    in Settings; what a frame costs is the hint of the zoom number.
+  - The status bar is a band of the ground under everything, 22 points tall
+    (`status_bar`, `STATUS_H`): what is under the pointer on the left; on the
+    right what extensions report, problems, what is not saved, the branch, an
+    update. It was a small card over the bottom right of the canvas, and it hid
+    what was under it. The version is in Settings; what a frame costs is the
+    hint of the zoom number.
   - A card's cross is drawn over its top right corner after its content, so
     `panel_title` leaves room for it when it is told one is coming (`CARD_X`).
+    The cross and the icons of a title are all 24 points wide with a glyph of
+    14, on one line: the menu of Source Control is a `MenuButton` made from a
+    button of that size, not `menu_button`, whose own padding made it narrower
+    than its neighbours.
+  - The Timeline under the files folds away by its title (`Prefs::timeline`):
+    closed, it is a row of its own height that cannot be dragged taller.
+  - **The question before deleting shows what is about to go** (`ui::Preview`,
+    `App::preview_of`): a picture is drawn in the question, a video, a sound or
+    a PDF is a page of its own placed over it (`media::PEEK`, not started, shut
+    when the question goes), a text file shows its first twelve lines and a
+    folder what it holds. Each question is a modal of its own identity, so one
+    is not as tall as the tallest before it.
     The viewer has its own cross and a web page gets a title row to carry it.
   - `Panel` names every panel and `UiState::show` opens one, wherever it goes.
     Which bar an icon is on is `UiState::side_of`: the app's own start on the

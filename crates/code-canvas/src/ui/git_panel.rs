@@ -16,20 +16,37 @@ pub(super) fn change_color(change: Change) -> Color32 {
     })
 }
 
-pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>, actions: &mut Vec<Action>) {
+pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>, prefs: &crate::prefs::Prefs, actions: &mut Vec<Action>) {
     let Some(page) = page else { return };
     let Some(path) = &page.timeline.path else { return };
-    let panel = egui::Panel::bottom("timeline").resizable(true).default_size(190.0).size_range(90.0..=520.0);
+    let open = prefs.timeline;
+    let panel = match open {
+        true => egui::Panel::bottom("timeline").resizable(true).default_size(190.0).size_range(90.0..=520.0),
+        false => egui::Panel::bottom("timeline closed").resizable(false).exact_size(ROW_H + 12.0),
+    };
     panel.frame(Frame::NONE.inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 6 })).show(ui, |ui| {
         let top = ui.max_rect().top();
         ui.painter().hline(ui.max_rect().x_range(), top - 6.0, (1.0, pal().border));
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.label(icon(icons::GIT_BRANCH, 13.0, pal().text_dim));
-            ui.label(RichText::new("Timeline").size(12.5).color(pal().text));
-            let name = path.rsplit('/').next().unwrap_or(path);
-            ui.label(RichText::new(name).size(11.5).color(pal().text_faint));
-        });
+        let (head, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(head.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
+        }
+        let mut row = ui
+            .new_child(egui::UiBuilder::new().max_rect(head).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        row.add_space(10.0);
+        let chevron = if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+        row.label(icon(chevron, 13.0, pal().text_dim));
+        row.label(icon(icons::GIT_BRANCH, 13.0, pal().text_dim));
+        row.label(RichText::new("Timeline").size(12.5).color(pal().text));
+        let name = path.rsplit('/').next().unwrap_or(path);
+        row.label(RichText::new(name).size(11.5).color(pal().text_faint));
+        let tip = if open { "Hide the history of the file" } else { "Show the history of the file" };
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+            actions.push(Action::SetPrefs(crate::prefs::Prefs { timeline: !open, ..prefs.clone() }));
+        }
+        if !open {
+            return;
+        }
         let pending = page.git.as_ref().and_then(|g| g.changes.iter().find(|ch| ch.path == *path));
         let now =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -267,7 +284,9 @@ pub fn changes_panel(
                 let more = ui
                     .scope(|ui| {
                         ui.visuals_mut().button_frame = false;
-                        ui.menu_button(icon(icons::ELLIPSIS_VERTICAL, 14.0, pal().text_dim), |ui| {
+                        let dots = egui::Button::new(icon(icons::ELLIPSIS_VERTICAL, 14.0, pal().text_dim));
+                        let dots = dots.min_size(Vec2::splat(24.0)).frame(false);
+                        egui::containers::menu::MenuButton::from_button(dots).ui(ui, |ui| {
                             ui.set_width(210.0);
                             ui.spacing_mut().item_spacing.y = 1.0;
                             let mut op = None;
@@ -308,7 +327,20 @@ pub fn changes_panel(
                         })
                     })
                     .inner;
-                more.response.on_hover_text("More actions");
+                let (more, _) = more;
+                if more.hovered() {
+                    let at = Rect::from_center_size(more.rect.center(), Vec2::splat(24.0));
+                    ui.painter().rect_filled(at, 6.0, pal().hover);
+                    let glyph = icons::ELLIPSIS_VERTICAL;
+                    ui.painter().text(
+                        at.center(),
+                        Align2::CENTER_CENTER,
+                        glyph,
+                        FontId::proportional(14.0),
+                        pal().text,
+                    );
+                }
+                more.on_hover_text("More actions");
             }
             if small_icon(ui, icons::REFRESH_CW, "Ask git again") {
                 actions.push(Action::RefreshGit);

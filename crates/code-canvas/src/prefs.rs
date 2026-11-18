@@ -17,6 +17,7 @@ pub struct Prefs {
     pub share_writers: bool,
     pub skip_dirs: Option<Vec<String>>,
     pub skip_files: Option<Vec<String>>,
+    pub timeline: bool,
 }
 
 impl Default for Prefs {
@@ -36,6 +37,7 @@ impl Default for Prefs {
             share_writers: false,
             skip_dirs: None,
             skip_files: None,
+            timeline: true,
         }
     }
 }

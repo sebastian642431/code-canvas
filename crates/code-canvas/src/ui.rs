@@ -288,6 +288,8 @@ pub struct UiState {
     explorer_seen: (f32, f32),
     pub can_go: (bool, bool),
     pub pictures: Vec<(egui::TextureId, Rect)>,
+    pub ask_picture: Option<(egui::TextureId, [u32; 2])>,
+    pub ask_page: Option<Rect>,
     pub pen: crate::doodle::Pen,
     pub doodles: Vec<(Vec<Pos2>, f32, Color32)>,
     pub rubber: Option<(Pos2, f32)>,
@@ -350,6 +352,8 @@ impl Default for UiState {
             explorer_seen: (0.0, 0.0),
             can_go: (false, false),
             pictures: Vec::new(),
+            ask_picture: None,
+            ask_page: None,
             pen: Default::default(),
             doodles: Vec::new(),
             rubber: None,
@@ -730,6 +734,9 @@ pub fn build(
     st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
+    if !st.bare {
+        status_bar(ui, st, ext, pages.get(active), info, actions);
+    }
     let entries = rail_entries(st, ext);
     let available: Vec<(String, Side)> = entries.iter().map(|entry| (entry.panel.key(), entry.panel.home())).collect();
     let order = st.rails.arrange(&available);
@@ -779,7 +786,6 @@ pub fn build(
         enclose(&ctx.layer_painter(egui::LayerId::background()), free, canvas);
         cards(&ctx, st, canvas, pages, active, ext, actions);
         toolbar(&ctx, st, canvas, info, actions);
-        status_pill(&ctx, st, ext, pages.get(active), canvas, info, actions);
     }
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
@@ -906,29 +912,69 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     });
 }
 
-fn status_pill(
-    ctx: &egui::Context,
+const STATUS_H: f32 = 22.0;
+
+fn status_bar(
+    ui: &mut egui::Ui,
     st: &mut UiState,
     ext: &Extensions,
     page: Option<&Page>,
-    canvas: Rect,
     info: &FrameInfo,
     actions: &mut Vec<Action>,
 ) {
     let mut panel_to_show = None;
     let (mut update_now, mut save) = (false, false);
-    let at = canvas.right_bottom() - Vec2::new(12.0, 12.0);
-    let area = egui::Area::new(egui::Id::unique("status")).pivot(Align2::RIGHT_BOTTOM).fixed_pos(at);
-    let resp = area.order(egui::Order::Foreground).show(ctx, |ui| {
-        let frame = Frame::NONE
-            .fill(pal().card)
-            .stroke(Stroke::new(1.0, pal().border))
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(Margin::symmetric(10, 6));
-        frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                let most = (canvas.width() * 0.4).clamp(120.0, 420.0);
+    let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin::symmetric(12, 0));
+    egui::Panel::bottom("status").frame(frame).exact_size(STATUS_H).show_separator_line(false).show(ui, |ui| {
+        let most = (ui.available_width() * 0.5).max(120.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            if let crate::update::State::Available(new) = &st.update {
+                let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
+                let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);
+                let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
+                if label.on_hover_text("Download the new version and restart into it").clicked() {
+                    update_now = true;
+                }
+            } else if let crate::update::State::Installing(new) = &st.update {
+                ui.label(RichText::new(format!("Downloading {new}…")).size(12.0).color(pal().accent));
+            }
+            if let Some(git) = page.and_then(|p| p.git.as_ref()) {
+                let icon = crate::codicons::glyph("source-control").unwrap_or(icons::GIT_BRANCH);
+                let mut text = format!("{icon} {}{}", git.branch, if git.changes.is_empty() { "" } else { "*" });
+                if git.ahead > 0 {
+                    text.push_str(&format!(" ↑{}", git.ahead));
+                }
+                if git.behind > 0 {
+                    text.push_str(&format!(" ↓{}", git.behind));
+                }
+                let label =
+                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                if label.on_hover_text("Source control").clicked() {
+                    panel_to_show = Some(Panel::Changes);
+                }
+            }
+            let unsaved = page.map_or(0, |p| p.unsaved().count());
+            if unsaved > 0 {
+                let text = format!("●  {unsaved} not saved");
+                let label =
+                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
+                save = label.on_hover_text(tip).clicked();
+            }
+            let (errors, warnings) = ext.totals();
+            if errors + warnings > 0 {
+                let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
+                let color = if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
+                let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
+                if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
+                    panel_to_show = Some(Panel::Problems);
+                }
+            }
+            for (_, text) in ext.status_items.iter().rev() {
+                ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let said = RichText::new(&info.status).size(12.0).color(pal().text_dim);
                 let more = page.and_then(|page| page.ready().map(|r| (page, r))).map(|(page, r)| {
                     format!(
@@ -940,64 +986,14 @@ fn status_pill(
                         r.load_ms
                     )
                 });
-                let said = ui.scope(|ui| {
-                    ui.set_max_width(most);
-                    ui.add(egui::Label::new(said).truncate())
-                });
+                ui.set_max_width(most.min(ui.available_width()));
+                let said = ui.add(egui::Label::new(said).truncate());
                 if let Some(more) = more {
-                    said.inner.on_hover_text(more);
-                }
-                for (_, text) in &ext.status_items {
-                    ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
-                }
-                let (errors, warnings) = ext.totals();
-                if errors + warnings > 0 {
-                    let text = format!("{}  {errors}   {}  {warnings}", icons::CIRCLE_ALERT, icons::TRIANGLE_ALERT);
-                    let color =
-                        if errors > 0 { c(theme::get().problem_error) } else { c(theme::get().problem_warning) };
-                    let label =
-                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
-                    if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
-                        panel_to_show = Some(Panel::Problems);
-                    }
-                }
-                let unsaved = page.map_or(0, |p| p.unsaved().count());
-                if unsaved > 0 {
-                    let text = format!("●  {unsaved} not saved");
-                    let label = ui
-                        .add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
-                    let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
-                    save = label.on_hover_text(tip).clicked();
-                }
-                if let Some(git) = page.and_then(|p| p.git.as_ref()) {
-                    let icon = crate::codicons::glyph("source-control").unwrap_or(icons::GIT_BRANCH);
-                    let mut text = format!("{icon} {}{}", git.branch, if git.changes.is_empty() { "" } else { "*" });
-                    if git.ahead > 0 {
-                        text.push_str(&format!(" ↑{}", git.ahead));
-                    }
-                    if git.behind > 0 {
-                        text.push_str(&format!(" ↓{}", git.behind));
-                    }
-                    let label = ui
-                        .add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
-                    if label.on_hover_text("Source control").clicked() {
-                        panel_to_show = Some(Panel::Changes);
-                    }
-                }
-                if let crate::update::State::Available(new) = &st.update {
-                    let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
-                    let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);
-                    let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
-                    if label.on_hover_text("Download the new version and restart into it").clicked() {
-                        update_now = true;
-                    }
-                } else if let crate::update::State::Installing(new) = &st.update {
-                    ui.label(RichText::new(format!("Downloading {new}…")).size(12.0).color(pal().accent));
+                    said.on_hover_text(more);
                 }
             });
         });
     });
-    st.floating.push(resp.response.rect);
     if let Some(panel) = panel_to_show {
         st.toggle(panel);
     }
@@ -1115,13 +1111,13 @@ fn cards(
                 ctx.data_mut(|data| data.insert_temp(egui::Id::unique(CARD_X), false));
             });
             if !own_cross {
-                let cross = Rect::from_min_size(Pos2::new(rect.right() - 32.0, rect.top() + 8.0), Vec2::splat(24.0));
+                let cross = Rect::from_min_size(Pos2::new(rect.right() - 33.0, rect.top() + 11.0), Vec2::splat(24.0));
                 let resp = ui.interact(cross, id.with("cross"), Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(cross, 6.0, pal().hover);
                 }
                 let color = if resp.hovered() { pal().text } else { pal().text_dim };
-                ui.painter().text(cross.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(15.0), color);
+                ui.painter().text(cross.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(14.0), color);
                 shut = resp.on_hover_text("Close").clicked();
             }
             let grip = Rect::from_min_max(
@@ -1587,7 +1583,7 @@ fn files_panel(ui: &mut egui::Ui, st: &mut UiState, pages: &mut [Page], active: 
         });
     });
     workspace_list(ui, st, actions);
-    git_panel::timeline(ui, pages.get(active), actions);
+    git_panel::timeline(ui, pages.get(active), &st.prefs, actions);
     explorer(ui, st, pages.get_mut(active), actions);
 }
 
@@ -3347,8 +3343,16 @@ pub enum ChoiceLook {
     Plain,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Preview {
+    Picture(std::path::PathBuf),
+    Plays(std::path::PathBuf),
+    Text { lines: Vec<String>, more: usize },
+}
+
 pub struct Ask {
     pub about: Asked,
+    pub preview: Option<Preview>,
     pub danger: bool,
     pub title: String,
     pub text: String,
@@ -3359,7 +3363,16 @@ pub struct Ask {
 
 impl Ask {
     pub fn new(about: Asked, title: &str, text: String) -> Ask {
-        Ask { about, danger: true, title: title.to_string(), text, items: Vec::new(), choices: Vec::new(), fresh: true }
+        Ask {
+            about,
+            preview: None,
+            danger: true,
+            title: title.to_string(),
+            text,
+            items: Vec::new(),
+            choices: Vec::new(),
+            fresh: true,
+        }
     }
 
     pub fn choice(mut self, label: &'static str, look: ChoiceLook, answer: Answer) -> Ask {
@@ -3391,6 +3404,8 @@ fn ask_button(ui: &mut egui::Ui, label: &str, look: ChoiceLook) -> bool {
 fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     const WIDTH: f32 = 440.0;
     const SHOWN: usize = 8;
+    const TALL: f32 = 210.0;
+    st.ask_page = None;
     let Some(ask) = st.ask.as_mut() else { return };
     st.floating.push(ctx.content_rect());
     st.page_places.clear();
@@ -3408,9 +3423,10 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::same(20));
     let tint = if ask.danger { c(theme::get().git_removed) } else { pal().accent };
-    egui::Modal::new(egui::Id::unique("ask")).backdrop_color(Color32::from_black_alpha(150)).frame(frame).show(
-        ctx,
-        |ui| {
+    egui::Modal::new(egui::Id::unique(("ask", ask.title.as_str(), ask.preview.is_some())))
+        .backdrop_color(Color32::from_black_alpha(150))
+        .frame(frame)
+        .show(ctx, |ui| {
             ui.set_width(WIDTH);
             ui.spacing_mut().item_spacing = Vec2::new(12.0, 6.0);
             ui.horizontal_top(|ui| {
@@ -3427,6 +3443,46 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
                     }
                 });
             });
+            match &ask.preview {
+                Some(Preview::Picture(_)) | Some(Preview::Plays(_)) => {
+                    ui.add_space(6.0);
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(WIDTH, TALL), Sense::hover());
+                    ui.painter().rect_filled(rect, 8.0, pal().well);
+                    let room = rect.shrink(6.0);
+                    match (&ask.preview, st.ask_picture) {
+                        (Some(Preview::Plays(_)), _) => st.ask_page = Some(room),
+                        (_, Some((picture, [w, h]))) if w > 0 && h > 0 => {
+                            let fit = (room.width() / w as f32).min(room.height() / h as f32).min(1.0);
+                            let shown = Rect::from_center_size(room.center(), Vec2::new(w as f32, h as f32) * fit);
+                            let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                            ui.painter().image(picture, shown, whole, Color32::WHITE);
+                        }
+                        _ => {}
+                    }
+                }
+                Some(Preview::Text { lines, more }) => {
+                    ui.add_space(6.0);
+                    Frame::NONE
+                        .fill(pal().well)
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(WIDTH - 24.0);
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            for line in lines {
+                                let text = RichText::new(line).font(FontId::monospace(11.5)).color(pal().text_dim);
+                                ui.add(egui::Label::new(text).truncate());
+                            }
+                            if *more > 0 {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    RichText::new(format!("… and {more} more")).size(11.5).color(pal().text_faint),
+                                );
+                            }
+                        });
+                }
+                None => {}
+            }
             if !ask.items.is_empty() {
                 ui.add_space(6.0);
                 Frame::NONE
@@ -3455,8 +3511,7 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
                     }
                 }
             });
-        },
-    );
+        });
     if let Some(answer) = answer {
         if let Some(ask) = st.ask.take() {
             actions.push(Action::Answered(ask.about, answer));
