@@ -392,6 +392,9 @@ pub struct GitState {
     pub branches: Vec<String>,
     pub locals: Vec<LocalBranch>,
     pub remote_branches: Vec<RemoteBranch>,
+    /// The tags of the repository, the newest first.
+    pub tags: Vec<String>,
+    pub stashes: Vec<Stash>,
     pub changes: Vec<FileChange>,
     pub ignored: Vec<String>,
     pub truncated: bool,
@@ -416,6 +419,29 @@ pub struct RemoteBranch {
     pub remote: String,
     pub name: String,
     pub local: Option<String>,
+}
+
+/// A set of changes put aside with stash: its number in `stash@{N}` and the words it was saved with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stash {
+    pub index: u32,
+    pub message: String,
+}
+
+/// Reads `git for-each-ref refs/tags --sort=-creatordate --format=%(refname:short)`.
+fn parse_tags(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|tag| !tag.is_empty()).map(str::to_string).collect()
+}
+
+/// Reads `git stash list --format=%gd%x1f%s`, where `%gd` looks like `stash@{2}`.
+fn parse_stashes(text: &str) -> Vec<Stash> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, message) = line.split_once('\u{1f}').unwrap_or((line, ""));
+            let index = name.trim().strip_prefix("stash@{")?.strip_suffix('}')?.parse().ok()?;
+            Some(Stash { index, message: message.trim().to_string() })
+        })
+        .collect()
 }
 
 /// Reads `git for-each-ref refs/heads --format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)`.
@@ -656,6 +682,42 @@ pub enum GitOp {
         remote: String,
         name: String,
     },
+    /// Bring another branch into the current one.
+    Merge(String),
+    /// Replay the current branch on top of another one.
+    Rebase(String),
+    /// Make a branch, optionally starting from another one, and switch to it.
+    NewBranch {
+        name: String,
+        from: Option<String>,
+    },
+    RenameBranch {
+        from: String,
+        to: String,
+    },
+    /// Delete a local branch that is already merged.
+    DeleteBranch(String),
+    /// Delete a branch on a remote such as GitHub.
+    DeleteRemoteBranch {
+        remote: String,
+        name: String,
+    },
+    /// Send a local branch to a remote and make it follow it.
+    PushBranch {
+        remote: String,
+        name: String,
+    },
+    NewTag {
+        name: String,
+        at: Option<String>,
+    },
+    DeleteTag(String),
+    PushTag(String),
+    /// Switch to a tag, leaving every branch (a detached head).
+    CheckoutTag(String),
+    StashApply(u32),
+    StashPopAt(u32),
+    StashDrop(u32),
 }
 
 impl GitOp {
@@ -704,6 +766,28 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
         GitOp::StashPop => vec![s(&["stash", "pop"])],
         GitOp::Switch(branch) => vec![s(&["switch", branch])],
         GitOp::Track { remote, name } => vec![s(&["switch", "-c", name, "--track", &format!("{remote}/{name}")])],
+        GitOp::Merge(branch) => vec![s(&["merge", branch])],
+        GitOp::Rebase(branch) => vec![s(&["rebase", branch])],
+        GitOp::NewBranch { name, from } => {
+            let mut args = s(&["switch", "-c", name]);
+            args.extend(from.iter().cloned());
+            vec![args]
+        }
+        GitOp::RenameBranch { from, to } => vec![s(&["branch", "-m", from, to])],
+        GitOp::DeleteBranch(name) => vec![s(&["branch", "-d", name])],
+        GitOp::DeleteRemoteBranch { remote, name } => vec![s(&["push", remote, "--delete", name])],
+        GitOp::PushBranch { remote, name } => vec![s(&["push", "-u", remote, name])],
+        GitOp::NewTag { name, at } => {
+            let mut args = s(&["tag", name]);
+            args.extend(at.iter().cloned());
+            vec![args]
+        }
+        GitOp::DeleteTag(name) => vec![s(&["tag", "-d", name])],
+        GitOp::PushTag(name) => vec![s(&["push", "origin", name])],
+        GitOp::CheckoutTag(name) => vec![s(&["switch", "--detach", name])],
+        GitOp::StashApply(n) => vec![s(&["stash", "apply", &format!("stash@{{{n}}}")])],
+        GitOp::StashPopAt(n) => vec![s(&["stash", "pop", &format!("stash@{{{n}}}")])],
+        GitOp::StashDrop(n) => vec![s(&["stash", "drop", &format!("stash@{{{n}}}")])],
     }
 }
 
@@ -825,41 +909,49 @@ fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    let (status, prefix, diff, log, list, ignored, remote_refs, remote_names) = std::thread::scope(|s| {
-        let status =
-            s.spawn(|| git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."]));
-        let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
-        let diff =
-            s.spawn(|| git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]));
-        let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
-        let list = s.spawn(|| {
-            git(
-                root,
-                &[
-                    "for-each-ref",
-                    "refs/heads",
-                    "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)",
-                ],
+    let (status, prefix, diff, log, list, ignored, remote_refs, remote_names, tag_refs, stash_list) =
+        std::thread::scope(|s| {
+            let status = s.spawn(|| {
+                git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."])
+            });
+            let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
+            let diff =
+                s.spawn(|| git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]));
+            let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
+            let list = s.spawn(|| {
+                git(
+                    root,
+                    &[
+                        "for-each-ref",
+                        "refs/heads",
+                        "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)",
+                    ],
+                )
+            });
+            let remote_refs =
+                s.spawn(|| git(root, &["for-each-ref", "refs/remotes", "--format=%(refname:short)%1f%(symref)"]));
+            let remote_names = s.spawn(|| git(root, &["remote"]));
+            let tag_refs = s.spawn(|| {
+                git(root, &["for-each-ref", "refs/tags", "--sort=-creatordate", "--format=%(refname:short)"])
+            });
+            let stash_list = s.spawn(|| git(root, &["stash", "list", "--format=%gd%x1f%s"]));
+            let ignored = s.spawn(|| {
+                git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
+            });
+            let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
+            (
+                done(status),
+                done(prefix),
+                done(diff),
+                done(log),
+                done(list),
+                done(ignored),
+                done(remote_refs),
+                done(remote_names),
+                done(tag_refs),
+                done(stash_list),
             )
         });
-        let remote_refs =
-            s.spawn(|| git(root, &["for-each-ref", "refs/remotes", "--format=%(refname:short)%1f%(symref)"]));
-        let remote_names = s.spawn(|| git(root, &["remote"]));
-        let ignored = s.spawn(|| {
-            git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
-        });
-        let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
-        (
-            done(status),
-            done(prefix),
-            done(diff),
-            done(log),
-            done(list),
-            done(ignored),
-            done(remote_refs),
-            done(remote_names),
-        )
-    });
     let status = status?;
     let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
     let mut state = parse_status(&String::from_utf8_lossy(&status), &prefix);
@@ -878,6 +970,12 @@ pub fn load(root: &Path) -> Option<GitState> {
     if let (Some(refs), Some(names)) = (remote_refs, remote_names) {
         let names: Vec<String> = String::from_utf8_lossy(&names).lines().map(|n| n.trim().to_string()).collect();
         state.remote_branches = parse_remote_branches(&String::from_utf8_lossy(&refs), &names, &state.locals);
+    }
+    if let Some(tags) = tag_refs {
+        state.tags = parse_tags(&String::from_utf8_lossy(&tags));
+    }
+    if let Some(stashes) = stash_list {
+        state.stashes = parse_stashes(&String::from_utf8_lossy(&stashes));
     }
     if let Some(ignored) = ignored {
         state.ignored = parse_ignored(&String::from_utf8_lossy(&ignored));
@@ -1507,6 +1605,47 @@ mod tests {
             state.branches,
             state.ms
         );
+    }
+
+    #[test]
+    fn tags_and_stashes() {
+        assert_eq!(parse_tags("v2\nv1.0\n\n"), vec!["v2", "v1.0"]);
+        let stashes = parse_stashes("stash@{0}\u{1f}WIP on main: abc one\nstash@{1}\u{1f}On x: two\nodd line\n");
+        assert_eq!(
+            stashes,
+            vec![
+                Stash { index: 0, message: "WIP on main: abc one".into() },
+                Stash { index: 1, message: "On x: two".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn branch_tag_and_stash_steps() {
+        let one = |op: GitOp| steps(&op);
+        let v = |args: &[&str]| vec![args.iter().map(|a| a.to_string()).collect::<Vec<String>>()];
+        assert_eq!(one(GitOp::Merge("dev".into())), v(&["merge", "dev"]));
+        assert_eq!(one(GitOp::Rebase("dev".into())), v(&["rebase", "dev"]));
+        assert_eq!(one(GitOp::NewBranch { name: "n".into(), from: None }), v(&["switch", "-c", "n"]));
+        assert_eq!(
+            one(GitOp::NewBranch { name: "n".into(), from: Some("dev".into()) }),
+            v(&["switch", "-c", "n", "dev"])
+        );
+        assert_eq!(one(GitOp::RenameBranch { from: "a".into(), to: "b".into() }), v(&["branch", "-m", "a", "b"]));
+        assert_eq!(one(GitOp::DeleteBranch("a".into())), v(&["branch", "-d", "a"]));
+        assert_eq!(
+            one(GitOp::DeleteRemoteBranch { remote: "origin".into(), name: "a".into() }),
+            v(&["push", "origin", "--delete", "a"])
+        );
+        assert_eq!(one(GitOp::PushBranch { remote: "up".into(), name: "a".into() }), v(&["push", "-u", "up", "a"]));
+        assert_eq!(one(GitOp::NewTag { name: "t".into(), at: None }), v(&["tag", "t"]));
+        assert_eq!(one(GitOp::NewTag { name: "t".into(), at: Some("dev".into()) }), v(&["tag", "t", "dev"]));
+        assert_eq!(one(GitOp::DeleteTag("t".into())), v(&["tag", "-d", "t"]));
+        assert_eq!(one(GitOp::PushTag("t".into())), v(&["push", "origin", "t"]));
+        assert_eq!(one(GitOp::CheckoutTag("t".into())), v(&["switch", "--detach", "t"]));
+        assert_eq!(one(GitOp::StashApply(2)), v(&["stash", "apply", "stash@{2}"]));
+        assert_eq!(one(GitOp::StashPopAt(0)), v(&["stash", "pop", "stash@{0}"]));
+        assert_eq!(one(GitOp::StashDrop(1)), v(&["stash", "drop", "stash@{1}"]));
     }
 
     #[test]

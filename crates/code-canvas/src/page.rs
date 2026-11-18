@@ -993,6 +993,16 @@ impl Page {
             (crate::git::GitOp::Track { name, .. }, Ok(_)) => {
                 self.git_note = Some((true, format!("On branch {name}.")))
             }
+            (crate::git::GitOp::NewBranch { name, .. }, Ok(_)) => {
+                self.git_note = Some((true, format!("On the new branch {name}.")))
+            }
+            (crate::git::GitOp::NewTag { name, .. }, Ok(_)) => {
+                self.git_note = Some((true, format!("Tag {name} made.")))
+            }
+            (crate::git::GitOp::Merge(branch), Ok(_)) => self.git_note = Some((true, format!("Merged {branch}."))),
+            (crate::git::GitOp::Rebase(branch), Ok(_)) => {
+                self.git_note = Some((true, format!("Rebased onto {branch}.")))
+            }
             (_, Ok(_)) => {}
             (_, Err(e)) => self.git_note = Some((false, e)),
         }

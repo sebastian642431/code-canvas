@@ -21,12 +21,12 @@ pub(super) struct Picker<'a> {
     pub remotes: &'a [RemoteBranch],
 }
 
-fn matches(filter: &str, name: &str) -> bool {
+pub(super) fn matches(filter: &str, name: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(filter)
 }
 
 /// One full-width row with the hover shade already painted.
-fn row(ui: &mut Ui) -> (Rect, Response) {
+pub(super) fn row(ui: &mut Ui) -> (Rect, Response) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, 5.0, pal().hover);
@@ -35,7 +35,7 @@ fn row(ui: &mut Ui) -> (Rect, Response) {
 }
 
 /// Draws the folders of `names` under `prefix` (open or closed) and then the branches directly in it.
-fn tree(
+pub(super) fn tree(
     ui: &mut Ui,
     shut: &mut HashSet<String>,
     section: &str,
@@ -101,7 +101,94 @@ fn tree(
     }
 }
 
-fn section_head(ui: &mut Ui, glyph: &str, title: &str, count: usize) {
+/// A row of a local branch: its name, how far ahead or behind its remote it is, and a check on the
+/// branch that is switched to. The tip says what a click does.
+pub(super) fn local_row(ui: &mut Ui, branch: &LocalBranch, label: &str, indent: f32) -> Response {
+    let full = &branch.name;
+    let (rect, resp) = row(ui);
+    let mid = rect.center().y;
+    let tint = if branch.current { pal().accent } else { pal().text };
+    let font = FontId::proportional(13.0);
+    ui.painter().text(Pos2::new(rect.left() + 22.0 + indent, mid), Align2::LEFT_CENTER, icons::GIT_BRANCH, font, tint);
+    let mut gap = String::new();
+    for (count, arrow) in [(branch.ahead, icons::ARROW_UP), (branch.behind, icons::ARROW_DOWN)] {
+        if count > 0 {
+            gap.push_str(&format!("{}{count}{arrow}", if gap.is_empty() { "" } else { " " }));
+        }
+    }
+    let mut right = rect.right() - 8.0;
+    if !gap.is_empty() {
+        let galley = ui.painter().layout_no_wrap(gap, FontId::proportional(11.0), pal().text_faint);
+        right -= galley.size().x;
+        ui.painter().galley(Pos2::new(right, mid - galley.size().y * 0.5), galley, pal().text_faint);
+        right -= 6.0;
+    }
+    if branch.current {
+        let font = FontId::proportional(12.0);
+        ui.painter().text(Pos2::new(right, mid), Align2::RIGHT_CENTER, icons::CHECK, font, pal().accent);
+        right -= 18.0;
+    }
+    let font = FontId::proportional(12.5);
+    text_fit(
+        ui.painter(),
+        Pos2::new(rect.left() + 40.0 + indent, mid),
+        label,
+        font,
+        tint,
+        right - rect.left() - 44.0 - indent,
+    );
+    let tip = if branch.current { format!("{full}: the branch you are on") } else { format!("Switch to {full}") };
+    resp.on_hover_text(tip)
+}
+
+/// A row of a branch on a remote: its name, "local" when a local branch follows it, and a button
+/// to bring it to local when none does.
+pub(super) fn remote_row(ui: &mut Ui, branch: &RemoteBranch, label: &str, indent: f32) -> Response {
+    let full = &branch.name;
+    let (rect, resp) = row(ui);
+    let mid = rect.center().y;
+    let font = FontId::proportional(13.0);
+    ui.painter().text(
+        Pos2::new(rect.left() + 22.0 + indent, mid),
+        Align2::LEFT_CENTER,
+        icons::GIT_BRANCH,
+        font,
+        pal().text_dim,
+    );
+    let mut right = rect.right() - 8.0;
+    match &branch.local {
+        Some(_) => {
+            let galley = ui.painter().layout_no_wrap("local".into(), FontId::proportional(11.0), pal().text_faint);
+            right -= galley.size().x;
+            ui.painter().galley(Pos2::new(right, mid - galley.size().y * 0.5), galley, pal().text_faint);
+            right -= 6.0;
+        }
+        None if resp.hovered() => {
+            let button = Rect::from_center_size(Pos2::new(rect.right() - 14.0, mid), Vec2::splat(20.0));
+            ui.painter().rect_filled(button, 5.0, pal().border_strong);
+            let font = FontId::proportional(13.0);
+            ui.painter().text(button.center(), Align2::CENTER_CENTER, icons::DOWNLOAD, font, pal().text);
+            right = button.left() - 4.0;
+        }
+        None => {}
+    }
+    let font = FontId::proportional(12.5);
+    text_fit(
+        ui.painter(),
+        Pos2::new(rect.left() + 40.0 + indent, mid),
+        label,
+        font,
+        pal().text,
+        right - rect.left() - 44.0 - indent,
+    );
+    let tip = match &branch.local {
+        Some(local) => format!("Switch to {local}, which follows {full}"),
+        None => format!("Bring '{full}' to local and switch to it"),
+    };
+    resp.on_hover_text(tip)
+}
+
+pub(super) fn section_head(ui: &mut Ui, glyph: &str, title: &str, count: usize) {
     ui.add_space(4.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
     let mid = rect.center().y;
@@ -168,56 +255,7 @@ impl Picker<'_> {
                 section_head(ui, icons::GIT_BRANCH, "Local", names.len());
                 let mut leaf = |ui: &mut Ui, full: &str, label: &str, indent: f32| {
                     let Some(branch) = locals.iter().find(|l| l.name == full) else { return };
-                    let (rect, resp) = row(ui);
-                    let mid = rect.center().y;
-                    let tint = if branch.current { pal().accent } else { pal().text };
-                    let font = FontId::proportional(13.0);
-                    ui.painter().text(
-                        Pos2::new(rect.left() + 22.0 + indent, mid),
-                        Align2::LEFT_CENTER,
-                        icons::GIT_BRANCH,
-                        font,
-                        tint,
-                    );
-                    let mut gap = String::new();
-                    for (count, arrow) in [(branch.ahead, icons::ARROW_UP), (branch.behind, icons::ARROW_DOWN)] {
-                        if count > 0 {
-                            gap.push_str(&format!("{}{count}{arrow}", if gap.is_empty() { "" } else { " " }));
-                        }
-                    }
-                    let mut right = rect.right() - 8.0;
-                    if !gap.is_empty() {
-                        let galley = ui.painter().layout_no_wrap(gap, FontId::proportional(11.0), pal().text_faint);
-                        right -= galley.size().x;
-                        ui.painter().galley(Pos2::new(right, mid - galley.size().y * 0.5), galley, pal().text_faint);
-                        right -= 6.0;
-                    }
-                    if branch.current {
-                        let font = FontId::proportional(12.0);
-                        ui.painter().text(
-                            Pos2::new(right, mid),
-                            Align2::RIGHT_CENTER,
-                            icons::CHECK,
-                            font,
-                            pal().accent,
-                        );
-                        right -= 18.0;
-                    }
-                    let font = FontId::proportional(12.5);
-                    text_fit(
-                        ui.painter(),
-                        Pos2::new(rect.left() + 40.0 + indent, mid),
-                        label,
-                        font,
-                        tint,
-                        right - rect.left() - 44.0 - indent,
-                    );
-                    let tip = if branch.current {
-                        format!("{full}: the branch you are on")
-                    } else {
-                        format!("Switch to {full}")
-                    };
-                    if resp.on_hover_text(tip).clicked() && !branch.current {
+                    if local_row(ui, branch, label, indent).clicked() && !branch.current {
                         actions.push(Action::Git(GitOp::Switch(full.to_string())));
                         ui.close();
                     }
@@ -245,61 +283,7 @@ impl Picker<'_> {
                     let Some(branch) = remotes.iter().find(|r| r.remote == remote_name && r.name == full) else {
                         return;
                     };
-                    let (rect, resp) = row(ui);
-                    let mid = rect.center().y;
-                    let font = FontId::proportional(13.0);
-                    ui.painter().text(
-                        Pos2::new(rect.left() + 22.0 + indent, mid),
-                        Align2::LEFT_CENTER,
-                        icons::GIT_BRANCH,
-                        font,
-                        pal().text_dim,
-                    );
-                    let mut right = rect.right() - 8.0;
-                    match &branch.local {
-                        Some(_) => {
-                            let galley = ui.painter().layout_no_wrap(
-                                "local".into(),
-                                FontId::proportional(11.0),
-                                pal().text_faint,
-                            );
-                            right -= galley.size().x;
-                            ui.painter().galley(
-                                Pos2::new(right, mid - galley.size().y * 0.5),
-                                galley,
-                                pal().text_faint,
-                            );
-                            right -= 6.0;
-                        }
-                        None if resp.hovered() => {
-                            let button = Rect::from_center_size(Pos2::new(rect.right() - 14.0, mid), Vec2::splat(20.0));
-                            ui.painter().rect_filled(button, 5.0, pal().border_strong);
-                            let font = FontId::proportional(13.0);
-                            ui.painter().text(
-                                button.center(),
-                                Align2::CENTER_CENTER,
-                                icons::DOWNLOAD,
-                                font,
-                                pal().text,
-                            );
-                            right = button.left() - 4.0;
-                        }
-                        None => {}
-                    }
-                    let font = FontId::proportional(12.5);
-                    text_fit(
-                        ui.painter(),
-                        Pos2::new(rect.left() + 40.0 + indent, mid),
-                        label,
-                        font,
-                        pal().text,
-                        right - rect.left() - 44.0 - indent,
-                    );
-                    let tip = match &branch.local {
-                        Some(local) => format!("Switch to {local}, which follows {full}"),
-                        None => format!("Bring '{full}' to local and switch to it"),
-                    };
-                    if resp.on_hover_text(tip).clicked() {
+                    if remote_row(ui, branch, label, indent).clicked() {
                         actions.push(Action::Git(match &branch.local {
                             Some(local) => GitOp::Switch(local.clone()),
                             None => GitOp::Track { remote: remote_name.to_string(), name: full.to_string() },

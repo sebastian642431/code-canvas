@@ -12,6 +12,7 @@ use crate::page::{build_tree, Page, PageState, RelFilters};
 use crate::tree_ops;
 
 mod branch_picker;
+mod branch_sidebar;
 mod console;
 mod deps_panel;
 mod ext_panels;
@@ -353,6 +354,7 @@ pub struct UiState {
     pub workspace_shut: bool,
     branch_filter: String,
     branch_shut: std::collections::HashSet<String>,
+    side: branch_sidebar::Side,
     workspace_drag: Option<(std::path::PathBuf, String)>,
     canvas_was: Rect,
     pub bare: bool,
@@ -441,6 +443,7 @@ impl Default for UiState {
             workspace_shut: false,
             branch_filter: String::new(),
             branch_shut: std::collections::HashSet::new(),
+            side: branch_sidebar::Side::default(),
             workspace_drag: None,
             canvas_was: Rect::NOTHING,
             bare: false,
@@ -717,6 +720,16 @@ pub enum Action {
     SetDiff(crate::page::DiffView),
     ShowCommit(Option<crate::git::Commit>),
     Answered(Asked, Answer),
+    /// Ask first, in the app's own modal, before git does something that cannot be taken back.
+    GitConfirm {
+        op: crate::git::GitOp,
+        title: String,
+        text: String,
+        button: &'static str,
+        danger: bool,
+    },
+    /// Ask for a name (of a branch or a tag), and then do the git operation that needs it.
+    GitName(NameFor),
     Share(ShareOp),
     Workspace(WorkspaceOp),
     Agent(AgentOp),
@@ -1612,7 +1625,7 @@ fn panel_content(
         Panel::Changes => {
             folder_row(ui, st, pages, active, actions, false);
             workspace_list(ui, st, actions);
-            git_panel::changes_panel(ui, &mut st.file_icons, pages.get_mut(active), actions);
+            git_panel::changes_panel(ui, &mut st.file_icons, &mut st.side, pages.get_mut(active), actions);
         }
         Panel::Search => {
             folder_row(ui, st, pages, active, actions, false);
@@ -4873,23 +4886,110 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Asked {
-    Delete { folder: std::path::PathBuf, path: String },
-    DeleteMany { folder: std::path::PathBuf, paths: Vec<String> },
+    Delete {
+        folder: std::path::PathBuf,
+        path: String,
+    },
+    DeleteMany {
+        folder: std::path::PathBuf,
+        paths: Vec<String>,
+    },
     Clash,
     Across,
-    Git { folder: std::path::PathBuf, op: crate::git::GitOp },
-    Close { folder: std::path::PathBuf, forget: bool },
-    Overwrite { folder: std::path::PathBuf, path: String },
-    Share { join: bool },
+    Git {
+        folder: std::path::PathBuf,
+        op: crate::git::GitOp,
+    },
+    /// A git operation that needs a name; `name` is filled with what was typed when the answer comes.
+    GitNamed {
+        folder: std::path::PathBuf,
+        what: NameFor,
+        name: String,
+    },
+    Close {
+        folder: std::path::PathBuf,
+        forget: bool,
+    },
+    Overwrite {
+        folder: std::path::PathBuf,
+        path: String,
+    },
+    Share {
+        join: bool,
+    },
     Sync,
     SyncInstall,
     SyncCommand,
     Defaults,
-    Trust { folder: std::path::PathBuf, shared: bool },
+    Trust {
+        folder: std::path::PathBuf,
+        shared: bool,
+    },
     Exit,
     ResetColours,
-    DeleteTheme { key: String },
-    EndConsole { tab: u64 },
+    DeleteTheme {
+        key: String,
+    },
+    EndConsole {
+        tab: u64,
+    },
+}
+
+/// What a name typed in the modal is for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NameFor {
+    /// A new branch, starting from another one (or from where the folder is now).
+    NewBranch {
+        from: Option<String>,
+    },
+    RenameBranch {
+        from: String,
+    },
+    /// A new tag on a branch (or on where the folder is now).
+    NewTag {
+        at: Option<String>,
+    },
+}
+
+impl NameFor {
+    pub fn title(&self) -> String {
+        match self {
+            NameFor::NewBranch { from: Some(from) } => format!("New branch from '{from}'"),
+            NameFor::NewBranch { from: None } => "New branch".to_string(),
+            NameFor::RenameBranch { from } => format!("Rename the branch '{from}'"),
+            NameFor::NewTag { at: Some(at) } => format!("New tag on '{at}'"),
+            NameFor::NewTag { at: None } => "New tag".to_string(),
+        }
+    }
+
+    pub fn hint(&self) -> &'static str {
+        match self {
+            NameFor::NewBranch { .. } | NameFor::RenameBranch { .. } => "Name of the branch",
+            NameFor::NewTag { .. } => "Name of the tag",
+        }
+    }
+
+    pub fn button(&self) -> &'static str {
+        match self {
+            NameFor::NewBranch { .. } => "Create",
+            NameFor::RenameBranch { .. } => "Rename",
+            NameFor::NewTag { .. } => "Create",
+        }
+    }
+
+    /// What git is asked to do with the name, or nothing when no name was typed.
+    pub fn op(&self, name: &str) -> Option<crate::git::GitOp> {
+        use crate::git::GitOp;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        Some(match self {
+            NameFor::NewBranch { from } => GitOp::NewBranch { name, from: from.clone() },
+            NameFor::RenameBranch { from } => GitOp::RenameBranch { from: from.clone(), to: name },
+            NameFor::NewTag { at } => GitOp::NewTag { name, at: at.clone() },
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4922,6 +5022,9 @@ pub struct Ask {
     pub items: Vec<String>,
     pub choices: Vec<(&'static str, ChoiceLook, Answer)>,
     pub fresh: bool,
+    /// A text field to type a name in, with the words shown while it is empty, and what is typed in it.
+    pub field: Option<&'static str>,
+    pub typed: String,
 }
 
 impl Ask {
@@ -4935,6 +5038,8 @@ impl Ask {
             items: Vec::new(),
             choices: Vec::new(),
             fresh: true,
+            field: None,
+            typed: String::new(),
         }
     }
 
@@ -5006,6 +5111,17 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
                     }
                 });
             });
+            if let Some(hint) = ask.field {
+                ui.add_space(6.0);
+                let edit = egui::TextEdit::singleline(&mut ask.typed)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY)
+                    .margin(Margin::symmetric(8, 6));
+                let edit = ui.add(edit);
+                if fresh {
+                    edit.request_focus();
+                }
+            }
             match &ask.preview {
                 Some(Preview::Picture(_)) | Some(Preview::Plays(_)) => {
                     ui.add_space(6.0);
@@ -5085,7 +5201,10 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
             });
         });
     if let Some(answer) = answer {
-        if let Some(ask) = st.ask.take() {
+        if let Some(mut ask) = st.ask.take() {
+            if let Asked::GitNamed { name, .. } = &mut ask.about {
+                *name = std::mem::take(&mut ask.typed);
+            }
             actions.push(Action::Answered(ask.about, answer));
         }
     }

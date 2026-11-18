@@ -1,0 +1,43 @@
+title: Source Control lists the branches, the remotes, the tags and the stashes in sections, a right click on a branch makes a tag on it, and a stash is dropped after asking
+folders: git-sidebar
+expect-file: git-sidebar/.git/refs/tags/rel-1 :: ^[0-9a-f]{40}
+forbid-log: WARN.*script
+
+wait 3500
+left changes
+wait 1500
+mark a-sections
+wait 500
+ui click 100 576
+wait 800
+ui click 100 647
+wait 1000
+mark b-tags-and-stashes
+wait 500
+ui right 100 317
+wait 1000
+mark c-branch-menu
+wait 500
+ui click 180 454
+wait 1000
+type rel-1
+wait 600
+mark d-name-asked
+wait 500
+answer create
+wait 2500
+mark e-tag-made
+wait 500
+ui right 100 712
+wait 1000
+mark f-stash-menu
+wait 500
+ui click 150 795
+wait 1000
+mark g-drop-asked
+wait 500
+answer drop
+wait 2500
+mark h-stash-gone
+wait 500
+quit

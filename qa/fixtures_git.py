@@ -150,7 +150,17 @@ def git_remote_branches(root):
     commit(root, "local only")
 
 
+def git_sidebar(root):
+    """The repository of git-remote-branches with two tags (v1 on the first commit, v2 on main) and one stash."""
+    git_remote_branches(root)
+    git(root, "tag", "v1", "main~1")
+    git(root, "tag", "v2")
+    write(root, "a.txt", "a1\na2\na3\nstashed\n")
+    git(root, "stash", "push", "-m", "half done")
+
+
 FIXTURES = {
+    "git-sidebar": git_sidebar,
     "git-remote-branches": git_remote_branches,
     "git-shifted": git_shifted,
     "git-spaces": git_spaces,

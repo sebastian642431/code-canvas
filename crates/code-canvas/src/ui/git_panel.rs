@@ -273,6 +273,7 @@ enum Primary {
 pub fn changes_panel(
     ui: &mut egui::Ui,
     file_icons: &mut FileIcons,
+    side: &mut super::branch_sidebar::Side,
     page: Option<&mut Page>,
     actions: &mut Vec<Action>,
 ) {
@@ -592,6 +593,7 @@ pub fn changes_panel(
             }
         }
 
+        side.show(ui, g, actions);
         ui.add_space(8.0);
         if group_header(ui, "Graph", "graph", None, None).0 {
             let now = std::time::SystemTime::now()

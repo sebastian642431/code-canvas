@@ -2256,6 +2256,13 @@ impl App {
                     None => self.ext.notice(ext::Level::Warn, "Source Control", "That folder is not open any more."),
                 }
             }
+            (ui::Asked::GitNamed { folder, what, name }, ui::Answer::Yes) => {
+                let Some(op) = what.op(&name) else { return };
+                match self.pages.iter().position(|page| page.root == folder) {
+                    Some(index) => self.run_git(index, op),
+                    None => self.ext.notice(ext::Level::Warn, "Source Control", "That folder is not open any more."),
+                }
+            }
             (ui::Asked::Close { folder, forget }, ui::Answer::Yes | ui::Answer::Other) => {
                 let Some(i) = self.pages.iter().position(|page| page.root == folder) else { return };
                 if answer == ui::Answer::Yes {
@@ -3774,6 +3781,34 @@ impl App {
                 self.ui.ask = Some(ask);
                 self.request_redraw();
             }
+            Action::GitConfirm { op, title, text, button, danger } => {
+                let Some(folder) = self.pages.get(self.active).map(|page| page.root.clone()) else { return };
+                let look = if danger { ui::ChoiceLook::Danger } else { ui::ChoiceLook::Main };
+                let mut ask = ui::Ask::new(ui::Asked::Git { folder, op }, &title, text)
+                    .choice(button, look, ui::Answer::Yes)
+                    .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+                ask.danger = danger;
+                self.ui.ask = Some(ask);
+                self.request_redraw();
+            }
+            Action::GitName(what) => {
+                let Some(folder) = self.pages.get(self.active).map(|page| page.root.clone()) else { return };
+                let (title, button) = (what.title(), what.button());
+                let mut ask = ui::Ask::new(
+                    ui::Asked::GitNamed { folder, what: what.clone(), name: String::new() },
+                    &title,
+                    String::new(),
+                )
+                .choice(button, ui::ChoiceLook::Main, ui::Answer::Yes)
+                .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+                ask.danger = false;
+                ask.field = Some(what.hint());
+                if let ui::NameFor::RenameBranch { from } = &what {
+                    ask.typed = from.clone();
+                }
+                self.ui.ask = Some(ask);
+                self.request_redraw();
+            }
             Action::WriteCommitMessage => {
                 let settings = self.ui.commit_ai.clone();
                 if let Some(page) = self.pages.get_mut(self.active) {
@@ -4072,7 +4107,11 @@ impl App {
             Step::Answer(choice) => {
                 let asked = self.ui.ask.as_ref().and_then(|ask| {
                     let said = ask.choices.iter().find(|(label, ..)| label.eq_ignore_ascii_case(&choice))?;
-                    Some((ask.about.clone(), said.2))
+                    let mut about = ask.about.clone();
+                    if let ui::Asked::GitNamed { name, .. } = &mut about {
+                        *name = ask.typed.clone();
+                    }
+                    Some((about, said.2))
                 });
                 match asked {
                     Some((about, answer)) => {
@@ -4101,6 +4140,12 @@ impl App {
                 } else {
                     log::warn!("script: cannot edit '{rel}'");
                 }
+            }
+            Step::Type(text) if self.ui.ask.as_ref().is_some_and(|ask| ask.field.is_some()) => {
+                if let Some(ask) = self.ui.ask.as_mut() {
+                    ask.typed.push_str(&text);
+                }
+                self.request_redraw();
             }
             Step::Type(text) => {
                 if let Some(e) = self.pages.get_mut(self.active).and_then(|p| p.editor_mut()) {

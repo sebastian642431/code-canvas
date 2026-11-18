@@ -18,12 +18,15 @@ folders, their branch, and quick branch switching.
 
 ## Phases
 
-### 1. Branches from the remotes (in progress)
+### 1. Branches from the remotes (done)
 The branch chip's popup lists local branches (in folders such as `feature/`, with ahead/behind) and
 those of each remote (what is on GitHub). A remote branch is brought to local and switched to in one
 click (`git switch -c <name> --track <remote>/<name>`). A refresh button fetches.
 
-### 2. A Fork-style sidebar in Source Control
+### 2. A Fork-style sidebar in Source Control (done, except what is noted)
+Branches, Remotes, Tags and Stashes are under the changes, with their right-click menus; deleting,
+dropping and checking out a tag ask first. Still to do: Submodules, Worktrees, a filter, the pin /
+show-only / hide buttons (they act on the graph: phase 3), interactive rebase and pull requests.
 - Sections: Local Changes, All Commits, Branches, Remotes, Tags, Stashes, Submodules, Worktrees; a filter on top.
 - Branches in folders, current one in bold with a check, ahead/behind counts; per-row buttons:
   pin, show only this branch's commits, hide it from the graph.
