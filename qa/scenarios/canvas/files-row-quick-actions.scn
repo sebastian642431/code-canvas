@@ -1,0 +1,61 @@
+title: A row of the file list shows small buttons while the pointer is on it: a plus on a folder that asks for a file or a folder and names it in the folder's own rows, and the same plus on the folders of the workspace
+folders: tree-move, tree-other
+expect-file: tree-move/lib/fresh.txt ::
+expect-file: tree-move/lib/sub/inner.txt ::
+expect-file: tree-other/w.txt ::
+absent-file: tree-move/fresh.txt
+
+wait 3500
+left files
+wait 1200
+files hover lib
+wait 1500
+mark hover-folder
+wait 300
+files hover a.txt
+wait 2000
+mark hover-file
+wait 300
+files plus lib
+wait 2500
+mark plus-menu
+wait 300
+ui click 371 290
+wait 1500
+mark naming-inside-the-folder
+wait 300
+files text fresh.txt
+wait 800
+press enter
+wait 2500
+mark file-made
+wait 300
+files plus lib
+wait 2500
+ui click 371 290
+wait 1500
+files text sub/inner.txt
+wait 800
+press enter
+wait 2500
+mark nested-file-made
+wait 300
+files hover tree-other
+wait 1500
+mark hover-workspace-folder
+wait 300
+ui click 293 147
+wait 1500
+mark workspace-plus-menu
+wait 300
+ui click 345 178
+wait 2500
+mark naming-at-the-root
+wait 300
+files text w.txt
+wait 800
+press enter
+wait 3000
+mark made-in-the-other-folder
+wait 500
+quit

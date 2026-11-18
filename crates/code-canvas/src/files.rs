@@ -72,6 +72,28 @@ pub fn recycle(path: &Path) -> Result<(), String> {
     trash::delete(path).map_err(|e| e.to_string())
 }
 
+pub fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dst).map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
+pub fn relocate(src: &Path, dst: &Path) -> Result<(), String> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_tree(src, dst)?;
+    let gone = if src.is_dir() { std::fs::remove_dir_all(src) } else { std::fs::remove_file(src) };
+    gone.map_err(|e| e.to_string())
+}
+
 pub struct Copying {
     pub target: PathBuf,
     pub finished: Receiver<Result<(), String>>,

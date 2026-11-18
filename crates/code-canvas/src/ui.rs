@@ -9,10 +9,12 @@ use egui::{
 use crate::ext::Extensions;
 use crate::icons;
 use crate::page::{build_tree, Page, PageState, RelFilters};
+use crate::tree_ops;
 
 mod console;
 mod deps_panel;
 mod ext_panels;
+mod files_tree;
 mod git_panel;
 mod settings;
 mod versions_menu;
@@ -21,6 +23,7 @@ use crate::keys::{Command, Keymap};
 
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
+pub use files_tree::{Clip as TreeClip, DropAt, TreeOp};
 pub use settings::{ask_reset as settings_ask_reset, SettingsView, Tab as SettingsTab};
 pub use versions_menu::VersionMenu;
 
@@ -193,6 +196,7 @@ pub enum FileOp {
     NewFolder { dir: String, name: String },
     Rename { path: String, name: String },
     Delete(String),
+    CopyName(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -327,6 +331,7 @@ pub struct UiState {
     pub rebinding: Option<Command>,
     pub settings: SettingsView,
     pub naming: Option<Naming>,
+    pub tree: files_tree::Tree,
     pub single: bool,
     pub prefs: crate::prefs::Prefs,
     pub media: Option<std::path::PathBuf>,
@@ -412,6 +417,7 @@ impl Default for UiState {
             rebinding: None,
             settings: Default::default(),
             naming: None,
+            tree: Default::default(),
             single: false,
             prefs: Default::default(),
             media: None,
@@ -647,6 +653,7 @@ impl UiState {
 }
 
 pub enum Action {
+    Tree(TreeOp),
     TrustFolders,
     SwitchTab(usize),
     CloseTab(usize),
@@ -976,6 +983,7 @@ pub fn build(
     actions: &mut Vec<Action>,
 ) -> Rect {
     st.floating.clear();
+    st.tree.begin_frame();
     st.card_places.clear();
     st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
@@ -1060,6 +1068,7 @@ pub fn build(
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     workspace_drop(&ctx, st, canvas);
+    files_tree::drag_step(&ctx, st, pages.get(active).map(|page| page.root.as_path()), actions);
     let commit_shown = pages.get(active).is_some_and(|page| page.showing.is_some());
     following_bar(&ctx, st, canvas, commit_shown, actions);
     share_panel(&ctx, st, actions);
@@ -2442,7 +2451,7 @@ fn folder_row(
     actions: &mut Vec<Action>,
     tools: bool,
 ) {
-    Frame::NONE.inner_margin(Margin { left: 6, right: 8, top: 8, bottom: 0 }).show(ui, |ui| {
+    let shown = Frame::NONE.inner_margin(Margin { left: 6, right: 8, top: 8, bottom: 0 }).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -2477,6 +2486,9 @@ fn folder_row(
             });
         });
     });
+    if tools {
+        st.tree.root_row = shown.response.rect;
+    }
 }
 
 fn short_branch(branch: &str) -> String {
@@ -2547,8 +2559,11 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
         let pointer = ui.ctx().pointer_latest_pos();
         for row in &st.workspace {
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click_and_drag());
+            st.tree.folders.push((rect, row.path.clone()));
             let on = row.page.is_some();
-            let hot = ui.rect_contains_pointer(rect);
+            let new_id = ui.scope_id().with(("workspace new", &row.path));
+            let new_open = egui::Popup::is_id_open(ui.ctx(), new_id.with("popup"));
+            let hot = ui.rect_contains_pointer(rect) || new_open;
             if row.active {
                 ui.painter().rect_filled(rect, 6.0, pal().raised);
             } else if hot {
@@ -2570,7 +2585,43 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 (false, None, Some(files)) => files.to_string(),
                 (false, None, None) => String::new(),
             };
-            let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
+            let plus_at = Rect::from_center_size(Pos2::new(button.left() - 13.0, mid), Vec2::splat(22.0));
+            if hot && st.tree.drag.is_none() {
+                let plus = ui.interact(plus_at, new_id, Sense::click());
+                if plus.hovered() || new_open {
+                    ui.painter().rect_filled(plus_at, 5.0, pal().border_strong);
+                }
+                ui.painter().text(
+                    plus_at.center(),
+                    Align2::CENTER_CENTER,
+                    icons::PLUS,
+                    FontId::proportional(13.0),
+                    pal().text_dim,
+                );
+                egui::Popup::menu(&plus).show(|ui| {
+                    ui.set_width(170.0);
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    let mut kind = None;
+                    if menu_row(ui, icons::FILE, "New file") {
+                        kind = Some(NamingKind::NewFile);
+                    }
+                    if menu_row(ui, icons::FOLDER, "New folder") {
+                        kind = Some(NamingKind::NewFolder);
+                    }
+                    if let Some(kind) = kind {
+                        st.naming = Some(Naming { kind, path: String::new(), text: String::new(), focus: true });
+                        if !row.active {
+                            actions.push(match row.page {
+                                Some(page) => Action::SwitchTab(page),
+                                None => Action::Workspace(WorkspaceOp::Put(row.path.clone())),
+                            });
+                        }
+                        ui.close();
+                    }
+                });
+                plus.on_hover_text("New file or folder in it");
+            }
+            let right = if hot { plus_at.left() - 4.0 } else { rect.right() - 8.0 };
             let shade = if row.branch.is_some() && on { pal().text_dim } else { pal().text_faint };
             let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), shade);
             let name_end = right - counted.size().x - 8.0;
@@ -2715,9 +2766,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 6 }).show(ui, |ui| {
         search_field(ui, &mut st.explorer_filter, "Filter by name, e.g. api types", icons::SEARCH);
     });
-    naming_box(ui, st, actions);
-
     let Some(page) = page else {
+        naming_box(ui, st, actions);
         ui.add_space(8.0);
         ui.vertical_centered(|ui| ui.label(RichText::new("No folder open").color(pal().text_dim)));
         return;
@@ -2733,6 +2783,11 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         st.explorer_reveal = Some(selected_path.clone());
     }
     st.explorer_shown = now_shown;
+    if st.tree.page != page.id {
+        st.tree.page = page.id;
+        st.tree.sel.clear();
+        st.tree.anchor = None;
+    }
     let reveal = st.explorer_reveal.take();
     let mut opened = false;
     if let Some(path) = &reveal {
@@ -2743,6 +2798,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         }
     }
     let PageState::Ready(r) = &mut page.state else {
+        naming_box(ui, st, actions);
         ui.add_space(8.0);
         ui.vertical_centered(|ui| ui.label(RichText::new("Scanning…").color(pal().text_dim)));
         return;
@@ -2769,6 +2825,18 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             .collect()
     });
     let rows = matches.as_ref().map(|m| m.len()).unwrap_or(r.tree.len());
+    let new_in = st.naming.as_ref().filter(|n| n.kind != NamingKind::Rename && matches.is_none()).and_then(|n| {
+        if n.path.is_empty() {
+            return Some((0usize, 0u16));
+        }
+        let at = r.tree.iter().position(|row| row.path == n.path)?;
+        r.tree[at].open.then_some((at + 1, r.tree[at].depth + 1))
+    });
+    if new_in.is_none() {
+        naming_box(ui, st, actions);
+    }
+    let shown_at = new_in.map(|(at, _)| at);
+    let rows = rows + shown_at.is_some() as usize;
     if let Some(m) = &matches {
         let note = if m.len() >= 5000 { "5000+ files".to_string() } else { format!("{} files", m.len()) };
         ui.horizontal(|ui| {
@@ -2783,38 +2851,69 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     let indent_step = (indent_room / deepest.max(1) as f32).clamp(6.0, 16.0);
     let indent = |depth: u16| (depth as f32 * indent_step).min(indent_room);
     let mut list = egui::ScrollArea::vertical().auto_shrink([false, false]);
-    let row_of =
-        reveal.as_ref().filter(|_| matches.is_none()).and_then(|path| r.tree.iter().position(|row| row.path == *path));
+    let row_of = reveal
+        .as_ref()
+        .filter(|_| matches.is_none())
+        .and_then(|path| r.tree.iter().position(|row| row.path == *path))
+        .or(shown_at.filter(|_| st.naming.as_ref().is_some_and(|n| n.focus)));
     if let Some(row) = row_of {
         let (top, (from, tall)) = (row as f32 * ROW_H, st.explorer_seen);
         if top < from || top + ROW_H > from + tall {
             list = list.vertical_scroll_offset((top - tall * 0.35).max(0.0));
         }
+    } else if st.tree.scroll != 0.0 && st.tree.drag.is_some() {
+        list = list.vertical_scroll_offset((st.explorer_seen.0 + st.tree.scroll).max(0.0));
     }
+    let dragging = st.tree.drag.is_some();
+    let any_popup = egui::Popup::is_any_open(ui.ctx());
     let seen = list.show_rows(ui, ROW_H, rows, |ui, range| {
-        for i in range {
+        for slot in range {
+            if Some(slot) == shown_at {
+                let depth = new_in.map_or(0, |(_, depth)| depth);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::hover());
+                let x0 = rect.left() + 14.0 + indent(depth);
+                let folder = st.naming.as_ref().is_some_and(|n| n.kind == NamingKind::NewFolder);
+                let glyph = if folder { icons::FOLDER } else { icons::FILE };
+                let mid = rect.center().y;
+                let at = Pos2::new(x0 + 49.0, mid);
+                ui.painter().text(at, Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), pal().text_dim);
+                let field = Rect::from_min_max(
+                    Pos2::new(x0 + 58.0, rect.top() + 1.0),
+                    Pos2::new(rect.right() - 8.0, rect.bottom() - 1.0),
+                );
+                rename_in_place(ui, st, field, actions);
+                continue;
+            }
+            let i = if shown_at.is_some_and(|at| slot > at) { slot - 1 } else { slot };
             let (depth, open, name, path, count, state) = match &matches {
                 Some(m) => {
                     let f = &r.repo.files[m[i]];
                     let hidden = page.filter.hidden.contains(&f.rel_path);
-                    let state = RowState { is_dir: false, hidden, locked: false, ignored: false };
+                    let state = RowState { is_dir: false, hidden, locked: false, ignored: false, open: false };
                     (0u16, false, f.rel_path.as_str(), f.rel_path.as_str(), 0, state)
                 }
                 None => {
                     let row = &r.tree[i];
-                    let state =
-                        RowState { is_dir: row.is_dir, hidden: row.hidden, locked: row.locked, ignored: row.ignored };
+                    let state = RowState {
+                        is_dir: row.is_dir,
+                        hidden: row.hidden,
+                        locked: row.locked,
+                        ignored: row.ignored,
+                        open: row.open,
+                    };
                     (row.depth, row.open, row.name.as_str(), row.path.as_str(), row.count, state)
                 }
             };
-            let RowState { is_dir, hidden, locked, ignored } = state;
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+            let RowState { is_dir, hidden, locked, ignored, .. } = state;
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click_and_drag());
             if !ui.is_rect_visible(rect) {
                 continue;
             }
+            st.tree.rows.push((rect, path.to_string(), is_dir, open));
+            let picked = st.tree.sel.contains(path);
             let painter = ui.painter();
             let row_bg = rect.shrink2(Vec2::new(6.0, 0.0));
-            if has_selection && path == selected_path {
+            if picked || (has_selection && path == selected_path) {
                 painter.rect_filled(row_bg, 6.0, pal().raised);
             } else if resp.hovered() {
                 painter.rect_filled(row_bg, 6.0, pal().row);
@@ -2874,8 +2973,20 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 );
                 text_x += 20.0;
             }
-            let mut right_pad = if is_dir && !ignored { 44.0 } else { 10.0 };
-            if let (Some(change), Some(tint)) = (change, tint) {
+            let renamed = st.naming.as_ref().is_some_and(|n| n.kind == NamingKind::Rename && n.path == path);
+            let alone = st.tree.focus && st.tree.sel.len() == 1 && picked;
+            let menu_up = any_popup
+                && egui::Popup::is_id_open(ui.ctx(), ui.make_persistent_id(("tree quick", path, 0)).with("popup"));
+            let hot = !dragging && !renamed && !ignored && (ui.rect_contains_pointer(rect) || alone || menu_up);
+            let mut right_pad = if hot {
+                files_tree::quick_width(is_dir)
+            } else if is_dir && !ignored {
+                44.0
+            } else {
+                10.0
+            };
+            if hot {
+            } else if let (Some(change), Some(tint)) = (change, tint) {
                 let at = Pos2::new(rect.right() - 14.0, mid);
                 painter.text(at, Align2::RIGHT_CENTER, change.change.letter(), FontId::monospace(11.5), tint);
                 right_pad += 16.0;
@@ -2883,12 +2994,11 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 painter.circle_filled(Pos2::new(rect.right() - right_pad - 2.0, mid), 2.5, tint);
                 right_pad += 10.0;
             }
-            if unsaved {
+            if unsaved && !hot {
                 painter.circle_filled(Pos2::new(rect.right() - right_pad - 4.0, mid), 3.2, pal().text);
                 right_pad += 14.0;
             }
             let room = rect.right() - right_pad - text_x;
-            let renamed = st.naming.as_ref().is_some_and(|n| n.kind == NamingKind::Rename && n.path == path);
             if renamed {
                 let field = Rect::from_min_max(
                     Pos2::new(text_x - 5.0, rect.top() + 1.0),
@@ -2898,17 +3008,44 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 continue;
             }
             text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
-            if is_dir && !ignored {
+            if is_dir && !ignored && !hot {
                 let at = Pos2::new(rect.right() - 14.0, mid);
                 painter.text(at, Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.0), pal().text_faint);
             }
+            if hot {
+                let quick = files_tree::Quick { path, is_dir, open, naming: &mut st.naming };
+                files_tree::quick_buttons(ui, rect, quick, actions);
+            }
 
-            if resp.hovered() && on {
+            if resp.hovered() && on && !dragging {
                 actions.push(Action::HoverPath(path.to_string()));
+            }
+            if resp.drag_started() && !ignored {
+                st.tree.start_drag(&page.root, path, is_dir);
+            }
+            let mods = ui.input(|i| i.modifiers);
+            if resp.secondary_clicked() && !st.tree.sel.contains(path) {
+                st.tree.sel = [path.to_string()].into();
+                st.tree.anchor = Some(path.to_string());
             }
             if resp.clicked() && ignored {
                 actions.push(Action::OpenIgnored(path.to_string()));
+            } else if resp.clicked() && (mods.command || mods.ctrl) {
+                if !st.tree.sel.remove(path) {
+                    st.tree.sel.insert(path.to_string());
+                }
+                st.tree.anchor = Some(path.to_string());
+            } else if resp.clicked() && mods.shift {
+                let order: Vec<&str> = match &matches {
+                    Some(m) => m.iter().map(|&k| r.repo.files[k].rel_path.as_str()).collect(),
+                    None => r.tree.iter().map(|row| row.path.as_str()).collect(),
+                };
+                let from = st.tree.anchor.clone().unwrap_or_else(|| path.to_string());
+                st.tree.sel = tree_ops::select_range(&order, &from, path).into_iter().collect();
+                st.tree.anchor.get_or_insert_with(|| path.to_string());
             } else if resp.clicked() {
+                st.tree.sel = [path.to_string()].into();
+                st.tree.anchor = Some(path.to_string());
                 let x = resp.interact_pointer_pos().map(|p| p.x).unwrap_or(text_x);
                 if is_dir && x < x0 + 17.0 {
                     actions.push(Action::ToggleTreeOpen(path.to_string()));
@@ -2928,7 +3065,14 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             if resp.double_clicked() && is_dir && on {
                 actions.push(Action::ToggleCollapsed(path.to_string()));
             }
-            resp.context_menu(|ui| file_menu(ui, &mut st.naming, path, state, actions));
+            resp.context_menu(|ui| {
+                let menu = MenuInfo {
+                    acted: st.tree.acted_on(path),
+                    can_paste: st.tree.clip.is_some(),
+                    undo: st.tree.can_undo.clone(),
+                };
+                file_menu(ui, &mut st.naming, path, state, menu, actions)
+            });
             if ignored {
                 resp.on_hover_text("Git ignores it, so it is not on the canvas");
             } else if let Some(change) = change {
@@ -2942,6 +3086,21 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
         }
     });
     st.explorer_seen = (seen.state.clamped_offset().y, seen.inner_rect.height());
+    st.tree.list = seen.inner_rect;
+    let pressed = ui.ctx().input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
+    if let Some(at) = pressed {
+        st.tree.focus = seen.inner_rect.contains(at);
+    }
+    let used = seen.content_size.y.min(seen.inner_rect.height());
+    let free = Rect::from_min_max(Pos2::new(seen.inner_rect.left(), seen.inner_rect.top() + used), seen.inner_rect.max);
+    if free.height() > 8.0 && st.tree.drag.is_none() {
+        let blank = ui.interact(free, ui.scope_id().with("tree blank"), Sense::click());
+        if blank.clicked() {
+            st.tree.sel.clear();
+        }
+        let (paste, undo) = (st.tree.clip.is_some(), st.tree.can_undo.clone());
+        blank.context_menu(|ui| root_menu(ui, &mut st.naming, paste, undo, actions));
+    }
 }
 
 fn completion_list(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
@@ -3056,16 +3215,76 @@ struct RowState {
     hidden: bool,
     locked: bool,
     ignored: bool,
+    open: bool,
 }
 
-fn file_menu(ui: &mut egui::Ui, naming: &mut Option<Naming>, path: &str, row: RowState, actions: &mut Vec<Action>) {
-    let RowState { is_dir, hidden, locked, ignored } = row;
+struct MenuInfo {
+    acted: Vec<String>,
+    can_paste: bool,
+    undo: Option<String>,
+}
+
+fn many(count: usize) -> String {
+    if count > 1 {
+        format!(" ({count})")
+    } else {
+        String::new()
+    }
+}
+
+fn root_menu(
+    ui: &mut egui::Ui,
+    naming: &mut Option<Naming>,
+    can_paste: bool,
+    undo: Option<String>,
+    actions: &mut Vec<Action>,
+) {
+    ui.set_width(236.0);
+    ui.spacing_mut().item_spacing.y = 1.0;
+    let mut ask = None;
+    let mut tree = None;
+    if menu_row(ui, icons::FILE, "New file…") {
+        ask = Some(NamingKind::NewFile);
+    }
+    if menu_row(ui, icons::FOLDER, "New folder…") {
+        ask = Some(NamingKind::NewFolder);
+    }
+    if can_paste && menu_row(ui, icons::COPY, "Paste") {
+        tree = Some(TreeOp::Paste(String::new()));
+    }
+    if let Some(label) = undo {
+        if menu_row(ui, icons::ROTATE_CCW, &format!("Undo {label}")) {
+            tree = Some(TreeOp::Undo);
+        }
+    }
+    if let Some(kind) = ask {
+        *naming = Some(Naming { kind, path: String::new(), text: String::new(), focus: true });
+        ui.close();
+    }
+    if let Some(op) = tree {
+        actions.push(Action::Tree(op));
+        ui.close();
+    }
+}
+
+fn file_menu(
+    ui: &mut egui::Ui,
+    naming: &mut Option<Naming>,
+    path: &str,
+    row: RowState,
+    menu: MenuInfo,
+    actions: &mut Vec<Action>,
+) {
+    let RowState { is_dir, hidden, locked, ignored, open } = row;
+    let MenuInfo { acted, can_paste, undo } = menu;
     ui.set_width(236.0);
     ui.spacing_mut().item_spacing.y = 1.0;
     let dir = if is_dir { path } else { path.rsplit_once('/').map_or("", |(dir, _)| dir) };
     let name = path.rsplit_once('/').map_or(path, |(_, name)| name);
+    let count = acted.len();
     let mut op = None;
     let mut ask = None;
+    let mut tree = None;
 
     let reveal = if cfg!(windows) {
         "Reveal in File Explorer"
@@ -3081,11 +3300,27 @@ fn file_menu(ui: &mut egui::Ui, naming: &mut Option<Naming>, path: &str, row: Ro
         op = Some(FileOp::Terminal(dir.to_string()));
     }
     menu_gap(ui);
+    if menu_row(ui, icons::ARROW_RIGHT, &format!("Cut{}", many(count))) {
+        tree = Some(TreeOp::Cut(acted.clone()));
+    }
+    if menu_row(ui, icons::COPY, &format!("Copy{}", many(count))) {
+        tree = Some(TreeOp::CopyFiles(acted.clone()));
+    }
+    if can_paste && menu_row(ui, crate::codicons::glyph("clippy").unwrap_or(icons::COPY), "Paste") {
+        tree = Some(TreeOp::Paste(crate::tree_ops::paste_dir(path, is_dir)));
+    }
+    if menu_row(ui, crate::codicons::glyph("files").unwrap_or(icons::COPY), &format!("Duplicate{}", many(count))) {
+        tree = Some(TreeOp::Duplicate(acted.clone()));
+    }
+    menu_gap(ui);
     if menu_row(ui, icons::COPY, "Copy path") {
         op = Some(FileOp::CopyPath { path: path.to_string(), relative: false });
     }
     if menu_row(ui, icons::COPY, "Copy relative path") {
         op = Some(FileOp::CopyPath { path: path.to_string(), relative: true });
+    }
+    if menu_row(ui, icons::COPY, "Copy name") {
+        op = Some(FileOp::CopyName(name.to_string()));
     }
     menu_gap(ui);
     if menu_row(ui, icons::FILE, "New file…") {
@@ -3094,11 +3329,20 @@ fn file_menu(ui: &mut egui::Ui, naming: &mut Option<Naming>, path: &str, row: Ro
     if menu_row(ui, icons::FOLDER, "New folder…") {
         ask = Some((NamingKind::NewFolder, dir.to_string(), String::new()));
     }
-    if menu_row(ui, icons::FILE_TEXT, "Rename…") {
+    if count < 2 && menu_row(ui, icons::FILE_TEXT, "Rename…") {
         ask = Some((NamingKind::Rename, path.to_string(), name.to_string()));
     }
-    if menu_row(ui, icons::TRASH_2, "Delete") {
+    if count > 1 {
+        if menu_row(ui, icons::TRASH_2, &format!("Delete{}", many(count))) {
+            tree = Some(TreeOp::Delete(acted.clone()));
+        }
+    } else if menu_row(ui, icons::TRASH_2, "Delete") {
         op = Some(FileOp::Delete(path.to_string()));
+    }
+    if let Some(label) = undo {
+        if menu_row(ui, icons::ROTATE_CCW, &format!("Undo {label}")) {
+            tree = Some(TreeOp::Undo);
+        }
     }
     menu_gap(ui);
     let mut canvas = None;
@@ -3121,10 +3365,13 @@ fn file_menu(ui: &mut egui::Ui, naming: &mut Option<Naming>, path: &str, row: Ro
     }
 
     if let Some((kind, path, text)) = ask {
+        if is_dir && !open && kind != NamingKind::Rename {
+            actions.push(Action::ToggleTreeOpen(path.clone()));
+        }
         *naming = Some(Naming { kind, path, text, focus: true });
         ui.close();
     }
-    if let Some(action) = op.map(Action::File).or(canvas) {
+    if let Some(action) = op.map(Action::File).or(tree.map(Action::Tree)).or(canvas) {
         actions.push(action);
         ui.close();
     }
@@ -3159,11 +3406,19 @@ fn rename_in_place(ui: &mut egui::Ui, st: &mut UiState, field: Rect, actions: &m
     }
     let accepted = ui.input(|i| i.key_pressed(egui::Key::Enter));
     if let Some(n) = st.naming.take().filter(|n| accepted && !n.text.trim().is_empty()) {
-        let same = n.path.rsplit('/').next() == Some(n.text.trim());
+        let same = n.kind == NamingKind::Rename && n.path.rsplit('/').next() == Some(n.text.trim());
         if !same {
-            actions.push(Action::File(FileOp::Rename { path: n.path, name: n.text }));
+            actions.push(finished_naming(n));
         }
     }
+}
+
+fn finished_naming(n: Naming) -> Action {
+    Action::File(match n.kind {
+        NamingKind::NewFile => FileOp::NewFile { dir: n.path, name: n.text },
+        NamingKind::NewFolder => FileOp::NewFolder { dir: n.path, name: n.text },
+        NamingKind::Rename => FileOp::Rename { path: n.path, name: n.text },
+    })
 }
 
 fn naming_box(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
@@ -3191,11 +3446,7 @@ fn naming_box(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     });
     let Some(accepted) = done else { return };
     if let Some(n) = st.naming.take().filter(|n| accepted && !n.text.trim().is_empty()) {
-        actions.push(Action::File(match n.kind {
-            NamingKind::NewFile => FileOp::NewFile { dir: n.path, name: n.text },
-            NamingKind::NewFolder => FileOp::NewFolder { dir: n.path, name: n.text },
-            NamingKind::Rename => FileOp::Rename { path: n.path, name: n.text },
-        }));
+        actions.push(finished_naming(n));
     }
 }
 
@@ -4653,6 +4904,9 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
 #[derive(Clone, Debug, PartialEq)]
 pub enum Asked {
     Delete { folder: std::path::PathBuf, path: String },
+    DeleteMany { folder: std::path::PathBuf, paths: Vec<String> },
+    Clash,
+    Across,
     Git { folder: std::path::PathBuf, op: crate::git::GitOp },
     Close { folder: std::path::PathBuf, forget: bool },
     Overwrite { folder: std::path::PathBuf, path: String },

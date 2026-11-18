@@ -2501,6 +2501,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `click` | `click <x> <y>`, `click <path> <line> <column>` | A click on the canvas, in physical pixels of the window, or in the middle of a cell of a card (1-based, as `hover`): on a wrapped card that is the row the column is on. |
 | `hover` | `hover <x> <y>`, `hover <path> <line> <column>` | The pointer resting on the canvas, in physical pixels or on a cell of a card (1-based; a column past the card's edge is where it would be if the card went on): what is under it reacts (the rest of a long line). |
 | `ui` | `ui click\|right\|move\|down\|up <x> <y>`, `ui drag <x> <y> <x> <y>` | The pointer on the interface, in points: what a button, a menu or a dragged icon gets. The steps after it wait until it has played out. |
+| `files` | `files drag <from> <to>`, `hold <from> <to>` then `release <to>`, `click\|right\|hover <path>`, `plus <folder>`, `mods ctrl\|shift\|none`, `key ctrl+z\|ctrl+x\|delete\|f2\|enter\|…`, `text <name>`, `drop-os <file> <path>`, `log` | The file list by row path (`empty` is the free space under the rows, `root` the folder's row, a workspace folder by its name): drags, clicks with modifiers, the keys the list handles while it has focus, and a file dropped from the system. Frames play at the pace of redraws: wait about 3 s after a drag before a `mark`. |
 | `folders` | `folders` | Show the list of opened folders. |
 | `collapse-all` | `collapse-all` | No argument. |
 | `expand-all` | `expand-all` | No argument. |
@@ -3832,3 +3833,41 @@ Configuration carries no comments either; what they said:
   `crates/code-canvas/src/icons.rs`. The font
   (`crates/code-canvas/assets/lucide.ttf`) and the CSS come from the
   `lucide-static` npm package.
+
+## The file list: drag, drop and quick actions
+
+- `src/tree_ops.rs` holds what has no window: `check_drop` (not into itself or
+  a folder inside itself, not onto its own folder unless copying, the open
+  folder itself never moves), `unique_name` (`x (2).txt`, `dir (2)`, an existing
+  ` (n)` is counted on), `top_most` (a folder and what is in it count once),
+  `select_range`, `Job` / `run` (move or copy, `Replace` sends what is there to
+  the Recycle Bin, `KeepBoth` numbers the new name, a copy into its own folder is
+  always numbered) and `undo` (a move goes back, a copy goes to the Recycle Bin).
+- `ui/files_tree.rs` is the list's part of the interface: the selection
+  (Ctrl+click toggles, Shift+click is a range of the rows shown), the drag
+  (ghost with the name or the count, `+` while Ctrl is down, the folder under
+  the pointer lit, red with "not here" when the drop is refused, the folder
+  opens after 600 ms, the list scrolls near its edges), and the buttons that
+  show on a row under the pointer (folder: new file or folder, terminal, close
+  the folders inside; file: show its card, rename). Drop targets are rows (a
+  file means its folder), the free space under the rows or the folder's row (the
+  root), and the other folders of the workspace (another project: it asks first).
+- `app/tree_files.rs` applies it: unsaved text of what moves is saved first (a
+  move stops if it cannot be), the folder is scanned again, the tree opens the
+  folder it went to and shows the file, what was hidden or collapsed on the
+  canvas follows a moved folder, and the last move or copy is kept for Ctrl+Z
+  (only while the list has focus, so the editor's own undo is not taken). A name
+  that exists asks (`Replace`, `Keep both`, `Cancel`) with the app's own question;
+  Delete with several rows asks once. Cut and Copy keep the rows inside the app
+  (not the system clipboard); Paste goes into the selected folder or the folder of
+  the selected file.
+- A file dropped from the system (`HoveredFile` / `DroppedFile`) goes where the
+  pointer is when it is let go (the window gets no pointer events during such a
+  drag, so `GetCursorPos` is asked): over a row or the free space of the list it
+  is copied there (an existing name gets ` (2)`), anywhere else it keeps its old
+  behaviour (a folder opens, a file is copied beside the selected card). A folder
+  dropped is still opened, never copied.
+- Not done: "Find in this folder" (the search has no folder filter), copying
+  files to the system clipboard to paste in Explorer, arrow keys moving the
+  selection, and moving the open editor to the new path (it closes; the file
+  keeps its card).

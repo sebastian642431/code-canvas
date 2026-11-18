@@ -1,0 +1,128 @@
+title: Files and folders are dragged in the list to move or copy them, with a question for a name that exists and for another folder, undo, cut and paste, a delete that asks, and files dropped from the system
+folders: tree-move, tree-other
+prefs: {"autosave": false}
+fixtures: tree-outside
+expect-log: files: Moved "notes.md" to docs
+expect-log: files: Moved "notes.md" to the folder's root
+expect-log: files: refused: "docs" cannot go into a folder inside itself
+expect-log: files: Copied "b.txt" to lib
+expect-log: files: undone
+expect-log: files: Moved 2 items
+expect-log: files: "from-explorer.txt" was copied in from outside into docs
+expect-file: tree-move/notes.md :: # Notes
+expect-file: tree-move/src/a (2).txt :: root a
+expect-file: tree-move/src/a.txt :: src a
+expect-file: tree-move/b.txt :: root b
+expect-file: tree-move/lib/b.txt :: root b
+expect-file: tree-move/lib/readme.md :: # Readme
+expect-file: tree-move/docs/c.txt :: root c
+expect-file: tree-move/docs/d.txt :: root d
+expect-file: tree-move/docs/from-explorer.txt :: dropped from the system
+expect-file: tree-move/src/keep.txt :: ZZkeep
+absent-file: tree-move/lib/keep.txt
+expect-file: tree-other/other.txt :: other
+expect-file: tree-other/extra.txt :: root extra
+expect-file: tree-outside/from-explorer.txt :: dropped
+absent-file: tree-move/a.txt
+absent-file: tree-move/extra.txt
+absent-file: tree-move/docs/notes.md
+absent-file: tree-move/docs/readme.md
+absent-file: tree-move/lib/extra.txt
+absent-file: tree-move/c.txt
+absent-file: tree-move/d.txt
+
+wait 3500
+left files
+wait 1200
+files click docs
+wait 400
+files click lib
+wait 400
+files mods none
+mark list
+wait 300
+files drag notes.md docs
+wait 2200
+mark moved-into-docs
+wait 400
+files drag docs/notes.md empty
+wait 2200
+mark moved-back-to-the-root
+wait 400
+files hold docs docs/guide
+wait 2200
+mark refused-into-itself
+wait 1500
+files release docs/guide
+wait 600
+files drag a.txt src
+wait 2200
+mark clash-asks
+wait 1500
+answer Keep both
+wait 1200
+files mods ctrl
+wait 200
+files hold b.txt lib
+wait 2200
+mark copy-ghost
+wait 1500
+files release lib
+wait 1200
+files mods none
+wait 300
+files drag extra.txt lib
+wait 2200
+files key ctrl+z
+wait 1200
+mark undone
+wait 300
+files click docs/readme.md
+wait 300
+files key ctrl+x
+wait 300
+files click lib
+wait 300
+files key ctrl+v
+wait 1500
+files click lib/keep.txt
+wait 300
+files key delete
+wait 1500
+mark delete-asks
+wait 1500
+answer Cancel
+wait 500
+files click c.txt
+wait 300
+files mods ctrl
+wait 200
+files click d.txt
+wait 400
+files mods none
+wait 300
+wait 1500
+mark two-selected
+files drag d.txt docs
+wait 2200
+mark two-moved
+wait 300
+files drop-os {FIX}\tree-outside\from-explorer.txt docs
+wait 1500
+edit lib/keep.txt 1 1
+wait 400
+type ZZ
+wait 500
+files drag lib/keep.txt src
+wait 3000
+mark moved-with-unsaved-text
+wait 1500
+files drag extra.txt tree-other
+wait 3500
+mark across-asks
+wait 1500
+answer Move
+wait 1500
+mark done
+wait 500
+quit

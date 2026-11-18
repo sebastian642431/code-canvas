@@ -23,6 +23,8 @@ use crate::script::{Script, Step};
 use crate::session::{self, PageSession, Session};
 use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState};
 
+mod tree_files;
+
 mod assistants;
 mod consoles;
 mod github_sync;
@@ -231,6 +233,11 @@ pub struct App {
     watcher: crate::watch::Watcher,
     auto_rescan: Option<Instant>,
     rescan_later: HashSet<u32>,
+    pending_job: Option<crate::tree_ops::Job>,
+    pasting_cut: bool,
+    tree_undo: Option<tree_files::Undoable>,
+    os_hover: bool,
+    script_mods: egui::Modifiers,
     changed_under: HashSet<(u32, String)>,
     zoom_rest: Option<(Instant, [f32; 2])>,
     long_line: Option<(u32, usize, usize, Rect)>,
@@ -389,6 +396,11 @@ impl App {
             watcher: crate::watch::Watcher::new(),
             auto_rescan: None,
             rescan_later: HashSet::new(),
+            pending_job: None,
+            pasting_cut: false,
+            tree_undo: None,
+            os_hover: false,
+            script_mods: egui::Modifiers::NONE,
             changed_under: HashSet::new(),
             zoom_rest: None,
             long_line: None,
@@ -444,6 +456,13 @@ impl App {
         app.know_folders();
         app.agents.follow_codex(app.ui.prefs.codex);
         app
+    }
+
+    fn system_cursor(&self) -> Option<[f32; 2]> {
+        let g = self.gfx.as_ref()?;
+        let [x, y] = tree_files::cursor_on_screen()?;
+        let origin = g.window.inner_position().ok()?;
+        Some([(x - origin.x) as f32, (y - origin.y) as f32])
     }
 
     fn scale(&self) -> f32 {
@@ -705,7 +724,8 @@ impl App {
 
     fn file_op(&mut self, op: FileOp) {
         let Some(root) = self.pages.get(self.active).map(|p| p.root.clone()) else { return };
-        let changes = !matches!(op, FileOp::Reveal(_) | FileOp::Terminal(_) | FileOp::CopyPath { .. });
+        let changes =
+            !matches!(op, FileOp::Reveal(_) | FileOp::Terminal(_) | FileOp::CopyPath { .. } | FileOp::CopyName(_));
         if changes && self.pages[self.active].shared.is_some() && self.pages[self.active].read_only {
             let text = "You are looking, not editing: the one who shares can let you make, rename and delete files.";
             return self.ext.notice(ext::Level::Info, "Sharing", text);
@@ -721,6 +741,9 @@ impl App {
                 let text = if relative { path.clone() } else { full.display().to_string() };
                 arboard::Clipboard::new().and_then(|mut c| c.set_text(text)).map_err(|e| e.to_string())
             }),
+            FileOp::CopyName(name) => {
+                arboard::Clipboard::new().and_then(|mut c| c.set_text(name)).map_err(|e| e.to_string())
+            }
             FileOp::NewFile { dir, name } => at(&dir).and_then(|d| crate::files::create_file(&d, &name)).map(|_| ()),
             FileOp::NewFolder { dir, name } => {
                 at(&dir).and_then(|d| crate::files::create_folder(&d, &name)).map(|_| ())
@@ -2194,6 +2217,26 @@ impl App {
                     Err(why) => self.ext.notice(ext::Level::Error, "files", why),
                 }
             }
+            (ui::Asked::DeleteMany { folder, paths }, ui::Answer::Yes) => self.delete_many(folder, paths),
+            (ui::Asked::Across, ui::Answer::Yes) => {
+                if let Some(job) = self.pending_job.take() {
+                    self.transfer_checked(job);
+                }
+            }
+            (ui::Asked::Clash, ui::Answer::Yes) => {
+                if let Some(job) = self.pending_job.take() {
+                    self.run_transfer(job, crate::tree_ops::Clash::Replace);
+                }
+            }
+            (ui::Asked::Clash, ui::Answer::Other) => {
+                if let Some(job) = self.pending_job.take() {
+                    self.run_transfer(job, crate::tree_ops::Clash::KeepBoth);
+                }
+            }
+            (ui::Asked::Across | ui::Asked::Clash, _) => {
+                self.pending_job = None;
+                self.pasting_cut = false;
+            }
             (ui::Asked::Overwrite { folder, path }, ui::Answer::Yes | ui::Answer::Other) => {
                 let Some(index) = self.pages.iter().position(|page| page.root == folder) else { return };
                 self.changed_under.remove(&(self.pages[index].id, path.clone()));
@@ -3325,6 +3368,11 @@ impl App {
         if typing || self.ui.quick.is_some() {
             return;
         }
+        if let Some(chord) = chord.as_ref().filter(|_| self.ui.tree.focus) {
+            if self.tree_key(chord) {
+                return;
+            }
+        }
         let before_editor = bound.is_some_and(|i| i.command.is_caret()) || (bound.is_some() && alt && !cmd);
         if !before_editor && self.edit_key(event) {
             return;
@@ -3450,6 +3498,7 @@ impl App {
             self.session_dirty = true;
         }
         match action {
+            Action::Tree(op) => self.tree_op(op),
             Action::SwitchTab(i) => self.show_folder(i),
             Action::CloseTab(i) => self.close_folder(i, false),
             Action::OpenFolder => self.pick_folder(),
@@ -4274,6 +4323,7 @@ impl App {
                 };
                 self.ui_events.extend(frames);
             }
+            Step::Files(what) => self.files_step(&what),
             Step::Preview(path) => self.apply(Action::Preview(path)),
             Step::Page(script) => self.webviews.run(&script),
             Step::Back => self.travel(true),
@@ -5283,6 +5333,12 @@ impl App {
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
         let mut actions = Vec::new();
+        self.ui.tree.os_over = None;
+        if self.os_hover {
+            let s = self.scale();
+            self.ui.tree.os_over = self.system_cursor().map(|c| egui::pos2(c[0] / s, c[1] / s));
+            self.request_redraw();
+        }
         let (mut full, canvas_pts) = {
             let g = self.gfx.as_mut().unwrap();
             let mut raw = g.egui_state.take_egui_input(&g.window);
@@ -5886,7 +5942,23 @@ impl ApplicationHandler for App {
                 self.last_input = Instant::now();
                 self.on_key(&event)
             }
+            WindowEvent::HoveredFile(_) => {
+                self.os_hover = true;
+                self.request_redraw();
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.os_hover = false;
+                self.ui.tree.os_over = None;
+                self.request_redraw();
+            }
             WindowEvent::DroppedFile(path) => {
+                self.os_hover = false;
+                self.ui.tree.os_over = None;
+                let at = self.system_cursor();
+                if at.is_some_and(|at| self.drop_from_system(path.clone(), at)) {
+                    self.save_session();
+                    return;
+                }
                 if path.is_dir() {
                     self.open_folder(path, None);
                 } else if self.pages.get(self.active).is_some() {

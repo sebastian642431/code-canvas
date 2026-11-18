@@ -36,6 +36,7 @@ mod share;
 mod sync;
 mod term;
 mod themes;
+mod tree_ops;
 mod trust;
 mod ui;
 mod update;
