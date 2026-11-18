@@ -2149,7 +2149,10 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     of the canvas are shown or hidden (`Prefs::rail`, `status`, `toolbar`;
     the dock is `UiState::files`), a button puts every part back, and two
     modes: full screen (`Action::ToggleFullScreen`, borderless) and only the
-    canvas (`Action::ToggleUi`).
+    canvas (`Action::ToggleUi`). The dock and its bar of icons go to either
+    side (`Prefs::dock_right`): the bars swap sides, the dock becomes a right
+    panel, and the rounded corners, the seam and the tab of the docked icon
+    follow (`rail_frame`, `rail_tab`).
   - The Timeline under the files folds away by its title (`Prefs::timeline`):
     closed, it is a row of its own height that cannot be dragged taller.
   - **The question before deleting shows what is about to go** (`ui::Preview`,

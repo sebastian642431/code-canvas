@@ -996,7 +996,7 @@ fn layout_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                 again
             };
             if head(ui, "Visible", true) {
-                (prefs.rail, prefs.status, prefs.toolbar) = (true, true, true);
+                (prefs.rail, prefs.status, prefs.toolbar, prefs.dock_right) = (true, true, true, false);
                 st.files = true;
             }
             let row = |ui: &mut egui::Ui, glyph: &str, label: &str, key: String, on: bool| {
@@ -1048,6 +1048,15 @@ fn layout_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
             }
             if row(ui, icons::MOUSE_POINTER_2, "Toolbar of the canvas", String::new(), prefs.toolbar) {
                 prefs.toolbar = !prefs.toolbar;
+            }
+            ui.add_space(4.0);
+            ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top() - 2.0, Stroke::new(1.0, pal().border));
+            head(ui, "Files and the bar of icons", false);
+            if row(ui, icons::PANEL_LEFT, "On the left", String::new(), !prefs.dock_right) {
+                prefs.dock_right = false;
+            }
+            if row(ui, icons::PANEL_RIGHT, "On the right", String::new(), prefs.dock_right) {
+                prefs.dock_right = true;
             }
             ui.add_space(4.0);
             ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top() - 2.0, Stroke::new(1.0, pal().border));
@@ -1180,27 +1189,38 @@ fn status_bar(
     }
 }
 
-fn rail_frame(side: Side) -> Frame {
+fn rail_frame(on_right: bool) -> Frame {
     let edge = EDGE as i8;
-    let margin = match side {
-        Side::Left => Margin { left: edge, right: 0, top: 0, bottom: edge },
-        Side::Right => Margin { left: 0, right: edge, top: 0, bottom: edge },
+    let margin = match on_right {
+        false => Margin { left: edge, right: 0, top: 0, bottom: edge },
+        true => Margin { left: 0, right: edge, top: 0, bottom: edge },
     };
     Frame::NONE.fill(pal().chrome).inner_margin(margin)
 }
 
-fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect) {
+fn rail_tab(painter: &egui::Painter, icon: Rect, bar: Rect, toward_right: bool) {
     // The flares reach 2 * FLARE past the tab, more than the gap above the first icon; keep the
-    // right edge unclipped so the tab still covers the seam into the dock.
+    // edge by the dock unclipped so the tab still covers the seam into the dock.
     let painter = painter.with_clip_rect(bar.shrink2(Vec2::new(0.0, 1.0)));
-    let tab = Rect::from_min_max(icon.left_top() + Vec2::new(3.0, 0.0), Pos2::new(bar.right(), icon.bottom()));
-    let round = CornerRadius { nw: 9, sw: 9, ne: 0, se: 0 };
-    painter.rect_filled(tab, round, pal().row);
     const FLARE: f32 = 7.0;
+    let (tab, round, inner) = match toward_right {
+        true => (
+            Rect::from_min_max(icon.left_top() + Vec2::new(3.0, 0.0), Pos2::new(bar.right(), icon.bottom())),
+            CornerRadius { nw: 9, sw: 9, ne: 0, se: 0 },
+            bar.right() - FLARE,
+        ),
+        false => (
+            Rect::from_min_max(Pos2::new(bar.left(), icon.top()), icon.right_bottom() - Vec2::new(3.0, 0.0)),
+            CornerRadius { nw: 0, sw: 0, ne: 9, se: 9 },
+            bar.left() + FLARE,
+        ),
+    };
+    painter.rect_filled(tab, round, pal().row);
+    let edge_x = if toward_right { tab.right() } else { tab.left() };
     for (edge, away) in [(tab.top(), -FLARE), (tab.bottom(), FLARE)] {
-        let square = Rect::from_two_pos(Pos2::new(tab.right() - FLARE, edge), Pos2::new(tab.right(), edge + away));
+        let square = Rect::from_two_pos(Pos2::new(inner, edge), Pos2::new(edge_x, edge + away));
         painter.rect_filled(square, 0.0, pal().row);
-        painter.circle_filled(Pos2::new(tab.right() - FLARE, edge + away), FLARE, pal().well);
+        painter.circle_filled(Pos2::new(inner, edge + away), FLARE, pal().well);
     }
 }
 
@@ -1215,7 +1235,12 @@ fn files_dock(
     ext: &mut Extensions,
     actions: &mut Vec<Action>,
 ) {
-    let dock = egui::Panel::left("left").resizable(true).default_size(290.0).size_range(230.0..=560.0);
+    let right = st.prefs.dock_right;
+    let dock = match right {
+        false => egui::Panel::left("left"),
+        true => egui::Panel::right("left on the right"),
+    };
+    let dock = dock.resizable(true).default_size(290.0).size_range(230.0..=560.0);
     let frame = Frame::NONE.fill(pal().chrome).inner_margin(Margin { left: 0, right: 0, top: 0, bottom: EDGE as i8 });
     let was = ui.style().visuals.widgets.clone();
     let widgets = &mut ui.style_mut().visuals.widgets;
@@ -1223,10 +1248,13 @@ fn files_dock(
     dock.frame(frame).show_separator_line(false).show(ui, |ui| {
         ui.style_mut().visuals.widgets = was.clone();
         let all = ui.max_rect();
-        let round = CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 };
+        let round = match right {
+            false => CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 },
+            true => CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 },
+        };
         ui.painter().rect(all, round, pal().row, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
-        let seam =
-            Rect::from_min_max(Pos2::new(all.left(), all.top() + 1.0), Pos2::new(all.left() + 1.0, all.bottom() - 1.0));
+        let by_bar = if right { all.right() - 1.0 } else { all.left() };
+        let seam = Rect::from_min_max(Pos2::new(by_bar, all.top() + 1.0), Pos2::new(by_bar + 1.0, all.bottom() - 1.0));
         ui.painter().rect_filled(seam, 0.0, pal().row);
         ui.set_min_height(ui.available_height());
         ui.set_width(ui.available_width());
@@ -1488,7 +1516,7 @@ fn paint_rail_icon(
     hovered: bool,
 ) {
     match active {
-        Some(bar) if entry.panel == st.dock => rail_tab(ui.painter(), rect, bar),
+        Some(bar) if entry.panel == st.dock => rail_tab(ui.painter(), rect, bar, !st.prefs.dock_right),
         Some(_) => {
             ui.painter().rect_filled(rect.shrink(3.0), 8.0, pal().selection.gamma_multiply(0.7));
         }
@@ -1556,77 +1584,89 @@ fn rail(
     if side == Side::Right && order.is_empty() && st.rail_drag.is_none() {
         return;
     }
-    let bar = match side {
-        Side::Left => egui::Panel::left("rail_left"),
-        Side::Right => egui::Panel::right("rail_right"),
+    let on_right = (side == Side::Right) != st.prefs.dock_right;
+    let bar = match (side, on_right) {
+        (Side::Left, false) => egui::Panel::left("rail_left"),
+        (Side::Left, true) => egui::Panel::right("rail_left"),
+        (Side::Right, true) => egui::Panel::right("rail_right"),
+        (Side::Right, false) => egui::Panel::left("rail_right"),
     };
     let joined = side == Side::Left && st.files;
-    bar.frame(rail_frame(side)).exact_size(RAIL_W + EDGE).resizable(false).show_separator_line(false).show(ui, |ui| {
-        let zone = ui.max_rect();
-        let round = match joined {
-            true => CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 },
-            false => CornerRadius::same(ROUND as u8),
-        };
-        ui.painter().rect(zone, round, pal().well, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
-        if joined {
-            let seam = Rect::from_min_max(
-                Pos2::new(zone.right() - 1.0, zone.top() + 1.0),
-                Pos2::new(zone.right(), zone.bottom() - 1.0),
-            );
-            ui.painter().rect_filled(seam, 0.0, pal().well);
-        }
-        ui.spacing_mut().item_spacing.y = 2.0;
-        ui.add_space(5.0);
-        let mut slots: Vec<(String, Rect)> = Vec::new();
-        for entry in order.iter().filter_map(|key| entries.iter().find(|entry| entry.panel.key() == *key)) {
-            let key = entry.panel.key();
-            let (slot, resp) = ui.allocate_exact_size(Vec2::new(zone.width(), RAIL_ICON.y), Sense::click_and_drag());
-            let rect = Rect::from_center_size(slot.center(), RAIL_ICON);
-            slots.push((key.clone(), rect));
-            let lifted = st.rail_drag.as_ref().is_some_and(|drag| drag.key == key);
-            if !lifted {
-                let active = st.is_open(&entry.panel).then_some(zone);
-                paint_rail_icon(ui, st, ext, entry, rect, active, resp.hovered());
-                rail_badge(ui, ext, page, &entry.panel, rect);
-            }
-            if resp.drag_started_by(egui::PointerButton::Primary) {
-                st.rail_drag = Some(RailDrag { key, target: None });
-            }
-            let other = side.other();
-            let offer = match other {
-                Side::Left => "Move to the left bar",
-                Side::Right => "Move to the right bar",
+    bar.frame(rail_frame(on_right)).exact_size(RAIL_W + EDGE).resizable(false).show_separator_line(false).show(
+        ui,
+        |ui| {
+            let zone = ui.max_rect();
+            let round = match (joined, on_right) {
+                (true, false) => CornerRadius { nw: ROUND as u8, sw: ROUND as u8, ne: 0, se: 0 },
+                (true, true) => CornerRadius { nw: 0, sw: 0, ne: ROUND as u8, se: ROUND as u8 },
+                (false, _) => CornerRadius::same(ROUND as u8),
             };
-            resp.context_menu(|ui| {
-                ui.set_width(200.0);
-                if menu_row(ui, icons::PANEL_LEFT, offer) {
-                    st.rail_move = Some((entry.panel.clone(), other, None));
-                    ui.close();
-                }
-            });
-            if resp.on_hover_text(format!("{}\nDrag it to reorder it or to the other bar", entry.tip)).clicked() {
-                st.toggle(entry.panel.clone());
+            ui.painter().rect(zone, round, pal().well, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+            if joined {
+                let by_dock = if on_right { zone.left() } else { zone.right() - 1.0 };
+                let seam = Rect::from_min_max(
+                    Pos2::new(by_dock, zone.top() + 1.0),
+                    Pos2::new(by_dock + 1.0, zone.bottom() - 1.0),
+                );
+                ui.painter().rect_filled(seam, 0.0, pal().well);
             }
-        }
-        rail_drop_target(ui, st, side, zone, &slots);
-        if side == Side::Right {
-            return;
-        }
-        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             ui.add_space(5.0);
-            account_button(ui, st, actions);
-            let tip = st.keys.hint("Settings: version, theme, colours, shortcuts", Command::Settings);
-            if icon_button(ui, icons::SETTINGS, RAIL_ICON, st.settings.open, pal().hover).on_hover_text(tip).clicked() {
-                st.settings.toggle();
+            let mut slots: Vec<(String, Rect)> = Vec::new();
+            for entry in order.iter().filter_map(|key| entries.iter().find(|entry| entry.panel.key() == *key)) {
+                let key = entry.panel.key();
+                let (slot, resp) =
+                    ui.allocate_exact_size(Vec2::new(zone.width(), RAIL_ICON.y), Sense::click_and_drag());
+                let rect = Rect::from_center_size(slot.center(), RAIL_ICON);
+                slots.push((key.clone(), rect));
+                let lifted = st.rail_drag.as_ref().is_some_and(|drag| drag.key == key);
+                if !lifted {
+                    let active = st.is_open(&entry.panel).then_some(zone);
+                    paint_rail_icon(ui, st, ext, entry, rect, active, resp.hovered());
+                    rail_badge(ui, ext, page, &entry.panel, rect);
+                }
+                if resp.drag_started_by(egui::PointerButton::Primary) {
+                    st.rail_drag = Some(RailDrag { key, target: None });
+                }
+                let other = side.other();
+                let offer = match other {
+                    Side::Left => "Move to the left bar",
+                    Side::Right => "Move to the right bar",
+                };
+                resp.context_menu(|ui| {
+                    ui.set_width(200.0);
+                    if menu_row(ui, icons::PANEL_LEFT, offer) {
+                        st.rail_move = Some((entry.panel.clone(), other, None));
+                        ui.close();
+                    }
+                });
+                if resp.on_hover_text(format!("{}\nDrag it to reorder it or to the other bar", entry.tip)).clicked() {
+                    st.toggle(entry.panel.clone());
+                }
             }
-            let help = st.is_open(&Panel::Help);
-            let tip = "Keyboard and mouse shortcuts";
-            if icon_button(ui, icons::CIRCLE_HELP, RAIL_ICON, help, pal().hover).on_hover_text(tip).clicked() {
-                st.toggle(Panel::Help);
+            rail_drop_target(ui, st, side, zone, &slots);
+            if side == Side::Right {
+                return;
             }
-            share_button(ui, st, actions);
-        });
-    });
+            ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                ui.add_space(5.0);
+                account_button(ui, st, actions);
+                let tip = st.keys.hint("Settings: version, theme, colours, shortcuts", Command::Settings);
+                if icon_button(ui, icons::SETTINGS, RAIL_ICON, st.settings.open, pal().hover)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    st.settings.toggle();
+                }
+                let help = st.is_open(&Panel::Help);
+                let tip = "Keyboard and mouse shortcuts";
+                if icon_button(ui, icons::CIRCLE_HELP, RAIL_ICON, help, pal().hover).on_hover_text(tip).clicked() {
+                    st.toggle(Panel::Help);
+                }
+                share_button(ui, st, actions);
+            });
+        },
+    );
 }
 
 fn account_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
@@ -1766,10 +1806,11 @@ fn sign_in_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
 }
 
 fn rail_drop_target(ui: &egui::Ui, st: &mut UiState, side: Side, zone: Rect, slots: &[(String, Rect)]) {
+    let on_right = (side == Side::Right) != st.prefs.dock_right;
     let Some(drag) = st.rail_drag.as_mut() else { return };
-    let reach = match side {
-        Side::Left => Rect::from_min_max(zone.min, zone.max + Vec2::new(RAIL_REACH, 0.0)),
-        Side::Right => Rect::from_min_max(zone.min - Vec2::new(RAIL_REACH, 0.0), zone.max),
+    let reach = match on_right {
+        false => Rect::from_min_max(zone.min, zone.max + Vec2::new(RAIL_REACH, 0.0)),
+        true => Rect::from_min_max(zone.min - Vec2::new(RAIL_REACH, 0.0), zone.max),
     };
     let pointer = ui.input(|input| input.pointer.latest_pos()).filter(|at| reach.contains(*at));
     let Some(pointer) = pointer else { return };

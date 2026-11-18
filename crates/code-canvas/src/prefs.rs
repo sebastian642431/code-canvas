@@ -22,6 +22,7 @@ pub struct Prefs {
     pub status: bool,
     pub toolbar: bool,
     pub autosave: bool,
+    pub dock_right: bool,
 }
 
 impl Default for Prefs {
@@ -46,6 +47,7 @@ impl Default for Prefs {
             status: true,
             toolbar: true,
             autosave: true,
+            dock_right: false,
         }
     }
 }

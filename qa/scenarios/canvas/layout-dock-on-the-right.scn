@@ -1,0 +1,23 @@
+title: The files and the bar of icons move to the right side from the layout menu, and back
+folders: rust-small
+forbid-log: WARN.*script
+expect-file: ..\data\prefs.json :: "dock_right": false
+
+wait 3000
+ui click 1545 20
+wait 700
+mark a-menu
+wait 400
+ui click 1500 256
+wait 900
+mark b-on-the-right
+wait 400
+left changes
+wait 800
+mark c-source-control-on-the-right
+wait 400
+ui click 1500 226
+wait 900
+mark d-back-on-the-left
+wait 400
+quit
