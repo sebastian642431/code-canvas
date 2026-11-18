@@ -314,7 +314,7 @@ fn kill_tree(child: &mut Child) {
 }
 
 #[cfg(windows)]
-mod job {
+pub(crate) mod job {
     use std::ffi::c_void;
     use std::os::windows::io::AsRawHandle;
     use std::process::Child;
@@ -392,6 +392,14 @@ mod job {
             unsafe { NtResumeProcess(process) };
             job
         }
+
+        pub fn tie(process: std::os::windows::io::RawHandle) -> Option<Job> {
+            let job = Job::new().filter(|job| unsafe { AssignProcessToJobObject(job.0, process) } != 0);
+            if job.is_none() {
+                log::warn!("a console's shell is not tied to the app: what it starts may outlive it");
+            }
+            job
+        }
     }
 
     impl Drop for Job {
@@ -402,7 +410,7 @@ mod job {
 }
 
 #[cfg(not(windows))]
-mod job {
+pub(crate) mod job {
     pub struct Job;
 
     impl Job {

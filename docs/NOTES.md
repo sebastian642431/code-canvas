@@ -2535,7 +2535,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it draws (or rubs out) with the pencil, selects code with the pointer over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
 | `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
-| `term` | `term drag <text> <text>`, `term click <text> [times]`, `term right [text]`, `term copy`, `term report` | The mouse on the console's screen, aimed at text shown there (the lowest row it is on; no spaces in it): a drag from the start of one text to the end of the other, one or more clicks on a text, a right click on a text or the middle. `copy` is Ctrl+C. `report` logs "script: console selection \"…\"", "script: console clipboard \"…\"" (the run's own) and "script: console line at the cursor \"…\"". |
+| `term` | `term drag <text> <text>`, `term click <text> [times]`, `term right [text]`, `term copy`, `term report` | The mouse on the screen of the console the keyboard goes to, aimed at text shown there (the lowest row it is on; no spaces in it): a drag from the start of one text to the end of the other, one or more clicks on a text, a right click on a text or the middle. `copy` is Ctrl+C. `report` logs a line per console ("script: console tab <n> [(current)] \"<title>\" card … group … busy … news … broke … ended … commands … failed … cwd …"), then "script: console selection \"…\"", "script: console clipboard \"…\"" (the run's own) and "script: console line at the cursor \"…\"". |
+| `term` (consoles) | `term new [profile]`, `term split [profile]`, `term next`, `term prev`, `term front <n>`, `term kill [n]`, `term rename <name>`, `term tocard`, `term unsplit`, `term colour <0-6>`, `term icon <codicon>`, `term clear`, `term fill`, `term up`, `term down`, `term default <profile>`, `term has <n> <text>`, `term menu new\|more\|tab <n>\|close`, `term page split\|default\|folders\|colour\|icon\|dirs\|commands` | The consoles' own commands, on the current one; `<n>` counts the consoles from 1 in the order of `report`, a profile is `bash`, `pwsh`, `powershell`, `cmd` or `wsl:<distribution>`. `kill` asks like the trash button when something runs. `has` logs "script: console tab <n> shows '<text>'" or "does not show". `menu` opens the kinds menu, the "…" menu or a console's own menu, `page` one of its pages, for a picture. |
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `colours` | `colours <path> <line>` | Logs "script: colours of <path> line N: keyword let · ident x · …": the kind of each token of that line (1-based) as the canvas draws it, from a grammar or the app's own. |
@@ -3284,19 +3285,85 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### crates/code-canvas/src/term.rs, ui/console.rs
 
-The console: a card like any other (`Panel::Console`, `` Ctrl+` ``), with bash
-in the folder that is open.
+The consoles: a card like any other (`Panel::Console`, `` Ctrl+` ``), with
+shells in the folder that is open, as many as wanted (`consoles.rs`).
 
-- **It is bash everywhere** (`term::bash`): the same commands work on every
-  system and in what assistants and READMEs say to run. On Windows that is the
-  one Git for Windows brings (`Git\bin\bash.exe`; the `bash.exe` of
-  `System32` and `WindowsApps` only starts WSL and is passed over). When there
-  is none the card says so and offers to install Git with `winget`
-  (`Console::install`, on a thread, told when it ends) or to open its download
-  page; nothing is installed without that click.
-- The shell runs on a pseudo terminal (`portable-pty`: ConPTY on Windows) as a
-  login shell, with `CHERE_INVOKING` so that Git's profile stays in the folder
-  instead of going home. One thread reads what it prints; `vt100` keeps the
+- **Many consoles, as in VS Code's terminal** (`consoles::Consoles`): each one
+  (`Tab`) has its shell, screen, scrollback, selection and folder. The card
+  shows the group in front (consoles split side by side share a `group`) and,
+  when it has more than one console, a list of them on its right (icons only
+  when the card is narrow), with `┌ ├ └` for a split group, the icon of the
+  kind or the one picked, its colour, a blue dot when it printed something
+  while it was not shown (`news`) and a red one when a command in it, or the
+  shell, ended with an error (`broke`; 130, Ctrl+C, is not an error). Both
+  marks go once the console is shown (`Consoles::seen`, every frame). The
+  header has + (a new console of the default kind in the active folder,
+  `Ctrl+~`), ⌄ (the kinds menu: every kind, "Split Console with Profile",
+  "Select Default Profile", "New Console in Folder"), split
+  (`Ctrl+Shift+5`, `Ctrl+%` as Windows reads it), trash, "…" (Clear, Run
+  Selected Text, Run Active File, Go to Recent Directory, Run Recent Command,
+  scroll to the previous / next command, Rename, Move to a New Card, Unsplit),
+  and fill-the-canvas. A right click on a console in the list: Split, Move to a
+  New Card, Change Colour, Change Icon, Rename (F2), Unsplit, Kill (Del). A
+  double click renames; an empty name gives the automatic one back: the
+  command running in it, else its folder's name. `Ctrl+PageDown` /
+  `Ctrl+PageUp` go to the next / previous console; the palette has them all
+  as "Terminal: …". Menus are drawn by the card (`consoles::Menu`), so a
+  script opens them too.
+- **Ending a console with something running asks** ("End npm run dev?", the
+  app's own `Asked::EndConsole`). What runs is known from the shell itself
+  (below); a shell that does not say (WSL) always asks.
+- **Moved to a card of its own** (`Consoles::move_out`, `Panel::Consoles(n)`,
+  key `console:<n>`): two servers watched side by side. Closing that card
+  gives its consoles back to the first card (`UiState::close_panel` →
+  `Consoles::fold`); a card left with no console closes. The card that fills
+  the canvas is `Consoles::filled` (`ui::cards` gives it the canvas's rect).
+- **The kinds** (`consoles::profiles`, `Profile`): Git Bash (`term::bash`),
+  PowerShell 7 (`pwsh.exe` on the PATH or in `Program Files\PowerShell\7`),
+  Windows PowerShell, the Command Prompt (`ComSpec`), and each WSL
+  distribution (`wsl -l -q`, which writes UTF-16, asked on a thread when
+  `System32\wsl.exe` is there; `docker-desktop` ones are left out); zsh and
+  fish elsewhere. The default is `Prefs::console_profile`, else the first
+  found (Git Bash). When there is no shell at all the card offers to install
+  Git with `winget` (`Consoles::install`) or to open its download page;
+  nothing is installed without that click. Running a file (`Profile::run_file`)
+  only types `python`, `node`, `npx tsx`, `bash`… and its path, quoted for that
+  shell, and Enter.
+- **The shell says where its prompts and commands are** (`term::Shell`, VS
+  Code's `OSC 633`, `133` read too): bash is started with `--init-file` of a
+  script written into the data folder (`console/bash-integration.sh`) that
+  runs what a login shell runs (`/etc/profile`, then the first of
+  `~/.bash_profile`, `~/.bash_login`, `~/.profile`; the user's files are never
+  changed), then puts its own function first in `PROMPT_COMMAND` (`D;<exit
+  code>`, `P;Cwd=<folder>` as Windows writes it, `pwd -W`, `A`) and `B` at the
+  end of `PS1`; PowerShell gets a `prompt` around its own by
+  `-EncodedCommand` (a script file would meet the execution policy); the
+  Command Prompt gets `A`, `B` and the folder through `PROMPT` (it cannot say
+  an exit code). A command starts when Enter is sent while a prompt waits
+  (`B` seen, `Shell::entered`); its text is read off the screen from where the
+  prompt ended once the shell has echoed it (`Shell::read`), and it ends with
+  `D` or the next prompt. That gives the title, "is something running", the
+  folder a console is in (remembered for the next start), the recent commands
+  and folders, and the marks in the gutter (a ring while it runs, a dot when
+  it ended well, red when it failed; `Ctrl+Up` / `Ctrl+Down` scroll to them,
+  `Terminal::scroll_to_command`). A prompt drawn again (readline does it when
+  the size changes) does not end the command typed at it. ConPTY passes these
+  sequences through in order (checked on Windows 11).
+- **Shells end with the app and take what they started with them**: each
+  shell is put in a job object of its own that kills everything in it when it
+  closes (`ext::host::job::Job::tie`, `KILL_ON_JOB_CLOSE`), so a dev server
+  started in a console ends when its console is killed, when the app quits
+  (`Consoles::end_all` in `exiting`) and when it crashes (Windows closes the
+  handle). A process a shell starts in the moment before it is tied is not
+  in it; a shell takes far longer than that to start anything.
+- **Restored by name, not run again** (`consoles::Saved` in the session):
+  each console's number, card, group, name, kind, folder (where it was last),
+  colour and icon, the one in front of each card and the current one, the
+  recent commands and folders. A console's shell starts the first time it is
+  shown. A session from before has none: the card starts one as it did.
+- The shell runs on a pseudo terminal (`portable-pty`: ConPTY on Windows),
+  with `CHERE_INVOKING` so that Git's profile stays in the folder instead of
+  going home. One thread reads what it prints; `vt100` keeps the
   screen and 5000 lines above it; `Terminal::poll` feeds it with the rest of
   the background work.
 - **A terminal is asked things and must answer**: ConPTY starts by asking where
@@ -3339,10 +3406,13 @@ in the folder that is open.
   the computer copied.
 - Shift+PageUp, Shift+PageDown and the wheel look at what scrolled away; typing
   comes back.
-- "Open in terminal" of the files menu starts the console's shell there. It used
-  to start a window of another program.
-- Not there yet: several consoles, a console of the one who shares for those
-  who join.
+- "Open in terminal" of the files menu opens a new console there. It used to
+  start a window of another program. "Run the install" of a manifest types it
+  into the current console when that is a bash waiting at its prompt, else
+  into a new one in the manifest's folder.
+- Not there yet: a console of the one who shares for those who join; dragging
+  a console out of the list (use "Move to a New Card"); shell integration for
+  WSL and zsh / fish.
 
 ### crates/code-canvas/src/update.rs
 

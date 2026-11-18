@@ -231,15 +231,19 @@ impl App {
         };
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         log::info!("versions: {command} in {}", dir.display());
-        self.ui.show(Panel::Console);
-        match self.ui.console.term.as_mut() {
-            Some(term) => term.send(format!("cd {} && {command}\r", quoted(&dir)).as_bytes()),
-            None => {
-                self.console(ui::ConsoleOp::Start, Some(dir));
-                if let Some(term) = self.ui.console.term.as_mut() {
-                    term.send(format!("{command}\r").as_bytes());
-                }
-            }
+        let at_hand = self.ui.console.current.filter(|id| {
+            let tab = self.ui.console.tab(*id);
+            tab.is_some_and(|tab| tab.term.is_some() && !tab.busy() && tab.profile == "bash")
+        });
+        let (id, line) = match at_hand {
+            Some(id) => (id, format!("cd {} && {command}\r", quoted(&dir))),
+            None => (self.new_console(None, Some("bash".into()), Some(dir)), format!("{command}\r")),
+        };
+        self.ui.console.bring(id);
+        let card = self.ui.console.tab(id).map_or(crate::consoles::MAIN, |tab| tab.card);
+        self.ui.show(if card == crate::consoles::MAIN { Panel::Console } else { Panel::Consoles(card) });
+        if let Some(term) = self.ui.console.tab_mut(id).and_then(|tab| tab.term.as_mut()) {
+            term.send(line.as_bytes());
         }
         self.request_redraw();
     }

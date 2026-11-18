@@ -47,6 +47,7 @@ quit
 | `allow-log` | Lines matching it are not checked against the forbidden ones. |
 | `expect-file` | `path :: regex`: a file (relative to the fixtures) whose text must match. |
 | `absent-file` | A file that must not exist when it ends. |
+| `absent-process` | A regular expression no process's command line may match once the app has ended (what the consoles started must end with them). May repeat. |
 | `guest-expect-log` | As `expect-log`, for the second instance. |
 | `guest-extensions` | As `extensions`, for the second instance. |
 | `prefs` | The preferences the app starts with, as JSON (also the guest's): `{"autosave": false}` for a scenario about what is typed and not saved. |

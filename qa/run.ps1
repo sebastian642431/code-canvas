@@ -59,7 +59,7 @@ function Save-Window($process, $file) {
 }
 
 $head = @{}
-$many = @{ 'expect-log' = @(); 'forbid-log' = @(); 'allow-log' = @(); 'expect-file' = @(); 'absent-file' = @(); 'guest-expect-log' = @(); 'again-expect-log' = @(); 'again-forbid-log' = @(); 'relay-expect-log' = @() }
+$many = @{ 'expect-log' = @(); 'forbid-log' = @(); 'allow-log' = @(); 'expect-file' = @(); 'absent-file' = @(); 'guest-expect-log' = @(); 'again-expect-log' = @(); 'again-forbid-log' = @(); 'relay-expect-log' = @(); 'absent-process' = @() }
 $steps = @{ host = @(); guest = @(); again = @() }
 $part = 'head'
 foreach ($line in Get-Content -LiteralPath $Scenario -Encoding UTF8) {
@@ -315,6 +315,13 @@ if ($relay) {
 
 $ours = @('code-canvas.exe', 'node.exe', 'rust-analyzer.exe', 'rust-analyzer-proc-macro-srv.exe')
 $leftover = @(Get-CimInstance Win32_Process | Where-Object { $ours -contains $_.Name -and $_.CommandLine -and $_.CommandLine.Contains($Work) })
+foreach ($want in $many['absent-process']) {
+    $left = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -match $want })
+    foreach ($process in $left) {
+        $problems += "left running: $($process.Name) ($($process.ProcessId)) /$want/"
+        try { & taskkill /PID $process.ProcessId /T /F | Out-Null } catch {}
+    }
+}
 foreach ($process in $leftover) {
     $problems += "left running: $($process.Name) ($($process.ProcessId))"
     try { & taskkill /PID $process.ProcessId /T /F | Out-Null } catch {}

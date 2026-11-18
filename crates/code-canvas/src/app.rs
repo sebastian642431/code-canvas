@@ -24,6 +24,7 @@ use crate::session::{self, PageSession, Session};
 use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState};
 
 mod assistants;
+mod consoles;
 mod github_sync;
 mod sharing;
 mod term_steps;
@@ -331,6 +332,8 @@ impl App {
         ui.rails = saved.rails.clone();
         ui.rails_at_home();
         ui.restore(saved.left_open, &saved.cards);
+        ui.console.scripts = session::data_dir().join("console");
+        ui.console.restore(&saved.consoles);
         ui.single = saved.single;
         let trust = crate::trust::Trust::load(&session::data_dir(), || {
             let open = saved.pages.iter().map(|p| p.path.clone());
@@ -593,6 +596,7 @@ impl App {
             window_pos,
             maximized,
             single: self.ui.single,
+            consoles: self.ui.console.saved(),
         });
     }
 
@@ -708,8 +712,7 @@ impl App {
         let done: Result<(), String> = match op {
             FileOp::Reveal(path) => at(&path).and_then(|p| crate::files::reveal(&p)),
             FileOp::Terminal(dir) => at(&dir).map(|place| {
-                self.ui.show(Panel::Console);
-                self.console(ui::ConsoleOp::Start, Some(place));
+                self.new_console(None, None, Some(place));
             }),
             FileOp::CopyPath { path, relative } => at(&path).and_then(|full| {
                 let full: PathBuf = full.components().collect();
@@ -1984,23 +1987,6 @@ impl App {
         }
     }
 
-    fn console(&mut self, op: ui::ConsoleOp, place: Option<PathBuf>) {
-        match op {
-            ui::ConsoleOp::Start => {
-                let folder = self.pages.get(self.active).map(|page| page.root.clone());
-                let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-                self.ui.console.start(&place.or(folder).unwrap_or(home));
-            }
-            ui::ConsoleOp::Install => self.ui.console.install(),
-            ui::ConsoleOp::Page => {
-                if let Err(why) = crate::files::open_web_link(crate::term::GIT_PAGE) {
-                    self.ext.notice(ext::Level::Warn, "Console", why);
-                }
-            }
-        }
-        self.request_redraw();
-    }
-
     fn keep_caret_visible(&mut self) {
         let area = self.clear();
         let Some((tl, br)) = self.caret_cell() else { return };
@@ -2265,6 +2251,7 @@ impl App {
             (ui::Asked::Trust { folder, shared }, answer) => self.trust_answered(&folder, shared, answer),
             (ui::Asked::ResetColours, ui::Answer::Yes) => self.apply(Action::ResetColors),
             (ui::Asked::DeleteTheme { key }, ui::Answer::Yes) => self.apply(Action::DeleteTheme(key)),
+            (ui::Asked::EndConsole { tab }, ui::Answer::Yes) => self.console(ui::ConsoleOp::End(tab)),
             _ => {}
         }
         self.request_redraw();
@@ -3377,8 +3364,16 @@ impl App {
             Command::ToggleLeftPanel => self.ui.files = !self.ui.files,
             Command::ToggleConsole => {
                 self.ui.toggle(Panel::Console);
-                self.ui.console.focus = self.ui.is_open(&Panel::Console);
+                if self.ui.is_open(&Panel::Console) {
+                    if let Some(id) = self.ui.console.front(crate::consoles::MAIN) {
+                        self.ui.console.bring(id);
+                    }
+                }
             }
+            Command::NewConsole => self.console(ui::ConsoleOp::New { card: None, profile: None, dir: None }),
+            Command::SplitConsole => self.console(ui::ConsoleOp::Split { tab: None, profile: None }),
+            Command::NextConsole => self.console(ui::ConsoleOp::Cycle(1)),
+            Command::PreviousConsole => self.console(ui::ConsoleOp::Cycle(-1)),
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::ToggleUi => self.apply(Action::ToggleUi),
             Command::FullScreen => self.apply(Action::ToggleFullScreen),
@@ -3656,7 +3651,7 @@ impl App {
                 self.session_dirty = true;
                 self.request_redraw();
             }
-            Action::Console(op) => self.console(op, None),
+            Action::Console(op) => self.console(op),
             Action::Show(panel) => {
                 self.ui.show(panel);
                 self.request_redraw();
@@ -4300,11 +4295,8 @@ impl App {
                 other => log::warn!("script: account needs signin|cancel|sync|signout|menu, not '{other}'"),
             },
             Step::Console(said) => {
-                self.ui.show(Panel::Console);
-                if self.ui.console.term.is_none() {
-                    self.console(ui::ConsoleOp::Start, None);
-                }
-                match self.ui.console.term.as_mut() {
+                let id = self.console_at_hand();
+                match self.ui.console.tab_mut(id).and_then(|tab| tab.term.as_mut()) {
                     Some(term) => term.send(format!("{said}\r").as_bytes()),
                     None => log::warn!("script: the console has no shell to type '{said}' into"),
                 }
@@ -4689,6 +4681,7 @@ impl App {
             }
             None => {}
         }
+        self.console_cards();
         if let Some((_, at)) = self.zoom_rest.filter(|(since, _)| since.elapsed() > Duration::from_millis(180)) {
             self.zoom_rest = None;
             let vp = self.viewport();
@@ -5718,6 +5711,7 @@ impl ApplicationHandler for App {
         self.share_stop(None);
         self.agents.close();
         self.ext.shutdown();
+        self.ui.console.end_all();
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {

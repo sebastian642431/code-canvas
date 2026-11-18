@@ -8,6 +8,7 @@ mod camera;
 mod codex;
 mod codicons;
 mod commit_ai;
+mod consoles;
 mod doodle;
 mod editor;
 mod ext;

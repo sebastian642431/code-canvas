@@ -15,6 +15,7 @@ pub struct Session {
     pub maximized: bool,
     pub single: bool,
     pub workspace: Vec<Known>,
+    pub consoles: crate::consoles::Saved,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]

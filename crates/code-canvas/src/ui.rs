@@ -38,6 +38,8 @@ pub enum Panel {
     Deps,
     Media,
     Console,
+    /// A card of its own for consoles moved out of the console's card, by its number.
+    Consoles(u64),
     Webview(String),
     /// A container of an extension's tree views, by its id.
     Tree(String),
@@ -67,6 +69,7 @@ impl Panel {
             Panel::Media => "media".to_string(),
             Panel::Console => "console".to_string(),
             Panel::Views => "views".to_string(),
+            Panel::Consoles(card) => format!("console:{card}"),
             Panel::Webview(view) => format!("view:{view}"),
             Panel::Tree(id) => format!("{}{id}", crate::ext::TREE),
         }
@@ -85,6 +88,7 @@ impl Panel {
             "media" => Panel::Media,
             "console" => Panel::Console,
             "views" => Panel::Views,
+            card if card.starts_with("console:") => Panel::Consoles(card["console:".len()..].parse().ok()?),
             tree if tree.starts_with(crate::ext::TREE) => Panel::Tree(tree[crate::ext::TREE.len()..].to_string()),
             view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
         })
@@ -282,7 +286,7 @@ pub struct UiState {
     pub cards: Vec<Panel>,
     pub cards_reach: f32,
     pub card_places: Vec<CardPlace>,
-    pub console: crate::term::Console,
+    pub console: crate::consoles::Consoles,
     card_widths: std::collections::HashMap<String, f32>,
     pub explorer_filter: String,
     pub search_query: String,
@@ -484,6 +488,9 @@ impl UiState {
     }
 
     pub fn close_panel(&mut self, panel: &Panel) {
+        if let Panel::Consoles(number) = panel {
+            self.console.fold(*number);
+        }
         if !self.docks(panel) {
             self.cards.retain(|open| open != panel);
         } else if self.dock == *panel || (*panel == Panel::Views && self.dock_entry() == Panel::Views) {
@@ -1537,7 +1544,8 @@ fn card_of(
             }
         }
         Panel::Media => ext_panels::media_panel(ui, st, actions),
-        Panel::Console => console::console_panel(ui, st, actions),
+        Panel::Console => console::console_panel(ui, st, actions, crate::consoles::MAIN),
+        Panel::Consoles(card) => console::console_panel(ui, st, actions, *card),
         Panel::Tree(id) => ext_panels::tree_panel(ui, st, ext, id),
     }
 }
@@ -1568,7 +1576,7 @@ fn cards(
             continue;
         }
         let usual = match panel {
-            Panel::Console => 600.0,
+            Panel::Console | Panel::Consoles(_) => 600.0,
             Panel::Extension => 580.0,
             page if page.is_page() => 420.0,
             _ => 330.0,
@@ -1576,6 +1584,7 @@ fn cards(
         let wanted = st.card_widths.get(&key).copied().unwrap_or(usual);
         let width = wanted.clamp(NARROWEST, room.min(760.0));
         let rect = match free {
+            _ if console::fills(st, panel) => canvas.shrink(AWAY),
             Some([x, y, w, h]) => {
                 let w = w.clamp(NARROWEST, (canvas.width() - 2.0 * AWAY).max(NARROWEST));
                 let h = h.clamp(LOWEST, (canvas.height() - 2.0 * AWAY).max(LOWEST));
@@ -4425,6 +4434,7 @@ pub enum Asked {
     Exit,
     ResetColours,
     DeleteTheme { key: String },
+    EndConsole { tab: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5018,6 +5028,7 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
         ),
         ("Extensions: Install from VSIX…".into(), Action::InstallVsix),
     ];
+    out.extend(console::palette());
     use crate::versions::{Bulk, Op};
     let versions = [
         ("Versions: Update Dependencies of the File to Their Latest Versions", Op::Update(Bulk::Latest, None)),

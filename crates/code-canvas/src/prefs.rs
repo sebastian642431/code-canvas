@@ -33,6 +33,7 @@ pub struct Prefs {
     pub share_relay: bool,
     pub relay: String,
     pub docked: Vec<String>,
+    pub console_profile: String,
 }
 
 impl Default for Prefs {
@@ -68,6 +69,7 @@ impl Default for Prefs {
             share_relay: false,
             relay: String::new(),
             docked: Vec::new(),
+            console_profile: String::new(),
         }
     }
 }

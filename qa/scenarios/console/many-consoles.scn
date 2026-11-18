@@ -1,0 +1,106 @@
+title: Several consoles at once, of several kinds: three servers in three consoles keep their own output, the list beside them marks the one that printed and the one whose server crashed, the kinds menu and a console's own menu open, a split shows two side by side, a console moves to a card of its own, one with a server running asks before it ends, closing the app ends every shell with what it started, and the next start brings the consoles back by name
+folders: rust-small
+limit: 170
+expect-log: console: .*bash.* in .*rust-small
+expect-log: console: .*powershell.* in .*rust-small
+expect-log: console: .*cmd.* in .*rust-small
+expect-log: script: console tab 1 shows 'alpha-'
+expect-log: script: console tab 2 shows 'beta-'
+expect-log: script: console tab 3 shows 'about'
+expect-log: script: console tab 1 does not show 'beta-'
+expect-log: script: console tab 2 does not show 'alpha-'
+expect-log: script: console tab 1 \(current\) "alpha server" card 0 .* busy true news false broke false ended false commands \d failed 0
+expect-log: script: console tab 2 "node -e .*beta.*" card 0 .* busy true news true broke false
+expect-log: script: console tab 3 "rust-small" card 0 .* busy false news true broke true ended false commands 1 failed 1
+expect-log: script: console tab 3 \(current\) "alpha server" card [1-9][0-9]* .* busy true
+expect-log: console: node -e .*beta.* ended
+expect-log: script: console tab \d "Command Prompt split" card 0 group \d+ busy false
+again-expect-log: script: console tab \d+ .*"alpha server" card [1-9][0-9]* .* busy false .* cwd .*rust-small
+again-expect-log: script: console tab \d+ .*"Command Prompt split" card 0
+again-expect-log: console: .*bash.* in .*rust-small
+forbid-log: WARN.*script
+forbid-log: console: .* did not start
+forbid-log: is not tied to the app
+absent-process: cc-qa-server
+
+wait 3000
+console node -e "let n=0,t=setInterval(()=>console.log('alpha-'+(++n)),700)" cc-qa-server-a
+wait 2500
+term rename alpha server
+term new powershell
+wait 5000
+console node -e "let n=0,t=setInterval(()=>console.log('beta-'+(++n)),900)" cc-qa-server-b
+wait 2500
+term new bash
+wait 3500
+console echo about to crash && node -e "setTimeout(()=>process.exit(7),5000)" cc-qa-server-c
+wait 1200
+term front 1
+wait 1500
+mark a-three-consoles-the-first-in-front
+wait 500
+term has 1 alpha-
+term has 2 beta-
+term has 3 about
+term has 1 beta-
+term has 2 alpha-
+wait 6000
+term report
+mark b-news-and-a-crash-marked-in-the-list
+wait 500
+term menu new
+wait 900
+mark c-the-kinds-of-console
+wait 500
+term page split
+wait 900
+mark d-split-with-a-kind
+wait 500
+term menu close
+term menu more
+wait 900
+mark e-the-more-menu
+wait 500
+term menu close
+term front 3
+wait 1200
+mark f-the-crashed-one-with-its-red-mark
+wait 500
+term split cmd
+wait 4000
+term rename Command Prompt split
+wait 800
+mark g-split-with-the-command-prompt
+wait 500
+term menu tab 1
+wait 900
+mark h-a-console-menu
+wait 500
+term page colour
+wait 800
+mark i-its-colours
+wait 500
+term menu close
+term front 1
+term colour 2
+term icon server
+term kill 2
+wait 1200
+mark j-asked-before-ending-a-server
+wait 500
+answer End
+wait 1500
+term front 1
+term tocard
+wait 2500
+term report
+mark k-a-card-of-its-own
+wait 500
+quit
+
+=== again
+wait 6000
+term report
+mark restored
+wait 500
+quit

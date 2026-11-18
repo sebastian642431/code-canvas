@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -36,11 +37,141 @@ fn whole(n: u16) -> NonZeroU16 {
 }
 
 /// Counts the rows that fell off the top: of the scrollback when it is full, of the screen itself on the alternate
-/// screen (which keeps none). With it a line keeps one number for as long as it is anywhere ([`Spot::line`]).
+/// screen (which keeps none). With it a line keeps one number for as long as it is anywhere ([`Spot::line`]). It also
+/// hears what the shell says of itself between the lines it prints ([`Shell`]).
 #[derive(Default)]
 pub struct Dropped {
     main: usize,
     alternate: usize,
+    pub shell: Shell,
+}
+
+/// What a shell that tells where its prompts and commands are said (`OSC 633` or `OSC 133`, written by the scripts the
+/// console starts it with).
+#[derive(Default, Debug)]
+pub struct Shell {
+    pub integrated: bool,
+    pub cwd: Option<PathBuf>,
+    /// Where what is typed at the prompt begins, while the prompt waits.
+    pub input: Option<Spot>,
+    pub running: Option<Running>,
+    pub marks: Vec<Mark>,
+    /// Commands that ended badly and have not been taken yet.
+    pub failed: usize,
+    /// Commands that were run and have not been taken yet.
+    pub ran: Vec<String>,
+    /// The size changed while the prompt waited: the terminal draws its screen again, and where the input begins is
+    /// where the cursor ends up, until a key is sent.
+    anchor: bool,
+    /// Enter was sent before the prompt was there: the shell runs that line as soon as it shows its prompt.
+    ahead: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Running {
+    pub at: Spot,
+    pub text: String,
+    pub read: bool,
+}
+
+/// A command in the gutter: the line it was typed on and how it ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub line: usize,
+    pub exit: Option<i32>,
+    pub done: bool,
+}
+
+/// The code a command ends with when it was stopped with Ctrl+C: not a failure.
+pub const STOPPED: i32 = 130;
+
+impl Mark {
+    pub fn failed(&self) -> bool {
+        self.exit.is_some_and(|code| code != 0 && code != STOPPED)
+    }
+}
+
+impl Shell {
+    fn finish(&mut self, grid: &mut Lines, code: Option<i32>) {
+        let Some(mut running) = self.running.take() else { return };
+        if !running.read {
+            running.text = typed_at(grid, running.at);
+        }
+        if running.text.is_empty() {
+            return;
+        }
+        self.noted(&running);
+        if let Some(mark) = self.marks.iter_mut().rev().find(|mark| mark.line == running.at.line && !mark.done) {
+            (mark.exit, mark.done) = (code, true);
+            if mark.failed() {
+                self.failed += 1;
+            }
+        }
+    }
+
+    fn noted(&mut self, running: &Running) {
+        if !self.marks.iter().any(|mark| mark.line == running.at.line && !mark.done) {
+            self.marks.push(Mark { line: running.at.line, exit: None, done: false });
+            self.ran.push(running.text.clone());
+        }
+    }
+
+    fn heard(&mut self, grid: &mut Lines, at: Spot, kind: &[u8], rest: &[&[u8]]) {
+        self.integrated = true;
+        match kind {
+            b"A" => {
+                self.finish(grid, None);
+                self.input = None;
+            }
+            b"B" if self.running.is_none() => {
+                self.input = Some(at);
+                if std::mem::take(&mut self.ahead) {
+                    self.entered();
+                }
+            }
+            b"D" => {
+                let code = rest.first().and_then(|code| std::str::from_utf8(code).ok()?.trim().parse().ok());
+                self.finish(grid, code);
+            }
+            b"P" => {
+                let said = rest.iter().map(|part| String::from_utf8_lossy(part)).collect::<Vec<_>>().join(";");
+                if let Some(dir) = said.strip_prefix("Cwd=").map(str::trim).filter(|dir| !dir.is_empty()) {
+                    self.cwd = Some(PathBuf::from(dir));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Enter was sent: what waits at the prompt is a command now.
+    fn entered(&mut self) {
+        if self.running.is_some() {
+            return;
+        }
+        match self.input.take() {
+            Some(at) => self.running = Some(Running { at, text: String::new(), read: false }),
+            None => self.ahead = true,
+        }
+    }
+
+    /// Reads the command off the screen, for good once the shell has shown all of it (the cursor went below it).
+    fn read(&mut self, grid: &mut Lines, cursor: usize) {
+        let Some(running) = self.running.as_mut().filter(|running| !running.read) else { return };
+        let (_, end) = whole_line(grid, running.at.line);
+        running.text = typed_at(grid, running.at);
+        running.read = cursor > end;
+        if running.read && !running.text.is_empty() {
+            let running = running.clone();
+            self.noted(&running);
+        }
+    }
+}
+
+/// The text typed from `at` to the end of its line, the lines it wrapped onto too.
+fn typed_at(grid: &mut Lines, at: Spot) -> String {
+    let (_, end) = whole_line(grid, at.line);
+    let cols = grid.cols();
+    text(grid, at, Spot::new(end, cols)).trim().to_string()
 }
 
 impl vt100::Callbacks for Dropped {
@@ -50,6 +181,25 @@ impl vt100::Callbacks for Dropped {
             false => self.main += 1,
         }
     }
+
+    fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
+        let [b"633" | b"133", kind, rest @ ..] = params else { return };
+        if screen.alternate_screen() {
+            return;
+        }
+        let (row, col) = screen.cursor_position();
+        let at = Spot::new(self.main + screen.scrollback_len() + usize::from(row), col);
+        let mut grid = Lines { screen, first: self.main };
+        self.shell.heard(&mut grid, at, kind, rest);
+    }
+}
+
+/// How a shell is started: the program, what it is given and what it finds in its environment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Launch {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+    pub env: Vec<(String, String)>,
 }
 
 pub struct Terminal {
@@ -59,26 +209,34 @@ pub struct Terminal {
     child: Box<dyn Child + Send + Sync>,
     heard: Receiver<Vec<u8>>,
     size: (u16, u16),
+    _job: Option<crate::ext::host::job::Job>,
     pub ended: bool,
+    /// The code the shell ended with, when it ended by itself.
+    pub exit: Option<u32>,
+    /// It printed something that was not looked at yet.
+    pub news: bool,
     /// What the mouse selected. It stays on its lines while more output comes, and goes with a resize, a switch to
     /// or from the alternate screen, a cleared scrollback, or once all of it fell off the top.
     pub selection: Option<Selection>,
 }
 
 impl Terminal {
-    pub fn open(shell: &Path, dir: &Path, rows: u16, cols: u16) -> Result<Terminal, String> {
+    pub fn open(launch: &Launch, dir: &Path, rows: u16, cols: u16) -> Result<Terminal, String> {
         let (rows, cols) = (rows.max(2), cols.max(8));
         let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
         let pair = native_pty_system().openpty(size).map_err(|e| e.to_string())?;
-        let mut command = CommandBuilder::new(shell);
-        command.args(["--login", "-i"]);
+        let mut command = CommandBuilder::new(&launch.program);
+        command.args(&launch.args);
         if dir.is_dir() {
             command.cwd(dir);
         }
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        command.env("CHERE_INVOKING", "1");
+        for (name, value) in &launch.env {
+            command.env(name, value);
+        }
         let child = pair.slave.spawn_command(command).map_err(|e| e.to_string())?;
+        let job = tie(child.as_ref());
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -94,7 +252,7 @@ impl Terminal {
             crate::ext::wake_ui();
         };
         std::thread::Builder::new().name("console".into()).spawn(read).map_err(|e| e.to_string())?;
-        log::info!("console: {} in {}", shell.display(), dir.display());
+        log::info!("console: {} in {}", launch.program.display(), dir.display());
         Ok(Terminal {
             parser: vt100::Parser::new_with_callbacks(whole(rows), whole(cols), KEPT, Dropped::default()),
             writer,
@@ -102,9 +260,66 @@ impl Terminal {
             child,
             heard,
             size: (rows, cols),
+            _job: job,
             ended: false,
+            exit: None,
+            news: false,
             selection: None,
         })
+    }
+
+    pub fn shell(&self) -> &Shell {
+        &self.parser.callbacks().shell
+    }
+
+    pub fn shell_mut(&mut self) -> &mut Shell {
+        &mut self.parser.callbacks_mut().shell
+    }
+
+    /// The command running in it, as it was typed, when the shell says.
+    pub fn command(&self) -> Option<&str> {
+        self.shell().running.as_ref().map(|running| running.text.as_str()).filter(|text| !text.is_empty())
+    }
+
+    /// Something may still be running in it: a command the shell said it started, or anything at all when the shell
+    /// does not say.
+    pub fn busy(&self) -> bool {
+        !self.ended && (!self.shell().integrated || self.shell().running.is_some())
+    }
+
+    /// Lets go of all it showed, the screen and what scrolled away; `redraw` is sent to the shell to show its prompt
+    /// again.
+    pub fn clear(&mut self, redraw: &[u8]) {
+        let (rows, cols) = self.size;
+        let gone = self.bottom() + usize::from(rows);
+        let mut heard = std::mem::take(self.parser.callbacks_mut());
+        (heard.main, heard.alternate) = (gone, 0);
+        heard.shell.marks.clear();
+        heard.shell.input = None;
+        if let Some(running) = heard.shell.running.as_mut() {
+            running.at = Spot::new(gone, 0);
+            running.read = true;
+        }
+        self.parser = vt100::Parser::new_with_callbacks(whole(rows), whole(cols), KEPT, heard);
+        self.selection = None;
+        if !redraw.is_empty() {
+            self.answer(redraw);
+        }
+    }
+
+    /// Scrolls to the command before (or after) the line at the top, as the gutter marks them.
+    pub fn scroll_to_command(&mut self, up: bool) {
+        let (top, bottom, kept) = (self.top(), self.bottom(), self.screen().scrollback_len());
+        let mut lines = self.shell().marks.iter().map(|mark| mark.line);
+        let line = match up {
+            true => lines.rev().find(|line| *line < top),
+            false => lines.find(|line| *line > top),
+        };
+        match line {
+            Some(line) => self.parser.screen_mut().set_scrollback(bottom.saturating_sub(line).min(kept)),
+            None if !up => self.parser.screen_mut().set_scrollback(0),
+            None => {}
+        }
     }
 
     pub fn poll(&mut self) -> bool {
@@ -122,10 +337,37 @@ impl Terminal {
                 self.answer(b"\x1b[?1;2c");
             }
         }
-        if !self.ended && matches!(self.child.try_wait(), Ok(Some(_))) {
-            self.ended = true;
-            changed = true;
+        self.news |= changed;
+        if changed && !self.screen().alternate_screen() {
+            let (row, col) = self.screen().cursor_position();
+            let cursor = self.bottom() + usize::from(row);
+            let (screen, heard) = self.parser.screen_and_callbacks_mut();
+            let mut grid = Lines { screen, first: heard.main };
+            heard.shell.read(&mut grid, cursor);
+            let shell = &mut heard.shell;
+            if shell.anchor && shell.running.is_none() && shell.input.is_some() {
+                shell.input = Some(Spot::new(cursor, col));
+            }
         }
+        if !self.ended {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                self.ended = true;
+                self.exit = Some(status.exit_code());
+                let code = i32::try_from(status.exit_code()).ok();
+                let shell = self.shell_mut();
+                shell.running = None;
+                for mark in shell.marks.iter_mut().filter(|mark| !mark.done) {
+                    (mark.exit, mark.done) = (code, true);
+                }
+                let ended = Mark { line: 0, exit: code, done: true };
+                if status.exit_code() != 0 && ended.failed() {
+                    shell.failed += 1;
+                }
+                changed = true;
+            }
+        }
+        let first = self.first();
+        self.shell_mut().marks.retain(|mark| mark.line >= first);
         let gone = self.selection.is_some_and(|selection| selection.anchor.max(selection.head).line < self.first());
         if self.bottom() < bottom || self.screen().alternate_screen() != alternate || gone {
             self.selection = None;
@@ -182,6 +424,10 @@ impl Terminal {
         if self.ended || bytes.is_empty() {
             return;
         }
+        self.shell_mut().anchor = false;
+        if bytes.contains(&b'\r') {
+            self.shell_mut().entered();
+        }
         self.parser.screen_mut().set_scrollback(0);
         self.answer(bytes);
     }
@@ -191,8 +437,15 @@ impl Terminal {
         if (rows, cols) == self.size {
             return;
         }
+        let narrower = cols != self.size.1;
         self.size = (rows, cols);
         self.selection = None;
+        let bottom = self.bottom();
+        let shell = self.shell_mut();
+        if narrower {
+            shell.marks.retain(|mark| mark.line < bottom || !mark.done);
+        }
+        shell.anchor = true;
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         self.parser.set_size(whole(rows), whole(cols));
     }
@@ -452,16 +705,14 @@ impl Drop for Terminal {
     }
 }
 
-#[derive(Default)]
-pub struct Console {
-    pub term: Option<Terminal>,
-    pub shell: Option<PathBuf>,
-    pub looked: bool,
-    pub failed: Option<String>,
-    pub focus: bool,
-    pub wheel: f32,
-    pub mouse: Mouse,
-    installing: Option<Receiver<Result<(), String>>>,
+#[cfg(windows)]
+fn tie(child: &(dyn Child + Send + Sync)) -> Option<crate::ext::host::job::Job> {
+    crate::ext::host::job::Job::tie(child.as_raw_handle()?)
+}
+
+#[cfg(not(windows))]
+fn tie(_child: &(dyn Child + Send + Sync)) -> Option<crate::ext::host::job::Job> {
+    None
 }
 
 /// The pointer over the console's screen, from one frame to the next.
@@ -476,83 +727,6 @@ pub struct Mouse {
     /// Where the first cell of the screen was drawn and the size of a cell, in points: what the script's `term`
     /// steps aim at.
     pub place: Option<(egui::Pos2, egui::Vec2)>,
-}
-
-impl Console {
-    pub fn look(&mut self) {
-        self.shell = bash();
-        self.looked = true;
-    }
-
-    pub fn start(&mut self, dir: &Path) {
-        if !self.looked || self.shell.is_none() {
-            self.look();
-        }
-        let Some(shell) = self.shell.clone() else { return };
-        let (rows, cols) = self.term.as_ref().map_or((24, 80), Terminal::size);
-        self.term = None;
-        match Terminal::open(&shell, dir, rows, cols) {
-            Ok(term) => {
-                self.term = Some(term);
-                self.failed = None;
-                self.focus = true;
-            }
-            Err(why) => {
-                log::warn!("console: {} did not start: {why}", shell.display());
-                self.failed = Some(why);
-            }
-        }
-    }
-
-    pub fn installing(&self) -> bool {
-        self.installing.is_some()
-    }
-
-    pub fn install(&mut self) {
-        if self.installing.is_some() {
-            return;
-        }
-        let (done, heard) = mpsc::channel();
-        self.installing = Some(heard);
-        self.failed = None;
-        std::thread::spawn(move || {
-            let mut winget = std::process::Command::new("winget");
-            winget.args(["install", "--id", "Git.Git", "-e", "--source", "winget"]);
-            winget.args(["--accept-source-agreements", "--accept-package-agreements"]);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                winget.creation_flags(0x0800_0000);
-            }
-            let ran = winget.stdin(std::process::Stdio::null()).output();
-            let result = match ran {
-                Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => {
-                    let said = String::from_utf8_lossy(&out.stdout);
-                    let last = said.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("it did not say why");
-                    Err(format!("winget did not install Git: {}", last.trim()))
-                }
-                Err(e) => Err(format!("winget could not be run ({e})")),
-            };
-            let _ = done.send(result);
-            crate::ext::wake_ui();
-        });
-    }
-
-    pub fn poll(&mut self) -> Option<Result<(), String>> {
-        if let Some(term) = self.term.as_mut() {
-            term.poll();
-        }
-        let done = self.installing.as_ref().and_then(|heard| heard.try_recv().ok())?;
-        self.installing = None;
-        self.look();
-        Some(match (&done, &self.shell) {
-            (Ok(()), None) => {
-                Err("Git was installed but bash is not where it is looked for: start the app again.".into())
-            }
-            _ => done,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -647,33 +821,95 @@ mod tests {
         assert_eq!(chosen(&mut parser, dragged((6, 0), (10, 10))), "line6\nline7\nline8\nline9\nline10");
     }
 
-    #[test]
-    fn a_shell_runs_and_what_it_prints_is_on_the_screen() {
-        let Some(shell) = bash() else { return };
-        let dir = std::env::temp_dir();
-        let mut term = Terminal::open(&shell, &dir, 24, 80).expect("the shell starts");
-        let started = std::time::Instant::now();
-        let seen = |term: &mut Terminal, wanted: &str| {
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            while std::time::Instant::now() < until {
-                term.poll();
-                if term.screen().contents().contains(wanted) {
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(40));
-            }
-            false
-        };
-        term.send(b"echo can$((20+22))vas\r");
-        assert!(seen(&mut term, "can42vas"), "{:?} after {:?}", term.screen().contents(), started.elapsed());
-        term.resize(30, 100);
-        assert_eq!(term.size(), (30, 100));
-        term.send(b"exit\r");
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !term.ended && std::time::Instant::now() < until {
+    fn wait(term: &mut Terminal, what: &str, done: impl Fn(&Terminal) -> bool) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while std::time::Instant::now() < until {
             term.poll();
+            if done(term) {
+                return;
+            }
             std::thread::sleep(std::time::Duration::from_millis(40));
         }
-        assert!(term.ended, "the shell ends when told to");
+        panic!("{what}: {:?} {:?}", term.screen().contents(), term.shell());
+    }
+
+    #[test]
+    fn a_shell_says_where_its_prompts_and_commands_are() {
+        let mut parser = console(6, 30, 100, "\x1b]633;D;0\x07\x1b]633;A\x07$ \x1b]633;B\x07");
+        assert!(parser.callbacks().shell.integrated);
+        assert_eq!(parser.callbacks().shell.input, Some(Spot::new(0, 2)));
+        parser.callbacks_mut().shell.entered();
+        parser.process(b"npm run dev\r\nlistening\r\n");
+        let cursor = 2;
+        let (screen, heard) = parser.screen_and_callbacks_mut();
+        let mut grid = Lines { screen, first: heard.main };
+        heard.shell.read(&mut grid, cursor);
+        let shell = &parser.callbacks().shell;
+        assert_eq!(shell.running.as_ref().map(|running| running.text.as_str()), Some("npm run dev"));
+        assert_eq!(shell.marks, vec![Mark { line: 0, exit: None, done: false }]);
+        parser.process(b"crashed\r\n\x1b]633;D;1\x07\x1b]633;P;Cwd=C:\\work;here\x07\x1b]633;A\x07$ \x1b]633;B\x07");
+        let shell = &parser.callbacks().shell;
+        assert_eq!(shell.marks, vec![Mark { line: 0, exit: Some(1), done: true }]);
+        assert!(shell.marks[0].failed() && shell.running.is_none());
+        assert_eq!((shell.failed, shell.ran.clone()), (1, vec!["npm run dev".to_string()]));
+        assert_eq!(shell.cwd, Some(PathBuf::from("C:\\work;here")), "a ';' in the folder stays in it");
+        assert_eq!(shell.input, Some(Spot::new(3, 2)));
+        parser.callbacks_mut().shell.entered();
+        parser.process(b"\r\n\x1b]633;D;130\x07\x1b]633;A\x07$ \x1b]633;B\x07");
+        assert_eq!(parser.callbacks().shell.marks.len(), 1, "Enter alone is no command");
+        let stopped = Mark { line: 0, exit: Some(STOPPED), done: true };
+        assert!(!stopped.failed(), "a command stopped with Ctrl+C did not fail");
+    }
+
+    #[test]
+    fn a_line_typed_before_the_prompt_is_a_command_once_it_shows() {
+        let mut parser = console(6, 30, 100, "");
+        parser.callbacks_mut().shell.entered();
+        assert!(parser.callbacks().shell.running.is_none());
+        parser.process(b"\x1b]633;A\x07$ \x1b]633;B\x07");
+        assert_eq!(parser.callbacks().shell.running.as_ref().map(|running| running.at), Some(Spot::new(0, 2)));
+        parser.process(b"sleep 9\r\n");
+        let shell = &mut parser.callbacks_mut().shell;
+        shell.marks.clear();
+        let mut grid = console(6, 30, 100, "$ sleep 9\r\n");
+        let first = grid.callbacks().main;
+        let mut lines = Lines { screen: grid.screen_mut(), first };
+        shell.read(&mut lines, 1);
+        assert_eq!(shell.running.as_ref().map(|running| running.text.as_str()), Some("sleep 9"));
+    }
+
+    #[test]
+    fn a_shell_runs_and_what_it_prints_is_on_the_screen() {
+        let Some(bash) = crate::consoles::profiles().into_iter().find(|profile| profile.id == "bash") else { return };
+        let dir = std::env::temp_dir().join(format!("code-canvas-test-console-{}", std::process::id()));
+        let inside = dir.join("inside");
+        std::fs::create_dir_all(&inside).unwrap();
+        let mut term = Terminal::open(&bash.launch(&dir.join("scripts")), &dir, 24, 80).expect("the shell starts");
+        term.send(b"echo can$((20+22))vas\r");
+        wait(&mut term, "it prints", |term| term.screen().contents().contains("can42vas"));
+        wait(&mut term, "the prompt waits", |term| term.shell().integrated && term.shell().input.is_some());
+        let ready = |term: &Terminal| term.shell().input.is_some() && term.shell().running.is_none();
+        wait(&mut term, "the prompt waits again", ready);
+        term.send(b"cd inside\r");
+        wait(&mut term, "it says where it is", |term| {
+            term.shell().cwd.as_ref().is_some_and(|cwd| cwd.ends_with("inside"))
+        });
+        wait(&mut term, "the prompt waits after cd", ready);
+        term.send(b"sleep 4\r");
+        wait(&mut term, "it runs", |term| term.command() == Some("sleep 4") && term.busy());
+        wait(&mut term, "it ends", ready);
+        let codes: Vec<Option<i32>> = term.shell().marks.iter().map(|mark| mark.exit).collect();
+        assert!(codes.ends_with(&[Some(0), Some(0)]), "{:?} {:?}", term.shell(), term.screen().contents());
+        term.send(b"(exit 3)\r");
+        wait(&mut term, "it fails", |term| term.shell().marks.last().is_some_and(|mark| mark.exit == Some(3)));
+        assert!(term.shell().failed >= 1);
+        term.resize(30, 100);
+        assert_eq!(term.size(), (30, 100));
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        wait(&mut term, "the prompt is drawn again", ready);
+        term.send(b"exit 5\r");
+        wait(&mut term, "the shell ends when told to", |term| term.ended);
+        assert_eq!(term.exit, Some(5));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
