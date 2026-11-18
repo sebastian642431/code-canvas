@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-const CLIENT_ID: &str = "";
+const CLIENT_ID: &str = "Ov23liqzdSkACc9mnzin";
 const SCOPE: &str = "gist";
 const USER_AGENT: &str = concat!("code-canvas/", env!("CARGO_PKG_VERSION"));
 const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
