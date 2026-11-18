@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Prefs {
     pub check_versions: bool,
+    pub version_prereleases: bool,
     pub complete_paths: bool,
     pub complete_code: bool,
     pub check_updates: bool,
@@ -37,6 +38,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Prefs {
             check_versions: true,
+            version_prereleases: false,
             complete_paths: true,
             complete_code: true,
             check_updates: true,

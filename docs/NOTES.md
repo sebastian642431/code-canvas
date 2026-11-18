@@ -71,7 +71,8 @@ to run things. These notes were rescued from the comments the code used to have.
   [themes.rs](#cratescode-canvassrcthemesrs) ·
   [ui.rs](#cratescode-canvassrcuirs) ·
   [update.rs](#cratescode-canvassrcupdaters) ·
-  [versions.rs](#cratescode-canvassrcversionsrs) ·
+  [versions](#cratescode-canvassrcversions) ·
+  [app/version_hints.rs](#cratescode-canvassrcappversion_hintsrs) ·
   [watch.rs](#cratescode-canvassrcwatchrs) ·
   [webview.rs](#cratescode-canvassrcwebviewrs)
 - [Repository files](#repository-files)
@@ -92,6 +93,8 @@ to run things. These notes were rescued from the comments the code used to have.
 | `CODE_CANVAS_NO_VSYNC` | `app.rs` | See "Measuring" in [ARCHITECTURE.md](ARCHITECTURE.md). |
 | `CODE_CANVAS_PRETEND_VERSION` | `update::current` | Replaces the version of this build, to see how an offered update looks without waiting for a release. |
 | `CODE_CANVAS_CHECK_UPDATES` | `App::new` | Lets a quiet run look for updates anyway (for testing the updater). |
+| `CODE_CANVAS_REGISTRY` | `versions::registries::reach` | Sends every request for the latest versions of dependencies to `<this>/<host>/<path>` instead of `https://<host>/<path>`: the QA runner points it at `qa/fake/registry.py`. |
+| `NPM_CONFIG_USERCONFIG` | `versions::npmrc` | npm's own: the user's `.npmrc` (`~/.npmrc` otherwise). The QA runner points it at a file of the run that does not exist. |
 | `CODEX_HOME` | `codex::home` | Codex's own: where its sessions are (`~/.codex` otherwise). The QA runner points it at a folder of the run. |
 
 A *quiet* run (scripted or benchmark) does not install the default extensions and
@@ -134,7 +137,7 @@ network; the last rows are not tests but belong to the same toolbox.
 | `git::load` on a real repository | `GIT_LOAD_TEST=<folder> cargo test -p code-canvas load_a_real -- --ignored --nocapture` |
 | Draw what a real icon theme gives a few names, side by side, to look at | `ICON_THEME_TEST=<theme.json> ICON_THEME_SHEET=<out.png> cargo test -p code-canvas real_icon_theme -- --ignored --nocapture` |
 | Latest release, from GitHub | `cargo test -p code-canvas real_latest -- --ignored --nocapture` |
-| Latest versions, from npm and crates.io | `cargo test -p code-canvas real_registries -- --ignored --nocapture` |
+| Latest versions, from npm, crates.io, PyPI, NuGet, the Go proxy, Packagist and pub.dev | `cargo test -p code-canvas real_registries -- --ignored --nocapture` |
 | Frame-time benchmark | `CODE_CANVAS_BENCH=1 code-canvas <folder>` |
 | Drive the real app | `CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800; select main; locate" code-canvas <folder>` |
 
@@ -2330,7 +2333,8 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
 
 | Field | Meaning |
 |---|---|
-| `check_versions` | Ask npm and crates.io for the latest version of each dependency and show it next to its line (`versions.rs`). Only package names are sent. |
+| `check_versions` | Ask each manifest's registry for the latest version of each dependency and show it next to its line, clickable (`versions`). Only package names are sent. |
+| `version_prereleases` | Show and offer the newest pre-release of a dependency when it is newer than its latest version (off by default). |
 | `complete_paths` | Offer file and folder names while a path is typed in a string (`paths.rs`). |
 | `complete_code` | Offer what the language's extension proposes while code is typed (`App::ask_completion`). |
 | `check_updates` | Look for a newer release when the app starts (`update.rs`). |
@@ -2433,6 +2437,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `format` | `format <path>` | Format a file with the installed formatter. |
 | `command` | `command <id>` | Run an extension's command. |
 | `lens` | `lens <path> <line> [n]`, `lens report <path>` | What a click on the n-th code lens (1-based) of a line (1-based) does; log every line's lenses as "script: lenses of <path> line N: a \| b". |
+| `versions` | `versions report <path>`, `versions menu <path> <line>`, `versions pick <n>`, `versions update latest\|major\|minor\|patch <path>`, `versions prereleases on\|off`, `versions hints on\|off`, `versions recheck` | Dependency versions: log a manifest's notes as "script: versions <path> line N name wanted -> note (Standing) [label text \| ...]"; open the menu of the version drawn on a line (1-based) as a click there would; take its n-th choice; a bulk update of that file; the two preferences; ask the registries again. |
 | `tree` | `tree <row>`, `tree expand\|collapse <row>`, `tree button <command> <row>`, `tree title <command>`, `tree report` | In the tree cards open: a click on the row with that label (opens or closes it, runs its command), a row's button or a title's button by command id; log the rows of each view as "script: tree <view>: a / v b /   c". |
 | `answer` | `answer <choice>` | Press that button of the question the app is asking, or of the notice that is. |
 | `open` | `open <path>` | Show an image, video or PDF in the viewer; a path in the folder, or anywhere on the disk. |
@@ -3169,32 +3174,103 @@ in the folder that is open.
 - `newer`: pre-releases are never newer.
 - `install` blocks and runs on a thread of its own.
 
-### crates/code-canvas/src/versions.rs
+### crates/code-canvas/src/versions
 
-- `package.json` and `Cargo.toml` are read for their dependencies; the latest
-  version of each is asked from npm's registry or the crates.io index on
-  background threads, and shown after its line: `✓ latest`, or `↑ 2.1.0`.
+The latest versions of dependencies, next to their lines in the manifests, with
+what to change each one to: what the Version Lens extension did, built in.
+
+- `manifests.rs` reads `package.json` (`dependencies`, `devDependencies`,
+  `peerDependencies`, `optionalDependencies`), `Cargo.toml` (every table whose name
+  ends in `dependencies`: dev, build, `target.*`, `workspace`; and
+  `[dependencies.name]` tables), `pyproject.toml` (PEP 621 `project.dependencies`,
+  `project.optional-dependencies`, PEP 735 `dependency-groups`, and Poetry's
+  tables), `requirements*.txt`, `*.csproj` / `*.fsproj` / `*.vbproj` /
+  `Directory.Packages.props` (`PackageReference`, `PackageVersion`, a `Version`
+  attribute or element), `go.mod` (`require`), `composer.json` (`require`,
+  `require-dev`) and `pubspec.yaml`. Each dependency knows the column of its
+  requirement, so a change replaces exactly it, inside its quotes.
+- Only what a registry can answer for is asked: paths, git, links, files,
+  workspace members (`{ workspace = true }`, `workspace:*`), aliases, tags such
+  as `latest`, platform packages of Composer (`php`, `ext-*`), MSBuild properties
+  (`$(...)`) and unpinned Python lines are skipped.
+- `registries.rs` asks npm (the short `application/vnd.npm.install-v1+json`
+  document: every version and the `latest` tag), the crates.io index, PyPI's JSON
+  (a release whose files are all yanked is left out), NuGet's flat container,
+  the Go proxy (`@v/list`, `@latest` when the list is empty), Packagist (`p2`)
+  and pub.dev (retracted versions left out). Answers up to 64 MB are read.
 - **Nothing but the names of the dependencies leaves the machine**, and only when
   `check_versions` is on.
-- `Checker`: `WORKERS` = 4 requests at once; an answer is good for an hour. A name
-  asked and not found (no network) is remembered as unknown and nothing is said
-  about it.
-- Only what a registry can answer for is asked: a requirement that starts with a
-  digit or one of `^~>=<v*`. Files, links, git and tags are skipped.
-- `Cargo.toml`: in a `[...dependencies]` table every line is a dependency; in a
-  `[dependencies.name]` table the `version` line is that crate's. A table with a
-  `package` key renames the crate, and `package` is the name to ask for.
-- `standing(wanted, latest)`:
-  - versions compare as far as they are written: `1.2` is `1.2.x`;
-  - with nothing to compare the answer is `Latest`: do not cry wolf;
-  - `Newer` is something newer the manifest already accepts, `Major` something it
-    does not. A caret range accepts the same first number that is not zero. `~1.2`,
-    `=` and ranges with `<` do not take a new minor by themselves;
-  - pre-releases (`2.0.0-rc.1`) are never "the latest".
-- npm: a scope's slash is part of the name, not of the path, and is sent as `%2f`.
-- crates.io: the index keeps a crate at a path made from its name
-  (`se/rd/serde`, `3/s/syn`; see `crates_index_path`). Its answer is one JSON
-  object per line, one per version, some of them withdrawn.
+- `npmrc.rs`: for `package.json`, `.npmrc` files are read (the user's,
+  `NPM_CONFIG_USERCONFIG` or `~/.npmrc`, then each folder from the root of the
+  canvas down to the manifest; the closer wins): `registry=`,
+  `@scope:registry=`, `//host/path/:_authToken=` and `:_auth=`. The token of
+  the longest matching `//host/path/` is sent. `${VAR}` is taken from the
+  environment and nowhere else; a line whose variable is missing or empty is as
+  if it were not there. **A package of a scope mapped elsewhere is never asked of
+  the public registry**; without a token it is not asked at all and its line
+  says `private registry` (an answer 401 or 403 says `private registry: no
+  access`). Tokens live only in memory, in `npmrc::Secret`, whose `Debug` hides
+  them; they are never logged, shown or written.
+- `Checker`: `WORKERS` = 4 requests at once, keyed by registry, registry address
+  and name; an answer is good for an hour (`FRESH`); "Ask the registries again"
+  (`Checker::forget`) drops them. An answer that failed (no network) is remembered
+  and nothing is said about it; a package the registry does not know says `not
+  found in the registry`.
+- `range.rs`: `Version` orders semver (pre-releases below their release, numeric
+  identifiers below text) and PEP 440 (`1.0.dev1 < 1.0a1 < 1.0b1 < 1.0rc1 < 1.0 <
+  1.0.post1`); missing numbers are zeros. `Requirement::parse` reads a requirement
+  as sets of comparators joined by `||`, by `Flavor`: `Npm` (`^`, `~`, x-ranges,
+  partial versions as ranges, hyphen ranges, `||`), `Cargo` (a bare version is a
+  caret, `,` joins), `Composer` (`~1.2` is `>=1.2 <2.0`, `|` also joins
+  alternatives, `@stability` dropped) and `Exact` (a bare version is that version:
+  PEP 440 with `==`, `~=`, `!=`, `.*`; Poetry; pub; Go; NuGet with its `[a,b)`
+  intervals). A pre-release satisfies a set only when a comparator of the set is a
+  pre-release of the same major.minor.patch, as npm does.
+- `judge(wanted, flavor, facts, prereleases)`: `Latest` (the requirement already
+  takes the latest stable version and writing it would change nothing, or it asks
+  for something newer), `InRange` (the latest is accepted but the requirement
+  could be raised to it: `↑ 18.3.1 in range`), `Behind` (the latest is outside
+  what it accepts: `↑ 19.1.0`), `NoMatch` (no published version satisfies it).
+  With prereleases shown, or a requirement that is itself a pre-release, the
+  newest pre-release newer than the latest is added: `◇ 20.0.0-rc.1`.
+- Choices offered for a dependency, never older than what it asks now and
+  without repeats: `latest`, `latest N.x` (the newest of its major), `latest
+  N.M.x` (of its minor) and `prerelease`. `range::rewrite` keeps the operator
+  (`^`, `~`, `~=`, `~>`, `=`, `==`, `>=`, none), a `v`, the spacing and the
+  precision (`1` stays one number, `~1.4` two, `1.x` keeps its `x`); a
+  pre-release, a build (`+incompatible`) or a version with more numbers than the
+  new one is written whole. Ranges with several parts (`>=1 <2`, `||`, `,`,
+  intervals) are not rewritten.
+- Bulk updates (`Bulk`): `Latest` takes each `latest` choice (a pre-release one
+  for a requirement that is a pre-release), `Major` only those whose latest has a
+  higher major, `Minor` the newest of the same major, `Patch` the newest of the
+  same major.minor.
+- `install_for`: what the project's install is: `pnpm`/`yarn`/`bun install` by
+  their lock files, else `npm install`; `cargo fetch` (it brings `Cargo.lock` in
+  line with the new requirements and changes nothing else); `uv sync`, `poetry
+  lock && poetry install`, `pip install -r <file>`; `dotnet restore`; `go mod
+  tidy`; `composer update`; `flutter pub get` or `dart pub get`. It is only run
+  when asked.
+
+### crates/code-canvas/src/app/version_hints.rs
+
+- `App::read_dependencies` reads up to `MAX_MANIFESTS` = 40 manifests of a folder
+  when it is read, when a manifest changes on disk and while one is edited
+  (`after_edit`). `show_versions` puts the notes on the canvas as the app's own
+  decorations (kind `versions`) and says once per folder how many are behind.
+- The overlay (`overlay::build`) records where each `versions` decoration was
+  drawn (`CanvasOverlay::version_hits`); a click there opens `ui::VersionMenu`
+  with the dependency's choices, "Update every dependency of the file" and the
+  install. Pointing at one underlines it (`Page::version_hover`).
+- A change goes through the editor (`Editor::replace_spans`): the manifest
+  becomes the file being edited, every requirement changed is one undo step, and
+  it is saved like typing is. The requirement is found again in the editor's
+  text by line and name, so what was typed meanwhile is not overwritten.
+- After a change the app offers the install as a notice (`INSTALL`); the command
+  is typed into the console, in the manifest's folder, only when that button or
+  the command is chosen.
+- The file of a bulk command or of the install is the one being edited, else the
+  card under the pointer or selected, else the folder's only manifest.
 
 ### crates/code-canvas/src/watch.rs
 

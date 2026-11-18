@@ -15,12 +15,14 @@ mod deps_panel;
 mod ext_panels;
 mod git_panel;
 mod settings;
+mod versions_menu;
 
 use crate::keys::{Command, Keymap};
 
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
 pub use settings::{SettingsView, Tab as SettingsTab};
+pub use versions_menu::VersionMenu;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Panel {
@@ -301,6 +303,7 @@ pub struct UiState {
     pub completion: Option<CompletionView>,
     pub find: Option<Find>,
     pub card_menu: Option<CardMenu>,
+    pub version_menu: Option<VersionMenu>,
     pub ask: Option<Ask>,
     pub share: ShareView,
     pub workspace: Vec<WorkspaceRow>,
@@ -377,6 +380,7 @@ impl Default for UiState {
             completion: None,
             find: None,
             card_menu: None,
+            version_menu: None,
             ask: None,
             share: ShareView::default(),
             workspace: Vec::new(),
@@ -517,6 +521,7 @@ pub enum Action {
     Console(ConsoleOp),
     SaveFile,
     RunCommand(String, String),
+    Versions(crate::versions::Op),
     DepsChanged,
     Arrange(bool),
     Git(crate::git::GitOp),
@@ -856,6 +861,7 @@ pub fn build(
     following_bar(&ctx, st, canvas, actions);
     share_panel(&ctx, st, actions);
     card_menu(&ctx, st, canvas, actions);
+    versions_menu::version_menu(&ctx, st, canvas, actions);
     completion_list(&ctx, st, actions);
     ext_panels::notices(&ctx, st, canvas, ext);
     settings::settings_modal(&ctx, st, ext, actions);
@@ -4715,6 +4721,20 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
         ),
         ("Extensions: Install from VSIX…".into(), Action::InstallVsix),
     ];
+    use crate::versions::{Bulk, Op};
+    let versions = [
+        ("Versions: Update Dependencies of the File to Their Latest Versions", Op::Update(Bulk::Latest, None)),
+        ("Versions: Update Dependencies That Have a New Major Version", Op::Update(Bulk::Major, None)),
+        ("Versions: Update Dependencies Within Their Major Version (minor and patch)", Op::Update(Bulk::Minor, None)),
+        ("Versions: Update Dependencies Within Their Minor Version (patch only)", Op::Update(Bulk::Patch, None)),
+        ("Versions: Show the Latest Versions in Manifests", Op::Hints(true)),
+        ("Versions: Hide the Latest Versions", Op::Hints(false)),
+        ("Versions: Show Prereleases", Op::Prereleases(true)),
+        ("Versions: Hide Prereleases", Op::Prereleases(false)),
+        ("Versions: Ask the Registries Again (clear the cache)", Op::Recheck),
+        ("Versions: Run the Install of the Project in the Console", Op::Install(None)),
+    ];
+    out.extend(versions.into_iter().map(|(title, op)| (title.to_string(), Action::Versions(op))));
     for e in ext.installed.iter().filter(|e| e.enabled && e.has_code) {
         out.extend(e.commands.iter().map(|(id, title)| (title.clone(), Action::RunCommand(id.clone(), title.clone()))));
     }

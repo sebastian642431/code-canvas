@@ -175,7 +175,7 @@ Not yet — these are the next pieces, in order:
 | ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
 | Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
-| Version Lens (`pflannery.vscode-versionlens`) | starts; its code lenses should show now, not tried yet |
+| Version Lens (`pflannery.vscode-versionlens`) | not needed: Code Canvas shows the versions of dependencies itself, clickable, with bulk updates, prereleases, private npm scopes and the project's install (see `versions` in [NOTES.md](NOTES.md)) |
 | Pretty TypeScript Errors (`yoavbls.pretty-ts-errors`) | starts; needs hovers and a TypeScript language server |
 | Claude Code (`Anthropic.claude-code`) | its panel and its list of sessions open and render, signed in; a session opened from the list, or a new one, is a tab that can be closed; sending a message has not been tested yet |
 | Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview panel — not tried since webviews landed |

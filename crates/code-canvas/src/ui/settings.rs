@@ -87,10 +87,10 @@ impl SettingsView {
 const HEAD: f32 = 46.0;
 const NAV: f32 = 190.0;
 
-const EDITING: [(&str, &str); 9] = [
+const EDITING: [(&str, &str); 10] = [
     (
         "Show newer versions of dependencies",
-        "In package.json and Cargo.toml. Asks npm and crates.io: only package names are sent.",
+        "In package.json, Cargo.toml, pyproject.toml, requirements.txt, .csproj, go.mod, composer.json and pubspec.yaml. Asks each one's registry; only package names are sent, and a scope a .npmrc gives to another registry goes only there. Click a version to update to it.",
     ),
     ("Offer file names while typing a path", "Inside quotes, after ./ or ../ or a folder name and a slash."),
     (
@@ -117,6 +117,10 @@ const EDITING: [(&str, &str); 9] = [
     (
         "Wrap long lines inside their card",
         "A line wider than its card goes on in the rows under it, a little indented, and the card grows taller. Off, it is cut at the edge and the rest shows beside the card.",
+    ),
+    (
+        "Show prereleases of dependencies",
+        "Next to the latest version, the newest alpha, beta or release candidate when one is newer, and it is offered when you update. Always on for a dependency that already asks for a prerelease.",
     ),
 ];
 
@@ -338,6 +342,9 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
         section(ui, icons::PACKAGE, "Help while editing");
         well(ui, |ui| {
             option(ui, f, &mut next.check_versions, EDITING[0]);
+            if next.check_versions {
+                option(ui, f, &mut next.version_prereleases, EDITING[9]);
+            }
             option(ui, f, &mut next.complete_paths, EDITING[1]);
             option(ui, f, &mut next.complete_code, EDITING[5]);
             option(ui, f, &mut next.follow_chat, EDITING[2]);

@@ -59,6 +59,7 @@ pub struct CanvasOverlay {
     pub preview_hits: Vec<(Rect, String)>,
     /// The code lenses drawn that run something, in screen pixels.
     pub lens_hits: Vec<(Rect, crate::ext::views::Lens)>,
+    pub version_hits: Vec<(Rect, String, u32)>,
 }
 
 pub struct LongLine {
@@ -999,7 +1000,7 @@ pub fn build(
             let mut types: Vec<_> = found.by_type.iter().collect();
             types.sort_by(|a, b| a.0.cmp(b.0));
             let rows = page.diffs.get(rel);
-            for d in types.into_iter().flat_map(|(_, items)| items) {
+            for (kind, d) in types.into_iter().flat_map(|(kind, items)| items.iter().map(move |d| (kind, d))) {
                 let line = row_of(rows, d.line);
                 if line as usize >= f.line_count() || drawn >= MAX_DECORATIONS {
                     continue;
@@ -1024,14 +1025,30 @@ pub fn build(
                     let col = next_col.get(&d.line).copied().unwrap_or(len + 3);
                     let at = n.cell_rect(line, col, 1);
                     let p = view.to_screen([at.x, at.y]);
-                    let text: String = d.text.chars().take(160).collect();
-                    next_col.insert(d.line, col + text.chars().count() as u32 + 3);
+                    let label: String = d.text.chars().take(160).collect();
+                    next_col.insert(d.line, col + label.chars().count() as u32 + 3);
+                    let top = p[1] + (z * LINE_H - size * 1.25) * 0.5;
+                    let color = if d.color & 0xff != 0 { d.color } else { theme::get().label_dir };
+                    if kind == "versions" {
+                        let w = text.measure(&label, size, false);
+                        let hit = Rect::new(p[0] - 2.0 * s, top - s, w + 4.0 * s, size * 1.3 + 2.0 * s);
+                        if page.version_hover.as_ref().is_some_and(|(r, l)| r == rel && *l == d.line) {
+                            out.chips.push(RectInstance::new(
+                                Rect::new(p[0], top + size * 1.2, w, s.max(1.0)),
+                                color,
+                                0,
+                                0.0,
+                                0.0,
+                            ));
+                        }
+                        out.version_hits.push((hit, rel.to_string(), d.line));
+                    }
                     out.labels.push(OwnedLabel {
-                        text,
+                        text: label,
                         left: p[0],
-                        top: p[1] + (z * LINE_H - size * 1.25) * 0.5,
+                        top,
                         size,
-                        color: if d.color & 0xff != 0 { d.color } else { theme::get().label_dir },
+                        color,
                         max_w: 2000.0 * s,
                         bold: false,
                     });

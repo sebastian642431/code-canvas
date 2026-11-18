@@ -27,6 +27,7 @@ mod assistants;
 mod github_sync;
 mod sharing;
 mod term_steps;
+mod version_hints;
 
 struct Gfx {
     renderer: Renderer,
@@ -197,6 +198,7 @@ pub struct App {
     toggle_hits: Vec<(Rect, String)>,
     preview_hits: Vec<(Rect, String)>,
     lens_hits: Vec<(Rect, ext::views::Lens)>,
+    version_hits: Vec<(Rect, String, u32)>,
     preview: Option<String>,
     /// What the webview of an extension's page was last made from (`details::View::stamp`).
     extension_page: String,
@@ -336,6 +338,7 @@ impl App {
             toggle_hits: Vec::new(),
             preview_hits: Vec::new(),
             lens_hits: Vec::new(),
+            version_hits: Vec::new(),
             preview: None,
             extension_page: String::new(),
             curves_for: None,
@@ -1280,7 +1283,7 @@ impl App {
                     }
                     _ => {}
                 }
-                if rel.ends_with("package.json") || rel.ends_with("Cargo.toml") {
+                if crate::versions::is_manifest(rel.rsplit('/').next().unwrap_or(&rel)) {
                     self.versions_due.push(page.id);
                 }
                 if let (Some(caret), true) = (caret, page.editing.as_deref() == Some(rel.as_str())) {
@@ -1703,6 +1706,9 @@ impl App {
             }
         }
         page.want_head(&rel);
+        if crate::versions::is_manifest(rel.rsplit('/').next().unwrap_or(&rel)) {
+            self.versions_due.push(id);
+        }
         self.symbols_stale = Some(Instant::now());
         self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
         self.typed = Some(Instant::now());
@@ -1930,6 +1936,7 @@ impl App {
         let (vp, notch) = (self.viewport(), WHEEL_NOTCH * self.scale());
         let [across, along] = moved;
         self.ui.card_menu = None;
+        self.ui.version_menu = None;
         self.share_let_go();
         if let Some(page) = self.pages.get_mut(self.active) {
             page.target = None;
@@ -2923,6 +2930,11 @@ impl App {
             self.ext.views.lens_hover = lens;
             self.request_redraw();
         }
+        let version = self.version_hit(cursor).filter(|_| on_canvas);
+        if let Some(page) = self.pages.get_mut(self.active).filter(|page| page.version_hover != version) {
+            page.version_hover = version;
+            self.request_redraw();
+        }
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let (mut hover, mut cell) = (None, None);
         if on_canvas {
@@ -3143,6 +3155,10 @@ impl App {
         }
         if let Some(lens) = self.lens_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, l)| l.clone()) {
             self.ext.run_lens(&lens);
+            return;
+        }
+        if let Some((rel, line)) = self.version_hit(pos) {
+            self.version_click(&rel, line, pos);
             return;
         }
         if let Some(path) = self.toggle_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, p)| p.clone()) {
@@ -3624,6 +3640,7 @@ impl App {
                 self.ext.run_command(&id, &title);
                 self.request_redraw();
             }
+            Action::Versions(op) => self.versions_op(op),
             Action::Answered(about, answer) => self.answered(about, answer),
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
@@ -3699,6 +3716,7 @@ impl App {
             Action::SetPrefs(prefs) => {
                 crate::prefs::save(&prefs);
                 let versions = prefs.check_versions != self.ui.prefs.check_versions;
+                let prereleases = prefs.version_prereleases != self.ui.prefs.version_prereleases;
                 self.webviews.set_follow(prefs.follow_chat);
                 self.updater.set_enabled(prefs.check_updates);
                 if !prefs.edit {
@@ -3747,6 +3765,9 @@ impl App {
                         self.ext.set_own_decorations(&path.to_string_lossy(), "versions", Vec::new());
                     }
                     self.versions_told.clear();
+                }
+                if prereleases && !versions {
+                    self.show_versions();
                 }
                 self.request_redraw();
             }
@@ -3946,6 +3967,7 @@ impl App {
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
             Step::Lens(arg) => self.script_lens(&arg),
+            Step::Versions(arg) => self.script_versions(&arg),
             Step::Tree(arg) => self.script_tree(&arg),
             Step::Answer(choice) => {
                 let asked = self.ui.ask.as_ref().and_then(|ask| {
@@ -4918,6 +4940,10 @@ impl App {
             None => {}
         }
         for (about, choice) in self.ext.take_answers() {
+            if let Some(path) = about.strip_prefix(version_hints::INSTALL) {
+                self.install_answered(path, &choice);
+                continue;
+            }
             if let Some(id) = about.strip_prefix("checker:") {
                 match (choice.as_str(), id.split_once('.')) {
                     (INSTALL_IT, Some((namespace, name))) => self.ext.install(namespace, name),
@@ -4954,78 +4980,6 @@ impl App {
                 _ => {}
             }
             self.request_redraw();
-        }
-    }
-
-    fn read_dependencies(&mut self, page_id: u32) {
-        const MAX_MANIFESTS: usize = 40;
-        if !self.ui.prefs.check_versions {
-            return;
-        }
-        let Some(page) = self.pages.iter().find(|p| p.id == page_id) else { return };
-        let Some(r) = page.ready() else { return };
-        let root = page.root.clone();
-        for gone in self.manifests.keys().filter(|path| path.starts_with(&root)).cloned().collect::<Vec<_>>() {
-            self.manifests.remove(&gone);
-            self.ext.set_own_decorations(&gone.to_string_lossy(), "versions", Vec::new());
-        }
-        let mut all = Vec::new();
-        let manifests = r.repo.files.iter().filter(|f| matches!(f.name.as_str(), "package.json" | "Cargo.toml"));
-        for f in manifests.take(MAX_MANIFESTS) {
-            let found = crate::versions::dependencies(&f.name, f.text());
-            if !found.is_empty() {
-                all.extend(found.iter().cloned());
-                self.manifests.insert(root.join(&f.rel_path), found);
-            }
-        }
-        self.versions.want(&all);
-        self.show_versions();
-    }
-
-    fn show_versions(&mut self) {
-        use crate::versions::Standing;
-        let t = canvas_render::theme::get();
-        let mut counts: HashMap<PathBuf, (usize, usize)> = HashMap::new();
-        for (path, wanted) in &self.manifests {
-            let notes = self.versions.notes(wanted);
-            if let Some(page) = self.pages.iter().find(|p| path.starts_with(&p.root)) {
-                let count = counts.entry(page.root.clone()).or_default();
-                count.0 += notes.iter().filter(|n| n.standing != Standing::Latest).count();
-                count.1 += notes.iter().filter(|n| n.standing == Standing::Major).count();
-            }
-            let items = notes
-                .into_iter()
-                .map(|n| ext::Decoration {
-                    line: n.line,
-                    col: 0,
-                    end_line: n.line,
-                    end_col: 0,
-                    whole_line: false,
-                    text: n.text,
-                    color: match n.standing {
-                        Standing::Latest => t.git_added,
-                        Standing::Newer => t.problem_info,
-                        Standing::Major => t.problem_warning,
-                    },
-                    background: 0,
-                })
-                .collect();
-            self.ext.set_own_decorations(&path.to_string_lossy(), "versions", items);
-        }
-        if self.versions.busy() {
-            return;
-        }
-        for (root, (newer, major)) in counts {
-            if newer > 0 && self.versions_told.insert(root.clone()) {
-                let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let upgrades = match major {
-                    0 => String::new(),
-                    n => format!(", {n} of them a new major version"),
-                };
-                let text =
-                    format!("{newer} dependencies have a newer version{upgrades}. They are marked in the manifests.");
-                self.ext.notice(ext::Level::Info, &name, text);
-            }
         }
     }
 
@@ -5434,6 +5388,7 @@ impl App {
         self.toggle_hits = std::mem::take(&mut canvas_overlay.toggle_hits);
         self.preview_hits = std::mem::take(&mut canvas_overlay.preview_hits);
         self.lens_hits = std::mem::take(&mut canvas_overlay.lens_hits);
+        self.version_hits = std::mem::take(&mut canvas_overlay.version_hits);
         let long_line = self.long_line_now(vp, area, s);
         let strip_rows: Vec<StripRow> =
             long_line.as_ref().map_or_else(Vec::new, |(long, caret)| long.draw(&mut canvas_overlay, *caret, s));

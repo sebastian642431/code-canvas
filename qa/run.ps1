@@ -145,6 +145,17 @@ $env:CLAUDE_CONFIG_DIR = Join-Path $Work 'claude'
 $env:CODEX_HOME = Join-Path $Work 'codex'
 if ($head.ContainsKey('codex')) { $env:CODEX_HOME = Join-Path $fix $head['codex'] }
 $fakeGitHub = $null
+$fakeRegistry = $null
+$env:NPM_CONFIG_USERCONFIG = Join-Path $Work 'user.npmrc'
+foreach ($variable in 'CODE_CANVAS_REGISTRY', 'QA_NPM_TOKEN') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
+if ($head.ContainsKey('registry')) {
+    $port = Get-Random -Minimum 20000 -Maximum 40000
+    $fakeArgs = @('-I', (Join-Path $PSScriptRoot 'fake\registry.py'), $port, $Work)
+    if ($head['registry'] -eq 'no-token') { $fakeArgs += 'no-token' } else { $env:QA_NPM_TOKEN = 'qa-npm-token' }
+    $fakeRegistry = Start-Process -FilePath python -ArgumentList $fakeArgs -PassThru -WindowStyle Hidden
+    Start-Sleep -Milliseconds 800
+    $env:CODE_CANVAS_REGISTRY = "http://127.0.0.1:$port"
+}
 foreach ($variable in 'CODE_CANVAS_GITHUB_SITE', 'CODE_CANVAS_GITHUB_API', 'CODE_CANVAS_GITHUB_CLIENT') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
 if ($head.ContainsKey('github')) {
     $port = Get-Random -Minimum 20000 -Maximum 40000
@@ -272,6 +283,11 @@ if ($fakeGitHub) {
 if ($fakeOpenVsx) {
     try { & taskkill /PID $fakeOpenVsx.Id /T /F | Out-Null } catch {}
     Remove-Item 'Env:CODE_CANVAS_OPEN_VSX' -ErrorAction SilentlyContinue
+}
+
+if ($fakeRegistry) {
+    try { & taskkill /PID $fakeRegistry.Id /T /F | Out-Null } catch {}
+    foreach ($variable in 'CODE_CANVAS_REGISTRY', 'QA_NPM_TOKEN') { Remove-Item "Env:$variable" -ErrorAction SilentlyContinue }
 }
 
 if ($relay) {

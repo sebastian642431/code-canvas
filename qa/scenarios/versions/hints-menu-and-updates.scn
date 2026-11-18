@@ -1,0 +1,63 @@
+title: Each manifest shows how its dependencies stand, a click on a version offers what to change it to, updates rewrite the file as one undoable edit, and the private scope is asked only of its own registry, with its token
+folders: versions-manifests
+registry: on
+limit: 120
+expect-log: script: versions package\.json line 6 react \^18\.2\.0 -> ↑ 19\.1\.0 \(Behind\) \[latest \^19\.1\.0 \| latest 18\.x \^18\.3\.1 \| latest 18\.2\.x \^18\.2\.5\]
+expect-log: script: versions package\.json line 7 @latin-securities/widgets \^1\.0\.0 -> ↑ 2\.0\.0 \(Behind\)
+expect-log: script: versions package\.json line 8 left-pad 1\.0\.0 -> ↑ 1\.3\.0 \(Behind\)
+expect-log: script: versions package\.json line 9 lodash \^4\.17\.21 -> ✓ latest \(Latest\)
+expect-log: script: versions package\.json line 12 vite ~5\.0\.0 -> ↑ 6\.0\.3 \(Behind\) \[latest ~6\.0\.3 \| latest 5\.x ~5\.4\.11 \| latest 5\.0\.x ~5\.0\.12\]
+expect-log: script: versions Cargo\.toml line 7 serde 1\.0\.100 -> ↑ 1\.0\.228 in range \(InRange\)
+expect-log: script: versions Cargo\.toml line 8 log 0\.3 -> ↑ 0\.4\.22 \(Behind\)
+expect-log: script: versions Cargo\.toml line 11 anyhow 1 -> ✓ latest \(Latest\)
+expect-log: script: versions requirements\.txt line 1 requests ==2\.28\.1 -> ↑ 2\.31\.0 \(Behind\)
+expect-log: script: versions go\.mod line 5 github\.com/spf13/cobra v1\.6\.0 -> ↑ v1\.8\.1 \(Behind\)
+expect-log: script: versions Shop\.csproj line 3 Newtonsoft\.Json 13\.0\.1 -> ↑ 13\.0\.3 \(Behind\)
+expect-log: versions: 1 requirements of package\.json rewritten
+expect-log: versions: 4 requirements of package\.json rewritten
+expect-log: script: versions package\.json line 6 react \^18\.3\.1 -> ↑ 19\.1\.0 \(Behind\)
+forbid-log: qa-npm-token
+expect-file: versions-manifests/package.json :: "react": "\^18\.3\.1",\r?\n    "@latin-securities/widgets": "\^1\.0\.0",\r?\n    "left-pad": "1\.0\.0"
+expect-file: versions-manifests/Cargo.toml :: serde = \{ version = "1\.0\.228", features = \["derive"\] \}\r?\nlog = "0\.4"\r?\n
+expect-file: versions-manifests/requirements.txt :: ^requests==2\.28\.2\r?\nDjango>=4\.2,<5
+expect-file: {WORK}/registry.log :: /npm\.pkg\.github\.com/@latin-securities/widgets authorized=True
+absent-file: {WORK}/leak.txt
+
+wait 2500
+goto package.json
+wait 3000
+versions report package.json
+versions report Cargo.toml
+versions report requirements.txt
+versions report go.mod
+versions report Shop.csproj
+mark hints
+wait 600
+versions menu package.json 6
+wait 800
+mark menu
+wait 600
+versions pick 2
+wait 1500
+mark picked
+wait 600
+versions update latest package.json
+wait 1200
+mark bulk
+wait 600
+key undo
+wait 1500
+versions report package.json
+mark undone
+wait 600
+versions update latest Cargo.toml
+wait 1500
+goto Cargo.toml
+wait 1500
+mark cargo
+wait 600
+versions update patch requirements.txt
+wait 1500
+key save
+wait 1000
+quit

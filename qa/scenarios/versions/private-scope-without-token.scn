@@ -1,0 +1,27 @@
+title: Without its token, a package of a scope that .npmrc sends to a private registry is only marked as private and its name is sent nowhere; prereleases show when asked and the hints go away when turned off
+folders: versions-manifests
+registry: no-token
+limit: 90
+expect-log: script: versions package\.json line 7 @latin-securities/widgets \^1\.0\.0 -> private registry \(Private\)
+expect-log: script: versions package\.json line 6 react \^18\.2\.0 -> ↑ 19\.1\.0 \(Behind\)
+expect-log: script: versions package\.json line 6 react \^18\.2\.0 -> ↑ 19\.1\.0  ◇ 19\.2\.0-rc\.1 \(Behind\) \[latest \^19\.1\.0 \| latest 18\.x \^18\.3\.1 \| latest 18\.2\.x \^18\.2\.5 \| prerelease \^19\.2\.0-rc\.1\]
+expect-log: script: no dependencies read from package\.json
+absent-file: {WORK}/leak.txt
+
+wait 2500
+goto package.json
+wait 3000
+versions report package.json
+mark private
+wait 600
+versions prereleases on
+wait 800
+versions report package.json
+mark prereleases
+wait 600
+versions hints off
+wait 800
+versions report package.json
+mark hidden
+wait 600
+quit

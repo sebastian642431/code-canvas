@@ -578,6 +578,33 @@ impl Editor {
         self.caret = self.clamp(caret);
     }
 
+    pub fn replace_spans(&mut self, spans: &[(Pos, Pos, String)]) {
+        let mut spans: Vec<&(Pos, Pos, String)> = spans
+            .iter()
+            .filter(|(from, to, _)| from.line == to.line && from <= to && to.line < self.lines.len())
+            .collect();
+        spans.sort_by_key(|(from, ..)| *from);
+        let (Some(first), Some(last)) = (spans.first(), spans.last()) else { return };
+        let (top, bottom) = (first.0.line, last.1.line);
+        let caret = Pos::new(first.0.line, first.0.col + first.2.chars().count());
+        let mut lines: Vec<String> = self.lines[top..=bottom].to_vec();
+        for (from, to, with) in spans.iter().rev() {
+            let line = &mut lines[from.line - top];
+            let (a, b) = (byte_at(line, from.col), byte_at(line, to.col));
+            line.replace_range(a..b, with);
+        }
+        let end = Pos::new(bottom, self.line_len(bottom));
+        self.replace(
+            Pos::new(top, 0),
+            end,
+            &lines.join(
+                "
+",
+            ),
+        );
+        self.caret = self.clamp(caret);
+    }
+
     pub fn complete(&mut self, from: usize, text: &str) {
         let end = self.caret;
         self.replace(Pos::new(end.line, from.min(end.col)), end, text);
@@ -963,6 +990,37 @@ mod tests {
 
     fn at(e: &mut Editor, line: usize, col: usize) {
         e.move_to(Pos::new(line, col), false);
+    }
+
+    #[test]
+    fn several_spans_are_replaced_as_one_undo() {
+        let source = "{
+  \"a\": \"^1.0.0\",
+  \"b\": \"~2.1\",
+  \"c\": \"3\"
+}
+";
+        let mut e = Editor::open("package.json".into(), source);
+        let span = |line: usize, col: usize, len: usize, with: &str| {
+            (Pos::new(line, col), Pos::new(line, col + len), with.to_string())
+        };
+        e.replace_spans(&[span(3, 8, 1, "4"), span(1, 8, 6, "^1.2.0"), span(2, 8, 4, "~2.3")]);
+        assert_eq!(
+            e.display_source(),
+            "{
+  \"a\": \"^1.2.0\",
+  \"b\": \"~2.3\",
+  \"c\": \"4\"
+}"
+        );
+        assert_eq!(e.caret, Pos::new(1, 14));
+        assert!(e.dirty);
+        assert!(e.undo());
+        assert_eq!(e.text(), source);
+        assert!(!e.dirty);
+        assert!(!e.undo());
+        e.replace_spans(&[]);
+        assert_eq!(e.text(), source);
     }
 
     #[test]
