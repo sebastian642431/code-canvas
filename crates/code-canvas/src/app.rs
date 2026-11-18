@@ -3620,6 +3620,7 @@ impl App {
                 }
             }
             Action::RestartIntoNewBuild => self.restart_into_new_build(),
+            Action::ReloadWindow => self.reload_window(),
             Action::ToggleFullScreen => {
                 if let Some(g) = &self.gfx {
                     let full = g.window.fullscreen().is_none();
@@ -6057,9 +6058,20 @@ impl App {
 
     fn restart_into_new_build(&mut self) {
         let Some((exe, ..)) = self.own_build.clone() else { return };
+        log::info!("restarting into the new build");
+        self.restart(exe);
+    }
+
+    fn reload_window(&mut self) {
+        let exe = self.own_build.as_ref().map(|(exe, ..)| exe.clone()).or_else(|| std::env::current_exe().ok());
+        let Some(exe) = exe else { return };
+        log::info!("reloading the window: restarting {}", exe.display());
+        self.restart(exe);
+    }
+
+    fn restart(&mut self, exe: PathBuf) {
         let unsaved = self.unsaved();
         self.save_some(unsaved, false, true);
-        log::info!("restarting into the new build");
         self.restart_as = Some(exe);
         self.exit_requested = true;
     }

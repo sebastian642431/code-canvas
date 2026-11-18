@@ -511,6 +511,7 @@ pub enum Action {
     ZoomBy(f32),
     ToggleFullScreen,
     RestartIntoNewBuild,
+    ReloadWindow,
     Account(AccountOp),
     ClearDoodles,
     FrameSelection,
@@ -4724,6 +4725,10 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),
         ("View: Reload the Folder from Disk".into(), Action::Rescan),
+        (
+            "Developer: Reload Window (restart Code Canvas with its folders and files as they are)".into(),
+            Action::ReloadWindow,
+        ),
         ("Canvas: Collapse All Folders".into(), Action::CollapseAll),
         ("Canvas: Expand All Folders".into(), Action::ExpandAll),
         ("Canvas: Show All Hidden Files".into(), Action::ShowAll),
