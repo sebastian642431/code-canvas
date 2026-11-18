@@ -338,7 +338,8 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.code_lenses, EDITING[7]);
         });
     }
-    let assistants = ["Assistants on the canvas", "Claude Code", "agents", "avatar", "hooks", "trail", TRAILS.0];
+    let assistants =
+        ["Assistants on the canvas", "Claude Code", "Codex", "agents", "avatar", "hooks", "trail", TRAILS.0];
     let seen = hit(f, &assistants);
     if seen {
         section(ui, icons::EYE, "Assistants on the canvas");
@@ -360,6 +361,16 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             }
             ui.add_space(4.0);
             note(ui, "Connecting adds a hook to Claude Code's own settings (~/.claude/settings.json, a copy of the file is kept beside it) that runs after each tool it uses and says which file it touched. Nothing leaves this computer. Every session started anywhere, and each of its agents, shows here while the app is open.");
+            ui.add_space(8.0);
+            let codex = next.codex;
+            let state = if codex { "Codex tells the canvas what it does." } else { "Codex is not connected." };
+            ui.label(RichText::new(state).size(12.5).color(pal().text));
+            ui.add_space(2.0);
+            if super::ext_panels::pill(ui, if codex { "Disconnect Codex" } else { "Connect Codex" }, !codex) {
+                next.codex = !codex;
+            }
+            ui.add_space(4.0);
+            note(ui, "Connecting reads the session files Codex writes as it works (~/.codex/sessions, or CODEX_HOME), in a terminal, with codex exec or in its editor extension, and shows each session where it reads, searches and edits. Codex's own settings are not touched and nothing leaves this computer.");
         });
     }
     let never = ["Folders never read", "Files never read", "skip", "ignore", "node_modules"];

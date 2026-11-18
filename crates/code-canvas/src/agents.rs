@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -392,6 +392,8 @@ pub fn connect_claude(on: bool) -> Result<(), String> {
 
 pub struct Agents {
     heard: Option<Receiver<Value>>,
+    tell: Option<Sender<Value>>,
+    codex: Option<crate::codex::Tail>,
     port: Option<u16>,
     pub list: Vec<Agent>,
     pub following: Option<String>,
@@ -446,11 +448,12 @@ impl Agents {
         }
         let socket = UdpSocket::bind(("127.0.0.1", 0)).ok();
         let port = socket.as_ref().and_then(|socket| socket.local_addr().ok()).map(|address| address.port());
-        let heard = match port {
+        let (tell, heard) = mpsc::channel();
+        match port {
             Some(port) => {
                 let _ = std::fs::create_dir_all(ports_dir());
                 let _ = std::fs::write(ports_dir().join(port.to_string()), "");
-                let (tx, heard) = mpsc::channel();
+                let tx = tell.clone();
                 std::thread::spawn(move || {
                     let (Some(socket), mut bytes) = (socket, vec![0u8; 65_536]) else { return };
                     while let Ok((length, _)) = socket.recv_from(&mut bytes) {
@@ -461,13 +464,9 @@ impl Agents {
                         crate::ext::wake_ui();
                     }
                 });
-                Some(heard)
             }
-            None => {
-                log::warn!("assistants will not be seen on the canvas: no port to listen on");
-                None
-            }
-        };
+            None => log::warn!("assistants other than Codex will not be seen on the canvas: no port to listen on"),
+        }
         let faces = std::fs::read_to_string(crate::session::data_dir().join("faces.json"))
             .ok()
             .and_then(|text| serde_json::from_str::<Vec<(String, usize)>>(&text).ok())
@@ -476,7 +475,9 @@ impl Agents {
             .filter(|(_, avatar)| *avatar < FACES)
             .collect();
         Agents {
-            heard,
+            heard: Some(heard),
+            tell: Some(tell),
+            codex: None,
             port,
             list: Vec::new(),
             following: None,
@@ -487,7 +488,31 @@ impl Agents {
         }
     }
 
+    /// Codex is followed or let go: its session files are read as they grow (`codex.rs`).
+    pub fn follow_codex(&mut self, on: bool) {
+        match (on, self.codex.is_some()) {
+            (true, false) => {
+                let home = crate::codex::home();
+                self.codex =
+                    self.tell.clone().zip(home).and_then(|(tell, home)| crate::codex::Tail::start(&home, tell));
+            }
+            (false, true) => {
+                self.codex = None;
+                log::info!("Codex is no longer followed");
+                let theirs = self
+                    .list
+                    .iter_mut()
+                    .filter(|agent| agent.from.is_none() && agent.key.starts_with(crate::codex::KEY));
+                for agent in theirs {
+                    (agent.doing, agent.at) = (Doing::Leaving, Instant::now());
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn close(&mut self) {
+        self.codex = None;
         if let Some(port) = self.port.take() {
             let _ = std::fs::remove_file(ports_dir().join(port.to_string()));
         }
@@ -591,10 +616,11 @@ impl Agents {
 
     fn hear_plain(&mut self, event: &Value) {
         let Some(key) = text(event, &["agent"]) else { return };
+        let session = text(event, &["session"]).unwrap_or(key);
         let role = text(event, &["name"]).unwrap_or("assistant").to_string();
         self.moves += 1;
         let moves = self.moves;
-        let agent = self.agent(key, key, &role);
+        let agent = self.agent(key, session, &role);
         agent.role = role;
         agent.at = Instant::now();
         if let Some(task) = text(event, &["task"]) {
@@ -615,7 +641,8 @@ impl Agents {
             let lines = event.get("lines").and_then(Value::as_u64).unwrap_or(1).clamp(1, 400) as u32;
             agent.path = Some(PathBuf::from(path));
             agent.lines = line.map(|line| (line.min(u32::MAX / 2), lines));
-            agent.find = None;
+            agent.find =
+                text(event, &["find"]).map(first_line).filter(|line| !line.is_empty() && agent.lines.is_none());
             agent.moved = moves;
             agent.stepped(false);
         }
@@ -752,6 +779,8 @@ mod tests {
     fn heard(events: &[Value]) -> Agents {
         let mut agents = Agents {
             heard: None,
+            tell: None,
+            codex: None,
             port: None,
             list: Vec::new(),
             following: None,
@@ -854,6 +883,11 @@ mod tests {
         assert_eq!((agent.role.as_str(), agent.doing, agent.lines), ("Codex", Doing::Editing, Some((11, 3))));
         assert_eq!(agent.note, "fixing the parser");
         assert!(heard(&[json!({ "note": "nobody" })]).list.is_empty());
+        let agents = heard(&[
+            json!({ "agent": "codex:p/h", "session": "codex:p", "name": "explorer", "action": "edit", "path": "C:/a.rs", "find": "\n  let b = 2;\nmore" }),
+        ]);
+        let agent = &agents.list[0];
+        assert_eq!((agent.session.as_str(), agent.find.as_deref(), agent.lines), ("codex:p", Some("let b = 2;"), None));
     }
 
     #[test]

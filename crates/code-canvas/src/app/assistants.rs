@@ -7,6 +7,7 @@ use crate::ui::{AgentMark, AgentOp, AgentTrail, AgentView, TrailStep};
 const LOOKED_FOR: Duration = Duration::from_secs(5);
 const CONNECT: &str = "Connect";
 pub(super) const CLAUDE_OFFER: &str = "claude on the canvas";
+pub(super) const CODEX_OFFER: &str = "codex on the canvas";
 
 struct Place {
     card: egui::Rect,
@@ -117,6 +118,31 @@ impl App {
     pub(super) fn claude_answered(&mut self, choice: &str) {
         if choice == CONNECT {
             self.agent_op(AgentOp::ConnectClaude(true));
+        }
+        self.offer_codex();
+    }
+
+    /// Codex is offered once, when it is found on this computer and is not followed
+    /// yet; after Claude Code's offer when that one is on screen.
+    pub(super) fn offer_codex(&mut self) {
+        let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
+        let prefs = &self.ui.prefs;
+        if quiet || prefs.codex || prefs.asked_codex || !crate::codex::there() {
+            return;
+        }
+        if self.ext.asking(CLAUDE_OFFER) {
+            return;
+        }
+        self.ui.prefs.asked_codex = true;
+        crate::prefs::save(&self.ui.prefs);
+        let text = "Codex can show on the canvas while it works: each session with a face of its own, where it reads and what it changes. Its own settings are not touched.";
+        self.ext.ask("Assistants", text, &[CONNECT, "Not now"], CODEX_OFFER);
+    }
+
+    pub(super) fn codex_answered(&mut self, choice: &str) {
+        if choice == CONNECT {
+            let prefs = crate::prefs::Prefs { codex: true, ..self.ui.prefs.clone() };
+            self.apply(Action::SetPrefs(prefs));
         }
     }
 

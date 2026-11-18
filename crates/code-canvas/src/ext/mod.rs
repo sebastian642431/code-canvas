@@ -892,6 +892,10 @@ impl Extensions {
         });
     }
 
+    pub fn asking(&self, about: &str) -> bool {
+        self.notices.iter().any(|n| n.own.as_deref() == Some(about))
+    }
+
     pub fn take_answers(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.answers)
     }

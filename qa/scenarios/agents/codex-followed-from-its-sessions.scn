@@ -1,0 +1,50 @@
+title: Codex is followed from the session files it writes: one at work before the app started is where it was, and a new one is seen reading lines, searching and editing as its file grows, then leaves when done
+folders: rust-small
+fixtures: codex-home
+codex: codex-home
+prefs: {"codex": true}
+limit: 90
+expect-log: Codex is followed: the sessions it writes in
+expect-log: an assistant \(Codex\) is on the canvas
+forbid-log: script: agent needs
+forbid-log: script: cannot append
+forbid-log: are not watched
+
+wait 3000
+fit
+wait 2500
+mark one-at-work-before
+wait 500
+agent Explain how the steps are counted
+wait 2500
+mark following-the-one-before
+wait 500
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"session_meta","payload":{"id":"01a1ec52-0000-7000-8000-000000000002","cwd":"{FIX}/rust-small","originator":"codex_exec","cli_version":"0.169.0","source":"exec"}}
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"UserMessage","id":"item-1","content":[{"type":"text","text":"Make step ten return ten times more"}]}}}
+wait 3000
+agent Make step ten return ten times more
+wait 500
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"CommandExecution","id":"exec-1","command":["powershell.exe","-Command","Get-Content src/steps.rs | Select-Object -Skip 29 -First 16"],"cwd":"file:///{FIX}/rust-small","parsed_cmd":[{"type":"read","cmd":"Get-Content src/steps.rs | Select-Object -Skip 29 -First 16","name":"steps.rs","path":"src/steps.rs"}],"status":"completed","exit_code":0}}}
+wait 3500
+mark reading-a-range
+wait 500
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call-2","input":"text(await tools.exec_command({cmd:\"rg -n step_1 src/steps.rs\"}))"}}
+wait 3500
+mark searching
+wait 500
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"item_completed","thread_id":"x","turn_id":"t1","item":{"type":"FileChange","id":"exec-3","status":"completed","changes":{"{FIX}/rust-small/src/steps.rs":{"type":"update","move_path":null,"unified_diff":"@@ -37,3 +37,3 @@\u000a fn step_10() -> u32 {\u000a-    10\u000a+    100\u000a }\u000a"}}}}}
+wait 3500
+mark editing
+wait 500
+touch {FIX}/codex-home/sessions/2026/01/01/rollout-2026-01-01T11-00-00-01a1ec52-0000-7000-8000-000000000002.jsonl {"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}
+wait 9000
+mark gone-when-done
+wait 500
+left settings:Codex
+wait 1500
+mark the-setting
+wait 500
+left settings:close
+wait 300
+quit

@@ -50,6 +50,7 @@ quit
 | `guest-expect-log` | As `expect-log`, for the second instance. |
 | `prefs` | The preferences the app starts with, as JSON (also the guest's): `{"autosave": false}` for a scenario about what is typed and not saved. |
 | `github` | `empty`, or a file of `qa/fake` with the files of a gist: the run gets a GitHub of its own on this computer (`qa/fake/github.py`) to sign in to. |
+| `codex` | A fixture that is Codex's folder (`CODEX_HOME`) for the run, such as `codex-home`; without it, an empty folder of the run. |
 | `extensions` | Folders of `qa/fake` put in the run's extensions folder before it starts: `relations-extension` plays a language server, `views-extension` gives code lenses and tree views. |
 
 A line `=== again` starts a part that is run after the app has ended: the app
@@ -59,7 +60,8 @@ remembered is what is being tested). Its pictures are `again-<name>.png`, and
 
 In steps and in `expect-file`, `{FIX}` is the folder of the fixtures, `{WORK}`
 the folder of the run, `{REPO}` this repository. In an `agent` step they are
-written with forward slashes, because what follows is JSON.
+written with forward slashes, because what follows is JSON (in a `touch` step
+too: it can append a line of JSON to a file, such as a session of Codex).
 
 The steps are the ones of `CODE_CANVAS_SCRIPT`: see the table in
 [docs/NOTES.md](../docs/NOTES.md), `script.rs`. `mark <name>` takes a picture
@@ -84,6 +86,7 @@ the invitation. Its pictures are `guest-<name>.png`.
 | `typescript` | A tiny TypeScript project with a `package.json`. |
 | `deps-folders` | 960 TypeScript files in eight layers of four folders, five thousand imports, two import cycles (`core0` and `pages0` import each other; `util1` → `util2` → `util3` → `util1`). |
 | `empty` | An empty folder. |
+| `codex-home` | Codex's folder with one session at work a few minutes ago on `rust-small` (`fixtures_agents.py`), for `codex: codex-home`. |
 
 More fixtures go in a `fixtures_<area>.py` beside it with its own `FIXTURES`
 dictionary; they are picked up by name like the others.
@@ -93,8 +96,8 @@ dictionary; they are picked up by name like the others.
 - A script that ends with something typed and not saved meets the app's
   question: answer it (`answer Close without saving`) or save first (`key save`).
 - Put a `wait` after a `mark`: the picture is taken a moment later.
-- The runner sets `CODE_CANVAS_SHARE_ON=127.0.0.1` (no firewall prompt) and
-  `CLAUDE_CONFIG_DIR` to a folder of the run (Claude Code's real settings are
-  never touched).
+- The runner sets `CODE_CANVAS_SHARE_ON=127.0.0.1` (no firewall prompt), and
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` to folders of the run (the real settings
+  and sessions of Claude Code and Codex are never touched or read).
 - Do not install or open the Claude Code extension in a scenario: it would run
   with the real account.

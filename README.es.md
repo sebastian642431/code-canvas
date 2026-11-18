@@ -119,6 +119,12 @@ muy grandes. Código abierto: cualquiera puede aportar.
   acaba de cambiar. Una sesión de Claude Code es un avatar y cada agente que lanza
   es otro. Clic en su cara (arriba) para **seguirlo**. Se activa en Ajustes,
   *Assistants on the canvas*, *Connect Claude Code*.
+- **Codex también**: con *Connect Codex*, al lado, la app lee los archivos de
+  sesión que Codex va escribiendo mientras trabaja (`~/.codex/sessions`) y cada
+  sesión aparece donde lee, busca y edita, con el nombre de lo que le pediste;
+  sirve en una terminal, con `codex exec` o en su extensión del editor. No se toca
+  nada de la configuración de Codex. La app te ofrece conectar cada uno una sola
+  vez, cuando lo encuentra instalado.
 - **El rastro de cada IA**: cada asistente deja marcas tenues de su color en los
   últimos lugares por donde pasó, unidas en orden por una línea punteada: un aro
   donde leyó y un punto donde editó. Se van apagando y a los diez minutos
