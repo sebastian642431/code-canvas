@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "ignore",
  "log",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-render"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytemuck",
  "canvas-core",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "code-canvas"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "arboard",
