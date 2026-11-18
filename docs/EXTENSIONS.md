@@ -36,7 +36,7 @@ it works, what works today, and what does not yet.
   `settings.json` in the app's data folder, then the folder's `.vscode/settings.json`
   (including `"[language]"` sections and `editor.defaultFormatter`).
 
-Extensions with code need **Node.js** on the `PATH`. Extensions run with your
+Extensions with code need **Node.js** on the `PATH` (or where its installer puts it). They run in a process of their own that gets only part of your environment (no `NODE_OPTIONS`, no tokens of other programs; see `ext/host.rs` in NOTES). Extensions run with your
 permissions, exactly as in VS Code: install the ones you trust.
 
 **Workspace trust.** A folder opened for the first time is not trusted, and a

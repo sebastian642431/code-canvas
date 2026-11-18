@@ -1,4 +1,4 @@
-title: An extension that asks the app to change a file outside the open folders is refused, by a full path or one going up with '..'
+title: An extension that asks the app to change a file outside the open folders is refused, by a full path or one going up with '..', and the host it runs in sees only part of the environment, from the folder of the host
 folders: rust-small
 fixtures: plain
 extensions: write-extension
@@ -7,6 +7,7 @@ expect-log: refused a write of QA writes to .*plain.src.main\.rs: it is not a do
 expect-log: refused a write of QA writes to .*rust-small.\.\..plain.src.main\.rs: it goes up with \.\.
 forbid-log: wrote .*plain.src.main\.rs
 expect-file: plain/src/main.rs :: \A(?![\s\S]*changed by an extension)
+expect-file: rust-small/qa-env.txt :: script=false claude=true path=true cwd=exthost
 
 wait 3000
 command qa.write.outside

@@ -1632,6 +1632,23 @@ Camera
 - `HOST_JS` is embedded with `include_str!`, so an installed app needs no extra
   files; `Host::start` writes it to disk and runs it.
 - `Stderr` lines are what the host wrote outside the protocol: Node's own errors.
+- **Node is found once, by full path** (`node_path`, `find_node`): the first
+  `node.exe` in an absolute folder of the `PATH` that is not the current folder,
+  then where Node is usually installed (`known_installs`). A relative folder of the
+  `PATH`, the current folder and a folder named like the program are never taken.
+  The log says which one runs ("extensions run on …").
+- **The host starts with an environment of its own** (`host_env`): everything is
+  cleared, then only `KEPT_ENV` (the system's folders, the user's profile, proxies,
+  `NODE_EXTRA_CA_CERTS`, where toolchains are) and `KEPT_PREFIXES` (`LC_`,
+  `ANTHROPIC_`, `CLAUDE_`; `XDG_` off Windows) come back, by name without regard
+  to case on Windows. `NODE_OPTIONS` and `NODE_PATH` never do, nor tokens such as
+  `GITHUB_TOKEN` or `OPENAI_API_KEY`. `AWS_*` comes only with
+  `CLAUDE_CODE_USE_BEDROCK`, `GOOGLE_*` and `CLOUD_ML_REGION` only with
+  `CLAUDE_CODE_USE_VERTEX`: Claude Code needs them on those clouds. Since one host
+  runs every extension, what Claude Code gets (an `ANTHROPIC_API_KEY`) every other
+  extension can read: one host per extension would end that.
+- Its current folder is `exthost` in the data folder, not wherever the app was
+  started from.
 
 ### crates/code-canvas/src/ext/market.rs
 
