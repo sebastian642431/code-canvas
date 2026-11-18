@@ -70,14 +70,8 @@ impl App {
     pub(super) fn show_versions(&mut self) {
         let t = canvas_render::theme::get();
         let pre = self.ui.prefs.version_prereleases;
-        let mut counts: HashMap<PathBuf, (usize, usize)> = HashMap::new();
         for (path, wanted) in &self.manifests {
             let notes = self.versions.notes(wanted, pre);
-            if let Some(page) = self.pages.iter().find(|p| path.starts_with(&p.root)) {
-                let count = counts.entry(page.root.clone()).or_default();
-                count.0 += notes.iter().filter(|n| matches!(n.standing, Standing::InRange | Standing::Behind)).count();
-                count.1 += notes.iter().filter(|n| n.standing == Standing::Behind).count();
-            }
             let items = notes
                 .into_iter()
                 .map(|n| ext::Decoration {
@@ -97,22 +91,6 @@ impl App {
                 })
                 .collect();
             self.ext.set_own_decorations(&path.to_string_lossy(), "versions", items);
-        }
-        if self.versions.busy() {
-            return;
-        }
-        for (root, (newer, outside)) in counts {
-            if newer > 0 && self.versions_told.insert(root.clone()) {
-                let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let upgrades = match outside {
-                    0 => String::new(),
-                    n => format!(", {n} of them outside what the manifest accepts"),
-                };
-                let text = format!(
-                    "{newer} dependencies have a newer version{upgrades}. They are marked in the manifests: click one to update it."
-                );
-                self.ext.notice(ext::Level::Info, &name, text);
-            }
         }
     }
 
@@ -179,7 +157,6 @@ impl App {
             }
             Op::Recheck => {
                 self.versions.forget();
-                self.versions_told.clear();
                 self.versions_due = self.pages.iter().map(|p| p.id).collect();
                 if !self.ui.prefs.check_versions {
                     let text = "Versions are not shown: turn them on in Settings, Help while editing.";

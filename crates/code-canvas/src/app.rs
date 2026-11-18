@@ -244,7 +244,6 @@ pub struct App {
     versions: crate::versions::Checker,
     manifests: HashMap<PathBuf, Vec<crate::versions::Dependency>>,
     versions_due: Vec<u32>,
-    versions_told: HashSet<PathBuf>,
     theme_revision: u64,
     theme_dirty: bool,
     last_input: Instant,
@@ -405,7 +404,6 @@ impl App {
             versions: crate::versions::Checker::new(ext::wake_ui),
             manifests: HashMap::new(),
             versions_due: Vec::new(),
-            versions_told: HashSet::new(),
             theme_revision: canvas_render::theme::revision(),
             theme_dirty: false,
             last_input: Instant::now(),
@@ -3790,7 +3788,6 @@ impl App {
                     for path in std::mem::take(&mut self.manifests).into_keys() {
                         self.ext.set_own_decorations(&path.to_string_lossy(), "versions", Vec::new());
                     }
-                    self.versions_told.clear();
                 }
                 if prereleases && !versions {
                     self.show_versions();
