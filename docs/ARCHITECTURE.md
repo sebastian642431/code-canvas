@@ -122,8 +122,11 @@ result as they drew the guess.
 to files of the repository, in parallel: Chromium's 1.35 million edges take half a
 second. The result is a sorted edge list with O(1) `outgoing(file)` / `incoming(file)`.
 The app draws the edges of the selected node as curves (the same pipeline as symbol
-relations) and lists them in the dependencies panel. It is import-based and
-approximate: no build system is consulted.
+relations, plus arrowheads and dashes) and lists them in the dependencies panel. The
+import cycles (strongly connected components) are found with the edges, and when
+there are many edges `deps::bundle` merges them per pair of folders too small to see
+into (`Layout::groups`). It is import-based and approximate: no build system is
+consulted.
 
 ## Layout filter
 

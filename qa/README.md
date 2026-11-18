@@ -82,6 +82,7 @@ the invitation. Its pictures are `guest-<name>.png`.
 | `git-subfolder` | A repository whose `app/` folder is the project. |
 | `odd-files` | CRLF, tabs, no final newline, empty, not UTF-8, binary, a 5000 column line, 12000 lines, names with spaces and accents. |
 | `typescript` | A tiny TypeScript project with a `package.json`. |
+| `deps-folders` | 960 TypeScript files in eight layers of four folders, five thousand imports, two import cycles (`core0` and `pages0` import each other; `util1` → `util2` → `util3` → `util1`). |
 | `empty` | An empty folder. |
 
 More fixtures go in a `fixtures_<area>.py` beside it with its own `FIXTURES`

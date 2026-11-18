@@ -46,6 +46,51 @@ fn neighbours(r: &Ready, node: usize, outgoing: bool, kinds: &[bool; 5]) -> Vec<
     out
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Sample {
+    Edge,
+    Cycle,
+    Bundle,
+}
+
+fn legend(ui: &mut egui::Ui, sample: Sample, text: &str) {
+    let color = c(theme::get().dep_out);
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(46.0, 16.0), Sense::hover());
+        let painter = ui.painter();
+        let y = rect.center().y;
+        let (start, end) = (rect.left() + 2.0, rect.right() - 4.0);
+        let width = if sample == Sample::Bundle { 4.0 } else { 1.5 };
+        let stroke = egui::Stroke::new(width, color);
+        match sample {
+            Sample::Cycle => {
+                let mut x = start;
+                while x < end - 7.0 {
+                    painter.line_segment([Pos2::new(x, y), Pos2::new((x + 4.2).min(end - 7.0), y)], stroke);
+                    x += 7.0;
+                }
+            }
+            _ => painter.line_segment([Pos2::new(start, y), Pos2::new(end - 6.0, y)], stroke),
+        }
+        let head = if sample == Sample::Bundle { 6.5 } else { 3.6 };
+        let tip = vec![Pos2::new(end, y), Pos2::new(end - head * 2.2, y - head), Pos2::new(end - head * 2.2, y + head)];
+        painter.add(egui::Shape::convex_polygon(tip, color, egui::Stroke::NONE));
+        if sample == Sample::Bundle {
+            let chip = Rect::from_center_size(Pos2::new(rect.center().x - 4.0, y), Vec2::new(18.0, 13.0));
+            painter.rect(chip, 6.5, c(theme::get().chip_fill), egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+            painter.text(
+                chip.center(),
+                Align2::CENTER_CENTER,
+                "12",
+                FontId::proportional(9.5),
+                c(theme::get().chip_text),
+            );
+        }
+        ui.add(egui::Label::new(RichText::new(text).size(11.5).color(pal().text_dim)).wrap());
+    });
+}
+
 pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actions: &mut Vec<Action>) {
     Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 10, bottom: 0 }).show(ui, |ui| {
         panel_title(ui, "Dependencies", |_| {});
@@ -72,10 +117,19 @@ pub fn deps_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, acti
             section(ui, icons::EYE, "Show");
             well(ui, |ui| {
                 check(ui, &mut st.deps.selected, "Edges of the selected file or folder", true, false);
-                let many = deps.edges.len() > 40_000;
-                let label = if many { "Every edge, faint (a sample: there are many)" } else { "Every edge, faint" };
-                check(ui, &mut st.deps.all, label, true, false);
+                check(ui, &mut st.deps.all, "Every edge, faint", true, false);
             });
+            ui.add_space(4.0);
+            legend(ui, Sample::Edge, "an import: the arrow points at the file imported");
+            let cycles = match deps.cycles {
+                0 => "part of an import cycle (there are none)".to_string(),
+                1 => format!("part of an import cycle · 1 cycle, {} edges", thousands(deps.cyclic_edges)),
+                n => format!("part of an import cycle · {n} cycles, {} edges", thousands(deps.cyclic_edges)),
+            };
+            legend(ui, Sample::Cycle, &cycles);
+            if page.dep_zoom.is_some() {
+                legend(ui, Sample::Bundle, "imports between two folders, together: zoom in or select a file inside");
+            }
 
             section(ui, icons::SHARE_2, "Relationships");
             well(ui, |ui| {

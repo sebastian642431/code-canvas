@@ -1,0 +1,42 @@
+title: Dependencies end in arrowheads, cycles are dashed, and many edges are bundled per folder
+folders: deps-folders
+limit: 120
+expect-log: script: deps 0 of 0 edges drawn, bundled, \d+ counts
+expect-log: script: deps \d+ of \d+ edges drawn, bundled, [1-9]\d* counts
+expect-log: script: deps [1-9]\d* of [1-9]\d* edges drawn, one by one, 0 counts
+
+wait 3000
+right deps
+fit
+wait 1000
+deps all on
+wait 1500
+mark every-edge-bundled
+wait 300
+deps report
+goto src/api
+wait 1500
+mark every-edge-zoomed-in
+wait 300
+deps all off
+goto src/data
+wait 1500
+fit
+wait 1200
+mark folder-bundled
+wait 300
+deps report
+goto src/core/core0/core0.ts
+wait 1500
+zoom 0.25
+wait 1200
+mark file-in-a-cycle
+wait 300
+deps report
+goto src/util/util0/util2.ts
+wait 1500
+zoom 0.6
+wait 1200
+mark arrowheads-close
+wait 300
+quit
