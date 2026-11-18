@@ -243,6 +243,7 @@ pub struct UiState {
     pub files: bool,
     pub dock: Panel,
     pub layout_open: bool,
+    faces_stack: Option<Rect>,
     pub new_build: bool,
     layout_button: Option<Rect>,
     pub full_screen: bool,
@@ -313,6 +314,7 @@ impl Default for UiState {
             files: true,
             dock: Panel::Files,
             layout_open: false,
+            faces_stack: None,
             new_build: false,
             layout_button: None,
             full_screen: false,
@@ -3498,7 +3500,15 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
     }
     st.share.button = Some(rect);
     const STEP: f32 = 21.0;
-    let room = ((ui.available_height() - 16.0) / STEP).max(0.0) as usize;
+    const APART: f32 = 31.0;
+    let space = (ui.available_height() - 16.0).max(0.0);
+    let room = (space / STEP) as usize;
+    let shown = st.agents.len().min(12) + st.share.people.iter().filter(|person| !person.me).count().min(8);
+    let pointer = ui.ctx().pointer_hover_pos();
+    let over = st.faces_stack.zip(pointer).is_some_and(|(stack, at)| stack.expand2(Vec2::new(6.0, 4.0)).contains(at));
+    let spread = ui.ctx().animate_bool_with_time(egui::Id::unique("the faces spread apart"), over, 0.14);
+    let step = (STEP + (APART - STEP) * spread).min(space / shown.clamp(1, room.max(1)) as f32).max(STEP);
+    let mut stack: Option<Rect> = None;
     if !st.agents.is_empty() || st.share.people.iter().any(|person| !person.me) {
         ui.add_space(4.0);
         let (line, _) = ui.allocate_exact_size(Vec2::new(18.0, 1.0), Sense::hover());
@@ -3512,7 +3522,8 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         ui.painter().rect_filled(behind, CornerRadius::same(round as u8), pal().well);
     };
     for agent in st.agents.iter().take(room.min(12)) {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, STEP), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, step), Sense::click());
+        stack = Some(stack.map_or(rect, |stack| stack.union(rect)));
         let at = rect.center() - Vec2::new(0.0, 2.0);
         cut(ui, at, 12.0);
         let lifted = if resp.hovered() { Vec2::new(0.0, -2.0) } else { Vec2::ZERO };
@@ -3538,7 +3549,8 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
             true => format!("{}: you follow what they look at. Click to stop.", person.name),
             false => format!("{}: click to follow what they look at", person.name),
         };
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, STEP), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, step), Sense::click());
+        stack = Some(stack.map_or(rect, |stack| stack.union(rect)));
         let at = rect.center() - Vec2::new(0.0, 2.0);
         cut(ui, at, 15.0);
         let color = c(person.color);
@@ -3552,6 +3564,7 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
             actions.push(Action::Share(ShareOp::Follow((!followed).then_some(person.id))));
         }
     }
+    st.faces_stack = stack;
 }
 
 fn name_tag(painter: &egui::Painter, at: Pos2, name: &str, color: Color32) {
