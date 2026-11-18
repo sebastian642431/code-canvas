@@ -1,0 +1,22 @@
+title: The branch picker lists the local branches and the ones on the remote in folders, and brings a remote branch to local in one click
+folders: git-remote-branches, rust-small
+expect-file: git-remote-branches/.git/HEAD :: ref: refs/heads/fix/c
+expect-file: git-remote-branches/.git/config :: \[branch "fix/c"\]
+forbid-log: WARN.*script
+
+wait 3500
+left files
+wait 1000
+ui click 303 120
+wait 2000
+mark a-picker
+wait 2500
+ui move 400 429
+wait 2000
+mark b-bring-to-local
+wait 2500
+ui click 400 429
+wait 2500
+mark c-on-the-new-branch
+wait 500
+quit

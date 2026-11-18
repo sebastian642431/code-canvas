@@ -390,12 +390,82 @@ pub struct GitState {
     pub upstream: bool,
     pub graph: Vec<GraphCommit>,
     pub branches: Vec<String>,
+    pub locals: Vec<LocalBranch>,
+    pub remote_branches: Vec<RemoteBranch>,
     pub changes: Vec<FileChange>,
     pub ignored: Vec<String>,
     pub truncated: bool,
     pub ms: u32,
     pub prefix: String,
     pub head: String,
+}
+
+/// A branch of this computer, with the remote branch it follows and how far apart they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LocalBranch {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub current: bool,
+}
+
+/// A branch that lives on a remote such as GitHub, with the local branch that follows it, if any.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteBranch {
+    pub remote: String,
+    pub name: String,
+    pub local: Option<String>,
+}
+
+/// Reads `git for-each-ref refs/heads --format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)`.
+fn parse_locals(text: &str) -> Vec<LocalBranch> {
+    let count = |track: &str, word: &str| -> u32 {
+        let after = track.split(word).nth(1).unwrap_or("");
+        after.trim_start().split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok()).unwrap_or(0)
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\u{1f}');
+            let name = parts.next().filter(|name| !name.is_empty())?;
+            let upstream = parts.next().filter(|up| !up.is_empty()).map(str::to_string);
+            let track = parts.next().unwrap_or("");
+            let current = parts.next().is_some_and(|head| head.trim() == "*");
+            Some(LocalBranch {
+                name: name.to_string(),
+                upstream,
+                ahead: count(track, "ahead "),
+                behind: count(track, "behind "),
+                current,
+            })
+        })
+        .collect()
+}
+
+/// Reads `git for-each-ref refs/remotes --format=%(refname:short)%1f%(symref)`, leaving out `origin/HEAD` and bare remote names.
+fn parse_remote_branches(text: &str, remotes: &[String], locals: &[LocalBranch]) -> Vec<RemoteBranch> {
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split('\u{1f}');
+        let short = parts.next().unwrap_or("");
+        if short.is_empty() || parts.next().is_some_and(|symref| !symref.is_empty()) {
+            continue;
+        }
+        let Some(remote) = remotes
+            .iter()
+            .filter(|r| short.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('/')))
+            .max_by_key(|r| r.len())
+        else {
+            continue;
+        };
+        let name = &short[remote.len() + 1..];
+        if name.is_empty() || name == "HEAD" {
+            continue;
+        }
+        let local = locals.iter().find(|l| l.upstream.as_deref() == Some(short)).map(|l| l.name.clone());
+        found.push(RemoteBranch { remote: remote.clone(), name: name.to_string(), local });
+    }
+    found
 }
 
 impl GitState {
@@ -556,12 +626,21 @@ fn part(root: &Path, path: &str, line: u32, what: Part) -> Result<String, String
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitOp {
-    Part { path: String, line: u32, what: Part },
+    Part {
+        path: String,
+        line: u32,
+        what: Part,
+    },
     Stage(String),
     Unstage(String),
     StageAll,
     UnstageAll,
-    Commit { message: String, all: bool, amend: bool, then: After },
+    Commit {
+        message: String,
+        all: bool,
+        amend: bool,
+        then: After,
+    },
     Sync,
     Push,
     Pull,
@@ -572,6 +651,11 @@ pub enum GitOp {
     Stash,
     StashPop,
     Switch(String),
+    /// Bring a branch that is only on a remote to a local branch of the same name, and switch to it.
+    Track {
+        remote: String,
+        name: String,
+    },
 }
 
 impl GitOp {
@@ -613,12 +697,13 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
         GitOp::Sync => vec![s(&["pull", "--ff-only"]), s(&["push"])],
         GitOp::Push => vec![s(&["push"])],
         GitOp::Pull => vec![s(&["pull", "--ff-only"])],
-        GitOp::Fetch => vec![s(&["fetch", "--prune"])],
+        GitOp::Fetch => vec![s(&["fetch", "--all", "--prune"])],
         GitOp::Publish(branch) => vec![s(&["push", "-u", "origin", branch])],
         GitOp::Discard(_) | GitOp::DiscardAll => Vec::new(),
         GitOp::Stash => vec![s(&["stash", "push", "--include-untracked"])],
         GitOp::StashPop => vec![s(&["stash", "pop"])],
         GitOp::Switch(branch) => vec![s(&["switch", branch])],
+        GitOp::Track { remote, name } => vec![s(&["switch", "-c", name, "--track", &format!("{remote}/{name}")])],
     }
 }
 
@@ -671,8 +756,16 @@ pub fn run(root: &Path, op: &GitOp) -> Result<String, String> {
         GitOp::DiscardAll => return discard(root, None),
         _ => {}
     }
+    let op = match op {
+        GitOp::Track { name, .. }
+            if git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some() =>
+        {
+            GitOp::Switch(name.clone())
+        }
+        other => other.clone(),
+    };
     let mut said = String::new();
-    for args in steps(op) {
+    for args in steps(&op) {
         let mut c = command(root);
         let out = c.args(&args).stdin(Stdio::null()).output().map_err(|e| format!("git could not be run: {e}"))?;
         let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
@@ -732,19 +825,40 @@ fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    let (status, prefix, diff, log, list, ignored) = std::thread::scope(|s| {
+    let (status, prefix, diff, log, list, ignored, remote_refs, remote_names) = std::thread::scope(|s| {
         let status =
             s.spawn(|| git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."]));
         let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
         let diff =
             s.spawn(|| git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]));
         let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
-        let list = s.spawn(|| git(root, &["branch", "--format=%(refname:short)"]));
+        let list = s.spawn(|| {
+            git(
+                root,
+                &[
+                    "for-each-ref",
+                    "refs/heads",
+                    "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)",
+                ],
+            )
+        });
+        let remote_refs =
+            s.spawn(|| git(root, &["for-each-ref", "refs/remotes", "--format=%(refname:short)%1f%(symref)"]));
+        let remote_names = s.spawn(|| git(root, &["remote"]));
         let ignored = s.spawn(|| {
             git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
         });
         let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
-        (done(status), done(prefix), done(diff), done(log), done(list), done(ignored))
+        (
+            done(status),
+            done(prefix),
+            done(diff),
+            done(log),
+            done(list),
+            done(ignored),
+            done(remote_refs),
+            done(remote_names),
+        )
     });
     let status = status?;
     let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
@@ -758,7 +872,12 @@ pub fn load(root: &Path) -> Option<GitState> {
         state.head = state.graph.first().map(|first| first.commit.hash.clone()).unwrap_or_default();
     }
     if let Some(list) = list {
-        state.branches = String::from_utf8_lossy(&list).lines().map(str::to_string).filter(|b| !b.is_empty()).collect();
+        state.locals = parse_locals(&String::from_utf8_lossy(&list));
+        state.branches = state.locals.iter().map(|l| l.name.clone()).collect();
+    }
+    if let (Some(refs), Some(names)) = (remote_refs, remote_names) {
+        let names: Vec<String> = String::from_utf8_lossy(&names).lines().map(|n| n.trim().to_string()).collect();
+        state.remote_branches = parse_remote_branches(&String::from_utf8_lossy(&refs), &names, &state.locals);
     }
     if let Some(ignored) = ignored {
         state.ignored = parse_ignored(&String::from_utf8_lossy(&ignored));
@@ -1299,6 +1418,42 @@ mod tests {
         assert_eq!(run(reword), vec!["commit --amend -m Better"]);
         assert_eq!(run(GitOp::Publish("feature".into())), vec!["push -u origin feature"]);
         assert_eq!(run(GitOp::Pull), vec!["pull --ff-only"]);
+    }
+
+    #[test]
+    fn local_branches_with_their_remote() {
+        let text = "main\u{1f}origin/main\u{1f}ahead 1, behind 2\u{1f}*\nfeature/a\u{1f}origin/feature/a\u{1f}\u{1f} \nold\u{1f}origin/old\u{1f}gone\u{1f} \nlone\u{1f}\u{1f}\u{1f} \n";
+        let got = parse_locals(text);
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[0].name, "main");
+        assert_eq!(got[0].upstream.as_deref(), Some("origin/main"));
+        assert_eq!((got[0].ahead, got[0].behind, got[0].current), (1, 2, true));
+        assert_eq!((got[1].ahead, got[1].behind, got[1].current), (0, 0, false));
+        assert_eq!((got[2].ahead, got[2].behind), (0, 0));
+        assert_eq!(got[3].upstream, None);
+    }
+
+    #[test]
+    fn remote_branches_skip_the_head_and_find_the_local() {
+        let locals = parse_locals("main\u{1f}origin/main\u{1f}\u{1f}*\n");
+        let remotes = vec!["origin".to_string(), "origin/fork".to_string()];
+        let text = "origin\u{1f}refs/remotes/origin/main\norigin/main\u{1f}\norigin/feature/b/deep\u{1f}\norigin/fork/x\u{1f}\n";
+        let got = parse_remote_branches(text, &remotes, &locals);
+        assert_eq!(
+            got,
+            vec![
+                RemoteBranch { remote: "origin".into(), name: "main".into(), local: Some("main".into()) },
+                RemoteBranch { remote: "origin".into(), name: "feature/b/deep".into(), local: None },
+                RemoteBranch { remote: "origin/fork".into(), name: "x".into(), local: None },
+            ]
+        );
+    }
+
+    #[test]
+    fn what_bringing_a_remote_branch_runs() {
+        let op = GitOp::Track { remote: "origin".into(), name: "fix/c".into() };
+        let run = steps(&op).iter().map(|s| s.join(" ")).collect::<Vec<_>>();
+        assert_eq!(run, vec!["switch -c fix/c --track origin/fix/c"]);
     }
 
     #[test]

@@ -128,7 +128,30 @@ def git_no_commits(root):
     write(root, "src/b.rs", "pub fn b() -> u32 {\n    1\n}\n")
 
 
+def git_remote_branches(root):
+    """A repository with a bare remote (a folder next to it): main is one commit ahead of origin/main,
+    feature/a is on both sides, feature/b/deep and fix/c are only on the remote."""
+    init(root)
+    remote = root + "-remote.git"
+    os.makedirs(remote, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", remote], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    write(root, "a.txt", "a1\na2\n")
+    commit(root, "first")
+    git(root, "remote", "add", "origin", remote)
+    git(root, "push", "-q", "-u", "origin", "main")
+    for name in ["feature/a", "feature/b/deep", "fix/c"]:
+        git(root, "switch", "-q", "-c", name)
+        write(root, name.replace("/", "-") + ".txt", name + "\n")
+        commit(root, "work on " + name)
+        git(root, "push", "-q", "-u", "origin", name)
+        git(root, "switch", "-q", "main")
+    git(root, "branch", "-q", "-D", "feature/b/deep", "fix/c")
+    write(root, "a.txt", "a1\na2\na3\n")
+    commit(root, "local only")
+
+
 FIXTURES = {
+    "git-remote-branches": git_remote_branches,
     "git-shifted": git_shifted,
     "git-spaces": git_spaces,
     "git-renamed": git_renamed,

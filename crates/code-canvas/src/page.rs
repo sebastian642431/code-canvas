@@ -990,6 +990,9 @@ impl Page {
             (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some((true, "Fetched.".into())),
             (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some((true, "Changes stashed.".into())),
             (crate::git::GitOp::Switch(branch), Ok(_)) => self.git_note = Some((true, format!("On branch {branch}."))),
+            (crate::git::GitOp::Track { name, .. }, Ok(_)) => {
+                self.git_note = Some((true, format!("On branch {name}.")))
+            }
             (_, Ok(_)) => {}
             (_, Err(e)) => self.git_note = Some((false, e)),
         }

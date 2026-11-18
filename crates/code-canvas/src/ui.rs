@@ -11,6 +11,7 @@ use crate::icons;
 use crate::page::{build_tree, Page, PageState, RelFilters};
 use crate::tree_ops;
 
+mod branch_picker;
 mod console;
 mod deps_panel;
 mod ext_panels;
@@ -350,6 +351,8 @@ pub struct UiState {
     pub restricted: bool,
     faces: Vec<egui::TextureHandle>,
     pub workspace_shut: bool,
+    branch_filter: String,
+    branch_shut: std::collections::HashSet<String>,
     workspace_drag: Option<(std::path::PathBuf, String)>,
     canvas_was: Rect,
     pub bare: bool,
@@ -436,6 +439,8 @@ impl Default for UiState {
             restricted: false,
             faces: Vec::new(),
             workspace_shut: false,
+            branch_filter: String::new(),
+            branch_shut: std::collections::HashSet::new(),
             workspace_drag: None,
             canvas_was: Rect::NOTHING,
             bare: false,
@@ -2508,6 +2513,8 @@ pub struct WorkspaceRow {
     pub loading: bool,
     pub branch: Option<String>,
     pub branches: Vec<String>,
+    pub locals: Vec<crate::git::LocalBranch>,
+    pub remotes: Vec<crate::git::RemoteBranch>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2599,18 +2606,19 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 if chip_hot {
                     ui.painter().rect_filled(chip, 5.0, pal().border_strong);
                 }
-                let current = row.branch.as_deref().unwrap_or_default().trim_end_matches('*').to_string();
+                let opening = place.clicked();
+                if opening {
+                    st.branch_filter.clear();
+                }
                 egui::Popup::menu(&place).show(|ui| {
-                    ui.set_min_width(200.0);
-                    ui.label(RichText::new("Switch to a branch").size(11.0).color(pal().text_faint));
-                    for name in &row.branches {
-                        if ui.selectable_label(*name == current, name).clicked() {
-                            if *name != current {
-                                actions.push(Action::Git(crate::git::GitOp::Switch(name.clone())));
-                            }
-                            ui.close();
-                        }
+                    branch_picker::Picker {
+                        filter: &mut st.branch_filter,
+                        shut: &mut st.branch_shut,
+                        opening,
+                        locals: &row.locals,
+                        remotes: &row.remotes,
                     }
+                    .show(ui, actions);
                 });
                 place.on_hover_text("Branch: click to switch to another");
             }

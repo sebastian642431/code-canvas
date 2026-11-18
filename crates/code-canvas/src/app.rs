@@ -857,6 +857,8 @@ impl App {
             ui::WorkspaceRow {
                 branch,
                 branches: open.map(|git| git.branches.clone()).unwrap_or_default(),
+                locals: open.map(|git| git.locals.clone()).unwrap_or_default(),
+                remotes: open.map(|git| git.remote_branches.clone()).unwrap_or_default(),
                 path: known.path.clone(),
                 title: name.unwrap_or_else(|| known.path.display().to_string()),
                 files: known.files,
