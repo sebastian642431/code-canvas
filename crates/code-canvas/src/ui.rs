@@ -238,6 +238,10 @@ pub struct CardPlace {
 pub struct UiState {
     pub files: bool,
     pub dock: Panel,
+    pub layout_open: bool,
+    layout_button: Option<Rect>,
+    pub full_screen: bool,
+    pub account: crate::account::Account,
     pub cards: Vec<Panel>,
     pub cards_reach: f32,
     pub card_places: Vec<CardPlace>,
@@ -303,6 +307,10 @@ impl Default for UiState {
         Self {
             files: true,
             dock: Panel::Files,
+            layout_open: false,
+            layout_button: None,
+            full_screen: false,
+            account: Default::default(),
             cards: Vec::new(),
             cards_reach: 0.0,
             card_places: Vec::new(),
@@ -462,6 +470,7 @@ pub enum Action {
     FiltersChanged,
     Fit,
     ZoomBy(f32),
+    ToggleFullScreen,
     ClearDoodles,
     FrameSelection,
     CollapseAll,
@@ -747,7 +756,7 @@ pub fn build(
     st.page_places.clear();
     st.file_icons.set(ext.icon_theme(&st.theme.icons).map(|t| t.file.as_path()));
     header(ui, st, actions);
-    if !st.bare {
+    if !st.bare && st.prefs.status {
         status_bar(ui, st, ext, pages.get(active), info, actions);
     }
     let entries = rail_entries(st, ext);
@@ -758,8 +767,9 @@ pub fn build(
         drag.target = None;
     }
     let bare = st.bare;
-    for side in Side::BOTH.into_iter().filter(|_| !bare) {
-        rail(ui, st, ext, pages.get(active), side, &entries, &order[side.index()]);
+    let rails = !bare && st.prefs.rail;
+    for side in Side::BOTH.into_iter().filter(|_| rails) {
+        rail(ui, st, ext, pages.get(active), side, &entries, &order[side.index()], actions);
     }
     finish_rail_drag(ui, st, ext, &entries);
     if let Some((panel, side, before)) = st.rail_move.take() {
@@ -798,8 +808,11 @@ pub fn build(
     if !bare {
         enclose(&ctx.layer_painter(egui::LayerId::background()), free, canvas);
         cards(&ctx, st, canvas, pages, active, ext, actions);
-        toolbar(&ctx, st, canvas, info, actions);
+        if st.prefs.toolbar {
+            toolbar(&ctx, st, canvas, info, actions);
+        }
     }
+    layout_menu(&ctx, st, actions);
     find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     workspace_drop(&ctx, st, canvas);
@@ -890,7 +903,22 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                     }
                 }
                 ui.add_space(6.0);
-                share_button(ui, st, actions);
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, 28.0), Sense::click());
+                if resp.hovered() || st.layout_open {
+                    ui.painter().rect_filled(rect, 7.0, pal().hover);
+                }
+                let col = if resp.hovered() || st.layout_open { pal().text } else { pal().text_dim };
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    icons::PANELS_TOP_LEFT,
+                    FontId::proportional(15.0),
+                    col,
+                );
+                if resp.on_hover_text("Customize the layout").clicked() {
+                    st.layout_open = !st.layout_open;
+                }
+                st.layout_button = Some(rect);
                 right_start = ui.min_rect().left();
             });
         });
@@ -924,6 +952,117 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             }
         }
     });
+}
+
+fn layout_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
+    const WIDTH: f32 = 330.0;
+    let Some(button) = st.layout_button.filter(|_| st.layout_open) else { return };
+    let at = Pos2::new(button.right() + 4.0, button.bottom() + 6.0);
+    let area = egui::Area::new(egui::Id::unique("layout"))
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(at)
+        .order(egui::Order::Foreground);
+    let mut prefs = st.prefs.clone();
+    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let resp = area.show(ctx, |ui| {
+        let frame = Frame::NONE
+            .fill(pal().card)
+            .stroke(Stroke::new(1.0, pal().border_strong))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(6, 6));
+        frame.show(ui, |ui| {
+            ui.set_width(WIDTH);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let head = |ui: &mut egui::Ui, text: &str, reset: bool| {
+                let mut again = false;
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(text).size(11.5).color(pal().text_faint));
+                    if reset {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            again = small_icon(ui, icons::ROTATE_CCW, "Put every part back");
+                        });
+                    }
+                });
+                again
+            };
+            if head(ui, "Visible", true) {
+                (prefs.rail, prefs.status, prefs.toolbar) = (true, true, true);
+                st.files = true;
+            }
+            let row = |ui: &mut egui::Ui, glyph: &str, label: &str, key: String, on: bool| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+                if resp.hovered() {
+                    ui.painter().rect_filled(rect, 6.0, pal().hover);
+                }
+                let mid = rect.center().y;
+                ui.painter().text(
+                    Pos2::new(rect.left() + 18.0, mid),
+                    Align2::CENTER_CENTER,
+                    glyph,
+                    FontId::proportional(14.0),
+                    pal().text_dim,
+                );
+                ui.painter().text(
+                    Pos2::new(rect.left() + 36.0, mid),
+                    Align2::LEFT_CENTER,
+                    label,
+                    FontId::proportional(13.0),
+                    pal().text,
+                );
+                let mut right = rect.right() - 10.0;
+                if on {
+                    ui.painter().text(
+                        Pos2::new(right, mid),
+                        Align2::RIGHT_CENTER,
+                        icons::CHECK,
+                        FontId::proportional(14.0),
+                        pal().accent,
+                    );
+                }
+                right -= 24.0;
+                if !key.is_empty() {
+                    let font = FontId::proportional(11.5);
+                    ui.painter().text(Pos2::new(right, mid), Align2::RIGHT_CENTER, key, font, pal().text_faint);
+                }
+                resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+            };
+            let keys = &st.keys;
+            if row(ui, icons::LAYOUT_GRID, "Bar of icons", String::new(), prefs.rail) {
+                prefs.rail = !prefs.rail;
+            }
+            if row(ui, icons::PANEL_LEFT, "Files and source control", keys.label(Command::ToggleLeftPanel), st.files) {
+                st.files = !st.files;
+            }
+            if row(ui, icons::PANEL_BOTTOM, "Status bar", String::new(), prefs.status) {
+                prefs.status = !prefs.status;
+            }
+            if row(ui, icons::MOUSE_POINTER_2, "Toolbar of the canvas", String::new(), prefs.toolbar) {
+                prefs.toolbar = !prefs.toolbar;
+            }
+            ui.add_space(4.0);
+            ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top() - 2.0, Stroke::new(1.0, pal().border));
+            head(ui, "Modes", false);
+            if row(ui, icons::FULLSCREEN, "Full screen", keys.label(Command::FullScreen), st.full_screen) {
+                actions.push(Action::ToggleFullScreen);
+            }
+            if row(ui, icons::APP_WINDOW, "Only the canvas", keys.label(Command::ToggleUi), st.bare) {
+                actions.push(Action::ToggleUi);
+                close = true;
+            }
+        });
+    });
+    let clicked_away = ctx.input(|i| i.pointer.any_pressed())
+        && ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|at| !resp.response.rect.contains(at) && !button.contains(at));
+    st.floating.push(resp.response.rect);
+    if prefs != st.prefs {
+        actions.push(Action::SetPrefs(prefs));
+    }
+    if close || clicked_away {
+        st.layout_open = false;
+    }
 }
 
 const STATUS_H: f32 = 22.0;
@@ -1363,6 +1502,7 @@ fn rail_badge(ui: &egui::Ui, ext: &Extensions, page: Option<&Page>, panel: &Pane
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rail(
     ui: &mut egui::Ui,
     st: &mut UiState,
@@ -1371,6 +1511,7 @@ fn rail(
     side: Side,
     entries: &[RailEntry],
     order: &[String],
+    actions: &mut Vec<Action>,
 ) {
     if side == Side::Right && order.is_empty() && st.rail_drag.is_none() {
         return;
@@ -1433,6 +1574,7 @@ fn rail(
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
             ui.add_space(5.0);
+            account_button(ui, st);
             let tip = st.keys.hint("Settings: version, theme, colours, shortcuts", Command::Settings);
             if icon_button(ui, icons::SETTINGS, RAIL_ICON, st.settings.open, pal().hover).on_hover_text(tip).clicked() {
                 st.settings.toggle();
@@ -1442,8 +1584,41 @@ fn rail(
             if icon_button(ui, icons::CIRCLE_HELP, RAIL_ICON, help, pal().hover).on_hover_text(tip).clicked() {
                 st.toggle(Panel::Help);
             }
+            share_button(ui, st, actions);
         });
     });
+}
+
+fn account_button(ui: &mut egui::Ui, st: &mut UiState) {
+    st.account.poll(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(RAIL_ICON, Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
+    }
+    let account = &st.account;
+    match (&account.user, &account.face) {
+        (Some(_), Some(face)) => {
+            let at = Rect::from_center_size(rect.center(), Vec2::splat(22.0));
+            let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            let shape = egui::epaint::RectShape::filled(at, CornerRadius::same(11), Color32::WHITE);
+            ui.painter().add(shape.with_texture(face.id(), whole));
+        }
+        (user, _) => {
+            let glyph = if user.is_some() { icons::GITHUB } else { icons::CIRCLE_USER };
+            let color = if resp.hovered() { pal().text } else { pal().text_dim };
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
+        }
+    }
+    let tip = match (&account.user, account.known) {
+        (Some(user), _) => format!("GitHub: {user}\nThe account git uses on this computer. Click to open its page"),
+        (None, true) => "Not signed in to GitHub: git has no GitHub account on this computer yet. Push to GitHub once and it shows here".to_string(),
+        (None, false) => "Looking for your GitHub account…".to_string(),
+    };
+    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+        if let Some(user) = &account.user {
+            let _ = crate::files::open_web_link(&format!("https://github.com/{user}"));
+        }
+    }
 }
 
 fn rail_drop_target(ui: &egui::Ui, st: &mut UiState, side: Side, zone: Rect, slots: &[(String, Rect)]) {
@@ -3077,15 +3252,15 @@ fn avatar(ui: &mut egui::Ui, person: &PersonView, size: f32, followed: bool) -> 
 fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     let on = st.share.mode != ShareMode::Off;
     let glyph = crate::codicons::glyph("live-share").unwrap_or(icons::WAYPOINTS);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, 28.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(RAIL_ICON, Sense::click());
     let lit = on || st.share.open;
     if resp.hovered() || st.share.open {
-        ui.painter().rect_filled(rect, 7.0, pal().hover);
+        ui.painter().rect_filled(rect.shrink(4.0), 8.0, pal().hover);
     }
     let color = if lit { pal().accent } else { pal().text_dim };
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(16.0), color);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(17.0), color);
     if on {
-        ui.painter().circle_filled(rect.right_top() + Vec2::new(-6.0, 7.0), 3.5, c(theme::get().git_added));
+        ui.painter().circle_filled(rect.right_top() + Vec2::new(-8.0, 8.0), 3.5, c(theme::get().git_added));
     }
     let tip = match st.share.mode {
         ShareMode::Off => "Share this session, or join someone's",
@@ -3097,10 +3272,16 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         st.share.open = !st.share.open;
     }
     st.share.button = Some(rect);
-    ui.add_space(2.0);
+    let room = ((ui.available_height() - 8.0) / 30.0).max(0.0) as usize;
+    if !st.agents.is_empty() || st.share.people.iter().any(|person| !person.me) {
+        ui.add_space(4.0);
+        let (line, _) = ui.allocate_exact_size(Vec2::new(18.0, 1.0), Sense::hover());
+        ui.painter().rect_filled(line, 0.0, pal().border);
+        ui.add_space(4.0);
+    }
     load_faces(ui.ctx(), st);
-    for agent in st.agents.iter().take(8) {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
+    for agent in st.agents.iter().take(room.min(8)) {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(RAIL_ICON.x, 30.0), Sense::click());
         face(ui.painter(), &st.faces, agent.avatar, rect.center(), 11.0, c(agent.color), agent.quiet, agent.followed);
         let how = if agent.followed { "You follow it. Click to stop." } else { "Click to follow it on the canvas." };
         if resp.on_hover_text(format!("{} · {}\n{}\n{how}", agent.name, agent.role, agent.said)).clicked() {
@@ -3108,7 +3289,7 @@ fn share_button(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) 
         }
     }
     let following = st.share.following;
-    for person in st.share.people.iter().filter(|person| !person.me).take(6) {
+    for person in st.share.people.iter().filter(|person| !person.me).take(room.saturating_sub(st.agents.len()).min(6)) {
         let followed = following == Some(person.id);
         let tip = match followed {
             true => format!("{}: you follow what they look at. Click to stop.", person.name),
@@ -3340,9 +3521,9 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
     const WIDTH: f32 = 380.0;
     let Some(button) = st.share.button.filter(|_| st.share.open) else { return };
     let screen = ctx.content_rect();
-    let at = Pos2::new((button.right() + 4.0).min(screen.right() - 8.0), button.bottom() + 8.0);
+    let at = Pos2::new((button.right() + 10.0).min(screen.right() - WIDTH - 8.0), button.bottom());
     let area = egui::Area::new(egui::Id::unique("share"))
-        .pivot(Align2::RIGHT_TOP)
+        .pivot(Align2::LEFT_BOTTOM)
         .fixed_pos(at)
         .order(egui::Order::Foreground);
     let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));

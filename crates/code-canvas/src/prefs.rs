@@ -18,6 +18,9 @@ pub struct Prefs {
     pub skip_dirs: Option<Vec<String>>,
     pub skip_files: Option<Vec<String>>,
     pub timeline: bool,
+    pub rail: bool,
+    pub status: bool,
+    pub toolbar: bool,
 }
 
 impl Default for Prefs {
@@ -38,6 +41,9 @@ impl Default for Prefs {
             skip_dirs: None,
             skip_files: None,
             timeline: true,
+            rail: true,
+            status: true,
+            toolbar: true,
         }
     }
 }

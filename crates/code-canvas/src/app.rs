@@ -2967,6 +2967,7 @@ impl App {
             }
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::ToggleUi => self.apply(Action::ToggleUi),
+            Command::FullScreen => self.apply(Action::ToggleFullScreen),
             Command::FormatFile => self.format_file(None),
             Command::Save => self.save_edit(),
             Command::MoveTool | Command::EditTool => {
@@ -3205,6 +3206,13 @@ impl App {
             Action::DragWindow => {
                 if let Some(g) = &self.gfx {
                     let _ = g.window.drag_window();
+                }
+            }
+            Action::ToggleFullScreen => {
+                if let Some(g) = &self.gfx {
+                    let full = g.window.fullscreen().is_none();
+                    g.window.set_fullscreen(full.then_some(winit::window::Fullscreen::Borderless(None)));
+                    self.ui.full_screen = full;
                 }
             }
             Action::ToggleMaximize => {

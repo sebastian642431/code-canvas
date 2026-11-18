@@ -2078,6 +2078,24 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     has no separator, and the dock's resize line is drawn with no stroke (the
     pointer still turns into the resize arrows there). The tab of the icon
     whose panel is docked flares into the dock at both ends (`rail_tab`).
+  - **The bottom of the bar of icons** holds, from the bottom up: the GitHub
+    account, Settings, Help, sharing, and then the faces of the assistants
+    and the people in the session, one above the other, as many as fit. They
+    were in the header, side by side; the share panel opens beside its button.
+  - **The GitHub account** is the one git already uses on this computer
+    (`account.rs`): `git credential fill` for github.com, with
+    `GCM_INTERACTIVE=never` and `GIT_TERMINAL_PROMPT=0` so nothing is ever
+    asked on screen, no window, given up after 15 seconds. Only the
+    `username=` line is kept; the rest of the answer (the token) is dropped at
+    once. Its picture comes from `github.com/<user>.png` and is kept as
+    `github-<user>.png` in the data folder. A click opens its page. Nothing of
+    it is in the repository or the release.
+  - **Customize the layout** (the button left of the window's buttons,
+    `layout_menu`): the bar of icons, the dock, the status bar and the toolbar
+    of the canvas are shown or hidden (`Prefs::rail`, `status`, `toolbar`;
+    the dock is `UiState::files`), a button puts every part back, and two
+    modes: full screen (`Action::ToggleFullScreen`, borderless) and only the
+    canvas (`Action::ToggleUi`).
   - The Timeline under the files folds away by its title (`Prefs::timeline`):
     closed, it is a row of its own height that cannot be dragged taller.
   - **The question before deleting shows what is about to go** (`ui::Preview`,

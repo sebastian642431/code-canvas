@@ -1,0 +1,25 @@
+title: The layout menu shows and hides the parts of the window; sharing, the faces of the assistants and the GitHub account sit at the bottom of the bar of icons
+folders: rust-small
+forbid-log: WARN.*script
+
+wait 3000
+agent {"agent":"bot-1","name":"Codex","task":"Make the parser faster","action":"read","path":"{WORK}/fix/rust-small/src/main.rs","line":1,"lines":2}
+agent {"agent":"bot-2","name":"Claude Code","task":"Write the tests","action":"read","path":"{WORK}/fix/rust-small/src/steps.rs","line":1,"lines":2}
+wait 4000
+mark a-bottom-of-the-bar
+wait 400
+ui click 1545 20
+wait 700
+mark b-layout-menu
+wait 400
+ui click 1500 145
+wait 400
+ui click 1500 174
+wait 700
+mark c-no-status-no-toolbar
+wait 400
+ui click 1546 58
+wait 700
+mark d-every-part-back
+wait 400
+quit
