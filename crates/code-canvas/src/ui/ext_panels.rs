@@ -108,11 +108,17 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 0, bottom: 8 }).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 5.0;
-            section(ui, icons::PACKAGE, &format!("Installed  ·  {}", ext.installed.len()));
-            if let (NodeStatus::Ready(version), true) = (&ext.node, ext.host_running) {
-                ui.label(RichText::new(format!("    running on Node.js {version}")).size(11.0).color(pal().text_faint));
+            // While something is typed in the search box the panel shows the registry alone; what is
+            // already installed shows up there marked "installed".
+            let browsing = ext.query.trim().is_empty();
+            let installed = if browsing { &ext.installed[..] } else { &[] };
+            if browsing {
+                section(ui, icons::PACKAGE, &format!("Installed  ·  {}", ext.installed.len()));
+                if let (NodeStatus::Ready(version), true) = (&ext.node, ext.host_running) {
+                    ui.label(RichText::new(format!("    running on Node.js {version}")).size(11.0).color(pal().text_faint));
+                }
             }
-            if ext.installed.is_empty() && ext.installing.is_empty() {
+            if browsing && ext.installed.is_empty() && ext.installing.is_empty() {
                 well(ui, |ui| {
                     ui.label(
                         RichText::new(
@@ -131,7 +137,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                     });
                 });
             }
-            for e in &ext.installed {
+            for e in installed {
                 let texture = extension_icon(ui.ctx(), &mut st.ext_icons, e);
                 let (state, color) = match e.status {
                     Status::Active => (format!("{}  {} ms", icons::HISTORY, e.activation_ms), pal().text_faint),
