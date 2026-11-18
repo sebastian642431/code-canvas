@@ -293,7 +293,7 @@ mod platform {
         ready: bool,
         queued: Vec<String>,
         theme: u64,
-        shape: Shape,
+        holes: Vec<[i32; 4]>,
         veiled: bool,
     }
 
@@ -320,16 +320,15 @@ mod platform {
         fn SetWindowRgn(window: *mut std::ffi::c_void, region: *mut std::ffi::c_void, redraw: i32) -> i32;
     }
 
-    fn cut_out(web: &WebView, shape: &Shape) {
-        const UNION: i32 = 2;
+    fn cut_out(web: &WebView, holes: &[[i32; 4]]) {
         const DIFFERENCE: i32 = 4;
         let window = web.hwnd().0;
-        let Shape { holes, width, height, round } = shape;
         unsafe {
-            let seen = CreateRoundRectRgn(0, 0, width + 1, height + 1, round * 2, round * 2);
-            let upper = CreateRectRgn(0, 0, *width, (height - round).max(0));
-            CombineRgn(seen, seen, upper, UNION);
-            DeleteObject(upper);
+            if holes.is_empty() {
+                SetWindowRgn(window, std::ptr::null_mut(), 1);
+                return;
+            }
+            let seen = CreateRectRgn(0, 0, FAR, FAR);
             for [left, top, right, bottom] in holes {
                 let hole = CreateRoundRectRgn(*left, *top, *right + 1, *bottom + 1, ROUND, ROUND);
                 CombineRgn(seen, seen, hole, DIFFERENCE);
@@ -341,12 +340,8 @@ mod platform {
         }
     }
 
-    #[derive(Default, PartialEq)]
-    struct Shape {
-        holes: Vec<[i32; 4]>,
-        width: i32,
-        height: i32,
-        round: i32,
+    fn above_the_corners(area: Rect, corner: f32) -> Rect {
+        Rect::new(area.x, area.y, area.w, (area.h - corner).max(1.0))
     }
 
     fn holes_in(area: Rect, covers: &[Rect]) -> Option<Vec<[i32; 4]>> {
@@ -594,9 +589,11 @@ mod platform {
         }
 
         pub fn show(&mut self, window: &winit::window::Window, targets: &[(&str, Rect, Vec<Rect>)]) -> bool {
+            let corner = (CARD_ROUND * window.scale_factor()) as f32;
             let targets: Vec<(&str, Rect, Vec<[i32; 4]>)> = targets
                 .iter()
-                .filter_map(|(handle, area, covers)| Some((*handle, *area, holes_in(*area, covers)?)))
+                .map(|(handle, area, covers)| (*handle, above_the_corners(*area, corner), covers))
+                .filter_map(|(handle, area, covers)| Some((handle, area, holes_in(area, covers)?)))
                 .collect();
             let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.shown)
                 .into_iter()
@@ -614,14 +611,8 @@ mod platform {
                     match self.create(window, handle, area) {
                         Ok(web) => {
                             let theme = canvas_render::theme::revision();
-                            let view = View {
-                                web,
-                                ready: false,
-                                queued: Vec::new(),
-                                theme,
-                                shape: Shape::default(),
-                                veiled: false,
-                            };
+                            let view =
+                                View { web, ready: false, queued: Vec::new(), theme, holes: Vec::new(), veiled: false };
                             self.views.insert(handle.to_string(), view);
                         }
                         Err(e) => {
@@ -636,11 +627,9 @@ mod platform {
                         let _ = view.web.set_bounds(bounds(area));
                     }
                     let holes = if view.veiled { vec![[0, 0, FAR, FAR]] } else { holes };
-                    let round = (CARD_ROUND * window.scale_factor()).round() as i32;
-                    let shape = Shape { holes, width: area.w.round() as i32, height: area.h.round() as i32, round };
-                    if view.shape != shape {
-                        cut_out(&view.web, &shape);
-                        view.shape = shape;
+                    if view.holes != holes {
+                        cut_out(&view.web, &holes);
+                        view.holes = holes;
                     }
                     if placed.is_none() {
                         let _ = view.web.set_visible(true);
