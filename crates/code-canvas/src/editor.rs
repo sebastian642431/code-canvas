@@ -742,6 +742,17 @@ impl Editor {
         });
     }
 
+    pub fn vertical_in(&mut self, delta: isize, select: bool, rows: Option<&canvas_core::Wrap>) {
+        let Some(rows) = rows else { return self.vertical(delta, select) };
+        self.each(|e| {
+            let at = e.display_col(e.caret) as u32;
+            let (line, col, goal) = rows.step(e.caret.line, at, e.goal.map(|goal| goal as u32), delta);
+            let p = e.pos_at_display(line.min(e.lines.len().saturating_sub(1)), col as usize);
+            e.move_to(p, select);
+            e.goal = Some(goal as usize);
+        });
+    }
+
     pub fn home(&mut self, select: bool) {
         self.each(|e| {
             let line = &e.lines[e.caret.line];
@@ -1323,6 +1334,24 @@ four",
         at(&mut s, 1, 5);
         s.tab();
         assert_eq!(s.text(), "if (x) {\n  y() \n}\n", "from column 5 to the next multiple of 2");
+    }
+
+    #[test]
+    fn up_and_down_go_by_the_rows_of_a_wrapped_line() {
+        let mut e = Editor::open("a.txt".into(), &format!("ab\n\t{}\ncd\n", "x".repeat(400)));
+        let (text, starts, _) = canvas_core::scan::normalise(&e.display_source());
+        let rows = canvas_core::Wrap::of(&text, &starts, 160).expect("the long line wraps");
+        at(&mut e, 1, 1);
+        e.vertical_in(1, false, Some(&rows));
+        assert_eq!(e.caret, Pos::new(1, 157), "the next row of the same line, under the caret (a tab is 4 columns)");
+        e.vertical_in(1, true, Some(&rows));
+        assert_eq!(e.selection(), Some((Pos::new(1, 157), Pos::new(1, 311))));
+        e.vertical_in(5, false, Some(&rows));
+        assert_eq!(e.caret, Pos::new(2, 2), "past the rows of the line, the next line");
+        e.vertical_in(-1, false, Some(&rows));
+        assert_eq!(e.caret, Pos::new(1, 311), "back up to the last row, under the same place");
+        e.vertical_in(-1, false, None);
+        assert_eq!(e.caret.line, 0, "without rows a line is one step");
     }
 
     #[test]

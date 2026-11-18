@@ -40,6 +40,7 @@ pub enum Step {
     Quick(String),
     Maximize,
     Click(f32, f32),
+    ClickCell(String, usize, usize),
     Hover(String),
     Drag([f32; 2], [f32; 2]),
     Move(String),
@@ -162,10 +163,11 @@ fn parse_step(text: &str) -> Option<Step> {
             let mut next = || parts.next()?.ok();
             Step::Drag([next()?, next()?], [next()?, next()?])
         }
-        "click" => {
-            let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
-            Step::Click(parts.next()?.ok()?, parts.next()?.ok()?)
-        }
+        "click" => match arg.split_whitespace().collect::<Vec<_>>().as_slice() {
+            [x, y] => Step::Click(x.parse().ok()?, y.parse().ok()?),
+            [rel, line, col] => Step::ClickCell(rel.to_string(), line.parse().ok()?, col.parse().ok()?),
+            _ => return None,
+        },
         "hover" => Step::Hover(arg.into()),
         "quit" => Step::Quit,
         _ => return None,
@@ -219,7 +221,7 @@ mod tests {
     #[test]
     fn parses_steps() {
         let s = Script::parse(
-            "goto src/a b.rs; wait 500 ;select main;connected on; bogus; zoom 1.5;hover 10 20.5;caret 3 7;quit",
+            "goto src/a b.rs; wait 500 ;select main;connected on; bogus; zoom 1.5;hover 10 20.5;caret 3 7;click 4 5.5;click src/a.rs 2 170;quit",
         );
         assert_eq!(
             s.steps,
@@ -231,6 +233,8 @@ mod tests {
                 Step::Zoom(1.5),
                 Step::Hover("10 20.5".into()),
                 Step::Caret(3, 7),
+                Step::Click(4.0, 5.5),
+                Step::ClickCell("src/a.rs".into(), 2, 170),
                 Step::Quit,
             ]
         );

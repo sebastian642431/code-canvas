@@ -87,7 +87,7 @@ impl SettingsView {
 const HEAD: f32 = 46.0;
 const NAV: f32 = 190.0;
 
-const EDITING: [(&str, &str); 8] = [
+const EDITING: [(&str, &str); 9] = [
     (
         "Show newer versions of dependencies",
         "In package.json and Cargo.toml. Asks npm and crates.io: only package names are sent.",
@@ -113,6 +113,10 @@ const EDITING: [(&str, &str); 8] = [
     (
         "Show code lenses",
         "The small links extensions put above a function, such as \"3 references\" or \"Run\". A click on one does what it says.",
+    ),
+    (
+        "Wrap long lines inside their card",
+        "A line wider than its card goes on in the rows under it, a little indented, and the card grows taller. Off, it is cut at the edge and the rest shows beside the card.",
     ),
 ];
 
@@ -329,6 +333,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.follow_chat, EDITING[2]);
             option(ui, f, &mut next.follow_changes, EDITING[3]);
             option(ui, f, &mut next.line_numbers, EDITING[4]);
+            option(ui, f, &mut next.wrap, EDITING[8]);
             option(ui, f, &mut next.autosave, EDITING[6]);
             option(ui, f, &mut next.code_lenses, EDITING[7]);
         });

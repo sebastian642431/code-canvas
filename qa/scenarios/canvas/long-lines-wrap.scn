@@ -1,0 +1,80 @@
+title: Asked to, a line longer than its card goes on in the rows under it: the card grows, a click and typing on a wrapped row land on the column aimed at, Down goes to the next row, and turned off the line is cut again
+folders: long-lines
+prefs: {"wrap": true}
+expect-file: long-lines/src/table.rs :: (?m)^.{199,200}ON_A_WRAPPED_ROW
+expect-file: long-lines/src/table.rs :: (?m)^    vec!\[.*ON_A_WRAPPED_ROW.+DOWN.*// end of the pairs$
+expect-file: long-lines/src/table.rs :: (?m)^.{500,501}DEEPER
+forbid-log: the rest of line (1|2|3|4|5|7|9|10|11|12) of
+expect-log: the rest of line 6 of src/table\.rs is shown over its card
+expect-log: the rest of line 8 of src/table\.rs is shown
+expect-file: {WORK}/data/prefs.json :: "wrap": false
+
+resize 1600 1000
+wait 3000
+goto src/table.rs
+wait 1500
+zoom 0.8
+wait 1200
+mark wrapped
+wait 500
+zoom 0.4
+wait 1000
+mark wrapped-tokens
+wait 500
+zoom 0.5
+wait 1000
+mark wrapped-lines
+wait 500
+zoom 5
+wait 1200
+hover src/table.rs 3 175
+wait 700
+mark no-rest-beside
+wait 500
+tool edit
+wait 300
+zoom 1.1
+wait 1200
+click src/table.rs 3 200
+wait 600
+type ON_A_WRAPPED_ROW
+wait 600
+key down
+wait 300
+type DOWN
+wait 800
+mark typed-on-a-row
+wait 500
+find WRAPPED_ROW
+wait 800
+mark found-on-a-row
+wait 500
+find close
+wait 300
+click src/table.rs 6 501
+wait 600
+type DEEPER
+wait 800
+mark typed-deeper
+wait 500
+key save
+wait 800
+left settings:Wrap long lines
+wait 1200
+mark settings
+wait 500
+ui click 541 256
+wait 800
+mark settings-off
+wait 500
+left settings:close
+wait 1200
+mark cut-again
+wait 500
+key escape
+wait 300
+hover src/table.rs 8 20
+wait 900
+mark rest-beside-again
+wait 500
+quit

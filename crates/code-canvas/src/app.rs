@@ -291,6 +291,7 @@ impl App {
         ui.theme = chosen;
         ui.prefs = crate::prefs::load();
         canvas_core::layout::set_line_numbers(ui.prefs.line_numbers);
+        canvas_core::layout::set_wrap(ui.prefs.wrap);
         crate::page::never_read(ui.prefs.skip_dirs.clone(), ui.prefs.skip_files.clone());
         let quiet = std::env::var_os("CODE_CANVAS_SCRIPT").is_some() || std::env::var_os("CODE_CANVAS_BENCH").is_some();
         let updates = (ui.prefs.check_updates && !quiet) || std::env::var_os("CODE_CANVAS_CHECK_UPDATES").is_some();
@@ -1420,7 +1421,8 @@ impl App {
         let lines = r.repo.files[fi].line_count();
         let world = page.camera.view(self.viewport()).to_world(point);
         let first = n.cell_rect(0, 0, 1);
-        let last = n.cell_rect(lines.saturating_sub(1) as u32, 0, 1);
+        let end = lines.saturating_sub(1) as u32;
+        let last = n.line_rects(end..end + 1).pop().unwrap_or_else(|| n.cell_rect(end, 0, 1));
         let inside = [world[0].max(first.x) + first.w * 0.5, world[1].clamp(first.y, last.bottom() - 0.01)];
         n.cell_at(inside, lines).map(|(line, col)| (line as usize, col as usize))
     }
@@ -1703,8 +1705,14 @@ impl App {
         let r = page.ready()?;
         let node = *r.layout.file_node.get(r.repo.file_index(rel)?)?;
         let n = r.layout.nodes.get(node as usize)?;
-        let row = n.cell_rect(line.saturating_sub(1) as u32, 0, 1);
-        let world = [row.x + (col.saturating_sub(1) as f32 + 0.5) * row.w, row.y + row.h * 0.5];
+        let (line, col) = (line.saturating_sub(1) as u32, col.saturating_sub(1) as u32);
+        let world = match n.wrap.is_some() {
+            true => n.cell_rect(line, col, 1).center(),
+            false => {
+                let row = n.cell_rect(line, 0, 1);
+                [row.x + (col as f32 + 0.5) * row.w, row.y + row.h * 0.5]
+            }
+        };
         Some(page.camera.view(self.viewport()).to_screen(world))
     }
 
@@ -2249,6 +2257,8 @@ impl App {
             }
         }
         let Some(page) = self.pages.get_mut(self.active) else { return false };
+        let rows = page.edited_wrap();
+        let rows = rows.as_deref();
         let Some(editor) = page.editor_mut() else { return false };
         let mut changed = false;
         match &event.logical_key {
@@ -2280,10 +2290,10 @@ impl App {
             Key::Named(NamedKey::ArrowRight) if cmd => editor.word(true, shift),
             Key::Named(NamedKey::ArrowLeft) => editor.left(shift),
             Key::Named(NamedKey::ArrowRight) => editor.right(shift),
-            Key::Named(NamedKey::ArrowUp) => editor.vertical(-1, shift),
-            Key::Named(NamedKey::ArrowDown) => editor.vertical(1, shift),
-            Key::Named(NamedKey::PageUp) => editor.vertical(-20, shift),
-            Key::Named(NamedKey::PageDown) => editor.vertical(20, shift),
+            Key::Named(NamedKey::ArrowUp) => editor.vertical_in(-1, shift, rows),
+            Key::Named(NamedKey::ArrowDown) => editor.vertical_in(1, shift, rows),
+            Key::Named(NamedKey::PageUp) => editor.vertical_in(-20, shift, rows),
+            Key::Named(NamedKey::PageDown) => editor.vertical_in(20, shift, rows),
             Key::Named(NamedKey::Home) if cmd => editor.move_to(crate::editor::Pos::default(), shift),
             Key::Named(NamedKey::End) if cmd => editor.move_to(crate::editor::Pos::new(usize::MAX, usize::MAX), shift),
             Key::Named(NamedKey::Home) => editor.home(shift),
@@ -3615,7 +3625,7 @@ impl App {
                     }
                     self.completion = None;
                 }
-                let numbered = prefs.line_numbers != self.ui.prefs.line_numbers;
+                let numbered = prefs.line_numbers != self.ui.prefs.line_numbers || prefs.wrap != self.ui.prefs.wrap;
                 let skipped =
                     (&prefs.skip_dirs, &prefs.skip_files) != (&self.ui.prefs.skip_dirs, &self.ui.prefs.skip_files);
                 self.ui.prefs = prefs;
@@ -3630,6 +3640,7 @@ impl App {
                 }
                 if let (true, Some(g)) = (numbered, self.gfx.as_mut()) {
                     canvas_core::layout::set_line_numbers(self.ui.prefs.line_numbers);
+                    canvas_core::layout::set_wrap(self.ui.prefs.wrap);
                     for page in &mut self.pages {
                         g.renderer.text.drop_page(page.id);
                         page.relayout(&g.renderer, &g.device, &self.ui.filters);
@@ -3738,6 +3749,15 @@ impl App {
                 self.request_redraw();
             }
         }
+    }
+
+    fn script_click(&mut self, at: [f32; 2]) {
+        self.cursor = at;
+        self.focus_folder_at(self.cursor);
+        if !self.over_ui(self.cursor) {
+            self.on_canvas_click(self.cursor);
+        }
+        self.update_hover();
     }
 
     fn run_script(&mut self) -> bool {
@@ -3870,7 +3890,8 @@ impl App {
                         }
                     } else if name == "save" {
                         save = true;
-                    } else if let Some(e) = page.editor_mut() {
+                    } else if let (rows, Some(e)) = (page.edited_wrap(), page.editor_mut()) {
+                        let rows = rows.as_deref();
                         match name.as_str() {
                             "enter" => e.newline(),
                             "backspace" => e.backspace(),
@@ -3878,8 +3899,8 @@ impl App {
                             "tab" => e.tab(),
                             "left" => e.left(false),
                             "right" => e.right(false),
-                            "up" => e.vertical(-1, false),
-                            "down" => e.vertical(1, false),
+                            "up" => e.vertical_in(-1, false, rows),
+                            "down" => e.vertical_in(1, false, rows),
                             "home" => e.home(false),
                             "end" => e.end(false),
                             "undo" => {
@@ -4330,14 +4351,11 @@ impl App {
                     None => log::warn!("script: hover needs <x> <y>, or <path> <line> <column> of a card"),
                 }
             }
-            Step::Click(x, y) => {
-                self.cursor = [x, y];
-                self.focus_folder_at(self.cursor);
-                if !self.over_ui(self.cursor) {
-                    self.on_canvas_click(self.cursor);
-                }
-                self.update_hover();
-            }
+            Step::ClickCell(rel, line, col) => match self.point_at_cell(&rel, line, col) {
+                Some(at) => self.script_click(at),
+                None => log::warn!("script: no card {rel} to click in"),
+            },
+            Step::Click(x, y) => self.script_click([x, y]),
             Step::Where => {
                 let (s, vp) = (self.scale(), self.viewport());
                 match self.pages.get(self.active).and_then(|page| page.portable_camera(s, vp)) {
