@@ -142,7 +142,10 @@ pub fn document(article: &str, base: &str, key: &str, style: &str) -> String {
     let base = base.replace(['"', '<', '>'], "");
     let name = serde_json::to_string(key).unwrap_or_default().replace('<', "\\u003c");
     let variables = format!(
-        ":root {{ --card: {}; --text: {}; --dim: {}; --border: {}; --well: {}; --row: {}; --accent: {}; --warn: {}; }}",
+        ":root {{ --card: var(--vscode-editor-background, {}); --text: var(--vscode-foreground, {}); \
+         --dim: var(--vscode-descriptionForeground, {}); --border: var(--vscode-panel-border, {}); \
+         --well: var(--vscode-input-background, {}); --row: var(--vscode-dropdown-background, {}); \
+         --accent: var(--vscode-focusBorder, {}); --warn: var(--vscode-charts-yellow, {}); }}",
         colour(t.card),
         colour(t.text),
         colour(t.text_dim),

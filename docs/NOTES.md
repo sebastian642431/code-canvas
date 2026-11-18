@@ -792,11 +792,28 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 - **Colours get baked** into GPU buffers and shaped text. Whoever keeps such a
   copy compares `revision()` with the one it was built at. `set` does nothing when
   the colours are the same, so the revision only moves on real changes.
-- The `theme!` macro declares `Theme`, the built-in themes `DARK` and `MIDNIGHT`,
-  and `FIELDS` from one table: `key: "Name" = <dark>, <midnight>;` under a group
-  heading. `Field::key` is the name in `theme.json`.
-- `PRESETS`: `(key in the settings file, name on screen, colours)`; the first is
-  the default.
+- The `theme!` macro declares `Theme` and `FIELDS` from one table: `key: "Name";`
+  under a group heading. `Field::key` is the name in `theme.json`. A colour added
+  later needs a value in every preset and a line in `theme_of` (`themes.rs`); old
+  `theme.json` files simply do not name it.
+- The built-in themes are whole `Theme` literals in `theme/presets.rs`, one per
+  theme with every field written out, so the compiler refuses one that forgets a
+  colour. `DARK` is the concept video's and is not to be retouched.
+- `PRESETS`: `Preset { key in the settings file, name on screen, Kind (dark,
+  light, high contrast: how the picker groups them), one line about it, colours }`;
+  the first is the default. Keys are kept forever: `theme.json` stores them.
+- `every_preset_is_readable` checks WCAG contrast of each preset: text on every
+  panel colour, the canvas texts, chips and each kind of code at 4.5:1, secondary
+  ones at 3:1 (7 and 4.5 for the high contrast ones). Colours with alpha are laid
+  over what they sit on first (`over`). `syntax_colours_are_told_apart` keeps the
+  main kinds of code at least 45 apart in RGB.
+- `Theme::is_light` (the panels' luminance) is what everything that has to know
+  asks: egui's light or dark visuals, the console's sixteen colours, the kind of
+  theme web pages are told (`vscode-light`), shadows and backdrops. It works for
+  a theme of an extension or of the user's too, which have no `Kind`.
+- Caret, selected code, the caret's line and search matches are colours of the
+  theme (`caret`, `code_selection`, `current_line`, `find_match`): white bars and
+  white washes, as they were, vanish on a light canvas.
 - `Theme::token_colors` has 16 entries because the shader's palette has 16.
   `Theme::rel_colors` is indexed by `RelKind::index()`: definitions,
   implementations, references, incoming calls, outgoing calls. Directory borders
@@ -2504,7 +2521,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `agent` | `agent <JSON of an event>`, `agent <name>` | What an assistant would send, as if it had arrived (a relative `path` is of the folder in front, such as a guest's shared one); or follow the one with that name. |
 | `workspace` | `workspace put\|off\|forget <folder>`, `workspace all` | Put a folder of the workspace on the canvas, take it off, forget it, or put them all. |
 | `share` | `share start [writers]`, `share stop`, `share relay [<address>]`, `share join <invitation> [name]`, `share follow\|writer\|reader <name>`, `share unfollow`, `share panel [close]` | Share the session or join one, follow someone, let someone edit or only look. `share relay` sets the relay the next `share start` goes through (none: share directly). |
-| `theme` | `theme <key or name>` | Change the theme: a built-in one or one of an installed extension. |
+| `theme` | `theme <key or name>`, `theme save <name>` | Change the theme: a built-in one, one of an installed extension or one of yours. `save` saves the colours on screen as a theme of yours and switches to it. |
+| `colour` | `colour <key> #rrggbb[aa]`, `colour reset` | Change one colour of the theme (`theme::FIELDS` key), as a click in Colours does; `reset` asks, as "Reset all to …" does, whether to put every one back. |
 | `commit` | `commit <place in the graph>`, `commit <start of a hash>`, `commit off` | Show on the canvas what a commit changed, or the files as they are again. |
 | `rename` | `rename <path>` | Start renaming a file in its row of the explorer. |
 | `delete` | `delete <path>` | Ask to delete a file or folder (answer with `answer Delete` or `answer Cancel`). |
@@ -2930,13 +2948,25 @@ A session shared between apps: `ot.rs` is how two texts edited at once agree,
   { "theme": "dark", "colors": { "card_border": "#4b5362" }, "icons": "symbols" }
   ```
 
-- `theme`: key of a built-in theme (`theme::PRESETS`), or of a theme of an
-  extension: `ext:<extension id>:<label>` (`ColorThemeDecl::key`); unknown or
-  empty means the default one.
-- A theme of an extension is read when it is chosen and at startup
-  (`theme_of_extension`) and kept in `ThemeFile::from_extension`, which is not
-  written: `base` gives it while the key is one of an extension, and the default
-  theme if the extension is gone.
+- `theme`: key of a built-in theme (`theme::PRESETS`), of a theme of an
+  extension: `ext:<extension id>:<label>` (`ColorThemeDecl::key`), or of one of
+  the user's: `mine:<file name>`; unknown or empty means the default one.
+- A theme of an extension or of the user's is read when it is chosen and at
+  startup (`outside_theme`) and kept in `ThemeFile::outside`, which is not
+  written: `base` gives it while the key is one of those, and the default theme
+  if it is gone.
+- **Themes of the user's** are files in `themes/` of the data folder:
+  `{ "name": "My Linen", "colors": { <every key>: "#rrggbb" } }`, every colour
+  written, so a later change to the built-in one it started from does not move
+  it. Saving (Colours, "Save as a theme of mine") writes the colours on screen
+  under a file name made from the name (`slug`; the same name overwrites), clears
+  the changes and switches to it. A file missing colours takes them from Daylight
+  or Dark, by how light its `card` is. They are not in what GitHub sync carries:
+  on another computer the key falls back to the default theme.
+- "Copy as JSON" puts that same format on the clipboard.
+- A light theme of an extension (`uiTheme` `vs` or `hc-light`) takes what it
+  does not say (relations, folder borders, status) from Daylight, a dark one from
+  Dark.
 - `from_vscode` reads the file and the ones it `include`s (the included first, so
   the including one wins), through `plain_json`: theme files carry comments and
   commas before a closing bracket. `theme_of` makes a `Theme` out of it:
@@ -2978,7 +3008,10 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
   completion list, for one): clicks on them are for them, not for the canvas
   underneath. For notices, only questions take clicks; plain ones let them through
   to the canvas.
-- egui is always dark, whatever the system theme is (`apply_theme`).
+- egui follows the theme, not the system's: light visuals for a light theme
+  (`Theme::is_light`), dark for the others (`apply_theme`). Every widget colour is
+  set from the theme there; dark defaults left in place would show as white text
+  on a light panel.
 - Lucide and Codicons are added as fallback fonts, so icon code points render
   anywhere text does. Codicons are needed because extensions name them in their
   texts, and a few panels that mirror VS Code's use the icons it does.
@@ -2998,6 +3031,15 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
     setting matches".
   - Shortcut rows are sorted by the place of their group in `keys::COMMANDS`,
     whose rows are not grouped.
+  - Appearance shows each theme as a tile drawn with egui from its own colours
+    (`draw_preview`: rail, canvas, folder, a selected card with code, the caret's
+    line, a selection and a caret, a panel and its accent button), grouped dark,
+    light, high contrast, from extensions, mine. A click applies it. Themes of
+    extensions are read once for their tiles and kept in `SettingsView::previews`;
+    the user's are listed from disk until `forget_mine` (after a save or delete).
+  - Colours: the search matches a colour's name, group, key and hex. Groups fold
+    (not while searching); "Only the changed ones" hides the rest. "Reset all"
+    and deleting a theme of the user's ask through `ui::Ask`.
 - The "go to file" box becomes the command palette when the query starts with `>`,
   as in VS Code. `quick_score` is a subsequence match on a lower-case query
   (`appts` → `src/app/types.ts`).

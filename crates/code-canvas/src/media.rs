@@ -149,14 +149,18 @@ pub fn page(path: &Path, kind: Kind, starts: bool) -> String {
         Kind::Audio => format!(r#"<audio id="media" src="{url}" {how}></audio>{WHEEL}"#),
         Kind::Pdf => format!(r#"<iframe id="media" class="page" src="{url}"></iframe>"#),
     };
+    let t = canvas_render::theme::get();
+    let hex = |c: u32| canvas_render::theme::to_hex(c | 0xff);
+    let (ground, text) = (hex(t.well), hex(t.text_dim));
+    let (check_a, check_b) = (hex(canvas_render::theme::mix(t.well, t.text, 0.06)), hex(t.well));
     format!(
         r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-  html, body {{ height: 100%; margin: 0; background: #0b0c0f; color: #8a8e99; font: 12px "Segoe UI", system-ui, sans-serif; }}
+  html, body {{ height: 100%; margin: 0; background: {ground}; color: {text}; font: 12px "Segoe UI", system-ui, sans-serif; }}
   body {{ display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: auto; }}
   img {{ max-width: 100%; max-height: calc(100% - 28px); object-fit: contain; cursor: zoom-in; image-rendering: auto;
-        background: repeating-conic-gradient(#16171c 0% 25%, #101115 0% 50%) 50% / 16px 16px; }}
+        background: repeating-conic-gradient({check_a} 0% 25%, {check_b} 0% 50%) 50% / 16px 16px; }}
   body.actual {{ display: block; }}
   body.actual img {{ max-width: none; max-height: none; cursor: zoom-out; }}
   video {{ display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }}

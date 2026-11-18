@@ -52,11 +52,12 @@ const INIT_JS: &str = r#"
     'textPreformat-foreground': T.problem_warning, 'textBlockQuote-background': T.well, 'textBlockQuote-border': T.border,
     'list-hoverBackground': T.raised, 'list-activeSelectionBackground': T.hover, 'list-activeSelectionForeground': T.text,
     'badge-background': T.hover, 'badge-foreground': T.text, 'progressBar-background': T.accent,
-    'scrollbarSlider-background': '#ffffff1f',
-    'scrollbarSlider-hoverBackground': '#ffffff33', 'scrollbarSlider-activeBackground': '#ffffff4d', 'widget-shadow': '#00000080',
+    'scrollbarSlider-background': T.scroll,
+    'scrollbarSlider-hoverBackground': T.scroll_hover, 'scrollbarSlider-activeBackground': T.scroll_active, 'widget-shadow': T.shadow,
     'dropdown-background': T.row, 'dropdown-foreground': T.text, 'dropdown-border': T.border,
     'menu-background': T.row, 'menu-foreground': T.text, 'menu-selectionBackground': T.hover,
-    'editorWidget-background': T.row, 'editorWidget-border': T.border, 'toolbar-hoverBackground': '#ffffff14',
+    'editorWidget-background': T.row, 'editorWidget-border': T.border, 'toolbar-hoverBackground': T.toolbar_hover,
+    'editor-selectionBackground': T.code_selection, 'editorCursor-foreground': T.caret,
     'charts-red': T.problem_error, 'charts-green': T.git_added, 'charts-yellow': T.problem_warning, 'charts-blue': T.accent,
     'charts-orange': T.tok_number, 'charts-purple': T.tok_keyword, 'icon-foreground': T.icon,
     'gitDecoration-addedResourceForeground': T.git_added, 'gitDecoration-modifiedResourceForeground': T.git_modified,
@@ -65,7 +66,7 @@ const INIT_JS: &str = r#"
   function guess(name) {
     const n = name.toLowerCase();
     const tone = /error|deleted|removed/.test(n) ? T.problem_error : /warning|modified/.test(n) ? T.problem_warning : /added|inserted|success/.test(n) ? T.git_added : /info|link|focus|active|selection|highlight/.test(n) ? T.accent : null;
-    if (/shadow/.test(n)) return '#00000080';
+    if (/shadow/.test(n)) return T.shadow;
     if (/border|outline|separator/.test(n)) return tone || T.border;
     if (/background/.test(n)) return tone ? tone.slice(0, 7) + '26' : /hover/.test(n) ? T.raised : T.card;
     if (/foreground|color/.test(n)) return tone || T.text;
@@ -86,9 +87,12 @@ const INIT_JS: &str = r#"
       const value = guess(name);
       if (value) root.style.setProperty('--vscode-' + name, value);
     }
+    const kind = T.kind || 'vscode-dark';
+    root.style.colorScheme = kind === 'vscode-light' ? 'light' : 'dark';
     if (document.body) {
-      document.body.classList.add('vscode-dark');
-      document.body.setAttribute('data-vscode-theme-kind', 'vscode-dark');
+      document.body.classList.remove('vscode-dark', 'vscode-light');
+      document.body.classList.add(kind);
+      document.body.setAttribute('data-vscode-theme-kind', kind);
     }
   }
   const css = `
@@ -200,11 +204,22 @@ fn theme_json() -> String {
     for field in theme::FIELDS {
         colours.insert(field.key.to_string(), Value::String(theme::to_hex((field.get)(&t))));
     }
-    let derived =
-        [("accent_hover", theme::mix(t.accent, 0xffffffff, 0.16)), ("icon", theme::mix(t.text, t.text_dim, 0.35))];
+    let light = t.is_light();
+    let toward = if light { 0x000000ff } else { 0xffffffff };
+    let derived = [
+        ("accent_hover", theme::mix(t.accent, toward, 0.16)),
+        ("icon", theme::mix(t.text, t.text_dim, 0.35)),
+        ("scroll", theme::with_alpha(t.text, 0x1f)),
+        ("scroll_hover", theme::with_alpha(t.text, 0x33)),
+        ("scroll_active", theme::with_alpha(t.text, 0x4d)),
+        ("toolbar_hover", theme::with_alpha(t.text, 0x14)),
+        ("shadow", if light { 0x00000029 } else { 0x00000080 }),
+    ];
     for (key, colour) in derived {
         colours.insert(key.to_string(), Value::String(theme::to_hex(colour)));
     }
+    let kind = if light { "vscode-light" } else { "vscode-dark" };
+    colours.insert("kind".to_string(), Value::String(kind.to_string()));
     Value::Object(colours).to_string()
 }
 

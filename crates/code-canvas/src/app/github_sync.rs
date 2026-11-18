@@ -175,7 +175,7 @@ impl App {
         let wanted = sync::write_down(&gist.files, held);
         self.apply(Action::SetPrefs(crate::prefs::load()));
         let mut theme = crate::themes::load();
-        theme.from_extension = theme_of_extension(&self.ext, &theme.theme);
+        theme.outside = outside_theme(&self.ext, &theme.theme);
         self.ui.theme = theme;
         self.theme_changed();
         self.ui.key_file = crate::keys::load();

@@ -21,7 +21,7 @@ use crate::keys::{Command, Keymap};
 
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
-pub use settings::{SettingsView, Tab as SettingsTab};
+pub use settings::{ask_reset as settings_ask_reset, SettingsView, Tab as SettingsTab};
 pub use versions_menu::VersionMenu;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -560,6 +560,8 @@ pub enum Action {
     SetTheme(String),
     SetColor(&'static str, u32),
     ResetColors,
+    SaveTheme(String),
+    DeleteTheme(String),
     SetIconTheme(String),
     ToggleSideBySide,
     ResetKey(Command),
@@ -661,13 +663,15 @@ pub fn style(ctx: &egui::Context) {
 }
 
 pub fn apply_theme(ctx: &egui::Context) {
-    let mut v = egui::Visuals::dark();
+    let t = theme::get();
+    let light = t.is_light();
+    let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
     v.panel_fill = pal().chrome;
     v.window_fill = pal().card;
     v.extreme_bg_color = pal().well;
     v.faint_bg_color = pal().raised;
     v.window_stroke = Stroke::new(1.0, pal().border);
-    v.slider_trailing_fill = true;
+    v.slider_trailing_fill = !light;
     v.handle_shape = egui::style::HandleShape::Circle;
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, pal().border);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, pal().text);
@@ -682,11 +686,31 @@ pub fn apply_theme(ctx: &egui::Context) {
     v.widgets.active.bg_fill = pal().active;
     v.widgets.active.weak_bg_fill = pal().active;
     v.widgets.active.corner_radius = CornerRadius::same(6);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.5, pal().text);
+    v.widgets.active.fg_stroke = Stroke::new(2.0, pal().text);
+    v.widgets.open.bg_fill = pal().active;
+    v.widgets.open.weak_bg_fill = pal().active;
+    v.widgets.open.fg_stroke = Stroke::new(1.0, pal().text);
+    v.widgets.open.bg_stroke = Stroke::new(1.0, pal().border_strong);
+    v.widgets.noninteractive.bg_fill = pal().card;
+    v.widgets.noninteractive.weak_bg_fill = pal().card;
     v.selection.bg_fill = pal().selection;
     v.selection.stroke = Stroke::new(1.0, pal().text);
     v.hyperlink_color = pal().accent;
-    ctx.set_theme(egui::Theme::Dark);
-    ctx.set_visuals_of(egui::Theme::Dark, v);
+    v.text_cursor.stroke = Stroke::new(2.0, pal().text);
+    v.warn_fg_color = c(t.problem_warning);
+    v.error_fg_color = c(t.problem_error);
+    v.code_bg_color = pal().well;
+    let shadow = if light { 28 } else { 96 };
+    v.window_shadow.color = Color32::from_black_alpha(shadow);
+    v.popup_shadow.color = Color32::from_black_alpha(shadow);
+    let which = if light { egui::Theme::Light } else { egui::Theme::Dark };
+    ctx.set_theme(which);
+    ctx.set_visuals_of(which, v);
+}
+
+fn backdrop() -> Color32 {
+    Color32::from_black_alpha(if theme::get().is_light() { 90 } else { 150 })
 }
 
 fn icon(glyph: &str, size: f32, color: Color32) -> RichText {
@@ -1840,7 +1864,7 @@ fn sign_in_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::same(20));
     let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    egui::Modal::new(egui::Id::unique("sign in")).backdrop_color(Color32::from_black_alpha(150)).frame(frame).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("sign in")).backdrop_color(backdrop()).frame(frame).show(ctx, |ui| {
         ui.set_width(400.0);
         ui.spacing_mut().item_spacing.y = 8.0;
         ui.horizontal(|ui| {
@@ -4182,6 +4206,8 @@ pub enum Asked {
     Defaults,
     Trust { folder: std::path::PathBuf, shared: bool },
     Exit,
+    ResetColours,
+    DeleteTheme { key: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4244,7 +4270,7 @@ fn ask_button(ui: &mut egui::Ui, label: &str, look: ChoiceLook) -> bool {
     let danger = c(theme::get().git_removed);
     let (fill, text, stroke) = match (look, resp.hovered()) {
         (ChoiceLook::Main, hot) => (pal().accent.gamma_multiply(if hot { 1.0 } else { 0.88 }), pal().on_accent, None),
-        (ChoiceLook::Danger, hot) => (danger.gamma_multiply(if hot { 1.0 } else { 0.86 }), Color32::WHITE, None),
+        (ChoiceLook::Danger, hot) => (danger.gamma_multiply(if hot { 1.0 } else { 0.86 }), readable_on(danger), None),
         (ChoiceLook::Plain, true) => (pal().hover, pal().text, Some(pal().border_strong)),
         (ChoiceLook::Plain, false) => (pal().raised, pal().text, Some(pal().border)),
     };
@@ -4279,7 +4305,7 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
         .inner_margin(Margin::same(20));
     let tint = if ask.danger { c(theme::get().git_removed) } else { pal().accent };
     egui::Modal::new(egui::Id::unique(("ask", ask.title.as_str(), ask.preview.is_some())))
-        .backdrop_color(Color32::from_black_alpha(150))
+        .backdrop_color(backdrop())
         .frame(frame)
         .show(ctx, |ui| {
             ui.set_width(WIDTH);

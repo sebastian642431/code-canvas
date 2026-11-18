@@ -140,7 +140,10 @@ struct Completion {
     selected: usize,
 }
 
-fn theme_of_extension(ext: &Extensions, key: &str) -> Option<canvas_render::theme::Theme> {
+fn outside_theme(ext: &Extensions, key: &str) -> Option<canvas_render::theme::Theme> {
+    if key.starts_with(crate::themes::MINE) {
+        return crate::themes::read_mine(key);
+    }
     let chosen = ext.color_themes().find(|theme| theme.key == key)?;
     let made = crate::themes::from_vscode(&chosen.file, chosen.light);
     if made.is_none() {
@@ -297,7 +300,7 @@ impl App {
         crate::page::forget_old_scans();
         let mut chosen = crate::themes::load();
         let mut ext = Extensions::new(session::data_dir(), waker);
-        chosen.from_extension = theme_of_extension(&ext, &chosen.theme);
+        chosen.outside = outside_theme(&ext, &chosen.theme);
         canvas_render::theme::set(chosen.resolve());
         let unattended = (std::env::var_os("CODE_CANVAS_SCRIPT").is_some()
             || std::env::var_os("CODE_CANVAS_BENCH").is_some())
@@ -2260,6 +2263,8 @@ impl App {
             (ui::Asked::Defaults, ui::Answer::Other) => self.ext.decline_defaults(),
             (ui::Asked::SyncCommand, answer) => self.sync_command_answered(answer),
             (ui::Asked::Trust { folder, shared }, answer) => self.trust_answered(&folder, shared, answer),
+            (ui::Asked::ResetColours, ui::Answer::Yes) => self.apply(Action::ResetColors),
+            (ui::Asked::DeleteTheme { key }, ui::Answer::Yes) => self.apply(Action::DeleteTheme(key)),
             _ => {}
         }
         self.request_redraw();
@@ -3831,7 +3836,7 @@ impl App {
                 self.frame_all();
             }
             Action::SetTheme(key) => {
-                self.ui.theme.from_extension = theme_of_extension(&self.ext, &key);
+                self.ui.theme.outside = outside_theme(&self.ext, &key);
                 self.ui.theme.set_base(&key);
                 self.theme_changed();
             }
@@ -3842,6 +3847,26 @@ impl App {
             Action::ResetColors => {
                 self.ui.theme.colors.clear();
                 self.theme_changed();
+            }
+            Action::SaveTheme(name) => match crate::themes::save_mine(&name, &self.ui.theme.resolve()) {
+                Ok(key) => {
+                    self.ui.settings.forget_mine();
+                    self.ui.theme.colors.clear();
+                    self.apply(Action::SetTheme(key));
+                    self.ext.notice(ext::Level::Info, "Themes", format!("Saved as {}.", name.trim()));
+                }
+                Err(why) => self.ext.notice(ext::Level::Error, "Themes", why),
+            },
+            Action::DeleteTheme(key) => {
+                if let Err(why) = crate::themes::delete_mine(&key) {
+                    self.ext.notice(ext::Level::Error, "Themes", why);
+                }
+                self.ui.settings.forget_mine();
+                if self.ui.theme.theme == key {
+                    let colors = self.ui.theme.resolve();
+                    let (dark, light) = (canvas_render::theme::PRESETS[0].key, "daylight");
+                    self.apply(Action::SetTheme(if colors.is_light() { light } else { dark }.to_string()));
+                }
             }
             Action::ToggleSideBySide => {
                 self.ui.single = !self.ui.single;
@@ -4387,11 +4412,15 @@ impl App {
                     None => log::warn!("script: workspace needs put|off|forget <folder>, or all"),
                 }
             }
+            Step::Theme(named) if named.starts_with("save ") => self.apply(Action::SaveTheme(named[5..].to_string())),
             Step::Theme(named) => {
-                let own =
-                    canvas_render::theme::PRESETS.iter().map(|(key, name, _)| (key.to_string(), name.to_string()));
+                let own = canvas_render::theme::PRESETS.iter().map(|p| (p.key.to_string(), p.name.to_string()));
                 let theirs = self.ext.color_themes().map(|theme| (theme.key.clone(), theme.label.clone()));
-                let found = own.chain(theirs).find(|(key, name)| *key == named || name.eq_ignore_ascii_case(&named));
+                let mine = crate::themes::mine().into_iter().map(|m| (m.key, m.name));
+                let found = own
+                    .chain(theirs)
+                    .chain(mine)
+                    .find(|(key, name)| *key == named || name.eq_ignore_ascii_case(&named));
                 match found {
                     Some((key, _)) => self.apply(Action::SetTheme(key)),
                     None => log::warn!("script: no theme named '{named}'"),
@@ -4575,6 +4604,17 @@ impl App {
                 }
             }
             Step::Colours(arg) => self.script_colours(&arg),
+            Step::Colour(arg) => match arg.split_once(' ') {
+                _ if arg == "reset" => ui::settings_ask_reset(&mut self.ui, &self.ext),
+                Some((key, hex)) => {
+                    let field = canvas_render::theme::FIELDS.iter().find(|f| f.key == key);
+                    match (field, canvas_render::theme::parse_hex(hex)) {
+                        (Some(field), Some(color)) => self.apply(Action::SetColor(field.key, color)),
+                        _ => log::warn!("script: colour wants a colour's key and #rrggbb, not '{arg}'"),
+                    }
+                }
+                None => log::warn!("script: colour wants a colour's key and #rrggbb, or reset"),
+            },
             Step::Bars(rel) => self.script_bars(&rel),
             Step::Count => match self.pages.get(self.active).and_then(|page| Some((page, page.ready()?))) {
                 Some((page, r)) => {

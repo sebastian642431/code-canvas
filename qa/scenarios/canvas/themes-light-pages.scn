@@ -1,0 +1,27 @@
+title: A Markdown page, the console and a picker of themes follow a switch to a light theme while they are open, and back
+folders: typescript
+
+wait 3000
+preview README.md
+wait 2000
+console echo -e "\e[31mred\e[0m \e[32mgreen\e[0m \e[33myellow\e[0m \e[34mblue\e[0m \e[37mwhite\e[0m \e[90mgrey\e[0m"
+wait 2500
+mark dark-pages
+wait 400
+theme daylight
+wait 1500
+mark daylight-pages
+wait 400
+theme contrast-light
+wait 1500
+mark contrast-light-pages
+wait 400
+theme linen
+wait 1500
+mark linen-pages
+wait 400
+theme midnight
+wait 1500
+mark midnight-pages
+wait 400
+quit

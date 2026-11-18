@@ -96,13 +96,13 @@ impl LongLine {
     pub fn draw(&self, out: &mut CanvasOverlay, caret: Option<usize>, s: f32) -> Vec<StripRow> {
         let t = theme::get();
         if caret.is_none() {
-            out.under.push(RectInstance::new(self.card_row, 0xffffff0a, 0, 0.0, 0.0));
+            out.under.push(RectInstance::new(self.card_row, t.current_line, 0, 0.0, 0.0));
         }
         let fill = theme::mix(t.background, t.card_fill | 0xff, (t.card_fill & 0xff) as f32 / 255.0);
         out.chips.push(RectInstance::new(self.rest.frame, fill, t.card_border, 3.0 * s, 1.0));
         if let Some(at) = caret.and_then(|col| self.rest.place_of(col)) {
             let w = (2.0 * s).round().max(1.0);
-            out.chips.push(RectInstance::new(Rect::new(at.x - w * 0.5, at.y, w, at.h), 0xffffffff, 0, 0.0, 0.0));
+            out.chips.push(RectInstance::new(Rect::new(at.x - w * 0.5, at.y, w, at.h), t.caret, 0, 0.0, 0.0));
         }
         self.rest
             .rows
@@ -364,13 +364,8 @@ fn selection_overlay(
         for rect in body_rects(repo, layout, sel.sym) {
             if rect.intersects(world) {
                 let o = filters.body_opacity[own];
-                out.under.push(RectInstance::new(
-                    rect,
-                    with_alpha(0xffffff00, 0.07 * o),
-                    with_alpha(0xffffff00, 0.45 * o),
-                    2.0,
-                    1.0,
-                ));
+                let ink = theme::get().chip_text;
+                out.under.push(RectInstance::new(rect, with_alpha(ink, 0.07 * o), with_alpha(ink, 0.45 * o), 2.0, 1.0));
             }
         }
     }
@@ -378,7 +373,7 @@ fn selection_overlay(
         chips.push(Chip {
             at,
             text: repo.sym_name(sel.sym).to_string(),
-            border: 0xffffffff,
+            border: theme::get().chip_text,
             text_color: theme::get().chip_text,
             bold: true,
             sym: Some(sel.sym),
@@ -774,8 +769,9 @@ pub fn build(
     if let Some(search) = &page.search {
         for (i, hit) in search.hits.iter().enumerate().take(MAX_MARKERS) {
             for rect in site_rects(layout, hit).into_iter().filter(|rect| rect.intersects(&world)) {
-                let fill = if search.current == Some(i) { 0xffd84d80 } else { 0xffd84d30 };
-                out.over.push(RectInstance::new(rect.expand(1.0), fill, 0xffd84dff, 2.0, 1.0));
+                let found = theme::get().find_match;
+                let fill = with_alpha(found, if search.current == Some(i) { 0.5 } else { 0.19 });
+                out.over.push(RectInstance::new(rect.expand(1.0), fill, found | 0xff, 2.0, 1.0));
             }
         }
     }
@@ -797,7 +793,7 @@ pub fn build(
                 };
                 if rows.iter().any(|row| row.intersects(&world)) && lit.insert(at.line) {
                     for row in rows {
-                        out.under.push(RectInstance::new(row, 0xffffff0a, 0, 0.0, 0.0));
+                        out.under.push(RectInstance::new(row, theme::get().current_line, 0, 0.0, 0.0));
                     }
                 }
                 if let Some((a, b)) = caret.selection() {
@@ -810,14 +806,14 @@ pub fn build(
                         };
                         let cells = n.cell_rects(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
                         for cell in cells.into_iter().filter(|cell| cell.intersects(&world)) {
-                            out.under.push(RectInstance::new(cell, 0x5a96ff59, 0, 0.0, 0.0));
+                            out.under.push(RectInstance::new(cell, theme::get().code_selection, 0, 0.0, 0.0));
                         }
                     }
                 }
                 let cell = n.cell_rect(at.line as u32, editor.display_col(at) as u32, 1);
                 if cell.intersects(&world) {
                     let bar = Rect::new(cell.x - w * 0.5, cell.y, w, cell.h);
-                    out.over.push(RectInstance::new(bar, 0xffffffff, 0, 0.0, 0.0));
+                    out.over.push(RectInstance::new(bar, theme::get().caret, 0, 0.0, 0.0));
                 }
             }
         }
@@ -874,7 +870,7 @@ pub fn build(
                         RowKind::Added => Some((theme::get().git_added, wash)),
                         RowKind::Removed => Some((theme::get().git_removed, wash * 1.2)),
                         RowKind::Gap => Some((theme::get().ui_text_dim, 0.08)),
-                        RowKind::Blank => Some((0x000000ff, 0.16)),
+                        RowKind::Blank => Some((0x000000ff, if theme::get().is_light() { 0.06 } else { 0.16 })),
                         RowKind::Same | RowKind::Before => None,
                     };
                     for mut rect in n.line_rects(first as u32..(end as u32).min(lines)) {
@@ -1072,7 +1068,8 @@ pub fn build(
         if z * LINE_H >= SYMBOL_HOVER_MIN_PX {
             if let Some(sym) = repo.sym_at(file, line) {
                 for rect in body_rects(repo, layout, sym) {
-                    out.over.push(RectInstance::new(rect, 0x7aa2f70c, 0x7aa2f7c0, 2.0, 1.0));
+                    let tint = theme::get().select;
+                    out.over.push(RectInstance::new(rect, with_alpha(tint, 0.05), with_alpha(tint, 0.75), 2.0, 1.0));
                 }
                 let site = repo.sym_site(sym);
                 if !seen_chips.contains(&(site.file, site.line)) {
@@ -1080,7 +1077,7 @@ pub fn build(
                         chips.push(Chip {
                             at,
                             text: format!("{} {}", repo.sym(sym).kind.badge(), repo.sym_name(sym)),
-                            border: 0x7aa2f7ff,
+                            border: theme::get().select,
                             text_color: theme::get().chip_text,
                             bold: false,
                             sym: None,

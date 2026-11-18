@@ -3,6 +3,9 @@ use std::sync::RwLock;
 
 use canvas_core::TokenKind;
 
+mod presets;
+pub use presets::*;
+
 pub struct Field {
     pub key: &'static str,
     pub label: &'static str,
@@ -12,12 +15,9 @@ pub struct Field {
 }
 
 macro_rules! theme {
-    ($( $group:literal { $( $field:ident : $label:literal = $dark:literal, $midnight:literal; )* } )*) => {
+    ($( $group:literal { $( $field:ident : $label:literal; )* } )*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub struct Theme { $( $( pub $field: u32, )* )* }
-
-        pub const DARK: Theme = Theme { $( $( $field: $dark, )* )* };
-        pub const MIDNIGHT: Theme = Theme { $( $( $field: $midnight, )* )* };
 
         pub const FIELDS: &[Field] = &[ $( $( Field {
             key: stringify!($field),
@@ -31,78 +31,139 @@ macro_rules! theme {
 
 theme! {
     "Interface" {
-        chrome: "Window and side rails" = 0x171619ff, 0x0a0b0eff;
-        card: "Panels" = 0x171619ff, 0x101115ff;
-        well: "Text fields and insets" = 0x0a090cff, 0x0b0c0fff;
-        row: "List rows" = 0x121114ff, 0x14161bff;
-        raised: "Buttons and selected rows" = 0x27262bff, 0x1b1d24ff;
-        hover: "Under the pointer" = 0x222126ff, 0x22252eff;
-        active: "While pressed" = 0x302f35ff, 0x2c313eff;
-        selection: "Selected text" = 0x2e3b4cff, 0x344058ff;
-        border: "Borders" = 0x242327ff, 0x22252eff;
-        border_strong: "Borders under the pointer" = 0x3b3a40ff, 0x3a3f4eff;
-        text: "Text" = 0xdcdce0ff, 0xe6e7ecff;
-        text_dim: "Secondary text" = 0x8f8e93ff, 0x8a8e99ff;
-        text_faint: "Hints and disabled text" = 0x5c5b60ff, 0x5c606cff;
-        accent: "Accent" = 0x6aa5d9ff, 0x5a96ffff;
-        on_accent: "Text on the accent" = 0x0a0f16ff, 0x080a10ff;
+        chrome: "Window and side rails";
+        card: "Panels";
+        well: "Text fields and insets";
+        row: "List rows";
+        raised: "Buttons and selected rows";
+        hover: "Under the pointer";
+        active: "While pressed";
+        selection: "Selected text";
+        border: "Borders";
+        border_strong: "Borders under the pointer";
+        text: "Text";
+        text_dim: "Secondary text";
+        text_faint: "Hints and disabled text";
+        accent: "Accent";
+        on_accent: "Text on the accent";
     }
     "Canvas" {
-        background: "Background" = 0x000000ff, 0x090a0eff;
-        card_fill: "File cards" = 0x0c0b0ef0, 0x10162290;
-        card_border: "File card borders" = 0x35343aff, 0x26304aff;
-        card_note_fill: "Cards of skipped files" = 0x1a1214f0, 0x1a141490;
-        dir_fill: "Folders" = 0xffffff07, 0xffffff04;
-        dir_collapsed_fill: "Collapsed folders" = 0xffffff10, 0xffffff0c;
-        dir_border_0: "Folder borders, depth 1" = 0x55545cff, 0x3d4f6eff;
-        dir_border_1: "Folder borders, depth 2" = 0x47464eff, 0x2f5c4cff;
-        dir_border_2: "Folder borders, depth 3" = 0x3d3c43ff, 0x4e4470ff;
-        dir_border_3: "Folder borders, depth 4" = 0x35343aff, 0x5c4c34ff;
-        label_dir: "Folder names" = 0x9a999fff, 0x8b93abff;
-        label_file: "File names" = 0xc9c8cdff, 0xa9b1d6ff;
-        canvas_hover: "Outline under the pointer" = 0x9796a0ff, 0x8aa0d0ff;
-        select: "Selection outline" = 0x6f9df2ff, 0x7aa2f7ff;
-        select_fill: "Selection fill" = 0x6f9df21a, 0x7aa2f714;
-        chip_fill: "Labels on lines" = 0x171619f2, 0x0b0e14f2;
-        chip_text: "Label text" = 0xdcdce0ff, 0xe6e9f5ff;
-        chip_text_dim: "Label secondary text" = 0x9a999fff, 0xaab0c8ff;
-        ui_text: "Text drawn on the canvas" = 0xdcdce0ff, 0xc0caf5ff;
-        ui_text_dim: "Secondary text on the canvas" = 0x7c7b81ff, 0x6b7394ff;
-        ui_warn: "Warnings on the canvas" = 0xe5c07bff, 0xe0af68ff;
+        background: "Background";
+        card_fill: "File cards";
+        card_border: "File card borders";
+        card_note_fill: "Cards of skipped files";
+        dir_fill: "Folders";
+        dir_collapsed_fill: "Collapsed folders";
+        dir_border_0: "Folder borders, depth 1";
+        dir_border_1: "Folder borders, depth 2";
+        dir_border_2: "Folder borders, depth 3";
+        dir_border_3: "Folder borders, depth 4";
+        label_dir: "Folder names";
+        label_file: "File names";
+        canvas_hover: "Outline under the pointer";
+        select: "Selection outline";
+        select_fill: "Selection fill";
+        chip_fill: "Labels on lines";
+        chip_text: "Label text";
+        chip_text_dim: "Label secondary text";
+        ui_text: "Text drawn on the canvas";
+        ui_text_dim: "Secondary text on the canvas";
+        ui_warn: "Warnings on the canvas";
     }
     "Code" {
-        tok_keyword: "Keywords" = 0xd55fdeff, 0xbb9af7ff;
-        tok_type: "Types" = 0xe5c07bff, 0x2ac3deff;
-        tok_function: "Functions" = 0x61afefff, 0x7aa2f7ff;
-        tok_macro: "Macros" = 0x2bbac5ff, 0xff9e64ff;
-        tok_string: "Strings" = 0x89ca78ff, 0x9ece6aff;
-        tok_number: "Numbers" = 0xd19a66ff, 0xff9e64ff;
-        tok_comment: "Comments" = 0x6f6e75ff, 0x5f6a94ff;
-        tok_punct: "Punctuation" = 0xa9a8afc8, 0x89ddffb0;
-        tok_ident: "Names" = 0xc3c2c8ff, 0xc0caf5ff;
-        tok_heading: "Headings" = 0xef596fff, 0xe0af68ff;
-        tok_text: "Prose" = 0xc3c2c8ff, 0xa9b1d6ff;
+        tok_keyword: "Keywords";
+        tok_type: "Types";
+        tok_function: "Functions";
+        tok_macro: "Macros";
+        tok_string: "Strings";
+        tok_number: "Numbers";
+        tok_comment: "Comments";
+        tok_punct: "Punctuation";
+        tok_ident: "Names";
+        tok_heading: "Headings";
+        tok_text: "Prose";
+        caret: "Caret";
+        code_selection: "Selected code";
+        current_line: "Line with the caret";
+        find_match: "Search matches";
     }
     "Relations" {
-        rel_def: "Definitions" = 0xff4fb8ff, 0xff4fb8ff;
-        rel_impl: "Implementations" = 0x3ddc84ff, 0x3ddc84ff;
-        rel_ref: "References" = 0xffb454ff, 0xffb454ff;
-        rel_in: "Incoming calls" = 0xb48cffff, 0xb48cffff;
-        rel_out: "Outgoing calls" = 0xe8663cff, 0xe8663cff;
-        dep_out: "What the selection imports" = 0x2bbac5ff, 0x2ac3deff;
-        dep_in: "What imports the selection" = 0xff79c6ff, 0xff79c6ff;
+        rel_def: "Definitions";
+        rel_impl: "Implementations";
+        rel_ref: "References";
+        rel_in: "Incoming calls";
+        rel_out: "Outgoing calls";
+        dep_out: "What the selection imports";
+        dep_in: "What imports the selection";
     }
     "Status" {
-        problem_error: "Errors" = 0xef596fff, 0xf7768eff;
-        problem_warning: "Warnings" = 0xe5c07bff, 0xe0af68ff;
-        problem_info: "Information" = 0x6f9df2ff, 0x7aa2f7ff;
-        git_added: "Git: new" = 0x22e39aff, 0x3ddc84ff;
-        git_modified: "Git: changed" = 0x6f9df2ff, 0x5a96ffff;
-        git_removed: "Git: removed" = 0xf0452fff, 0xf7768eff;
+        problem_error: "Errors";
+        problem_warning: "Warnings";
+        problem_info: "Information";
+        git_added: "Git: new";
+        git_modified: "Git: changed";
+        git_removed: "Git: removed";
     }
 }
 
-pub const PRESETS: &[(&str, &str, Theme)] = &[("dark", "Dark", DARK), ("midnight", "Midnight", MIDNIGHT)];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Dark,
+    Light,
+    HighContrast,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 3] = [Kind::Dark, Kind::Light, Kind::HighContrast];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Kind::Dark => "Dark",
+            Kind::Light => "Light",
+            Kind::HighContrast => "High contrast",
+        }
+    }
+}
+
+pub struct Preset {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub kind: Kind,
+    pub about: &'static str,
+    pub theme: Theme,
+}
+
+const fn preset(key: &'static str, name: &'static str, kind: Kind, about: &'static str, theme: Theme) -> Preset {
+    Preset { key, name, kind, about, theme }
+}
+
+pub const PRESETS: &[Preset] = &[
+    preset("dark", "Dark", Kind::Dark, "Neutral graphite, the look Code Canvas started with.", DARK),
+    preset("midnight", "Midnight", Kind::Dark, "Deep night blue with soft pastel code.", MIDNIGHT),
+    preset("ember", "Ember", Kind::Dark, "Warm charcoal and amber, easy on the eyes at night.", EMBER),
+    preset("harbor", "Harbor", Kind::Dark, "Cool slate and sea teal.", HARBOR),
+    preset("moss", "Moss", Kind::Dark, "Quiet forest greens with earthy code.", MOSS),
+    preset("linen", "Linen", Kind::Light, "Warm paper white with ink-dark text.", LINEN),
+    preset("daylight", "Daylight", Kind::Light, "Crisp cool white for bright rooms.", DAYLIGHT),
+    preset(
+        "contrast",
+        "High Contrast",
+        Kind::HighContrast,
+        "Black, white text, strong borders and vivid code.",
+        CONTRAST,
+    ),
+    preset(
+        "contrast-light",
+        "High Contrast Light",
+        Kind::HighContrast,
+        "White, black text, strong borders and deep code colours.",
+        CONTRAST_LIGHT,
+    ),
+];
+
+pub fn preset_named(key: &str) -> Option<&'static Preset> {
+    PRESETS.iter().find(|p| p.key == key)
+}
 
 impl Default for Theme {
     fn default() -> Self {
@@ -136,6 +197,36 @@ impl Theme {
     pub fn rel_colors(&self) -> [u32; 5] {
         [self.rel_def, self.rel_impl, self.rel_ref, self.rel_in, self.rel_out]
     }
+
+    pub fn is_light(&self) -> bool {
+        luminance(self.card) > 0.4
+    }
+}
+
+pub fn with_alpha(color: u32, alpha: u32) -> u32 {
+    (color & 0xffff_ff00) | (alpha & 0xff)
+}
+
+pub fn over(color: u32, under: u32) -> u32 {
+    mix(under | 0xff, color | 0xff, (color & 0xff) as f32 / 255.0)
+}
+
+pub fn luminance(c: u32) -> f32 {
+    let [r, g, b, _] = unpack(c);
+    let ch = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+}
+
+pub fn contrast(a: u32, b: u32) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 static CURRENT: RwLock<Theme> = RwLock::new(DARK);
@@ -252,8 +343,129 @@ mod tests {
 
     #[test]
     fn the_default_is_the_first_preset() {
-        assert_eq!(PRESETS[0].2, Theme::default());
-        assert_ne!(DARK, MIDNIGHT);
+        assert_eq!(PRESETS[0].theme, Theme::default());
+        let mut keys: Vec<&str> = PRESETS.iter().map(|p| p.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), PRESETS.len(), "every preset has a key of its own");
+        for (i, a) in PRESETS.iter().enumerate() {
+            for b in &PRESETS[i + 1..] {
+                assert_ne!(a.theme, b.theme, "{} and {} are the same colours", a.name, b.name);
+            }
+        }
+        assert_eq!(preset_named("linen").map(|p| p.name), Some("Linen"));
+    }
+
+    #[test]
+    fn every_kind_has_themes_and_light_ones_are_light() {
+        for kind in Kind::ALL {
+            assert!(PRESETS.iter().filter(|p| p.kind == kind).count() >= 2, "{kind:?}");
+        }
+        for p in PRESETS {
+            let light = matches!(p.key, "linen" | "daylight" | "contrast-light");
+            assert_eq!(p.theme.is_light(), light, "{}", p.name);
+        }
+    }
+
+    fn readable_pairs(t: &Theme, high: bool) -> Vec<(&'static str, &'static str, u32, u32, f32)> {
+        let (main, second) = if high { (7.0, 4.5) } else { (4.5, 3.0) };
+        let canvas = t.background;
+        let card = over(t.card_fill, canvas);
+        let chip = over(t.chip_fill, canvas);
+        let on_panel = |c: u32| over(c, t.card);
+        let mut pairs = vec![
+            ("text", "card", t.text, t.card, main),
+            ("text", "chrome", t.text, on_panel(t.chrome), main),
+            ("text", "well", t.text, on_panel(t.well), main),
+            ("text", "row", t.text, on_panel(t.row), main),
+            ("text", "raised", t.text, on_panel(t.raised), main),
+            ("text", "hover", t.text, on_panel(t.hover), main),
+            ("text", "active", t.text, on_panel(t.active), main),
+            ("text", "selection", t.text, on_panel(t.selection), main),
+            ("text_dim", "card", t.text_dim, t.card, second),
+            ("text_dim", "chrome", t.text_dim, on_panel(t.chrome), second),
+            ("text_dim", "well", t.text_dim, on_panel(t.well), second),
+            ("text_dim", "row", t.text_dim, on_panel(t.row), second),
+            ("text_faint", "card", t.text_faint, t.card, if high { 3.0 } else { 2.0 }),
+            ("accent", "card", t.accent, t.card, second),
+            ("on_accent", "accent", t.on_accent, t.accent, main),
+            ("ui_text", "background", t.ui_text, canvas, main),
+            ("ui_text", "card_fill", t.ui_text, card, main),
+            ("ui_text_dim", "background", t.ui_text_dim, canvas, second),
+            ("label_file", "background", t.label_file, canvas, main),
+            ("label_dir", "background", t.label_dir, canvas, second),
+            ("chip_text", "chip_fill", t.chip_text, chip, main),
+            ("chip_text_dim", "chip_fill", t.chip_text_dim, chip, second),
+            ("ui_warn", "background", t.ui_warn, canvas, second),
+            ("select", "background", t.select, canvas, second),
+            ("caret", "card_fill", t.caret, card, second),
+            ("tok_comment", "card_fill", over(t.tok_comment, card), card, second),
+            ("tok_punct", "card_fill", over(t.tok_punct, card), card, second),
+        ];
+        let code = [
+            ("tok_keyword", t.tok_keyword),
+            ("tok_type", t.tok_type),
+            ("tok_function", t.tok_function),
+            ("tok_macro", t.tok_macro),
+            ("tok_string", t.tok_string),
+            ("tok_number", t.tok_number),
+            ("tok_ident", t.tok_ident),
+            ("tok_heading", t.tok_heading),
+            ("tok_text", t.tok_text),
+        ];
+        for (name, color) in code {
+            pairs.push((name, "card_fill", over(color, card), card, main));
+            pairs.push((name, "code_selection", over(color, card), over(t.code_selection, card), second));
+        }
+        let status = [
+            ("problem_error", t.problem_error),
+            ("problem_warning", t.problem_warning),
+            ("problem_info", t.problem_info),
+            ("git_added", t.git_added),
+            ("git_modified", t.git_modified),
+            ("git_removed", t.git_removed),
+        ];
+        for (name, color) in status {
+            pairs.push((name, "card", color, t.card, second));
+        }
+        pairs
+    }
+
+    #[test]
+    fn every_preset_is_readable() {
+        let mut bad = Vec::new();
+        for p in PRESETS {
+            for (fore, back, a, b, wanted) in readable_pairs(&p.theme, p.kind == Kind::HighContrast) {
+                let got = contrast(a, b);
+                if got < wanted {
+                    bad.push(format!("{}: {fore} on {back} is {got:.2}:1, wants {wanted}:1", p.name));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+    }
+
+    #[test]
+    fn syntax_colours_are_told_apart() {
+        for p in PRESETS {
+            let t = p.theme;
+            let main = [t.tok_keyword, t.tok_type, t.tok_function, t.tok_string, t.tok_number, t.tok_comment];
+            for (i, a) in main.iter().enumerate() {
+                for b in &main[i + 1..] {
+                    let (a, b) = (unpack(*a), unpack(*b));
+                    let apart: f32 = (0..3).map(|c| (a[c] as f32 - b[c] as f32).powi(2)).sum::<f32>().sqrt();
+                    assert!(apart >= 45.0, "{}: two kinds of code look alike ({apart:.0})", p.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn contrast_of_black_and_white() {
+        assert!((contrast(0x000000ff, 0xffffffff) - 21.0).abs() < 0.01);
+        assert!((contrast(0x777777ff, 0x777777ff) - 1.0).abs() < 0.001);
+        assert_eq!(over(0xffffff80, 0x000000ff), 0x808080ff);
+        assert_eq!(with_alpha(0x11223344, 0x55), 0x11223355);
     }
 
     #[test]

@@ -16,12 +16,17 @@ const SIXTEEN: [u32; 16] = [
     0xf2d49b, 0x94b7f7, 0xd8aefb, 0x86e6ee, 0xffffff,
 ];
 
-fn shade(color: vt100::Color, plain: Color32) -> Color32 {
+const SIXTEEN_ON_LIGHT: [u32; 16] = [
+    0x3b3a40, 0xc4262e, 0x1f7a33, 0x8a6100, 0x1f5fc0, 0x8a3ac8, 0x0b7a8a, 0x6b6a70, 0x5c5b60, 0xd03a3a, 0x2a8a45,
+    0x946200, 0x2864d8, 0x9a4ad8, 0x0b8a9a, 0x2b2a30,
+];
+
+fn shade(color: vt100::Color, plain: Color32, sixteen: &[u32; 16]) -> Color32 {
     match color {
         vt100::Color::Default => plain,
         vt100::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
         vt100::Color::Idx(i) if i < 16 => {
-            let v = SIXTEEN[i as usize];
+            let v = sixteen[i as usize];
             Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
         }
         vt100::Color::Idx(i) if i < 232 => {
@@ -98,12 +103,13 @@ fn row_of(
 ) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let (text, ground) = (pal().text, Color32::TRANSPARENT);
+    let sixteen = if canvas_render::theme::get().is_light() { &SIXTEEN_ON_LIGHT } else { &SIXTEEN };
     for col in 0..cols {
         let Some(cell) = screen.cell(row, col) else { break };
         if cell.is_wide_continuation() {
             continue;
         }
-        let (mut front, mut back) = (shade(cell.fgcolor(), text), shade(cell.bgcolor(), ground));
+        let (mut front, mut back) = (shade(cell.fgcolor(), text, sixteen), shade(cell.bgcolor(), ground, sixteen));
         if cell.inverse() {
             (front, back) = (if back == ground { pal().well } else { back }, front);
         }

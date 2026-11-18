@@ -12,18 +12,23 @@ pub struct ThemeFile {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub icons: String,
     #[serde(skip)]
-    pub from_extension: Option<Theme>,
+    pub outside: Option<Theme>,
 }
 
 pub const FROM_EXTENSION: &str = "ext:";
+pub const MINE: &str = "mine:";
+
+pub fn is_outside(key: &str) -> bool {
+    key.starts_with(FROM_EXTENSION) || key.starts_with(MINE)
+}
 
 impl ThemeFile {
     pub fn base(&self) -> (&str, Theme) {
-        if let Some(colors) = self.from_extension.filter(|_| self.theme.starts_with(FROM_EXTENSION)) {
+        if let Some(colors) = self.outside.filter(|_| is_outside(&self.theme)) {
             return (self.theme.as_str(), colors);
         }
-        let (key, _, colors) = theme::PRESETS.iter().find(|p| p.0 == self.theme).unwrap_or(&theme::PRESETS[0]);
-        (key, *colors)
+        let preset = theme::preset_named(&self.theme).unwrap_or(&theme::PRESETS[0]);
+        (preset.key, preset.theme)
     }
 
     pub fn resolve(&self) -> Theme {
@@ -52,6 +57,113 @@ impl ThemeFile {
     pub fn is_changed(&self, key: &str) -> bool {
         self.colors.contains_key(key)
     }
+
+    pub fn changed(&self) -> usize {
+        theme::FIELDS.iter().filter(|field| self.colors.contains_key(field.key)).count()
+    }
+}
+
+pub struct Mine {
+    pub key: String,
+    pub name: String,
+    pub theme: Theme,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
+struct MineFile {
+    name: String,
+    colors: BTreeMap<String, String>,
+}
+
+pub fn as_json(name: &str, colors: &Theme) -> String {
+    let colors = theme::FIELDS.iter().map(|f| (f.key.to_string(), theme::to_hex((f.get)(colors)))).collect();
+    serde_json::to_string_pretty(&MineFile { name: name.to_string(), colors }).unwrap_or_default()
+}
+
+fn mine_of(text: &str) -> Option<(String, Theme)> {
+    let file: MineFile = serde_json::from_str(text).ok()?;
+    let card = file.colors.get("card").and_then(|c| theme::parse_hex(c));
+    let mut out = if card.is_some_and(|c| theme::luminance(c) > 0.4) { theme::DAYLIGHT } else { theme::DARK };
+    for field in theme::FIELDS {
+        if let Some(color) = file.colors.get(field.key).and_then(|text| theme::parse_hex(text)) {
+            (field.set)(&mut out, color);
+        }
+    }
+    Some((file.name, out))
+}
+
+fn slug(name: &str) -> String {
+    let words: Vec<String> =
+        name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect();
+    let joined = words.join("-");
+    if joined.is_empty() {
+        "theme".to_string()
+    } else {
+        joined.chars().take(48).collect()
+    }
+}
+
+fn mine_dir() -> PathBuf {
+    crate::session::data_dir().join("themes")
+}
+
+pub fn mine() -> Vec<Mine> {
+    mine_in(&mine_dir())
+}
+
+fn mine_in(dir: &Path) -> Vec<Mine> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<Mine> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| {
+            let stem = e.path().file_stem()?.to_string_lossy().into_owned();
+            let (name, theme) = mine_of(&std::fs::read_to_string(e.path()).ok()?)?;
+            let name = if name.trim().is_empty() { stem.clone() } else { name };
+            Some(Mine { key: format!("{MINE}{stem}"), name, theme })
+        })
+        .collect();
+    out.sort_by_key(|m| m.name.to_lowercase());
+    out
+}
+
+pub fn read_mine(key: &str) -> Option<Theme> {
+    read_mine_in(&mine_dir(), key)
+}
+
+fn stem_of(key: &str) -> Option<&str> {
+    key.strip_prefix(MINE).filter(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '-'))
+}
+
+fn read_mine_in(dir: &Path, key: &str) -> Option<Theme> {
+    let stem = stem_of(key)?;
+    mine_of(&std::fs::read_to_string(dir.join(format!("{stem}.json"))).ok()?).map(|(_, theme)| theme)
+}
+
+pub fn save_mine(name: &str, colors: &Theme) -> Result<String, String> {
+    save_mine_in(&mine_dir(), name, colors)
+}
+
+fn save_mine_in(dir: &Path, name: &str, colors: &Theme) -> Result<String, String> {
+    let stem = slug(name);
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{stem}.json"));
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, as_json(name.trim(), colors))
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .map_err(|e| format!("could not save the theme to {}: {e}", path.display()))?;
+    Ok(format!("{MINE}{stem}"))
+}
+
+pub fn delete_mine(key: &str) -> Result<(), String> {
+    delete_mine_in(&mine_dir(), key)
+}
+
+fn delete_mine_in(dir: &Path, key: &str) -> Result<(), String> {
+    let stem = stem_of(key).ok_or_else(|| "not a theme of yours".to_string())?;
+    let path = dir.join(format!("{stem}.json"));
+    std::fs::remove_file(&path).map_err(|e| format!("could not delete {}: {e}", path.display()))
 }
 
 pub fn plain_json(text: &str) -> String {
@@ -148,13 +260,7 @@ fn color_of(text: &str) -> Option<u32> {
     }
 }
 
-fn over(color: u32, under: u32) -> u32 {
-    theme::mix(under | 0xff, color | 0xff, (color & 0xff) as f32 / 255.0)
-}
-
-fn with_alpha(color: u32, alpha: u32) -> u32 {
-    (color & 0xffff_ff00) | alpha
-}
+use theme::{over, with_alpha};
 
 fn token(tokens: &[(String, u32)], wanted: &[&str]) -> Option<u32> {
     wanted.iter().find_map(|scope| {
@@ -201,7 +307,7 @@ fn theme_of(written: &Written, light: bool) -> Option<Theme> {
     let keyword = token(tokens, &["keyword.control", "keyword", "storage.type", "storage"]).unwrap_or(fg);
     let function = token(tokens, &["entity.name.function", "support.function", "meta.function-call"]).unwrap_or(fg);
     let comment = token(tokens, &["comment"]).unwrap_or(theme::mix(fg, bg, 0.5));
-    let base = theme::DARK;
+    let base = if light { theme::DAYLIGHT } else { theme::DARK };
     let status = |keys: &[&str], or: u32| asked(keys).map_or(or, |c| c | 0xff);
     Some(Theme {
         chrome: bar,
@@ -259,6 +365,11 @@ fn theme_of(written: &Written, light: bool) -> Option<Theme> {
         tok_ident: token(tokens, &["variable.other", "variable"]).unwrap_or(fg),
         tok_heading: token(tokens, &["markup.heading", "entity.name.section"]).unwrap_or(keyword),
         tok_text: fg,
+        caret: asked(&["editorCursor.foreground"]).map_or(fg, |c| c | 0xff),
+        code_selection: asked(&["editor.selectionBackground"]).unwrap_or(with_alpha(accent, 0x40)),
+        current_line: asked(&["editor.lineHighlightBackground"]).unwrap_or(with_alpha(fg, 0x0a)),
+        find_match: asked(&["editor.findMatchBorder", "editor.findMatchHighlightBorder"])
+            .map_or(base.find_match, |c| c | 0xff),
         problem_error: status(
             &["editorError.foreground", "errorForeground", "list.errorForeground"],
             base.problem_error,
@@ -359,6 +470,7 @@ mod tests {
         assert_eq!(made.tok_comment, 0x556677ff);
         assert_eq!(made.tok_ident, 0xddeeffff, "a rule with an exclusion is not taken");
         assert_eq!(made.git_modified, 0xabcdefff);
+        assert_eq!(made.code_selection, 0xff00ff88, "the selection keeps its see-through");
         assert_ne!(made.hover, made.card);
         assert_eq!(made.hover & 0xff, 0xff, "what is see-through is laid over what it is on");
         assert_ne!(made.background, made.card_fill | 0xff, "the canvas is not the colour of the cards");
@@ -370,7 +482,7 @@ mod tests {
     fn a_theme_of_an_extension_is_the_base_while_it_is_there() {
         let mut file = ThemeFile { theme: "ext:some.theme:Night".into(), ..Default::default() };
         assert_eq!(file.resolve(), Theme::default(), "not read yet, or gone: the default");
-        file.from_extension = Some(theme::MIDNIGHT);
+        file.outside = Some(theme::MIDNIGHT);
         assert_eq!(file.base(), ("ext:some.theme:Night", theme::MIDNIGHT));
         file.set_color("card", 0x112233ff);
         assert_eq!(file.resolve().card, 0x112233ff);
@@ -407,6 +519,61 @@ mod tests {
         let colors = file.resolve();
         assert_eq!(colors.card, theme::DARK.card);
         assert_eq!(colors.text, 0xffffffff);
+    }
+
+    #[test]
+    fn a_light_vscode_theme_gets_light_colours_for_what_it_does_not_say() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-light-theme-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("day.json"), r##"{ "colors": { "editor.background": "#fafafa" } }"##).unwrap();
+        let made = from_vscode(&dir.join("day.json"), true).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(made.is_light());
+        assert_eq!(made.rel_def, theme::DAYLIGHT.rel_def);
+        assert!(theme::contrast(made.text, made.card) >= 4.5);
+    }
+
+    #[test]
+    fn a_theme_of_mine_is_saved_listed_chosen_and_deleted() {
+        let dir = std::env::temp_dir().join(format!("code-canvas-mine-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(mine_in(&dir).is_empty());
+        let mut colors = theme::LINEN;
+        colors.accent = 0x123456ff;
+        let key = save_mine_in(&dir, "  My  Linen! ", &colors).unwrap();
+        assert_eq!(key, "mine:my-linen");
+        let listed = mine_in(&dir);
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].key.as_str(), listed[0].name.as_str()), ("mine:my-linen", "My  Linen!"));
+        assert_eq!(listed[0].theme, colors);
+        assert_eq!(read_mine_in(&dir, &key), Some(colors));
+        assert_eq!(read_mine_in(&dir, "mine:../theme"), None);
+        assert_eq!(read_mine_in(&dir, "mine:"), None);
+
+        let mut file = ThemeFile { theme: key.clone(), outside: read_mine_in(&dir, &key), ..Default::default() };
+        assert_eq!(file.base(), (key.as_str(), colors));
+        file.set_color("text", colors.text);
+        assert!(file.colors.is_empty(), "the same colour as the theme is not a change");
+
+        let partial = r##"{ "name": "Half", "colors": { "card": "#fefefe", "text": "#101010" } }"##;
+        std::fs::write(dir.join("half.json"), partial).unwrap();
+        let half = read_mine_in(&dir, "mine:half").unwrap();
+        assert_eq!((half.card, half.text, half.accent), (0xfefefeff, 0x101010ff, theme::DAYLIGHT.accent));
+
+        delete_mine_in(&dir, &key).unwrap();
+        assert!(delete_mine_in(&dir, "dark").is_err());
+        assert_eq!(mine_in(&dir).len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_file_written_before_the_new_colours_still_loads() {
+        let text = r##"{ "theme": "midnight", "colors": { "card_border": "#4b5362" }, "icons": "symbols" }"##;
+        let file: ThemeFile = serde_json::from_str(text).unwrap();
+        let colors = file.resolve();
+        assert_eq!(colors.card_border, 0x4b5362ff);
+        assert_eq!((colors.caret, colors.find_match), (theme::MIDNIGHT.caret, theme::MIDNIGHT.find_match));
+        assert_eq!(file.changed(), 1);
     }
 
     #[test]

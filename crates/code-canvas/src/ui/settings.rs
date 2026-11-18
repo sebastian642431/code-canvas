@@ -1,9 +1,7 @@
 use canvas_render::theme;
-use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
-};
+use egui::{Align, Align2, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
-use super::{check, icon, pal, search_field, section, small_icon, well, Action, UiState};
+use super::{c, check, icon, pal, search_field, section, small_icon, well, Action, UiState};
 use crate::icons;
 use crate::keys::{self, Scope};
 
@@ -59,6 +57,11 @@ pub struct SettingsView {
     filter: String,
     focus: bool,
     skips: Option<[String; 2]>,
+    folded: std::collections::HashSet<&'static str>,
+    only_changed: bool,
+    new_name: String,
+    mine: Option<Vec<crate::themes::Mine>>,
+    previews: std::collections::HashMap<String, Option<theme::Theme>>,
 }
 
 impl SettingsView {
@@ -82,6 +85,43 @@ impl SettingsView {
         self.show(None);
         self.filter = text.to_string();
     }
+
+    pub fn forget_mine(&mut self) {
+        self.mine = None;
+    }
+
+    fn mine(&mut self) -> &[crate::themes::Mine] {
+        self.mine.get_or_insert_with(crate::themes::mine)
+    }
+}
+
+pub fn theme_name(st: &mut UiState, ext: &crate::ext::Extensions, key: &str) -> String {
+    if let Some(preset) = theme::preset_named(key) {
+        return preset.name.to_string();
+    }
+    if let Some(found) = ext.color_themes().find(|t| t.key == key) {
+        return found.label.clone();
+    }
+    if let Some(found) = st.settings.mine().iter().find(|m| m.key == key) {
+        return found.name.clone();
+    }
+    theme::PRESETS[0].name.to_string()
+}
+
+pub fn ask_reset(st: &mut UiState, ext: &crate::ext::Extensions) {
+    let n = st.theme.changed();
+    if n == 0 {
+        return;
+    }
+    let key = st.theme.base().0.to_string();
+    let name = theme_name(st, ext, &key);
+    let what =
+        if n == 1 { "The colour you changed goes".to_string() } else { format!("The {n} colours you changed go") };
+    let text = format!("{what} back to {name}'s own. Save them as a theme of yours first to keep them.");
+    let ask = super::Ask::new(super::Asked::ResetColours, &format!("Reset every colour to {name}?"), text)
+        .choice("Reset", super::ChoiceLook::Danger, super::Answer::Yes)
+        .choice("Cancel", super::ChoiceLook::Plain, super::Answer::Cancel);
+    st.ask = Some(ask);
 }
 
 const HEAD: f32 = 46.0;
@@ -205,10 +245,8 @@ pub(super) fn settings_modal(
     let mut filter = std::mem::take(&mut st.settings.filter);
     let (mut close, mut picked) = (false, None);
 
-    let modal = egui::Modal::new(egui::Id::unique("settings"))
-        .backdrop_color(Color32::from_black_alpha(140))
-        .frame(frame)
-        .show(ctx, |ui| {
+    let modal =
+        egui::Modal::new(egui::Id::unique("settings")).backdrop_color(super::backdrop()).frame(frame).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
             let (head, body) = rect.split_top_bottom_at_y(rect.top() + HEAD);
             let (nav, content) = body.split_left_right_at_x(body.left() + NAV);
@@ -268,13 +306,13 @@ pub(super) fn settings_modal(
                             (true, _) => {
                                 general(ui, st, f, actions)
                                     | appearance(ui, st, ext, f, actions)
-                                    | colours(ui, st, f, actions)
+                                    | colours(ui, st, ext, f, actions)
                                     | keyboard(ui, st, f, actions)
                                     | commits(ui, st, f, actions)
                             }
                             (false, Tab::General) => general(ui, st, f, actions),
                             (false, Tab::Appearance) => appearance(ui, st, ext, f, actions),
-                            (false, Tab::Colours) => colours(ui, st, f, actions),
+                            (false, Tab::Colours) => colours(ui, st, ext, f, actions),
                             (false, Tab::Keyboard) => keyboard(ui, st, f, actions),
                             (false, Tab::Commits) => commits(ui, st, f, actions),
                         };
@@ -449,28 +487,7 @@ fn appearance(
     f: &str,
     actions: &mut Vec<Action>,
 ) -> bool {
-    let base_key = st.theme.base().0.to_string();
-    let all = hit(f, &["Theme"]);
-    let presets: Vec<(&str, &str)> = theme::PRESETS.iter().map(|(key, name, _)| (*key, *name)).collect();
-    let from_extensions: Vec<(&str, &str)> = ext.color_themes().map(|t| (t.key.as_str(), t.label.as_str())).collect();
-    let presets: Vec<(&str, &str)> =
-        presets.into_iter().chain(from_extensions.iter().copied()).filter(|(_, name)| all || hit(f, &[name])).collect();
-    if !presets.is_empty() {
-        section(ui, icons::PALETTE, "Theme");
-        well(ui, |ui| {
-            for (key, name) in presets.iter().copied() {
-                let mut on = key == base_key;
-                if check(ui, &mut on, name, true, false).clicked() && key != base_key {
-                    actions.push(Action::SetTheme(key.to_string()));
-                }
-            }
-            ui.add_space(2.0);
-            if from_extensions.is_empty() {
-                note(ui, "A colour theme installed as an extension (Dracula, Tokyo Night, GitHub Theme…) is listed here too.");
-            }
-            note(ui, "Every colour of a theme can be changed under Colours.");
-        });
-    }
+    let shown_themes = theme_picker(ui, st, ext, f, actions);
     let highlighting = hit(f, &[GRAMMARS.0, GRAMMARS.1, "grammar", "highlighting"]);
     if highlighting {
         section(ui, icons::CODE, "Highlighting");
@@ -503,40 +520,390 @@ fn appearance(
             }
         });
     }
-    !presets.is_empty() || icons_shown || highlighting
+    shown_themes || icons_shown || highlighting
 }
 
-fn colours(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Action>) -> bool {
-    let all = hit(f, &["Colours", "colors"]);
-    let fields: Vec<&theme::Field> =
-        theme::FIELDS.iter().filter(|field| all || hit(f, &[field.label, field.group])).collect();
-    if fields.is_empty() {
+const TILE: Vec2 = Vec2::new(172.0, 116.0);
+const PREVIEW_H: f32 = 90.0;
+
+struct Choice {
+    key: String,
+    name: String,
+    about: String,
+    theme: Option<theme::Theme>,
+    mine: bool,
+}
+
+enum Picked {
+    Nothing,
+    Theme,
+    Delete,
+}
+
+fn theme_picker(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &crate::ext::Extensions,
+    f: &str,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let base_key = st.theme.base().0.to_string();
+    let all = hit(f, &["Theme", "Colour theme", "Color theme"]);
+    let mut groups: Vec<(&str, Vec<Choice>)> = Vec::new();
+    for kind in theme::Kind::ALL {
+        let title = kind.title();
+        let list = theme::PRESETS
+            .iter()
+            .filter(|p| p.kind == kind && (all || hit(f, &[p.name, p.about, title])))
+            .map(|p| Choice {
+                key: p.key.to_string(),
+                name: p.name.to_string(),
+                about: p.about.to_string(),
+                theme: Some(p.theme),
+                mine: false,
+            })
+            .collect();
+        groups.push((title, list));
+    }
+    let mut theirs = Vec::new();
+    for decl in ext.color_themes().filter(|t| all || hit(f, &[t.label.as_str(), "From extensions"])) {
+        let made = *st
+            .settings
+            .previews
+            .entry(decl.key.clone())
+            .or_insert_with(|| crate::themes::from_vscode(&decl.file, decl.light));
+        let about = String::from("From an installed extension.");
+        theirs.push(Choice { key: decl.key.clone(), name: decl.label.clone(), about, theme: made, mine: false });
+    }
+    groups.push(("From extensions", theirs));
+    let mine = st
+        .settings
+        .mine()
+        .iter()
+        .filter(|m| all || hit(f, &[m.name.as_str(), "Mine", "my theme"]))
+        .map(|m| Choice {
+            key: m.key.clone(),
+            name: m.name.clone(),
+            about: String::from("Yours, saved from Colours."),
+            theme: Some(m.theme),
+            mine: true,
+        })
+        .collect();
+    groups.push(("Mine", mine));
+    if groups.iter().all(|(_, list)| list.is_empty()) {
         return false;
     }
-    let (_, base) = st.theme.base();
-    let current = theme::get();
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        let changed = match st.theme.colors.len() {
-            0 => "Click a colour to change it.".to_string(),
-            1 => "1 colour changed.".to_string(),
-            n => format!("{n} colours changed."),
-        };
-        ui.add_space(4.0);
-        note(ui, &changed);
-        if !st.theme.colors.is_empty() {
+    let mut delete = None;
+    section(ui, icons::PALETTE, "Theme");
+    well(ui, |ui| {
+        for (title, list) in groups.iter().filter(|(_, list)| !list.is_empty()) {
+            ui.add_space(2.0);
+            ui.label(RichText::new(*title).size(11.5).color(pal().text_faint));
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
+                for choice in list {
+                    match tile(ui, choice, choice.key == base_key) {
+                        Picked::Theme if choice.key != base_key => actions.push(Action::SetTheme(choice.key.clone())),
+                        Picked::Delete => delete = Some((choice.key.clone(), choice.name.clone())),
+                        _ => {}
+                    }
+                }
+            });
             ui.add_space(6.0);
-            if super::ext_panels::pill(ui, "Back to the theme's own colours", false) {
-                actions.push(Action::ResetColors);
-            }
         }
+        if ext.color_themes().next().is_none() {
+            note(ui, "A colour theme installed as an extension is listed here too.");
+        }
+        note(ui, "Every colour of a theme can be changed under Colours, and saved there as a theme of yours.");
     });
+    if let Some((key, name)) = delete {
+        let text = format!("{name} is deleted from this computer. Themes that come with Code Canvas stay.");
+        let ask = super::Ask::new(super::Asked::DeleteTheme { key }, &format!("Delete the theme {name}?"), text)
+            .choice("Delete", super::ChoiceLook::Danger, super::Answer::Yes)
+            .choice("Cancel", super::ChoiceLook::Plain, super::Answer::Cancel);
+        st.ask = Some(ask);
+    }
+    true
+}
+
+fn tile(ui: &mut egui::Ui, choice: &Choice, on: bool) -> Picked {
+    let (rect, resp) = ui.allocate_exact_size(TILE, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return Picked::Nothing;
+    }
+    let preview = Rect::from_min_size(rect.min, Vec2::new(TILE.x, PREVIEW_H));
+    let painter = ui.painter().with_clip_rect(rect.expand(3.0));
+    match &choice.theme {
+        Some(t) => draw_preview(&painter, preview, t),
+        None => {
+            painter.rect_filled(preview, 8.0, pal().raised);
+            let font = FontId::proportional(11.5);
+            painter.text(preview.center(), Align2::CENTER_CENTER, "Could not be read", font, pal().text_faint);
+        }
+    }
+    let ring = match (on, resp.hovered()) {
+        (true, _) => Stroke::new(2.0, pal().accent),
+        (false, true) => Stroke::new(1.5, pal().border_strong),
+        (false, false) => Stroke::new(1.0, pal().border),
+    };
+    painter.rect_stroke(preview, 8.0, ring, egui::StrokeKind::Outside);
+    let mut x = rect.left() + 2.0;
+    let y = preview.bottom() + 13.0;
+    if on {
+        painter.text(Pos2::new(x, y), Align2::LEFT_CENTER, icons::CHECK, FontId::proportional(13.0), pal().accent);
+        x += 18.0;
+    }
+    let color = if on || resp.hovered() { pal().text } else { pal().text_dim };
+    painter.text(Pos2::new(x, y), Align2::LEFT_CENTER, &choice.name, FontId::proportional(12.5), color);
+    let bin = Rect::from_min_size(Pos2::new(preview.right() - 28.0, preview.top() + 4.0), Vec2::splat(24.0));
+    let over_bin = resp.hover_pos().is_some_and(|at| bin.contains(at));
+    if choice.mine && resp.hovered() {
+        painter.rect_filled(bin, 6.0, if over_bin { pal().hover } else { pal().card });
+        painter.rect_stroke(bin, 6.0, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+        let tint = if over_bin { c(theme::get().problem_error) } else { pal().text_dim };
+        painter.text(bin.center(), Align2::CENTER_CENTER, icons::TRASH_2, FontId::proportional(13.0), tint);
+    }
+    let resp = match (choice.mine && over_bin, choice.about.is_empty()) {
+        (true, _) => resp.on_hover_text("Delete this theme"),
+        (false, false) => resp.on_hover_text(&choice.about),
+        (false, true) => resp,
+    };
+    match (resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked(), choice.mine && over_bin) {
+        (true, true) => Picked::Delete,
+        (true, false) => Picked::Theme,
+        _ => Picked::Nothing,
+    }
+}
+
+fn draw_preview(p: &egui::Painter, r: Rect, t: &theme::Theme) {
+    let bar = |x: f32, y: f32, w: f32, color: u32| {
+        p.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(w.max(1.0), 3.0)), 1.5, c(color));
+    };
+    p.rect_filled(r, 8.0, c(t.chrome | 0xff));
+    for (i, color) in [t.accent, t.text_dim, t.text_dim, t.text_faint].into_iter().enumerate() {
+        p.circle_filled(Pos2::new(r.left() + 9.0, r.top() + 14.0 + i as f32 * 12.0), 2.6, c(color));
+    }
+    let canvas = Rect::from_min_max(r.min + Vec2::new(18.0, 6.0), Pos2::new(r.right() - 52.0, r.bottom() - 6.0));
+    p.rect_filled(canvas, 6.0, c(t.background | 0xff));
+    let folder = canvas.shrink(6.0);
+    p.rect_filled(folder, 4.0, c(t.dir_fill));
+    p.rect_stroke(folder, 4.0, Stroke::new(1.0, c(t.dir_border_0)), egui::StrokeKind::Inside);
+    bar(folder.left() + 5.0, folder.top() + 4.0, 24.0, t.label_dir);
+
+    let card = Rect::from_min_size(
+        Pos2::new(folder.left() + 5.0, folder.top() + 11.0),
+        Vec2::new(folder.width() * 0.64, folder.height() - 15.0),
+    );
+    p.rect_filled(card.expand(2.0), 4.0, c(t.select_fill));
+    p.rect_filled(card, 3.0, c(t.card_fill));
+    p.rect_stroke(card, 3.0, Stroke::new(1.0, c(t.card_border)), egui::StrokeKind::Inside);
+    let rows: [&[(u32, f32)]; 7] = [
+        &[(t.tok_comment, 30.0)],
+        &[(t.tok_keyword, 7.0), (t.tok_function, 14.0), (t.tok_punct, 4.0)],
+        &[(t.tok_keyword, 6.0), (t.tok_ident, 9.0), (t.tok_punct, 3.0), (t.tok_string, 16.0)],
+        &[(t.tok_type, 11.0), (t.tok_punct, 3.0), (t.tok_number, 6.0)],
+        &[(t.tok_macro, 12.0), (t.tok_string, 12.0)],
+        &[(t.tok_punct, 4.0)],
+        &[(t.tok_heading, 10.0), (t.tok_text, 14.0)],
+    ];
+    let room = card.right() - 3.0;
+    for (i, row) in rows.iter().enumerate() {
+        let y = card.top() + 4.0 + i as f32 * 6.0;
+        if y + 3.0 > card.bottom() - 2.0 {
+            break;
+        }
+        let mut x = card.left() + if (2..5).contains(&i) { 9.0 } else { 4.0 };
+        if i == 2 {
+            p.rect_filled(
+                Rect::from_min_max(Pos2::new(card.left() + 1.0, y - 1.5), Pos2::new(room, y + 4.5)),
+                0.0,
+                c(t.current_line),
+            );
+        }
+        if i == 3 {
+            p.rect_filled(
+                Rect::from_min_size(Pos2::new(x - 1.0, y - 1.5), Vec2::new(16.0, 6.0)),
+                1.0,
+                c(t.code_selection),
+            );
+        }
+        for &(color, w) in row.iter() {
+            let w = w.min(room - x);
+            if w <= 0.0 {
+                break;
+            }
+            bar(x, y, w, color);
+            x += w + 2.5;
+        }
+        if i == 2 {
+            p.rect_filled(Rect::from_min_size(Pos2::new(x.min(room), y - 1.5), Vec2::new(1.2, 6.0)), 0.0, c(t.caret));
+        }
+    }
+    p.rect_stroke(card.expand(2.0), 4.0, Stroke::new(1.2, c(t.select)), egui::StrokeKind::Inside);
+
+    let other = Rect::from_min_max(
+        Pos2::new(card.right() + 6.0, card.top() + 2.0),
+        Pos2::new(folder.right() - 5.0, card.top() + card.height() * 0.62),
+    );
+    if other.width() > 8.0 {
+        p.rect_filled(other, 3.0, c(t.card_fill));
+        p.rect_stroke(other, 3.0, Stroke::new(1.0, c(t.card_border)), egui::StrokeKind::Inside);
+        p.rect_filled(Rect::from_min_size(other.left_top(), Vec2::new(2.0, other.height())), 0.0, c(t.git_modified));
+        for (i, color) in [t.tok_string, t.tok_ident, t.tok_function].into_iter().enumerate() {
+            bar(other.left() + 5.0, other.top() + 4.0 + i as f32 * 6.0, other.width() - 9.0 - i as f32 * 3.0, color);
+        }
+        let y = other.bottom() + 7.0;
+        p.line_segment(
+            [Pos2::new(other.center().x, other.bottom()), Pos2::new(other.center().x, y + 4.0)],
+            Stroke::new(1.0, c(t.dep_out)),
+        );
+        p.circle_filled(Pos2::new(other.center().x, y + 5.0), 2.0, c(t.rel_def));
+    }
+
+    let panel =
+        Rect::from_min_max(Pos2::new(r.right() - 47.0, r.top() + 6.0), Pos2::new(r.right() - 6.0, r.bottom() - 6.0));
+    p.rect_filled(panel, 5.0, c(t.card | 0xff));
+    p.rect_stroke(panel, 5.0, Stroke::new(1.0, c(t.border)), egui::StrokeKind::Inside);
+    let left = panel.left() + 5.0;
+    bar(left, panel.top() + 6.0, 24.0, t.text);
+    let chosen =
+        Rect::from_min_size(Pos2::new(panel.left() + 2.0, panel.top() + 13.0), Vec2::new(panel.width() - 4.0, 8.0));
+    p.rect_filled(chosen, 2.0, c(t.raised));
+    bar(left, panel.top() + 15.5, 20.0, t.text);
+    bar(left, panel.top() + 25.0, 26.0, t.text_dim);
+    bar(left, panel.top() + 32.0, 16.0, t.text_faint);
+    for (i, color) in [t.git_added, t.git_modified, t.problem_error].into_iter().enumerate() {
+        p.circle_filled(Pos2::new(left + 2.0 + i as f32 * 8.0, panel.top() + 42.0), 2.2, c(color));
+    }
+    let button = Rect::from_min_size(Pos2::new(left, panel.bottom() - 15.0), Vec2::new(panel.width() - 10.0, 10.0));
+    p.rect_filled(button, 3.0, c(t.accent));
+    bar(button.left() + 6.0, button.center().y - 1.5, button.width() - 12.0, t.on_accent);
+}
+
+fn group_header(ui: &mut egui::Ui, group: &str, folded: bool, count: usize, changed: usize) -> bool {
+    ui.add_space(4.0);
+    let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(row, 6.0, pal().row);
+    }
+    let at = |x: f32| Pos2::new(row.left() + x, row.center().y);
+    let p = ui.painter();
+    let chevron = if folded { icons::CHEVRON_RIGHT } else { icons::CHEVRON_DOWN };
+    p.text(at(6.0), Align2::LEFT_CENTER, chevron, FontId::proportional(13.0), pal().text_dim);
+    p.text(at(24.0), Align2::LEFT_CENTER, group_icon(group), FontId::proportional(14.0), pal().text_dim);
+    let title = p.text(at(44.0), Align2::LEFT_CENTER, group, FontId::proportional(13.5), pal().text);
+    let what = if count == 1 { "1 colour".to_string() } else { format!("{count} colours") };
+    let font = FontId::proportional(11.5);
+    let after = p.text(
+        Pos2::new(title.right() + 8.0, row.center().y),
+        Align2::LEFT_CENTER,
+        what,
+        font.clone(),
+        pal().text_faint,
+    );
+    if changed > 0 {
+        let text = format!("· {changed} changed");
+        p.text(Pos2::new(after.right() + 5.0, row.center().y), Align2::LEFT_CENTER, text, font, pal().accent);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+fn colours(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &crate::ext::Extensions,
+    f: &str,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let all = hit(f, &["Colours", "colors"]);
+    let current = theme::get();
+    let fields: Vec<&theme::Field> = theme::FIELDS
+        .iter()
+        .filter(|field| {
+            let hex = theme::to_hex((field.get)(&current));
+            all || hit(f, &[field.label, field.group, field.key, &hex])
+        })
+        .filter(|field| !st.settings.only_changed || st.theme.is_changed(field.key))
+        .collect();
+    let bar_shown = f.is_empty() || all;
+    if fields.is_empty() && !bar_shown {
+        return false;
+    }
+    let (base_key, base) = {
+        let (key, colors) = st.theme.base();
+        (key.to_string(), colors)
+    };
+    let name = theme_name(st, ext, &base_key);
+    let changed = st.theme.changed();
+    let mut reset = false;
+    if bar_shown {
+        ui.add_space(6.0);
+        well(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(icon(icons::PALETTE, 14.0, pal().text_dim));
+                ui.label(RichText::new(format!("Based on {name}")).size(13.0).color(pal().text));
+                let (what, color) = match changed {
+                    0 => ("nothing changed".to_string(), pal().text_faint),
+                    1 => ("1 colour changed".to_string(), pal().accent),
+                    n => (format!("{n} colours changed"), pal().accent),
+                };
+                ui.label(RichText::new(format!("· {what}")).size(12.0).color(color));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if changed > 0 && super::ext_panels::pill(ui, &format!("Reset all to {name}"), false) {
+                        reset = true;
+                    }
+                    let enabled = changed > 0 || st.settings.only_changed;
+                    check(ui, &mut st.settings.only_changed, "Only the changed ones", enabled, true);
+                });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Save as a theme of mine").size(12.0).color(pal().text_dim));
+                let hint = format!("My {name}");
+                let field = egui::TextEdit::singleline(&mut st.settings.new_name).hint_text(&hint).desired_width(170.0);
+                let typed = ui.add(field);
+                let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if super::ext_panels::pill(ui, "Save", true) || entered {
+                    let wanted = st.settings.new_name.trim();
+                    actions.push(Action::SaveTheme(if wanted.is_empty() { hint } else { wanted.to_string() }));
+                    st.settings.new_name.clear();
+                }
+                ui.add_space(10.0);
+                let copy = super::ext_panels::pill(ui, "Copy as JSON", false);
+                if copy {
+                    ui.ctx().copy_text(crate::themes::as_json(&name, &current));
+                }
+            });
+            ui.add_space(2.0);
+            note(ui, "Click a swatch to change a colour. A dot marks one changed from the theme, and the arrow beside it puts the theme's back. Saved themes are listed under Appearance.");
+        });
+    }
+    if reset {
+        ask_reset(st, ext);
+    }
+    if fields.is_empty() {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            note(ui, "No colour is changed from the theme yet.");
+        });
+        return true;
+    }
+    let searching = !f.is_empty();
     let mut start = 0;
     while start < fields.len() {
         let group = fields[start].group;
         let rows = &fields[start..start + fields[start..].iter().take_while(|field| field.group == group).count()];
         start += rows.len();
-        section(ui, group_icon(group), group);
+        let folded = !searching && st.settings.folded.contains(group);
+        let in_group = rows.iter().filter(|field| st.theme.is_changed(field.key)).count();
+        if group_header(ui, group, folded, rows.len(), in_group) && !searching && !st.settings.folded.remove(group) {
+            st.settings.folded.insert(group);
+        }
+        if folded {
+            continue;
+        }
         let half = rows.len().div_ceil(2);
         ui.columns(2, |columns| {
             for (i, field) in rows.iter().enumerate() {
@@ -550,12 +917,20 @@ fn colours(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(8.0);
-                        if changed && small_icon(ui, icons::X, "Back to the theme's colour") {
-                            actions.push(Action::SetColor(field.key, (field.get)(&base)));
+                        if changed {
+                            let theirs = (field.get)(&base);
+                            let tip = format!("Back to {name}'s {}", theme::to_hex(theirs));
+                            if small_icon(ui, icons::HISTORY, &tip) {
+                                actions.push(Action::SetColor(field.key, theirs));
+                            }
                         }
                         let hex = theme::to_hex(u32::from_be_bytes(rgba));
                         ui.label(RichText::new(hex).monospace().size(11.0).color(pal().text_faint));
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            if changed {
+                                let (dot, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), Sense::hover());
+                                ui.painter().circle_filled(dot.center(), 3.0, pal().accent);
+                            }
                             let color = if changed { pal().text } else { pal().text_dim };
                             ui.add(egui::Label::new(RichText::new(field.label).size(12.5).color(color)).truncate());
                         });
