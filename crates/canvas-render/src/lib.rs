@@ -10,7 +10,7 @@ use canvas_core::{Layout, Rect, Repo, TokenCache, CHAR_W, LINE_H};
 
 pub use curve::{push_curve, CurveVertex};
 pub use scene::{CodeInstance, Lod, RectInstance, SceneData, SceneGpu};
-pub use text::{CodeText, Label, TextLayer};
+pub use text::{CodeStrip, CodeText, Label, StripRow, TextLayer};
 
 use gpu_util::DynBuffer;
 
@@ -72,6 +72,7 @@ pub struct Overlay<'a> {
     pub over: &'a [RectInstance],
     pub chips: &'a [RectInstance],
     pub chip_labels: &'a [Label<'a>],
+    pub strip: Option<CodeStrip<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -429,6 +430,7 @@ impl Renderer {
             scene.as_mut().map(|sc| &mut *sc.tokens),
             overlay.labels,
             overlay.chip_labels,
+            overlay.strip.as_ref(),
         );
         stats.chunks_shaped = self.text.chunks_shaped_last_frame as u32;
         stats.text_pending = self.text.pending;

@@ -68,6 +68,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
   título a cualquier lugar del lienzo y se agrandan o achican por sus bordes y la
   esquina; doble clic en el título las vuelve a acomodar.
 - **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el cursor, arrastrar selecciona.
+- **Líneas largas**: una tarjeta muestra hasta 160 columnas. Con el puntero sobre una
+  línea más larga, el resto aparece al lado de la tarjeta, del mismo tamaño y con los
+  mismos colores, en varias filas si no entra. Un clic ahí pone el cursor en ese lugar,
+  y si escribís más allá del borde también aparece, así el cursor no se pierde de vista.
 - **Imágenes y videos dentro del lienzo**: la imagen se dibuja en su tarjeta, y un video,
   un audio o un PDF se reproduce dentro de su tarjeta al tocarlo.
 - **Cualquier ruta se abre en el lienzo**: la que nombra un asistente, una definición, un

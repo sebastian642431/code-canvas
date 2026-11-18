@@ -102,9 +102,35 @@ def long_names(root):
     write(root, "a b/c d.rs", "pub fn spaced() {}\n")
 
 
+WORDS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu", "nu"]
+
+
+def long_lines(root):
+    """A Rust file with lines of 400, 600 and 4000 columns between short ones."""
+    pairs = ", ".join(f'("{WORDS[i % len(WORDS)]}", {i}, {i}.5)' for i in range(20))
+    names = ", ".join(f'"{WORDS[i % len(WORDS)]}_{i}"' for i in range(50))
+    data = ", ".join(str(i * 7) for i in range(700))
+    lines = [
+        "// The rest of a long line is shown beside the card.",
+        "pub fn table() -> Vec<(&'static str, u32, f64)> {",
+        f"    vec![{pairs}] // end of the pairs",
+        "}",
+        "",
+        f"pub const NAMES: [&str; 50] = [{names}]; // end of the names",
+        "",
+        f"pub static DATA: [u32; 700] = [{data}]; // end of the data",
+        "",
+        "pub fn short() -> u32 {",
+        "    1",
+        "}",
+    ]
+    write(root, "src/table.rs", "\n".join(lines) + "\n")
+
+
 FIXTURES = {
     "media": media,
     "deep-tree": deep_tree,
     "many-files": many_files,
     "long-names": long_names,
+    "long-lines": long_lines,
 }

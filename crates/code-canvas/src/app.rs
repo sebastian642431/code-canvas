@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use canvas_core::layout::{NodeKind, FILE_LABEL_H};
 use canvas_core::{Rect, Site, SymRef, LINE_H};
-use canvas_render::{FrameStats, Label, Lod, Overlay, Pane, Renderer, ScenePass};
+use canvas_render::{CodeStrip, FrameStats, Label, Lod, Overlay, Pane, Renderer, ScenePass, StripRow};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -143,6 +143,7 @@ fn theme_of_extension(ext: &Extensions, key: &str) -> Option<canvas_render::them
 type Awaited = (PathBuf, Option<(u32, u32, u32)>);
 
 const WHEEL_NOTCH: f32 = 110.0;
+const LONG_LINE_STILL: Duration = Duration::from_millis(150);
 
 fn can_show(size: winit::dpi::PhysicalSize<u32>) -> bool {
     size.width >= 320 && size.height >= 200
@@ -214,6 +215,10 @@ pub struct App {
     rescan_later: HashSet<u32>,
     changed_under: HashSet<(u32, String)>,
     zoom_rest: Option<(Instant, [f32; 2])>,
+    long_line: Option<(u32, usize, usize, Rect)>,
+    in_long_line: bool,
+    camera_seen: Option<(u32, [f32; 2], f32, Instant)>,
+    long_line_waits: bool,
     merged_in: HashSet<(u32, String)>,
     webviews: crate::webview::WebViews,
     webview_roots: Vec<PathBuf>,
@@ -344,6 +349,10 @@ impl App {
             rescan_later: HashSet::new(),
             changed_under: HashSet::new(),
             zoom_rest: None,
+            long_line: None,
+            in_long_line: false,
+            camera_seen: None,
+            long_line_waits: false,
             merged_in: HashSet::new(),
             webviews: {
                 let mut webviews = crate::webview::WebViews::new();
@@ -1316,7 +1325,7 @@ impl App {
     fn code_under(&self, point: [f32; 2]) -> Option<String> {
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
-        if Lod::for_zoom(page.camera.zoom) != Lod::Text {
+        if Lod::for_zoom(page.camera.zoom) != Lod::Text || self.long_line.is_some_and(|(.., f)| f.contains(point)) {
             return None;
         }
         let world = page.camera.view(self.viewport()).to_world(point);
@@ -1645,7 +1654,62 @@ impl App {
         self.request_redraw();
     }
 
+    fn caret_rest(&self) -> Option<(overlay::LongLine, usize)> {
+        let page = self.pages.get(self.active)?;
+        let editor = page.editor()?;
+        let file = page.ready()?.repo.file_index(&editor.rel_path)?;
+        let col = editor.display_col(editor.caret);
+        let view = page.camera.view(self.viewport());
+        let long = overlay::long_line(page, view, self.canvas, self.scale(), file, editor.caret.line)?;
+        (col >= long.rest.rows.first()?.from).then_some((long, col))
+    }
+
+    fn long_line_now(&mut self, vp: [f32; 2], area: Rect, s: f32) -> Option<(overlay::LongLine, Option<usize>)> {
+        if let Some((long, col)) = self.caret_rest() {
+            return Some((long, Some(col)));
+        }
+        let page = self.pages.get(self.active)?;
+        let seen = (page.id, page.camera.center, page.camera.zoom);
+        let since = match self.camera_seen {
+            Some((id, center, zoom, at)) if (id, center, zoom) == seen => at,
+            _ => Instant::now(),
+        };
+        self.camera_seen = Some((seen.0, seen.1, seen.2, since));
+        if self.over_ui(self.cursor) {
+            return None;
+        }
+        let page = self.pages.get(self.active)?;
+        let kept = self.long_line.filter(|(id, .., frame)| *id == page.id && frame.contains(self.cursor));
+        let (file, line) = match kept {
+            Some((_, file, line, _)) => (file, line),
+            None => page.hover_cell.map(|(file, line, _)| (file as usize, line as usize))?,
+        };
+        let long = overlay::long_line(page, page.camera.view(vp), area, s, file, line)?;
+        let still = page.target.is_none()
+            && self.zoom_rest.is_none()
+            && self.drag.as_ref().is_none_or(|d| !d.moved)
+            && since.elapsed() >= LONG_LINE_STILL;
+        if !still {
+            self.long_line_waits = true;
+            return None;
+        }
+        Some((long, None))
+    }
+
+    fn point_at_cell(&self, rel: &str, line: usize, col: usize) -> Option<[f32; 2]> {
+        let page = self.pages.get(self.active)?;
+        let r = page.ready()?;
+        let node = *r.layout.file_node.get(r.repo.file_index(rel)?)?;
+        let n = r.layout.nodes.get(node as usize)?;
+        let row = n.cell_rect(line.saturating_sub(1) as u32, 0, 1);
+        let world = [row.x + (col.saturating_sub(1) as f32 + 0.5) * row.w, row.y + row.h * 0.5];
+        Some(page.camera.view(self.viewport()).to_screen(world))
+    }
+
     fn caret_cell(&self) -> Option<([f32; 2], [f32; 2])> {
+        if let Some(at) = self.caret_rest().and_then(|(long, col)| long.rest.place_of(col)) {
+            return Some(([at.x, at.y], [at.right(), at.bottom()]));
+        }
         let page = self.pages.get(self.active)?;
         let editor = page.editor()?;
         let (line, col) = (editor.caret.line as u32, editor.display_col(editor.caret) as u32);
@@ -2756,9 +2820,11 @@ impl App {
                 }
             }
         }
-        if hover != page.hover || cell != page.hover_cell {
+        let in_long_line = self.long_line.is_some_and(|(.., frame)| frame.contains(cursor));
+        if hover != page.hover || cell != page.hover_cell || in_long_line != self.in_long_line {
             page.hover = hover;
             page.hover_cell = cell;
+            self.in_long_line = in_long_line;
             self.request_redraw();
         }
     }
@@ -2833,16 +2899,27 @@ impl App {
         let vp = self.viewport();
         let (ctrl, shift) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
         let can_edit = self.ui.prefs.edit;
+        let in_strip = self.long_line.filter(|(.., frame)| frame.contains(pos)).and_then(|(id, file, line, _)| {
+            let page = self.pages.get(self.active).filter(|page| page.id == id)?;
+            let long = overlay::long_line(page, page.camera.view(vp), self.canvas, self.scale(), file, line)?;
+            Some((file, line, long.rest.col_at(pos)?))
+        });
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let world = page.camera.view(vp).to_world(pos);
-        let hit = r.layout.hit(world);
+        let card = in_strip.and_then(|(file, ..)| r.layout.file_node.get(file).copied());
+        let hit = card.filter(|&n| n != canvas_core::layout::NONE).map(|n| n as usize).or_else(|| r.layout.hit(world));
         let zoom = page.camera.zoom;
         let readable = Lod::for_zoom(zoom) == Lod::Text;
 
         let mut caret_at = None;
         let mut picked = None;
-        if let Some(n) = hit.map(|h| &r.layout.nodes[h]) {
+        if let Some((file, line, col)) = in_strip {
+            let f = &r.repo.files[file];
+            if !ctrl && can_edit && f.note.is_none() && page.showing.is_none() {
+                caret_at = Some((f.rel_path.clone(), line, col));
+            }
+        } else if let Some(n) = hit.map(|h| &r.layout.nodes[h]) {
             if let NodeKind::File(fi) = n.kind {
                 let f = &r.repo.files[fi];
                 if let Some((line, col)) = n.cell_at(world, f.line_count()) {
@@ -4032,6 +4109,22 @@ impl App {
                     None => self.pan(to[0] - from[0], to[1] - from[1]),
                 }
             }
+            Step::Hover(what) => {
+                let parts: Vec<&str> = what.split_whitespace().collect();
+                let numbers: Vec<f32> = parts.iter().filter_map(|n| n.parse().ok()).collect();
+                let at = match (parts.as_slice(), numbers.as_slice()) {
+                    ([_, _], [x, y]) => Some([*x, *y]),
+                    ([rel, _, _], [line, col]) => self.point_at_cell(rel, *line as usize, *col as usize),
+                    _ => None,
+                };
+                match at {
+                    Some(at) => {
+                        self.cursor = at;
+                        self.update_hover();
+                    }
+                    None => log::warn!("script: hover needs <x> <y>, or <path> <line> <column> of a card"),
+                }
+            }
             Step::Click(x, y) => {
                 self.cursor = [x, y];
                 self.focus_folder_at(self.cursor);
@@ -4060,6 +4153,13 @@ impl App {
 
     fn poll_background(&mut self) -> bool {
         let mut busy = self.zoom_rest.is_some();
+        if self.long_line_waits {
+            busy = true;
+            if self.camera_seen.is_some_and(|(.., at)| at.elapsed() >= LONG_LINE_STILL) {
+                self.long_line_waits = false;
+                self.request_redraw();
+            }
+        }
         match self.ui.console.poll() {
             Some(Ok(())) => self.ext.notice(ext::Level::Info, "Console", "Git is installed: the console has bash now."),
             Some(Err(why)) => {
@@ -4825,6 +4925,26 @@ impl App {
         self.chip_hits = std::mem::take(&mut canvas_overlay.chip_hits);
         self.toggle_hits = std::mem::take(&mut canvas_overlay.toggle_hits);
         self.preview_hits = std::mem::take(&mut canvas_overlay.preview_hits);
+        let long_line = self.long_line_now(vp, area, s);
+        let strip_rows: Vec<StripRow> =
+            long_line.as_ref().map_or_else(Vec::new, |(long, caret)| long.draw(&mut canvas_overlay, *caret, s));
+        let page_id = self.pages.get(self.active).map_or(0, |p| p.id);
+        let shown = long_line.as_ref().map(|(long, _)| (page_id, long.file, long.line, long.rest.frame));
+        if shown.map(|(id, file, line, _)| (id, file, line))
+            != self.long_line.map(|(id, file, line, _)| (id, file, line))
+        {
+            if let Some(((long, _), page)) = long_line.as_ref().zip(self.pages.get(self.active)) {
+                let path = page.ready().and_then(|r| r.repo.files.get(long.file)).map_or("", |f| f.rel_path.as_str());
+                let place = if long.rest.beside { "beside its card" } else { "over its card" };
+                log::info!(
+                    "the rest of line {} of {path} is shown {place}, {} rows",
+                    long.line + 1,
+                    long.rest.rows.len()
+                );
+            }
+        }
+        self.long_line = shown;
+        self.in_long_line = shown.is_some_and(|(.., frame)| frame.contains(self.cursor));
         let labels: Vec<Label> = canvas_overlay.labels.iter().map(|l| l.as_label()).collect();
         let chip_labels: Vec<Label> = canvas_overlay.chip_labels.iter().map(|l| l.as_label()).collect();
 
@@ -4913,6 +5033,7 @@ impl App {
                     over: &over.over,
                     chips: &over.chips,
                     chip_labels: &chip_labels,
+                    strip: None,
                 },
             );
             g.queue.submit(Some(encoder.finish()));
@@ -4960,6 +5081,13 @@ impl App {
                 over: &canvas_overlay.over,
                 chips: &canvas_overlay.chips,
                 chip_labels: &chip_labels,
+                strip: long_line.as_ref().map(|(long, _)| CodeStrip {
+                    page: page_id,
+                    file_index: long.file,
+                    line: long.line,
+                    zoom: view.zoom,
+                    rows: &strip_rows,
+                }),
             },
         );
 
