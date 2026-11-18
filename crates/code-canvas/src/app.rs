@@ -627,7 +627,10 @@ impl App {
         let at = |rel: &str| crate::files::inside(&root, rel);
         let done: Result<(), String> = match op {
             FileOp::Reveal(path) => at(&path).and_then(|p| crate::files::reveal(&p)),
-            FileOp::Terminal(dir) => at(&dir).and_then(|p| crate::files::terminal(&p)),
+            FileOp::Terminal(dir) => at(&dir).map(|place| {
+                self.ui.show(Panel::Console);
+                self.console(ui::ConsoleOp::Start, Some(place));
+            }),
             FileOp::CopyPath { path, relative } => at(&path).and_then(|full| {
                 let full: PathBuf = full.components().collect();
                 let text = if relative { path.clone() } else { full.display().to_string() };
@@ -1740,6 +1743,23 @@ impl App {
         }
     }
 
+    fn console(&mut self, op: ui::ConsoleOp, place: Option<PathBuf>) {
+        match op {
+            ui::ConsoleOp::Start => {
+                let folder = self.pages.get(self.active).map(|page| page.root.clone());
+                let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+                self.ui.console.start(&place.or(folder).unwrap_or(home));
+            }
+            ui::ConsoleOp::Install => self.ui.console.install(),
+            ui::ConsoleOp::Page => {
+                if let Err(why) = crate::files::open_web_link(crate::term::GIT_PAGE) {
+                    self.ext.notice(ext::Level::Warn, "Console", why);
+                }
+            }
+        }
+        self.request_redraw();
+    }
+
     fn keep_caret_visible(&mut self) {
         let area = self.clear();
         let Some((tl, br)) = self.caret_cell() else { return };
@@ -2764,6 +2784,10 @@ impl App {
             Command::Forward => self.travel(false),
             Command::Settings => self.ui.settings.show(None),
             Command::ToggleLeftPanel => self.ui.files = !self.ui.files,
+            Command::ToggleConsole => {
+                self.ui.toggle(Panel::Console);
+                self.ui.console.focus = self.ui.is_open(&Panel::Console);
+            }
             Command::ToggleSideBySide => self.apply(Action::ToggleSideBySide),
             Command::ToggleUi => self.apply(Action::ToggleUi),
             Command::FormatFile => self.format_file(None),
@@ -3009,6 +3033,7 @@ impl App {
                 self.session_dirty = true;
                 self.request_redraw();
             }
+            Action::Console(op) => self.console(op, None),
             Action::Show(panel) => {
                 self.ui.show(panel);
                 self.request_redraw();
@@ -3520,6 +3545,16 @@ impl App {
                 self.apply(Action::ToggleUi);
             }
             Step::Delete(path) => self.apply(Action::File(FileOp::Delete(path))),
+            Step::Console(said) => {
+                self.ui.show(Panel::Console);
+                if self.ui.console.term.is_none() {
+                    self.console(ui::ConsoleOp::Start, None);
+                }
+                match self.ui.console.term.as_mut() {
+                    Some(term) => term.send(format!("{said}\r").as_bytes()),
+                    None => log::warn!("script: the console has no shell to type '{said}' into"),
+                }
+            }
             Step::Rename(path) => {
                 let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                 self.ui.naming = Some(ui::Naming { kind: ui::NamingKind::Rename, path, text: name, focus: true });
@@ -3758,6 +3793,14 @@ impl App {
 
     fn poll_background(&mut self) -> bool {
         let mut busy = self.zoom_rest.is_some();
+        match self.ui.console.poll() {
+            Some(Ok(())) => self.ext.notice(ext::Level::Info, "Console", "Git is installed: the console has bash now."),
+            Some(Err(why)) => {
+                self.ui.console.failed = Some(why.clone());
+                self.ext.notice(ext::Level::Warn, "Console", why);
+            }
+            None => {}
+        }
         if let Some((_, at)) = self.zoom_rest.filter(|(since, _)| since.elapsed() > Duration::from_millis(180)) {
             self.zoom_rest = None;
             let vp = self.viewport();

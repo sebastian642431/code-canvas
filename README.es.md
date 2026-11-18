@@ -119,6 +119,9 @@ muy grandes. Código abierto: cualquiera puede aportar.
   (archivo: ocultar, renombrar, borrar, copiar ruta; carpeta: plegar; lienzo: ver
   todo, comandos). *Hide the interface* (o `Ctrl+\`) deja solo el lienzo.
 - Al seleccionar un archivo en el lienzo, el explorador abre sus carpetas y lo marca.
+- **Consola**: `` Ctrl+` `` (o su ícono) abre bash en la carpeta abierta, como una
+  tarjeta sobre el lienzo. En Windows usa el bash de Git para Windows; si no está
+  instalado, la tarjeta ofrece instalarlo.
 - **Los archivos quedan pegados a la izquierda** (`Ctrl+B` o el botón de arriba los
   oculta); **todo lo demás se abre como tarjeta flotante sobre el lienzo**: búsqueda,
   control de código, símbolos, un asistente. Abrís las que quieras, una al lado de la

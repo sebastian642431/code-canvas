@@ -25,6 +25,7 @@ mod rails;
 mod script;
 mod session;
 mod share;
+mod term;
 mod themes;
 mod ui;
 mod update;

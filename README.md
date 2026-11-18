@@ -211,6 +211,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   brings it back.
 - Selecting a file on the canvas opens its folders in the files panel and marks
   it there.
+- **A console**: `` Ctrl+` `` (or its icon) opens bash in the open folder, as a
+  card on the canvas. On Windows it is the bash of Git for Windows; if it is not
+  installed the card offers to install it. *Open in terminal* on a folder of
+  the files starts it there.
 - **The files stay docked on the left** (`Ctrl+B` or the button at the top hides
   them); **every other panel opens as a card floating over the canvas**: search,
   source control, symbols, an assistant. Open as many as you want side by side,

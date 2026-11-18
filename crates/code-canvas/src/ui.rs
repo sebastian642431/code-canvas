@@ -10,6 +10,7 @@ use crate::ext::Extensions;
 use crate::icons;
 use crate::page::{build_tree, Page, PageState, RelFilters};
 
+mod console;
 mod deps_panel;
 mod ext_panels;
 mod git_panel;
@@ -18,6 +19,7 @@ mod settings;
 use crate::keys::{Command, Keymap};
 
 pub use crate::rails::Side;
+pub use console::ConsoleOp;
 pub use settings::{SettingsView, Tab as SettingsTab};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -32,6 +34,7 @@ pub enum Panel {
     Symbols,
     Deps,
     Media,
+    Console,
     Webview(String),
 }
 
@@ -47,6 +50,7 @@ impl Panel {
             Panel::Symbols => "symbols".to_string(),
             Panel::Deps => "deps".to_string(),
             Panel::Media => "media".to_string(),
+            Panel::Console => "console".to_string(),
             Panel::Webview(view) => format!("view:{view}"),
         }
     }
@@ -62,6 +66,7 @@ impl Panel {
             "symbols" => Panel::Symbols,
             "deps" => Panel::Deps,
             "media" => Panel::Media,
+            "console" => Panel::Console,
             view => Panel::Webview(view.strip_prefix("view:")?.to_string()),
         })
     }
@@ -227,6 +232,7 @@ pub struct UiState {
     pub files: bool,
     pub cards: Vec<Panel>,
     pub cards_reach: f32,
+    pub console: crate::term::Console,
     card_widths: std::collections::HashMap<String, f32>,
     pub explorer_filter: String,
     pub search_query: String,
@@ -284,6 +290,7 @@ impl Default for UiState {
             files: true,
             cards: Vec::new(),
             cards_reach: 0.0,
+            console: Default::default(),
             card_widths: Default::default(),
             explorer_filter: String::new(),
             search_query: String::new(),
@@ -431,6 +438,7 @@ pub enum Action {
     FormatFile(Option<String>),
     Show(Panel),
     RailsChanged,
+    Console(ConsoleOp),
     SaveFile,
     RunCommand(String, String),
     DepsChanged,
@@ -1027,6 +1035,7 @@ fn card_of(
             ext_panels::webview_panel(ui, st, ext, view)
         }
         Panel::Media => ext_panels::media_panel(ui, st, actions),
+        Panel::Console => console::console_panel(ui, st, actions),
     }
 }
 
@@ -1052,7 +1061,12 @@ fn cards(
         if room < NARROWEST {
             break;
         }
-        let wanted = st.card_widths.get(&key).copied().unwrap_or(if panel.is_page() { 420.0 } else { 330.0 });
+        let usual = match panel {
+            Panel::Console => 600.0,
+            page if page.is_page() => 420.0,
+            _ => 330.0,
+        };
+        let wanted = st.card_widths.get(&key).copied().unwrap_or(usual);
         let width = wanted.clamp(NARROWEST, room.min(760.0));
         let rect = Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, height));
         let id = egui::Id::unique(("card", &key));
@@ -1115,6 +1129,11 @@ fn rail_entries(st: &UiState, ext: &Extensions) -> Vec<RailEntry> {
         own(Panel::Problems, icons::CIRCLE_ALERT, "Problems reported by extensions".to_string()),
         own(Panel::Symbols, icons::LIST_TREE, "Symbols: selection, filters, names".to_string()),
         own(Panel::Deps, icons::WAYPOINTS, "Dependencies: which file imports which".to_string()),
+        own(
+            Panel::Console,
+            crate::codicons::glyph("terminal").unwrap_or(icons::CHEVRON_RIGHT),
+            st.keys.hint("Console: bash in the folder", Command::ToggleConsole),
+        ),
     ];
     if st.media.is_some() {
         entries.push(own(Panel::Media, icons::FILE_TEXT, "The Markdown file being read".to_string()));

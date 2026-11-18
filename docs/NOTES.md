@@ -1661,6 +1661,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it selects code with the pencil over a file, and moves the canvas otherwise. |
 | `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
+| `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
@@ -2049,6 +2050,45 @@ The `Action` model is in "The app" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Git panel: discarding a new file has nothing to go back to, so it removes the
   file (to the recycle bin). Of the commit actions, amending is the one that works
   without a message.
+
+### crates/code-canvas/src/term.rs, ui/console.rs
+
+The console: a card like any other (`Panel::Console`, `` Ctrl+` ``), with bash
+in the folder that is open.
+
+- **It is bash everywhere** (`term::bash`): the same commands work on every
+  system and in what assistants and READMEs say to run. On Windows that is the
+  one Git for Windows brings (`Git\bin\bash.exe`; the `bash.exe` of
+  `System32` and `WindowsApps` only starts WSL and is passed over). When there
+  is none the card says so and offers to install Git with `winget`
+  (`Console::install`, on a thread, told when it ends) or to open its download
+  page; nothing is installed without that click.
+- The shell runs on a pseudo terminal (`portable-pty`: ConPTY on Windows) as a
+  login shell, with `CHERE_INVOKING` so that Git's profile stays in the folder
+  instead of going home. One thread reads what it prints; `vt100` keeps the
+  screen and 5000 lines above it; `Terminal::poll` feeds it with the rest of
+  the background work.
+- **A terminal is asked things and must answer**: ConPTY starts by asking where
+  the cursor is (`ESC [ 6 n`) and prints nothing until told, so a terminal that
+  only listens shows an empty screen for ever. `Terminal::poll` answers that
+  and "what are you" (`ESC [ c`).
+- The screen is drawn a row at a time as one laid out line of runs of the same
+  colours (`row_of`), in the interface's monospace font; the card's size in
+  letters is what the shell is told (`Terminal::resize`).
+- **Keys go to the shell while the screen has the focus** (a click on it gives
+  it, a click elsewhere takes it): egui holds the focus, which is also what
+  keeps the app's own shortcuts quiet (`on_key` returns while something is
+  being typed into), and Tab, the arrows and Escape are kept from moving the
+  focus (`set_focus_lock_filter`). `typed` turns a key into what a terminal
+  sends. Ctrl+C arrives from egui as "copy": with nothing selected it is the
+  interrupt. The commands of scope `Anywhere` still run (the palette, go to
+  file, the console's own key).
+- Shift+PageUp, Shift+PageDown and the wheel look at what scrolled away; typing
+  comes back.
+- "Open in terminal" of the files menu starts the console's shell there. It used
+  to start a window of another program.
+- Not there yet: several consoles, selecting text with the mouse, a console of
+  the one who shares for those who join.
 
 ### crates/code-canvas/src/update.rs
 

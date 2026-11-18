@@ -20,6 +20,7 @@ pub enum Command {
     PreviousFolder,
     Rescan,
     ToggleLeftPanel,
+    ToggleConsole,
     ToggleSideBySide,
     ToggleUi,
     Settings,
@@ -105,6 +106,7 @@ pub const COMMANDS: &[CommandInfo] = &[
         Scope::Window,
         &["ctrl+b"],
     ),
+    info(Command::ToggleConsole, "toggleConsole", "Show or hide the console", "Panels", Scope::Anywhere, &["ctrl+`"]),
     info(
         Command::ToggleSideBySide,
         "toggleSideBySide",

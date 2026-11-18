@@ -57,6 +57,7 @@ pub enum Step {
     Interface,
     Minimize(bool),
     Delete(String),
+    Console(String),
     Rename(String),
     Ignored(String),
     Part(String),
@@ -133,6 +134,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "minimize" => Step::Minimize(true),
         "restore" => Step::Minimize(false),
         "delete" => Step::Delete(arg.into()),
+        "console" => Step::Console(arg.into()),
         "rename" => Step::Rename(arg.into()),
         "ignored" => Step::Ignored(arg.into()),
         "menu" => {

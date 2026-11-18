@@ -32,6 +32,8 @@ pulldown-cmark.workspace = true
 similar.workspace = true
 ring.workspace = true
 flate2.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wry.workspace = true

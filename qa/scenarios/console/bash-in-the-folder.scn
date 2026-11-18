@@ -1,0 +1,20 @@
+title: The console is bash in the open folder: what is typed there happens on disk, and its screen shows what the shell says
+folders: git-changes
+limit: 50
+expect-log: console: .*bash.* in .*git-changes
+expect-file: git-changes\from-console.txt :: ^made by the console
+forbid-log: WARN.*script
+forbid-log: console: .* did not start
+
+wait 3000
+console echo "made by the console" > from-console.txt
+wait 3500
+console git status --short
+wait 3000
+mark a-console-after-two-commands
+wait 500
+console exit
+wait 2500
+mark b-the-shell-ended
+wait 500
+quit

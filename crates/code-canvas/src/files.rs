@@ -137,31 +137,6 @@ pub fn reveal(path: &Path) -> Result<(), String> {
     command.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-pub fn terminal(dir: &Path) -> Result<(), String> {
-    if cfg!(windows) {
-        let modern = Command::new("wt.exe").arg("-d").arg(dir).spawn();
-        if modern.is_ok() {
-            return Ok(());
-        }
-        return Command::new("cmd.exe")
-            .args(["/C", "start", "", "cmd.exe"])
-            .current_dir(dir)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| e.to_string());
-    }
-    let mut command = if cfg!(target_os = "macos") {
-        let mut c = Command::new("open");
-        c.args(["-a", "Terminal"]).arg(dir);
-        c
-    } else {
-        let mut c = Command::new("x-terminal-emulator");
-        c.current_dir(dir);
-        c
-    };
-    command.spawn().map(|_| ()).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
