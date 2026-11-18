@@ -15,6 +15,18 @@ it works, what works today, and what does not yet.
 - **Webviews**: an extension's own interface (the official Claude Code panel, for
   one) opens in the right panel; the extension's icon appears in the right rail.
   Windows only for now.
+- **Tree views**: the lists an extension adds to VS Code's side bar. Each container of
+  them (`contributes.viewsContainers`) gets an icon in the right rail, and the trees an
+  extension adds to VS Code's own places (the explorer, source control, testing) share
+  one more icon of the extension. The icon opens a card with one list per view: rows
+  that open and close (their children are asked when opened), codicons, descriptions,
+  a click runs the row's command, the view's title buttons (`view/title`, group
+  `navigation`) sit in the card's title and a row's own buttons (`view/item/context`,
+  group `inline`) appear on the row under the pointer.
+- **Code lenses**: what extensions put above a line ("3 references", "▶ Run") is drawn
+  faint above it on the card, once code is readable, with `|` between several. A click
+  runs it. "N references" selects the name on the canvas, which draws its uses.
+  *Settings → General → Show code lenses* turns them off.
 - **Problems** (circle icon): what linters and language servers report. On the canvas
   each problem underlines its code, and the file's card gets a coloured edge and a dot
   that stay visible from far away, so problems show on the map of the whole repository.
@@ -77,6 +89,9 @@ theirs:
 | `workspace.applyEdit`, formatting edits | the app writes the file and reloads its card |
 | status bar items | text in the status bar |
 | webview views and panels | a browser view (WebView2) over the right panel |
+| tree views | a card of lists, opened from the extension's icon in the right rail |
+| code lenses | faint links on the card above their line |
+| `editor.action.showReferences` | the name is selected: its uses are drawn |
 | `showInformationMessage` & co. | notices in the corner of the canvas |
 
 ### Coverage of the `vscode` API
@@ -102,20 +117,32 @@ container an extension declares (`contributes.viewsContainers`) gets one as soon
 the extension is installed, if it has a webview view whose `when` holds. Opening it
 is what starts the extension (`onView:<id>`). `when` clauses are evaluated in
 `ext/when.rs` against the context keys extensions set with `setContext`. A container
-that only has tree views gets no icon yet: there would be nothing to show.
+whose webview views are hidden but has trees gets an icon that opens its trees
+(`tree:<container>`); one with both shows its webview.
 
-Implemented: colour themes, file icon themes, webview views and panels, documents and their events, configuration, diagnostics, every
+Implemented: colour themes, file icon themes, webview views and panels, tree views
+(`createTreeView`, `registerTreeDataProvider`: `getChildren`, `getTreeItem`,
+`resolveTreeItem` for a tooltip, `onDidChangeTreeData`; `TreeItem` label, description,
+codicon `iconPath` and its colour, `resourceUri` with the file icon theme,
+collapsible state, command, `contextValue`, tooltip; the view's `title`,
+`description` and `message`, its expand, collapse, selection and visibility events),
+code lenses (`registerCodeLensProvider` with `resolveCodeLens` and
+`onDidChangeCodeLenses`), documents and their events, configuration, diagnostics, every
 `languages.register…Provider` (kept by kind; the app uses formatting, hovers,
-definitions and completions, and references, call hierarchies and implementations
-for the relations of a selected name), commands, workspace edits,
+definitions and completions, code lenses, and references, call hierarchies and
+implementations for the relations of a selected name), commands, workspace edits,
 `workspace.fs`, output channels, status bar items, messages, decorations, extension
 storage, activation events, and the classes and enums extensions construct.
 
 Not yet — these are the next pieces, in order:
 
-1. **Tree views**: the lists extensions add to the side bar (their containers are
-   read already, and get an icon once they have something that can be shown).
-2. **Code lenses and hovers** drawn on the canvas (the providers are already kept).
+1. **Trees, the rest**: the menus of a row's right click and the title's "…" (only
+   the buttons are shown), checkboxes, drag and drop, `reveal`, badges, icons that
+   are image files, several rows selected, `when` clauses with `=~` (regular
+   expressions, which many row buttons use) and the trees of a container that also
+   has a webview.
+2. **Inlay hints** and code actions (the light bulb) drawn on the canvas (the
+   providers are already kept).
 3. Signature help, snippets with more than one stop, and the commands a completion
    asks to run after it is taken; showing proposed diffs.
 4. Webviews on Linux and macOS; `when` clauses for menus and commands (views have
@@ -128,11 +155,11 @@ Not yet — these are the next pieces, in order:
 | Extension | State |
 |---|---|
 | TypeScript (`vscode.typescript-language-features`, VS Code's own) | works: compiler errors, hover, go to definition (`F12`), completions |
-| rust-analyzer (`rust-lang.rust-analyzer`) | works: syntax errors while typing, `cargo check` problems on save, hover, go to definition, completions with their imports. Its tree view, inlay hints and code lenses are not drawn |
+| rust-analyzer (`rust-lang.rust-analyzer`) | works: syntax errors while typing, `cargo check` problems on save, hover, go to definition, completions with their imports. Its code lenses and its dependency tree should show now, not checked with it yet; inlay hints are not drawn |
 | ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
 | Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
-| Version Lens (`pflannery.vscode-versionlens`) | starts; shows nothing until code lenses are drawn |
+| Version Lens (`pflannery.vscode-versionlens`) | starts; its code lenses should show now, not tried yet |
 | Pretty TypeScript Errors (`yoavbls.pretty-ts-errors`) | starts; needs hovers and a TypeScript language server |
 | Claude Code (`Anthropic.claude-code`) | its panel and its list of sessions open and render, signed in; a session opened from the list, or a new one, is a tab that can be closed; sending a message has not been tested yet |
 | Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview panel — not tried since webviews landed |
@@ -156,7 +183,11 @@ The host is plain Node and can be driven without the app: send it an `init` mess
 with a folder and extension folders, then `open` a file, and read what comes back.
 In the app, script steps cover the same ground (see "Testing the real app" in
 [ARCHITECTURE.md](ARCHITECTURE.md)): `install <publisher.name>`, `ext-search <text>`,
-`format <path>`, `command <id>`, `left extensions|problems|<publisher.name>`.
+`format <path>`, `command <id>`, `left extensions|problems|<publisher.name>`,
+`right <publisher.name>` (its first icon in the right rail, a tree card too),
+`lens report <path>`, `lens <path> <line> [n]`, `tree report`, `tree <row>`,
+`tree button <command> <row>`, `tree title <command>`. `qa/host/views.test.js` drives
+the host's lenses and trees with `qa/fake/views-extension`.
 
 ## A model of our own, later
 

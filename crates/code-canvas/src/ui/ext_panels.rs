@@ -4,6 +4,7 @@ use egui::{
 };
 
 use super::{c, icon, pal, panel_title, search_field, section, small_icon, well, Action, Panel, UiState, ROW_H};
+use crate::ext::views::{MenuItem, ShownRow, TreeRow};
 use crate::ext::{Extensions, Installed, Level, NodeStatus, Severity, Status};
 use crate::icons;
 use crate::page::Page;
@@ -426,7 +427,7 @@ pub fn extension_view(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions)
                 well(ui, |ui| {
                     ui.label(RichText::new(e.views.join("  ·  ")).size(12.0).color(pal().text));
                     ui.label(
-                        RichText::new("Its pages open from the right rail. Lists (tree views) cannot be shown yet.")
+                        RichText::new("Its pages and lists open from the right rail.")
                             .size(11.5)
                             .color(pal().text_faint),
                     );
@@ -545,6 +546,252 @@ pub fn webview_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, 
         ext.resolve_webview(&key);
     }
     st.page_places.push((Panel::Webview(view.to_string()), rect));
+}
+
+const TREE_ROW_H: f32 = 22.0;
+const TREE_INDENT: f32 = 12.0;
+
+/// A button of a view: its codicon, or its title when it has none.
+fn view_button(ui: &mut egui::Ui, item: &MenuItem) -> bool {
+    match item.codicon.as_deref().and_then(crate::codicons::glyph) {
+        Some(glyph) => small_icon(ui, glyph, &item.title),
+        None => {
+            let font = FontId::proportional(11.5);
+            let galley = ui.painter().layout_no_wrap(item.title.clone(), font, pal().text_dim);
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 10.0, 22.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, 6.0, pal().hover);
+            }
+            ui.painter().galley(rect.center() - galley.size() * 0.5, galley, pal().text_dim);
+            resp.clicked()
+        }
+    }
+}
+
+/// Buttons laid over a row, from `right` leftwards, without taking room in the list (the
+/// rows below do not move when they appear). Gives the one clicked.
+fn buttons_over(ui: &egui::Ui, id: egui::Id, items: &[MenuItem], right: f32, mid: f32) -> (f32, Option<MenuItem>) {
+    let font = FontId::proportional(11.5);
+    let mut x = right;
+    let mut clicked = None;
+    for (i, item) in items.iter().enumerate().rev() {
+        let glyph = item.codicon.as_deref().and_then(crate::codicons::glyph);
+        let galley = ui.painter().layout_no_wrap(item.title.clone(), font.clone(), pal().text_dim);
+        let w = if glyph.is_some() { 24.0 } else { galley.size().x + 10.0 };
+        x -= w;
+        let at = Rect::from_min_size(Pos2::new(x, mid - 11.0), Vec2::new(w, 22.0));
+        let resp = ui.interact(at, id.with(i), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(at, 6.0, pal().hover);
+        }
+        let color = if resp.hovered() { pal().text } else { pal().text_dim };
+        match glyph {
+            Some(glyph) => {
+                ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), color);
+            }
+            None => ui.painter().galley(at.center() - galley.size() * 0.5, galley, color),
+        }
+        if resp.on_hover_text(&item.title).clicked() {
+            clicked = Some(item.clone());
+        }
+    }
+    (x, clicked)
+}
+
+enum TreeAct {
+    /// Opens or closes a row; one with a command runs it too, as in VS Code.
+    Toggle(String, TreeRow),
+    Click(String, TreeRow),
+    Button(String, Option<String>, MenuItem),
+}
+
+/// The card of a container of tree views: each view a list of rows that open and close,
+/// with the buttons the extension gives its title and its rows.
+pub fn tree_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, id: &str) {
+    let Some((extension, name, title, container)) =
+        ext.tree_container(id).map(|(e, c)| (e.id.clone(), e.display_name.clone(), c.title.clone(), c.clone()))
+    else {
+        Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.label(
+                RichText::new("This list is gone: its extension is not installed any more.")
+                    .size(12.0)
+                    .color(pal().text_dim),
+            );
+        });
+        return;
+    };
+    let views = ext.tree_views(&container);
+    let single = views.len() == 1;
+    let mut act = None;
+    let title = if title.is_empty() { name.clone() } else { title };
+    Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 4 }).show(ui, |ui| {
+        panel_title(ui, &title, |ui| {
+            if let Some(view) = views.first().filter(|_| single) {
+                for item in ext.view_buttons(&extension, &view.id, None).iter().rev() {
+                    if view_button(ui, item) {
+                        act = Some(TreeAct::Button(view.id.clone(), None, item.clone()));
+                    }
+                }
+            }
+        });
+    });
+    if !ext.host_running {
+        Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.label(RichText::new("Open a folder to start the extensions.").size(12.0).color(pal().text_dim));
+        });
+        return;
+    }
+    if views.is_empty() {
+        Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.label(RichText::new(format!("{name} shows nothing here now.")).size(12.0).color(pal().text_dim));
+        });
+        return;
+    }
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for view in &views {
+            if !single {
+                let shut = st.tree_shut.contains(&view.id);
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                let mid = rect.center().y;
+                let chevron = if shut { icons::CHEVRON_RIGHT } else { icons::CHEVRON_DOWN };
+                let painter = ui.painter();
+                painter.text(
+                    Pos2::new(rect.left() + 16.0, mid),
+                    Align2::CENTER_CENTER,
+                    chevron,
+                    FontId::proportional(12.0),
+                    pal().text_dim,
+                );
+                let label = view.name.to_uppercase();
+                painter.text(
+                    Pos2::new(rect.left() + 26.0, mid),
+                    Align2::LEFT_CENTER,
+                    label,
+                    FontId::proportional(11.5),
+                    pal().text,
+                );
+                if resp.clicked() {
+                    if shut {
+                        st.tree_shut.remove(&view.id);
+                    } else {
+                        st.tree_shut.insert(view.id.clone());
+                    }
+                }
+                if !shut && ui.rect_contains_pointer(rect) {
+                    let buttons = ext.view_buttons(&extension, &view.id, None);
+                    let id = egui::Id::unique(("view title", &view.id));
+                    if let (_, Some(item)) = buttons_over(ui, id, &buttons, rect.right() - 8.0, mid) {
+                        act = Some(TreeAct::Button(view.id.clone(), None, item));
+                    }
+                }
+                if shut {
+                    continue;
+                }
+            }
+            let rows = ext.tree_rows(&view.id);
+            let (message, missing) =
+                ext.tree_state(&view.id).map_or((String::new(), false), |s| (s.message.clone(), s.missing));
+            if !message.is_empty() {
+                Frame::NONE.inner_margin(Margin { left: 14, right: 10, top: 2, bottom: 6 }).show(ui, |ui| {
+                    ui.label(RichText::new(&message).size(12.0).color(pal().text_dim));
+                });
+            }
+            if rows.is_empty() {
+                let text =
+                    if missing { format!("{name} gives nothing for this view yet.") } else { "Loading…".to_string() };
+                Frame::NONE.inner_margin(Margin { left: 14, right: 10, top: 2, bottom: 8 }).show(ui, |ui| {
+                    ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
+                });
+                continue;
+            }
+            for shown in rows {
+                if let Some(a) = tree_row(ui, st, ext, &extension, &view.id, &shown) {
+                    act = Some(a);
+                }
+            }
+            ui.add_space(6.0);
+        }
+    });
+    match act {
+        Some(TreeAct::Toggle(view, row)) => {
+            ext.toggle_tree_row(&view, &row.handle);
+            if row.command {
+                ext.click_tree_row(&view, &row);
+            }
+        }
+        Some(TreeAct::Click(view, row)) => ext.click_tree_row(&view, &row),
+        Some(TreeAct::Button(view, handle, item)) => ext.tree_command(&view, handle.as_deref(), &item),
+        None => {}
+    }
+}
+
+fn tree_row(
+    ui: &mut egui::Ui,
+    st: &mut UiState,
+    ext: &Extensions,
+    extension: &str,
+    view: &str,
+    shown: &ShownRow,
+) -> Option<TreeAct> {
+    let row = &shown.row;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TREE_ROW_H), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return None;
+    }
+    let pointed = ui.rect_contains_pointer(rect);
+    let mid = rect.center().y;
+    if pointed {
+        ui.painter().rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
+    }
+    let x0 = rect.left() + 10.0 + shown.depth as f32 * TREE_INDENT;
+    for d in 0..shown.depth {
+        let gx = rect.left() + 16.0 + d as f32 * TREE_INDENT;
+        ui.painter().vline(gx, rect.y_range(), Stroke::new(1.0, pal().raised));
+    }
+    if row.collapsible > 0 {
+        let chevron = if shown.open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+        ui.painter().text(
+            Pos2::new(x0 + 6.0, mid),
+            Align2::CENTER_CENTER,
+            chevron,
+            FontId::proportional(12.0),
+            pal().text_dim,
+        );
+    }
+    let mut x = x0 + 16.0;
+    let icon_at = Rect::from_center_size(Pos2::new(x + 7.0, mid), Vec2::splat(15.0));
+    let base = row.resource.rsplit(['/', '\\']).next().unwrap_or_default();
+    if let Some(glyph) = (!row.icon.is_empty()).then(|| crate::codicons::glyph(&row.icon)).flatten() {
+        let color = if row.icon_color & 0xff != 0 { c(row.icon_color) } else { pal().text_dim };
+        ui.painter().text(icon_at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), color);
+        x += 20.0;
+    } else if !base.is_empty() && st.file_icons.paint(ui, base, row.collapsible > 0, shown.open, icon_at, false) {
+        x += 20.0;
+    }
+    let buttons = if pointed { ext.view_buttons(extension, view, Some(&row.context)) } else { Vec::new() };
+    let id = egui::Id::unique(("tree row", view, &row.handle));
+    let (right, clicked) = buttons_over(ui, id, &buttons, rect.right() - 8.0, mid);
+    let mut act = clicked.map(|item| TreeAct::Button(view.to_string(), Some(row.handle.clone()), item));
+    let font = FontId::proportional(13.0);
+    let used = super::text_fit(ui.painter(), Pos2::new(x, mid), &row.label, font, pal().text, right - x);
+    if !row.description.is_empty() && right - x - used > 30.0 {
+        let at = Pos2::new(x + used + 8.0, mid);
+        super::text_fit(ui.painter(), at, &row.description, FontId::proportional(11.5), pal().text_faint, right - at.x);
+    }
+    let tip = if row.tooltip.is_empty() { None } else { Some(row.tooltip.clone()) };
+    let resp = match tip {
+        Some(tip) => resp.on_hover_text(tip),
+        None => resp,
+    };
+    if act.is_none() && resp.clicked() {
+        act = Some(if row.collapsible > 0 {
+            TreeAct::Toggle(view.to_string(), row.clone())
+        } else {
+            TreeAct::Click(view.to_string(), row.clone())
+        });
+    }
+    act
 }
 
 fn tab_strip(ui: &mut egui::Ui, ext: &mut Extensions, extension: &str) {

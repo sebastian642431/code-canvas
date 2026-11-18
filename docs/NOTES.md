@@ -46,6 +46,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [ext/host.rs](#cratescode-canvassrcexthostrs) ·
   [ext/market.rs](#cratescode-canvassrcextmarketrs) ·
   [ext/mod.rs](#cratescode-canvassrcextmodrs) ·
+  [ext/views.rs](#cratescode-canvassrcextviewsrs) ·
   [ext/when.rs](#cratescode-canvassrcextwhenrs) ·
   [files.rs](#cratescode-canvassrcfilesrs) ·
   [git.rs](#cratescode-canvassrcgitrs) ·
@@ -624,8 +625,32 @@ Behaviour
   the file (a picture in its viewer, code on the canvas).
 - `installVscodeModule` makes `vscode` resolvable for both `require` and `import`;
   bundles do either.
-- Not wired yet: file system watchers exist but never fire; tree views exist and
-  stay empty.
+- Not wired yet: file system watchers exist but never fire.
+- **Code lenses.** `codeLenses` asks every provider of the file (`askUntil`, 10 s),
+  resolves those that came without a command (`resolveCodeLens`) and answers plain
+  rows with an id; the lens objects stay in `lensTable`, because their arguments
+  (Uris, positions, a language server's own objects) cannot cross the wire.
+  `runLens` runs one by its id. Only the last answer of a file is kept
+  (`lensesOf`): a lens of an older answer is gone, and so are a closed file's.
+  `wait` lets a file being typed in rest first; a newer request for the same file
+  makes the waiting one answer `superseded`, so typing asks once.
+- `lensesChanged` is sent (at most every 200 ms) when a lens provider is registered
+  and when one fires `onDidChangeCodeLenses`: the app asks again for what it shows.
+- `editor.action.showReferences` and its kin (`SHOW_USES`) are what "N references"
+  runs: the host sends `showUses` with the place, and the canvas selects the name.
+- **Tree views.** `createTreeView` and `registerTreeDataProvider` both make an entry
+  in `trees` and say `treeView`. `treeChildren` asks the provider for the children
+  of a handle (none: the root) and gives each one a handle: `i/<id>` for an item with
+  an id, otherwise its parent's handle, `/` and its label (`#2`… for a repeat). The
+  same element gets the same handle when the tree is asked again, so the app keeps
+  what was open. The first time the root is asked the view becomes `visible`.
+  `onDidChangeTreeData` becomes `treeChanged` for the whole view (the app asks again
+  for every list it has); setting a view's `title`, `description` or `message` sends
+  `treeInfo`. `treeClick` runs a row's command and selects it, `treeExpand` fires
+  the expand and collapse events, `treeCommand` runs a button's command, with the
+  row's element as the argument for a row's button. A tree asked for before its
+  extension has started starts it (`activateForView`); `missing` means nothing
+  registered it even then.
 - Webview pages are served by the app from `RESOURCE_ORIGIN`
   (`https://ccres.localhost`); the host only owns the object the extension talks
   to.
@@ -1367,14 +1392,18 @@ Manifests and the rail
 - A manifest string of the form `%key%` points into `package.nls.json`
   (`localized`).
 - `manifest_commands` leaves out the commands an extension hides from the command
-  palette. `manifest_containers` leaves out views a manifest adds to VS Code's own
-  containers (the explorer, source control): those places are not an extension's.
+  palette. `manifest_containers` does not take the containers of VS Code's own places (the
+  explorer, source control): the trees a manifest adds there go together in one
+  container of its own, `<publisher.name>:views`, with no title (the extension's name
+  stands in); webviews there are left out.
 - `Extensions::rail_items`: the rule is in "Webviews" in
   [EXTENSIONS.md](EXTENSIONS.md). In addition, an extension none of whose
   containers gives an icon still gets one for a webview it has open or registered:
   a panel it opened itself, or a view under a condition this app cannot follow.
   Claude Code offers the same view in two places; only one of them is shown. A
-  container that only has trees gets no icon: there is nothing to open.
+  container with no webview shown but a tree whose `when` holds gets an icon
+  `tree:<container id>` (`TREE`, `ui::Panel::Tree`), after the extension's webview
+  icons, so the webview fallback above still looks at webviews only.
 - `Container::codicon` is set when the manifest names a codicon (`$(github)` →
   `github`). Otherwise the icon is an image file, and the extension's own icon
   stands in.
@@ -1395,6 +1424,36 @@ Notices
   wait 3600 s: nobody is blocked on them. Asking again about the same thing
   replaces the notice; answers arrive through `Extensions::take_answers`.
 - Status bar texts go through `codicons::render` (`$(check) Prettier`).
+
+### crates/code-canvas/src/ext/views.rs
+
+Code lenses and tree views on the app's side; the host's half is in host.js above.
+
+- **Lenses are asked only for files readable on screen**: `show_documents` hands the
+  visible files to `lenses_for`, which asks those not in `lens_fresh`. An answer is
+  kept per file (`Views::lenses`) and drawn until a newer one comes. What makes a
+  file asked again: an edit (`lenses_edited`, asked at once with `LENS_REST_MS` of
+  rest, so the host waits for the typing to stop), a change on disk or a save
+  (`lenses_stale`: asked when next seen), `lensesChanged` from the host (every file,
+  when next seen). A file pushed out of the host's open documents forgets its lenses.
+- `lens_asked` keeps the last request of each file: an answer to an older one, or a
+  `superseded` one, is dropped.
+- "Show code lenses" off (`set_show_lenses`, from the preferences every frame) drops
+  everything and asks nothing.
+- `plain_title` takes `$(codicon)` out of a title: the canvas's font has no codicons.
+- **Trees.** `TreeState` per view: the rows of each handle loaded (`""` is the root),
+  which are expanded (a row that comes `Expanded` is opened the first time it is
+  seen, never again), which requests are in flight and which lists are `stale`.
+  `tree_rows` is what the card draws and also asks for what is missing or stale: the
+  root and the children of every open row. `treeChanged` marks every list loaded
+  (and every one in flight) stale, so the card keeps its rows until the new ones
+  arrive and does not blink.
+- Rows of a handle the host no longer knows (`gone`) are dropped and closed.
+- `manifest_menus` reads `view/title` and `view/item/context` with the icon of each
+  command (a codicon, else the title is the button). `MenuItem::is_button`: the
+  title's `navigation` group, a row's `inline` group; `view_buttons` evaluates their
+  `when` with `view` and `viewItem` (the row's `contextValue`) on top of the context
+  keys.
 
 ### crates/code-canvas/src/ext/when.rs
 
@@ -1612,6 +1671,15 @@ Details:
   between two lines.
 - Decorations from extensions are drawn only at the text level of detail. Several
   texts on one line (two problems) follow each other.
+- **Code lenses** (`code_lenses`, `lens_place`) are drawn from `LENS_MIN_PX` (a line
+  6.5 px tall), at 0.72 of the code's size, the lenses of a line joined by `|`. The
+  card has no room between lines, so they go on the line above: at the line's
+  indentation when the line above is empty there (most functions follow an empty
+  line), after the text above when it fits in the card, and otherwise (the first
+  line, a long line above) after the end of the line itself. A lens that runs
+  nothing is fainter and cannot be clicked; the one under the pointer
+  (`Views::lens_hover`) is in the accent colour and underlined. `lens_hits` are in
+  screen pixels and a click on one comes before anything else of the card.
 - The selection of the file being edited reaches one cell past the end of a line,
   for the line break. Every caret is drawn the same, with its line lit and its
   selection; only those on screen are drawn.
@@ -1885,6 +1953,8 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `ext-search` | `ext-search <text>` | Search the extension registry. |
 | `format` | `format <path>` | Format a file with the installed formatter. |
 | `command` | `command <id>` | Run an extension's command. |
+| `lens` | `lens <path> <line> [n]`, `lens report <path>` | What a click on the n-th code lens (1-based) of a line (1-based) does; log every line's lenses as "script: lenses of <path> line N: a \| b". |
+| `tree` | `tree <row>`, `tree expand\|collapse <row>`, `tree button <command> <row>`, `tree title <command>`, `tree report` | In the tree cards open: a click on the row with that label (opens or closes it, runs its command), a row's button or a title's button by command id; log the rows of each view as "script: tree <view>: a / v b /   c". |
 | `answer` | `answer <choice>` | Press that button of the question the app is asking, or of the notice that is. |
 | `open` | `open <path>` | Show an image, video or PDF in the viewer; a path in the folder, or anywhere on the disk. |
 | `focus` | `focus page\|app` | Give the keyboard to the webview on screen, or back to the window: what clicking one or the other does. |

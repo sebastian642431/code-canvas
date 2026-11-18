@@ -188,6 +188,7 @@ pub struct App {
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
     preview_hits: Vec<(Rect, String)>,
+    lens_hits: Vec<(Rect, ext::views::Lens)>,
     preview: Option<String>,
     curves_for: Option<u32>,
     last_frame: Instant,
@@ -322,6 +323,7 @@ impl App {
             chip_hits: Vec::new(),
             toggle_hits: Vec::new(),
             preview_hits: Vec::new(),
+            lens_hits: Vec::new(),
             preview: None,
             curves_for: None,
             last_frame: Instant::now(),
@@ -2569,6 +2571,7 @@ impl App {
     }
 
     fn sync_documents(&mut self) {
+        self.ext.set_show_lenses(self.ui.prefs.code_lenses);
         if self.drag.is_some() {
             return;
         }
@@ -2822,6 +2825,12 @@ impl App {
         let vp = self.viewport();
         let cursor = self.cursor;
         let on_canvas = !self.over_ui(cursor) && self.drag.as_ref().is_none_or(|d| !d.moved);
+        let lens = on_canvas.then(|| self.lens_hits.iter().find(|(r, _)| r.contains(cursor))).flatten();
+        let lens = lens.map(|(_, l)| l.id.clone());
+        if lens != self.ext.views.lens_hover {
+            self.ext.views.lens_hover = lens;
+            self.request_redraw();
+        }
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let (mut hover, mut cell) = (None, None);
         if on_canvas {
@@ -2845,6 +2854,136 @@ impl App {
             page.hover_cell = cell;
             self.in_long_line = in_long_line;
             self.request_redraw();
+        }
+    }
+
+    /// `lens <path> <line> [n]`: what a click on the n-th lens (1-based) of that line does;
+    /// `lens report <path>`: logs the lenses of a file, line by line.
+    fn script_lens(&mut self, arg: &str) {
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        let path_of = |rel: &str| self.pages.get(self.active).map(|p| p.root.join(rel));
+        match words.as_slice() {
+            ["report", rel] => {
+                let Some(path) = path_of(rel) else { return };
+                let lines = self.ext.lens_lines(&path);
+                if lines.is_empty() {
+                    log::info!("script: no code lenses in {rel}");
+                }
+                for line in lines {
+                    let titles: Vec<String> =
+                        self.ext.lenses_at(&path, line).iter().map(|l| ext::views::plain_title(&l.title)).collect();
+                    log::info!("script: lenses of {rel} line {}: {}", line + 1, titles.join(" | "));
+                }
+            }
+            [rel, line, rest @ ..] => {
+                let (Some(path), Ok(line)) = (path_of(rel), line.parse::<u32>()) else {
+                    return log::warn!("script: lens <path> <line> [n]");
+                };
+                let n = rest.first().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).max(1);
+                match self.ext.lenses_at(&path, line.saturating_sub(1)).get(n - 1) {
+                    Some(lens) if lens.runs => self.ext.run_lens(&lens.clone()),
+                    Some(lens) => log::warn!("script: the lens '{}' runs nothing", lens.title),
+                    None => log::warn!("script: no lens {n} on line {line} of {rel}"),
+                }
+            }
+            _ => log::warn!("script: lens <path> <line> [n], or lens report <path>"),
+        }
+    }
+
+    /// `tree <label>`: a click on that row of an open list; `tree expand|collapse <label>`;
+    /// `tree button <command> <label>`: a row's button; `tree title <command>`: a button of
+    /// a view's title; `tree report`: logs the rows of every list that is open.
+    fn script_tree(&mut self, arg: &str) {
+        let containers: Vec<String> = self
+            .ui
+            .cards
+            .iter()
+            .filter_map(|c| if let Panel::Tree(id) = c { Some(id.clone()) } else { None })
+            .collect();
+        let mut views: Vec<(String, String)> = Vec::new();
+        for id in &containers {
+            if let Some((e, container)) = self.ext.tree_container(id) {
+                let extension = e.id.clone();
+                let container = container.clone();
+                views.extend(self.ext.tree_views(&container).into_iter().map(|v| (extension.clone(), v.id)));
+            }
+        }
+        let find = |ext: &mut Extensions, label: &str| {
+            views.iter().find_map(|(extension, view)| {
+                let row = ext.tree_rows(view).into_iter().find(|s| s.row.label == label)?;
+                Some((extension.clone(), view.clone(), row))
+            })
+        };
+        let (verb, rest) = arg.split_once(' ').unwrap_or((arg, ""));
+        match verb {
+            "report" => {
+                for (_, view) in &views {
+                    log::info!("script: tree {view}: {}", self.ext.tree_report(view).join(" / "));
+                }
+            }
+            "expand" | "collapse" => match find(&mut self.ext, rest) {
+                Some((_, view, shown)) if shown.open != (verb == "expand") => {
+                    self.ext.toggle_tree_row(&view, &shown.row.handle)
+                }
+                Some(_) => {}
+                None => log::warn!("script: no row '{rest}' in the lists open"),
+            },
+            "button" => {
+                let (command, label) = rest.split_once(' ').unwrap_or((rest, ""));
+                match find(&mut self.ext, label) {
+                    Some((extension, view, shown)) => {
+                        let buttons = self.ext.view_buttons(&extension, &view, Some(&shown.row.context));
+                        match buttons.iter().find(|b| b.command == command) {
+                            Some(item) => self.ext.tree_command(&view, Some(&shown.row.handle), item),
+                            None => log::warn!("script: the row '{label}' has no button {command}"),
+                        }
+                    }
+                    None => log::warn!("script: no row '{label}' in the lists open"),
+                }
+            }
+            "title" => {
+                let button = views.iter().find_map(|(extension, view)| {
+                    let item = self.ext.view_buttons(extension, view, None).into_iter().find(|b| b.command == rest)?;
+                    Some((view.clone(), item))
+                });
+                match button {
+                    Some((view, item)) => self.ext.tree_command(&view, None, &item),
+                    None => log::warn!("script: no list open has the button {rest}"),
+                }
+            }
+            _ => match find(&mut self.ext, arg) {
+                Some((_, view, shown)) if shown.row.collapsible > 0 => {
+                    self.ext.toggle_tree_row(&view, &shown.row.handle);
+                    if shown.row.command {
+                        self.ext.click_tree_row(&view, &shown.row);
+                    }
+                }
+                Some((_, view, shown)) => self.ext.click_tree_row(&view, &shown.row),
+                None => log::warn!("script: no row '{arg}' in the lists open"),
+            },
+        }
+    }
+
+    /// What "3 references" of a code lens does: the canvas goes to the name and selects it,
+    /// which draws its uses.
+    fn show_uses(&mut self, path: &Path, line: u32, col: u32) {
+        self.show_path(path, Some((line, col, 1)));
+        let Some((i, rel)) = self.locate_file(path) else { return };
+        if i != self.active {
+            return;
+        }
+        let page = &self.pages[i];
+        let Some(r) = page.ready() else { return };
+        let Some(file) = r.repo.file_index(&rel) else { return };
+        let row = page.row_of(&rel, line);
+        let sym =
+            r.repo.resolve_at(file as u32, row, col).map(|(sym, _)| sym).or_else(|| r.repo.sym_at(file as u32, row));
+        match sym {
+            Some(sym) => {
+                log::info!("showing the uses of '{}'", r.repo.sym_name(sym));
+                self.select_symbol(sym, None, false);
+            }
+            None => log::info!("no name to show the uses of at line {} of {rel}", line + 1),
         }
     }
 
@@ -2908,6 +3047,10 @@ impl App {
         }
         if let Some(path) = self.preview_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, p)| p.clone()) {
             self.apply(Action::Preview(path));
+            return;
+        }
+        if let Some(lens) = self.lens_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, l)| l.clone()) {
+            self.ext.run_lens(&lens);
             return;
         }
         if let Some(path) = self.toggle_hits.iter().find(|(r, _)| r.contains(pos)).map(|(_, p)| p.clone()) {
@@ -3663,6 +3806,8 @@ impl App {
             }
             Step::Format(path) => self.format_file(Some(path)),
             Step::Command(id) => self.ext.run_command(&id, &id),
+            Step::Lens(arg) => self.script_lens(&arg),
+            Step::Tree(arg) => self.script_tree(&arg),
             Step::Answer(choice) => {
                 let asked = self.ui.ask.as_ref().and_then(|ask| {
                     let said = ask.choices.iter().find(|(label, ..)| label.eq_ignore_ascii_case(&choice))?;
@@ -3808,7 +3953,7 @@ impl App {
                     let open = self.ext.webviews.iter().find(|w| w.key == key || w.extension == key);
                     match found.or(open.map(|w| w.key.clone())) {
                         Some(k) => {
-                            self.ui.show(Panel::Webview(k));
+                            self.ui.show(Panel::of_rail(k));
                         }
                         None => log::warn!("script: no webview '{key}'"),
                     }
@@ -4110,7 +4255,7 @@ impl App {
                 let mut parts = what.split_whitespace();
                 let panel = parts.next().and_then(|name| {
                     let view = self.ext.rail_items().into_iter().find(|w| w.view == name || w.extension == name);
-                    view.map(|w| Panel::Webview(w.view)).or_else(|| Panel::from_key(name))
+                    view.map(|w| Panel::of_rail(w.view)).or_else(|| Panel::from_key(name))
                 });
                 let side = match parts.next() {
                     Some("left") => Some(Side::Left),
@@ -4382,6 +4527,7 @@ impl App {
                 ext::Event::ShowWebview(key) => {
                     self.ui.show(Panel::Webview(key));
                 }
+                ext::Event::ShowUses { path, line, col } => self.show_uses(&path, line, col),
             }
         }
         let mut roots: Vec<PathBuf> = self.pages.iter().map(|p| p.root.clone()).collect();
@@ -4983,6 +5129,7 @@ impl App {
         self.chip_hits = std::mem::take(&mut canvas_overlay.chip_hits);
         self.toggle_hits = std::mem::take(&mut canvas_overlay.toggle_hits);
         self.preview_hits = std::mem::take(&mut canvas_overlay.preview_hits);
+        self.lens_hits = std::mem::take(&mut canvas_overlay.lens_hits);
         let long_line = self.long_line_now(vp, area, s);
         let strip_rows: Vec<StripRow> =
             long_line.as_ref().map_or_else(Vec::new, |(long, caret)| long.draw(&mut canvas_overlay, *caret, s));

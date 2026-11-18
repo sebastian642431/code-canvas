@@ -1,0 +1,41 @@
+{
+  "name": "fake-views",
+  "publisher": "qa",
+  "displayName": "QA views",
+  "description": "Code lenses over every Rust function and a container of two tree views, with title and row buttons. What its commands are asked is written to qa-ran.txt in the first folder.",
+  "version": "1.0.0",
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:rust"],
+  "engines": { "vscode": "^1.80.0" },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "qaShelf", "title": "QA shelf", "icon": "$(beaker)" }]
+    },
+    "views": {
+      "qaShelf": [
+        { "id": "qa.items", "name": "Produce" },
+        { "id": "qa.notes", "name": "Notes" },
+        { "id": "qa.hidden", "name": "Hidden", "when": "qa.never" }
+      ]
+    },
+    "commands": [
+      { "command": "qa.views.run", "title": "Run" },
+      { "command": "qa.items.add", "title": "Add a fruit", "icon": "$(add)" },
+      { "command": "qa.items.refresh", "title": "Refresh", "icon": "$(refresh)" },
+      { "command": "qa.items.remove", "title": "Remove", "icon": "$(trash)" },
+      { "command": "qa.items.open", "title": "Open" },
+      { "command": "qa.lenses.more", "title": "More lenses" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "qa.items.add", "when": "view == qa.items", "group": "navigation" },
+        { "command": "qa.items.refresh", "when": "view == qa.items", "group": "navigation@2" },
+        { "command": "qa.lenses.more", "when": "view == qa.items", "group": "other" }
+      ],
+      "view/item/context": [
+        { "command": "qa.items.remove", "when": "view == qa.items && viewItem == fruit", "group": "inline" },
+        { "command": "qa.items.open", "when": "view == qa.items", "group": "open" }
+      ]
+    }
+  }
+}
