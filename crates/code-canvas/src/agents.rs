@@ -549,18 +549,17 @@ mod tests {
 
     #[test]
     fn what_an_assistant_reads_edits_and_searches_is_where_it_is() {
+        let root = if cfg!(windows) { "C:/work/app" } else { "/work/app" };
+        let under = |rel: &str| format!("{root}/{rel}");
         let hook = |event: &str, tool: &str, input: Value| {
-            json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": event, "cwd": "C:/work/app",
+            json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": event, "cwd": root,
                     "tool_name": tool, "tool_input": input } })
         };
-        let agents = heard(&[hook(
-            "PreToolUse",
-            "Read",
-            json!({ "file_path": "C:/work/app/src/a.rs", "offset": 40, "limit": 20 }),
-        )]);
+        let agents =
+            heard(&[hook("PreToolUse", "Read", json!({ "file_path": under("src/a.rs"), "offset": 40, "limit": 20 }))]);
         let agent = &agents.list[0];
         assert_eq!((agent.name(), agent.role.as_str(), agent.doing), ("Nova", "Claude Code", Doing::Reading));
-        assert_eq!(agent.path.as_deref(), Some(std::path::Path::new("C:/work/app/src/a.rs")));
+        assert_eq!(agent.path.as_deref(), Some(std::path::Path::new(&under("src/a.rs"))));
         assert_eq!(agent.lines, Some((39, 20)));
 
         let agents = heard(&[
@@ -575,13 +574,12 @@ mod tests {
         assert_eq!(agents.list.len(), 1, "one session is one assistant");
         assert_eq!(
             agent.path.as_deref(),
-            Some(std::path::Path::new("C:/work/app/src/b.rs")),
+            Some(std::path::Path::new(&under("src/b.rs"))),
             "a relative path is the session's"
         );
         assert_eq!((agent.doing, agent.find.as_deref(), agent.lines), (Doing::Editing, Some("let a = 2;"), None));
 
-        let agents =
-            heard(&[hook("PreToolUse", "Grep", json!({ "pattern": "fn main", "path": "C:/work/app/crates" }))]);
+        let agents = heard(&[hook("PreToolUse", "Grep", json!({ "pattern": "fn main", "path": under("crates") }))]);
         assert_eq!((agents.list[0].doing, agents.list[0].note.as_str()), (Doing::Searching, "for fn main"));
         let agents = heard(&[hook("PreToolUse", "Bash", json!({ "command": "cargo   build\n --release" }))]);
         assert_eq!((agents.list[0].doing, agents.list[0].note.as_str()), (Doing::Running, "cargo build --release"));
