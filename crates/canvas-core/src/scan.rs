@@ -386,6 +386,7 @@ pub struct Repo {
     pub kept_deps: Vec<Option<crate::deps::FileDeps>>,
     pub reused: usize,
     pub text_bytes: u64,
+    stale: Vec<(usize, SourceFile)>,
 }
 
 impl Repo {
@@ -438,10 +439,26 @@ impl Repo {
         self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(rel_path))).ok()
     }
 
+    pub fn files_under<'a>(&'a self, dir: &str) -> impl Iterator<Item = &'a SourceFile> + 'a {
+        let first = self.files.partition_point(|f| Path::new(&f.rel_path) < Path::new(dir));
+        let inside = format!("{dir}/");
+        self.files[first..].iter().take_while(move |f| f.rel_path.starts_with(&inside))
+    }
+
+    fn set_file(&mut self, index: usize, file: SourceFile) {
+        let old = std::mem::replace(&mut self.files[index], file);
+        self.total_lines = self.total_lines + self.files[index].line_count() - old.line_count();
+        if let Some(kept) = self.kept_deps.get_mut(index) {
+            *kept = None;
+        }
+        if self.stale.iter().all(|(at, _)| *at != index) {
+            self.stale.push((index, old));
+        }
+    }
+
     pub fn replace_source(&mut self, index: usize, source: &str, opts: &ScanOptions) {
         let rel = self.files[index].rel_path.clone();
-        self.files[index] = build_file(rel, source, opts);
-        self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
+        self.set_file(index, build_file(rel, source, opts));
     }
 
     pub fn replace_shown(
@@ -472,22 +489,103 @@ impl Repo {
         }
         (file.analysis.symbols, file.analysis.impl_traits) = (symbols, Vec::new());
         (file.names, file.name_at, file.implemented) = (names, name_at, implemented);
-        self.files[index] = file;
-        self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
+        self.set_file(index, file);
         places
     }
 
-    pub fn reindex_symbols(&mut self) {
-        self.symbols = crate::refs::SymbolIndex::build(&self.files);
+    pub fn reindex_symbols(&mut self) -> Vec<usize> {
+        let stale = std::mem::take(&mut self.stale);
+        for (index, old) in &stale {
+            self.symbols.replace_file(&self.files, *index as u32, old);
+        }
+        stale.into_iter().map(|(index, _)| index).collect()
     }
 
     pub fn reload_file(&mut self, index: usize, opts: &ScanOptions) {
         let rel = self.files[index].rel_path.clone();
-        let path = self.root.join(&rel);
-        self.files[index] = load_file(&path, rel, None, opts);
-        self.files[index].root = Some(Arc::from(self.root.as_path()));
-        self.total_lines = self.files.iter().map(|f| f.line_count()).sum();
-        self.symbols = crate::refs::SymbolIndex::build(&self.files);
+        let mut file = load_file(&self.root.join(&rel), rel, None, opts);
+        file.root = Some(Arc::from(self.root.as_path()));
+        self.set_file(index, file);
+        self.reindex_symbols();
+    }
+
+    pub fn add_file(&mut self, rel_path: &str, opts: &ScanOptions) -> Option<usize> {
+        let Err(index) = self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(rel_path))) else {
+            return None;
+        };
+        let path = self.root.join(rel_path);
+        let known = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
+        self.reindex_symbols();
+        let mut file = load_file(&path, rel_path.to_string(), Some(known.len()), opts);
+        if file.note.as_ref().is_none_or(|note| note.starts_with("truncated")) {
+            file.root = Some(Arc::from(self.root.as_path()));
+        }
+        let changed = known.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+        file.stamp = (known.len(), changed.map_or(0, |since| since.as_nanos() as u64));
+        self.total_lines += file.line_count();
+        self.files.insert(index, file);
+        if !self.kept_deps.is_empty() {
+            self.kept_deps.insert(index, None);
+        }
+        shift_tree(&mut self.tree, index, true);
+        let mut dir = &mut self.tree;
+        let mut parts: Vec<&str> = rel_path.split('/').collect();
+        parts.pop();
+        let mut rel = String::new();
+        for part in parts {
+            if !rel.is_empty() {
+                rel.push('/');
+            }
+            rel.push_str(part);
+            let at = match dir.dirs.binary_search_by(|d| Path::new(&d.name).cmp(Path::new(part))) {
+                Ok(at) => at,
+                Err(at) => {
+                    dir.dirs.insert(at, Dir { name: part.to_string(), rel_path: rel.clone(), ..Default::default() });
+                    at
+                }
+            };
+            dir = &mut dir.dirs[at];
+        }
+        let at = dir.files.partition_point(|&f| f < index);
+        dir.files.insert(at, index);
+        self.symbols.insert_file(&self.files, index as u32);
+        Some(index)
+    }
+
+    pub fn remove_file(&mut self, index: usize) -> SourceFile {
+        self.reindex_symbols();
+        let old = self.files.remove(index);
+        self.total_lines -= old.line_count();
+        if !self.kept_deps.is_empty() {
+            self.kept_deps.remove(index);
+        }
+        let parts: Vec<&str> = old.rel_path.split('/').collect();
+        unhang(&mut self.tree, &parts[..parts.len() - 1], index);
+        shift_tree(&mut self.tree, index + 1, false);
+        self.symbols.remove_file(&self.files, index as u32, &old);
+        old
+    }
+}
+
+fn shift_tree(dir: &mut Dir, from: usize, up: bool) {
+    for f in dir.files.iter_mut().filter(|f| **f >= from) {
+        *f = if up { *f + 1 } else { *f - 1 };
+    }
+    for sub in &mut dir.dirs {
+        shift_tree(sub, from, up);
+    }
+}
+
+fn unhang(dir: &mut Dir, parts: &[&str], index: usize) {
+    match parts.split_first() {
+        None => dir.files.retain(|&f| f != index),
+        Some((first, rest)) => {
+            let Some(at) = dir.dirs.iter().position(|d| d.name == *first) else { return };
+            unhang(&mut dir.dirs[at], rest, index);
+            if dir.dirs[at].files.is_empty() && dir.dirs[at].dirs.is_empty() {
+                dir.dirs.remove(at);
+            }
+        }
     }
 }
 
@@ -832,6 +930,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: Option<Arc<ScanProgress>>
         kept_deps,
         reused,
         text_bytes,
+        stale: Vec::new(),
     }
 }
 

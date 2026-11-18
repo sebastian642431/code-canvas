@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -47,7 +48,7 @@ pub struct Edge {
     pub kind: DepKind,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Deps {
     pub edges: Vec<Edge>,
     pub unresolved: u32,
@@ -61,6 +62,7 @@ pub struct Deps {
     in_start: Vec<u32>,
     pairs: usize,
     cycle_of: Vec<u32>,
+    per_file: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +182,10 @@ impl Deps {
 
     fn build(mut edges: Vec<Edge>, files: usize) -> Deps {
         edges.par_sort_unstable_by_key(|e| (e.from, e.to, e.line, e.kind.index()));
+        Self::indexed(edges, files)
+    }
+
+    fn indexed(edges: Vec<Edge>, files: usize) -> Deps {
         let mut counts = [0u32; 5];
         let mut out_start = vec![0u32; files + 1];
         let mut in_start = vec![0u32; files + 1];
@@ -219,6 +225,7 @@ impl Deps {
             in_start,
             pairs,
             cycle_of,
+            per_file: Vec::new(),
         };
         deps.cyclic_edges = deps.edges.iter().filter(|e| deps.in_cycle(e)).count();
         deps
@@ -239,8 +246,116 @@ impl Deps {
     pub fn pairs(&self) -> usize {
         self.pairs
     }
+
+    fn reindex(&mut self, files: usize) {
+        let (unresolved, external, ms) = (self.unresolved, self.external, self.ms);
+        let per_file = std::mem::take(&mut self.per_file);
+        *self = Deps::indexed(std::mem::take(&mut self.edges), files);
+        (self.unresolved, self.external, self.ms, self.per_file) = (unresolved, external, ms, per_file);
+    }
+
+    pub fn update_files(&mut self, repo: &Repo, changed: &BTreeSet<u32>) -> bool {
+        if self.per_file.len() != repo.files.len() {
+            *self = analyze(repo);
+            return true;
+        }
+        let java = changed.iter().any(|&f| scanner_for(&repo.files[f as usize].name) == Some(Scanner::Java));
+        let ix = Index::lean(&repo.files, java);
+        let mut fresh: Vec<(u32, Vec<Edge>)> = Vec::with_capacity(changed.len());
+        let mut moved = false;
+        for &f in changed {
+            let mut s = Scratch::default();
+            scan_file(&ix, f, &repo.files[f as usize], &mut s);
+            let (unresolved, external) = std::mem::replace(&mut self.per_file[f as usize], (s.unresolved, s.external));
+            self.unresolved = self.unresolved + s.unresolved - unresolved;
+            self.external = self.external + s.external - external;
+            let old = self.outgoing(f);
+            let targets = |edges: &[Edge]| {
+                let mut out: Vec<(u32, usize)> = edges.iter().map(|e| (e.to, e.kind.index())).collect();
+                out.sort_unstable();
+                out
+            };
+            moved |= targets(old) != targets(&s.edges);
+            fresh.push((f, s.edges));
+        }
+        if !moved {
+            for (f, edges) in fresh {
+                let at = self.out_start[f as usize] as usize;
+                self.edges[at..at + edges.len()].copy_from_slice(&edges);
+            }
+            return false;
+        }
+        for (f, edges) in fresh.into_iter().rev() {
+            let range = range(&self.out_start, f).unwrap_or(0..0);
+            self.edges.splice(range, edges);
+        }
+        self.reindex(repo.files.len());
+        true
+    }
+
+    pub fn insert_file(&mut self, repo: &Repo, file: u32) -> Option<usize> {
+        let new = &repo.files[file as usize];
+        if reaches_far(&new.name) {
+            return None;
+        }
+        if self.per_file.len() + 1 != repo.files.len() {
+            return None;
+        }
+        let mut changed: BTreeSet<u32> = naming(repo, new, Some(file)).into_iter().collect();
+        changed.insert(file);
+        for e in &mut self.edges {
+            e.from += (e.from >= file) as u32;
+            e.to += (e.to >= file) as u32;
+        }
+        self.per_file.insert(file as usize, (0, 0));
+        self.reindex(repo.files.len());
+        self.update_files(repo, &changed);
+        Some(changed.len())
+    }
+
+    pub fn remove_file(&mut self, repo: &Repo, file: u32, old: &SourceFile) -> Option<usize> {
+        if reaches_far(&old.name) || self.per_file.len() != repo.files.len() + 1 {
+            return None;
+        }
+        let importers = self.incoming(file).map(|e| e.from).filter(|&f| f != file);
+        let mut changed: BTreeSet<u32> = importers.map(|f| f - (f > file) as u32).collect();
+        changed.extend(naming(repo, old, None));
+        let (unresolved, external) = self.per_file.remove(file as usize);
+        (self.unresolved, self.external) = (self.unresolved - unresolved, self.external - external);
+        self.edges.retain(|e| e.from != file && e.to != file);
+        for e in &mut self.edges {
+            e.from -= (e.from > file) as u32;
+            e.to -= (e.to > file) as u32;
+        }
+        self.reindex(repo.files.len());
+        self.update_files(repo, &changed);
+        Some(changed.len())
+    }
 }
 
+fn reaches_far(name: &str) -> bool {
+    matches!(name, "Cargo.toml" | "package.json" | "tsconfig.json" | "lib.rs" | "main.rs")
+}
+
+fn naming(repo: &Repo, named: &SourceFile, skip: Option<u32>) -> Vec<u32> {
+    let stem = named.name.split('.').next().unwrap_or_default();
+    let mut words = vec![stem];
+    if matches!(stem, "index" | "mod" | "__init__") {
+        let parent = named.rel_path.rsplit('/').nth(1).unwrap_or_default();
+        words.push(parent);
+    }
+    words.retain(|w| !w.is_empty());
+    let says = |f: &SourceFile| {
+        let maybe = words.iter().any(|w| f.may_hold(w.as_bytes()));
+        maybe && f.peek(|text, _| words.iter().any(|w| text.contains(w)))
+    };
+    repo.files
+        .par_iter()
+        .enumerate()
+        .filter(|(at, f)| Some(*at as u32) != skip && scanner_for(&f.name).is_some() && says(f))
+        .map(|(at, _)| at as u32)
+        .collect()
+}
 fn range(starts: &[u32], file: u32) -> Option<std::ops::Range<usize>> {
     let f = file as usize;
     Some(*starts.get(f)? as usize..*starts.get(f + 1)? as usize)
@@ -285,6 +400,7 @@ pub fn analyze_keeping(repo: &Repo) -> (Deps, Vec<FileDeps>) {
     let mut deps = Deps::build(edges, repo.files.len());
     deps.unresolved = unresolved;
     deps.external = external;
+    deps.per_file = per_file.iter().map(|p| (p.unresolved, p.external)).collect();
     deps.ms = started.elapsed().as_millis();
     (deps, per_file)
 }
@@ -294,16 +410,21 @@ const JAVA_SEGMENTS: usize = 6;
 const AMBIGUOUS: u32 = u32::MAX;
 
 struct Index<'r> {
-    by_path: HashMap<&'r str, u32>,
+    files: &'r [SourceFile],
+    by_path: Option<HashMap<&'r str, u32>>,
     java: HashMap<&'r str, u32>,
 }
 
 impl<'r> Index<'r> {
     fn build(files: &'r [SourceFile]) -> Self {
-        let mut by_path = HashMap::with_capacity(files.len());
+        let mut ix = Self::lean(files, true);
+        ix.by_path = Some(files.iter().enumerate().map(|(i, f)| (f.rel_path.as_str(), i as u32)).collect());
+        ix
+    }
+
+    fn lean(files: &'r [SourceFile], with_java: bool) -> Self {
         let mut java: HashMap<&'r str, u32> = HashMap::new();
-        for (i, f) in files.iter().enumerate() {
-            by_path.insert(f.rel_path.as_str(), i as u32);
+        for (i, f) in files.iter().enumerate().filter(|_| with_java) {
             if scanner_for(&f.name) != Some(Scanner::Java) {
                 continue;
             }
@@ -318,11 +439,17 @@ impl<'r> Index<'r> {
                 end = start - 1;
             }
         }
-        Index { by_path, java }
+        Index { files, by_path: None, java }
     }
 
     fn find(&self, path: &str) -> Option<u32> {
-        self.by_path.get(path).copied()
+        match &self.by_path {
+            Some(by_path) => by_path.get(path).copied(),
+            None => {
+                let at = self.files.binary_search_by(|f| Path::new(&f.rel_path).cmp(Path::new(path))).ok()?;
+                (self.files[at].rel_path == path).then_some(at as u32)
+            }
+        }
     }
 
     fn find_with(&self, path: &mut String, ext: &str) -> Option<u32> {

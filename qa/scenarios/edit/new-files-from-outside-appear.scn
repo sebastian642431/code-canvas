@@ -1,8 +1,11 @@
 title: Two files made by another program two seconds apart both get a card
 folders: edit-odd
 limit: 50
-expect-log: files were added or removed, scanning again
-expect-log: scanned 'edit-odd': 14 files
+expect-log: updated 'made_first\.txt' \(made\) alone in
+expect-log: updated 'made_second\.txt' \(made\) alone in
+expect-log: script: 14 files on the canvas, \d+ cards
+expect-log: script: the layout, the symbol index and the dependencies are what building them again gives
+forbid-log: scanning again
 
 wait 3000
 touch made_first.txt one
@@ -17,4 +20,5 @@ goto made_second.txt
 wait 1500
 mark second-selected
 wait 400
+count
 quit

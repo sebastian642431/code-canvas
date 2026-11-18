@@ -3,7 +3,7 @@ folders: edit-odd
 limit: 50
 absent-file: edit-odd/b.txt
 forbid-log: nothing offers
-expect-log: files were added or removed, scanning again
+expect-log: updated 'b\.txt' \(deleted\) alone in
 expect-file: edit-odd/a.txt :: (?-i)\AMINEfirst of a\n
 
 wait 3000

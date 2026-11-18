@@ -218,6 +218,15 @@ ya en la caché del disco y dibuja el repositorio entero en ~5 ms por fotograma.
 ~4 GB de memoria porque hoy guarda el texto de todos los archivos; leerlo a demanda es
 lo próximo.
 
+**Cambiar un archivo cuesta ese archivo**, no la carpeta entera: se mueven su tarjeta y
+las carpetas que la rodean, se sacan y se vuelven a poner sus símbolos y sus imports, y
+en la placa de video se escribe solo lo que se movió. En una carpeta de 30.721
+archivos: escribir una línea pasó de 40 ms a 0,2 ms; guardar, de 73 ms a 9 ms (casi
+todo es volver a leer el archivo del disco); que otro programa lo cambie, de 85 ms a
+1 ms; crear o borrar un archivo, de 0,75 s (se volvía a escanear todo) a 10 ms. En el
+registro de cargo (53.028 archivos, 3,37 M de símbolos), releer un archivo pasó de
+342 ms a 3 ms.
+
 ## Extensiones
 
 Cómo se ejecutan las extensiones de VS Code, cuáles están probadas y qué falta

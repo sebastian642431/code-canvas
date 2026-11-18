@@ -169,6 +169,11 @@ impl TokenCache {
         self.asked.clear();
     }
 
+    pub fn forget_file(&mut self, file_index: usize) {
+        self.map.retain(|&(file, _), _| file != file_index as u32);
+        self.asked.remove(&(file_index as u32));
+    }
+
     pub fn len(&self) -> usize {
         self.map.len()
     }

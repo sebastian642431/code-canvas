@@ -124,6 +124,7 @@ network; the last rows are not tests but belong to the same toolbox.
 | What | Command |
 |---|---|
 | Time each phase of loading a folder | `cargo run --release -p canvas-core --example scan_bench -- <folder>` |
+| Time one file typed, read again, made and deleted, against building everything again | `cargo run --release -p canvas-render --example update_bench -- <folder> [--write] [--check]` (`--write` makes and deletes a file in the folder: never on a folder that is not yours to write; `--check` compares each step with everything built again) |
 | Time dependency analysis on a real repository | `CODE_CANVAS_DEPS_REPO=<folder> cargo test --release -p canvas-core deps::tests::bench -- --ignored --nocapture` |
 | Ask a real assistant for a commit message about this repository | `COMMIT_AI_TEST=claude cargo test -p code-canvas real_assistant -- --ignored --nocapture` |
 | What the Codex of this computer did, as the canvas would be told it (reads its sessions, writes nothing; `CODEX_SESSIONS_SHOW=1` lists each place) | `CODEX_SESSIONS_TEST=%USERPROFILE%\.codex\sessions cargo test -p code-canvas real_sessions -- --ignored --nocapture` |
@@ -194,7 +195,31 @@ What it is and how fast: see "Dependencies between files" in
 - `Index::by_path` gives the same answers as `Repo::file_index`, in one hash
   instead of a binary search over paths: an order of magnitude cheaper, and
   resolution is all lookups. The ignored `bench` test prints what one lookup costs
-  each way.
+  each way. `Index::lean` has no hash (and builds the Java suffixes only when a
+  Java file is resolved): for a handful of files the binary search is cheaper than
+  hashing every path. It checks that the path found is the one asked for, because
+  `Path` comparison ignores `.` components.
+- **One file at a time.** What a file imports depends only on its own text and on
+  which paths exist, so:
+  - its text changed (`Deps::update_files`): only its statements are resolved again.
+    When it still points at the same files with the same kinds (only lines moved,
+    what typing in a body does) its edges are rewritten in place and nothing else
+    changes: the order of `by_to` and the cycles depend on targets, not lines.
+    Otherwise its edges are spliced in and the indexes and the cycles are made
+    again from the sorted edges (`Deps::reindex`, linear, no sort).
+  - a file made (`Deps::insert_file`): file numbers after it move up, then its own
+    imports are resolved, and so are those of every file whose text holds its stem
+    (`naming`, through the `threes` filter first, then the text): only a statement
+    that names it can come to point at it, whether it pointed nowhere before or at
+    another file it now shadows (`x.ts` beside `x/index.ts`, `a/b/c.py` for `from
+    a.b import c`). For `index`, `mod` and `__init__` the folder's name counts too.
+  - a file deleted (`Deps::remove_file`): its edges go both ways, and its importers
+    and the files that name it are resolved again.
+  - `reaches_far`: making or deleting a `Cargo.toml`, `package.json`,
+    `tsconfig.json`, `lib.rs` or `main.rs` changes how many files resolve (package
+    roots, `crate::`), so the caller analyses everything again (`None`).
+  - `Deps::per_file` keeps each file's unresolved and external counts, so the
+    totals follow without counting again.
 - `MAX_STATEMENT_LINES` = 40: a statement that spans several lines is followed for
   that many lines.
 - **Import cycles** are found once, when the edges are built (`cycles`, Tarjan's
@@ -290,8 +315,8 @@ Resolution rules per language:
   row it crosses. Rows are *virtual*: column `k` of a long file starts at row
   `k × fold`, so the shader's arithmetic and `FOLD_LINES` columns of lines stay
   as they were; a shorter column just leaves rows empty at its foot.
-  `Page::show_edit` makes the edited file's `Wrap` again on each edit, and lays
-  the folder out again only when the card's height changes.
+  `Page::show_edit` makes the edited file's `Wrap` again on each edit
+  (`Layout::resize_file`, below).
 - `rest_of_line` is the geometry of that rest, in pixels of the screen: rows that
   start where the card cuts the line (`Node::shown_cols`) and go on to the right
   edge of the canvas, wrapping under the first row when the rest is wider. With
@@ -322,6 +347,37 @@ Resolution rules per language:
 - Children are packed tallest first, which packs best; ties keep the alphabetical
   order. A file's slot includes the label strip above its card, and `Layout::hit`
   counts that strip as part of the card.
+- **One file at a time.** Every node keeps the size of its place in its folder
+  (`Node::slot`, the label strip included) and where that place is from the
+  folder's corner (`Node::offset`), so a folder can be packed again from its
+  children's slots alone (`pack`, which `lay_dir` uses too) and a node placed again
+  from its parent with the very additions the full build makes: the results are
+  equal to the bit, which the tests of `updates.rs` compare.
+  - `Layout::resize_file` (a file's text changed): the card (or the collapsed box
+    it is counted in) takes its new size; if that size is the same nothing else
+    moves (only `lines` up the chain change). Otherwise its folder is packed again
+    (`repack`: its children in the order `lay_dir` would see them, dirs then files),
+    then the folder above, and so on until a folder keeps its size. Then, from the
+    top, the chain and the children that changed place are placed again with
+    their subtrees. Node order is **not** changed: a card that grew taller than its
+    neighbours keeps its index, though the full build would put it first. Nothing
+    depends on the order of siblings (they never overlap), and selections, the
+    hovered node and the scene's ranges stay valid. Compare layouts by path
+    (`Layout::differences`), not by index.
+  - `Layout::insert_file` / `remove_file` (a file made or deleted, the repository
+    already changed): `lay_dir` runs again with a `Relay`: the folders on the
+    file's path are laid out again, every other folder is the old node it was
+    (`kept`, with its slot, its counts and the part of its name that is its own
+    chain), and so is every other card of those folders. `Flat::keep` moves the
+    kept subtrees into the new list, renumbered, with file numbers moved past the
+    one made or deleted. `dir_node` and `file_anchor` are carried over by mapping
+    old nodes to new ones. It costs moving every node once (a few ms for 30,000)
+    and packing the folders on the path; no card is measured again. It returns, for
+    each new node, the old one it was (`NONE` for new), which is what the scene
+    needs.
+  - With `only_files` set (only changed, only connected, a commit shown) the file
+    numbers in the filter are the caller's, so these return `None` and the caller
+    builds everything again.
 
 ### crates/canvas-core/src/refs.rs
 
@@ -332,6 +388,19 @@ Resolution rules per language:
   names with the same hash are told apart when it is built and kept in
   `clashing`, by name; a name that is asked for and *defined nowhere* could in
   principle meet another name's hash and be given its symbols.
+- **One file at a time.** A file's names are taken out and put in without building
+  the index again (`SymbolIndex::replace_file`, `insert_file`, `remove_file`): a
+  name taken out of the sorted arrays is only marked (`Named::gone`, positions), a
+  name put in goes to a small sorted list beside them (`Named::added`). `defs` and
+  `impls` therefore give a `Cow`: the slice itself while nothing changed for that
+  hash, otherwise a merged copy. Past `COMPACT_AT` (16,384) changes, and before
+  file numbers move (a file made or deleted), both are folded back into the arrays
+  in one pass (`compact`). A file whose names are the same as before (typing in a
+  body) changes nothing at all.
+  - Should a name put in meet the hash of another name, or a hash in `clashing`, the
+    index is built again whole: rare, and it keeps the clash rule exact.
+  - `SymbolIndex::tidied` is the index with every change folded in, equal to one
+    built from the same files; the tests and the `count` step compare them.
 - `relations` skips a file whose `idents` filter rules the name out; `search_text`
   one whose `threes` filter rules the phrase out, and once enough hits are found
   it stops reading files it would have to read from disk. Both are exact for
@@ -383,7 +452,7 @@ Text on demand
   the budget (`page::text_budget`: 768 MB, or `CODE_CANVAS_TEXT_MB`) every two
   seconds, and a scan trims before it hands the folder over.
 - Symbol names are kept beside the text (`names`, `name_at`, `implemented`), so
-  the index is rebuilt after every save without reading a file, and what draws a
+  the index is patched after every save without reading a file, and what draws a
   symbol's name does not read its file. `Symbol::name_start` still points into the
   text: the relations compare it with token offsets.
 - `Repo::warm` reads the text of files that were taken from the store, a batch at
@@ -413,8 +482,19 @@ The phases are in "Loading a folder" in [ARCHITECTURE.md](ARCHITECTURE.md).
 - `clean_path`: `canonicalize` on Windows returns `\\?\C:\…`; the prefix is
   stripped.
 - `Repo::replace_source` (an edit not saved yet) deliberately leaves the symbol
-  index as it was: rebuilding it per keystroke would be slow. Call
-  `Repo::reindex_symbols` when the typing pauses (the app does, after 700 ms).
+  index as it was. Every file put in place of another goes through `set_file`,
+  which keeps the version the index last saw in `Repo::stale`; `reindex_symbols`
+  takes those files' names out and puts the new ones in (`SymbolIndex::replace_file`)
+  and gives their numbers back, so the caller can resolve their imports too. The
+  app calls it when the typing pauses (after 700 ms); `reload_file` calls it at once.
+- `Repo::add_file` and `Repo::remove_file`: one file made or deleted without a scan.
+  `files` stays sorted (the new one goes where a scan would put it), the numbers in
+  `tree` after it move by one (`shift_tree`), a new folder is put among its
+  siblings in the order the scan makes, and a folder left empty is taken out
+  (`unhang`). Both flush `stale` first, because the symbol index moves its file
+  numbers. `kept_deps` follows `files` while it is not empty.
+- `Repo::files_under(dir)`: the files of a folder are one run of the sorted list,
+  right after the folder's own path (component order puts `a/b/x` before `a/b-c`).
 - `LOAD_PROFILE`: CPU nanoseconds per loading step, summed over all threads, as
   `[stat, read, normalise, analyse]`. Only `scan_bench` reads it.
 - `ScanOptions::skip_files` are lockfiles: huge and rarely useful.
@@ -560,6 +640,27 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 - `MAX_DYNAMIC_INSTANCES` = 4,000,000 per-frame instances: a safety valve.
 - `SceneData` is pure data so it can be built on the scan thread; only the upload
   (`SceneGpu::new`) runs on the UI thread.
+- **Instances name a slot, not a file.** `CodeInstance::file` is an index into
+  `origins`, and `SceneGpu::slots[file]` says which (the file's own number when the
+  scene is built). A file made gets a free slot or a new one at the end; a file
+  deleted gives its slot back. So when file numbers move, the block instances
+  already on the GPU stay right, and `prepare` maps the file to its slot for the
+  instances it makes each frame.
+- **One file at a time** on the GPU:
+  - `SceneGpu::card_changed` (after `Layout::resize_file`): the frames of the nodes
+    that moved are written where they are, and their origins (the span of slots
+    they touch). The card's blocks are written in place when there are as many as
+    before; otherwise a new block buffer is filled by copying what is before and
+    after the card on the GPU (`copy_buffer_to_buffer`, it needs `COPY_SRC`) and
+    writing the card's blocks between (`splice_blocks`), and `block_start` moves.
+  - `SceneGpu::relaid` (after `Layout::insert_file` / `remove_file`): frames and
+    origins are written whole (32 and 16 bytes a node: about a megabyte for 30,000
+    files), and the new block buffer is copied from the old one in runs of nodes
+    that were kept, in their new order (`move_blocks`); only new cards are made on
+    the CPU. A buffer cannot be copied into itself, hence a new one each time the
+    count changes.
+  - `Moves` is what both write through: the GPU, or a `Vec` in the test that checks
+    them against a scene built again.
 - `push_lines` merges tokens separated by small gaps into one bar.
 - On a wrapped card the instances carry rows, not lines: `push_bar` cuts a bar
   into one per row (`Wrap::pieces`) and `push_blocks` stretches a block over the
@@ -1254,23 +1355,29 @@ Keyboard and focus
 
 Editing and files
 
-- Typing is debounced twice in `App::poll_background`: the symbol index is rebuilt
-  700 ms after the last edit, and the extensions get the text 250 ms after it, not
-  per keystroke.
+- Typing is debounced twice in `App::poll_background`: the names of the typed files
+  go into the symbol index and their imports are resolved again 700 ms after the
+  last edit (not for a card that shows a diff: its text is not the file's), and the
+  extensions get the text 250 ms after it, not per keystroke. The card itself, its
+  folders and its blocks follow each keystroke (`Page::show_edit`).
 - `App::save_edit` reloads the file from disk after writing, so the symbol index
   and git see the saved file; then the extensions format it if the settings say
   so.
 - `App::write_file` (a formatter or a fix produced new contents): an open editor
   without changes of its own takes the new text.
 - `App::on_disk_changes`:
-  - paths with a skipped directory in them (build output, dependencies) are
-    ignored;
+  - paths with a skipped directory in them (build output, dependencies) and
+    lockfiles (`ScanOptions::skip_files`) are ignored;
   - new paths count only when git would not ignore them;
-  - a few changed files are reloaded one by one; many, or new and removed ones,
-    mean a rescan;
-  - no automatic rescan for a huge folder (it takes seconds: that stays the user's
-    call, F5), right after another one, while the page is loading, or while any
-    editor has unsaved changes;
+  - up to `ONE_BY_ONE` (24) files changed, made or deleted (a rename is one of
+    each) are taken one by one: `Page::reload_file`, `Page::file_made`,
+    `Page::file_gone`. Nothing else is read or laid out again. A folder that is
+    gone counts as all its files gone. Directories reported as changed are
+    ignored: Windows reports the folder of every file that changes;
+  - more than that, or a folder still being read, mean a rescan: none for a huge
+    folder (it takes seconds: that stays the user's call, F5), right after another
+    one, or while the page is loading;
+  - a file made by another program is lit and travelled to like one that changed;
   - a file with unsaved edits is not reloaded: what is being typed here wins over
     what changed there;
   - a changed `package.json` or `Cargo.toml` has its dependencies read again.
@@ -1997,11 +2104,46 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
   round trip, so nothing is lost on save.
 - `Page::editors` keeps files with edits in memory until saved, so leaving a file
   does not lose what was typed.
-- **`Page::show_edit` and `Page::reload_file` expect the caller to drop the page's
-  cached text first** (`TextLayer::drop_page`).
-- Both clear the selections: symbols and lines of that file moved, so what pointed
-  at them is stale. `show_edit` rebuilds the layout only when the card's size
-  changes (a line added, removed, or outgrowing it).
+- **`Page::show_edit`, `Page::reload_file`, `Page::file_made` and `Page::file_gone`
+  expect the caller to drop the page's cached text first** (`TextLayer::drop_page`).
+- `show_edit` clears the selections (symbols and lines of that file moved, so what
+  pointed at them is stale); the other three select the same names again.
+- **One file at a time.** A change of one file costs that file and the folders
+  around it, not the folder:
+  - its text (`show_edit`, `reload_file` → `card_changed`): the repository's file
+    and symbol names (`Repo::reload_file`), its imports (`Deps::update_files`), its
+    card and the folders up its chain (`Layout::resize_file`), and on the GPU the
+    frames and origins of what moved and the card's blocks
+    (`SceneGpu::card_changed`). The tokens of that file only are forgotten.
+  - a file made or deleted (`file_made`, `file_gone`): `Repo::add_file` /
+    `remove_file`, `Deps::insert_file` / `remove_file`, `Layout::insert_file` /
+    `remove_file`, `SceneGpu::relaid`. File numbers move, so the token cache, the
+    search and the hovered cell are dropped and the selected node is found again
+    by path. The explorer's tree is made again.
+  - With only changed or only connected files shown, or a commit, the layout is
+    built whole as before (`layout_filter` has `only_files`).
+  - Each logs `updated '<path>' (<why>) alone in <ms>` with what each part took;
+    `with everything laid out again` when it could not. The scenario
+    `edit/big-folder-one-file-at-a-time` checks those lines and, with the `count`
+    step, that the layout, the symbol index and the dependencies are what building
+    them again gives.
+  - Measured, release build, the UI thread, before (everything built again, a
+    rescan for a file made or deleted) and after:
+
+    | | before | after |
+    |---|---|---|
+    | 30,721 files (`big-folder` of the QA fixtures): a line typed, the card grows | 40–43 ms, and 12–15 ms more for the symbol index when the typing pauses | 0.23 ms (layout 0.04, GPU 0.16), and 0.03 ms for names and imports |
+    | the same: saved | 73 ms | 8.7 ms, of which 8.6 reading the file just written back from the disk |
+    | the same: written by another program (40 lines more) | 85 ms | 1.0–1.4 ms (1,296 of 31,161 boxes placed again) |
+    | the same: a file made | 755 ms (a rescan, the scan on its thread) | 8–11 ms |
+    | the same: a file deleted | 735 ms | 9–11 ms |
+    | the same: a file renamed | 805 ms | 18 ms (deleted, then made) |
+    | cargo registry, 53,028 files / 19.4 M lines / 3.37 M symbols (`update_bench`, no GPU): a line typed | 356 ms (layout 68, scene 36, symbol index 252) | 2.0 ms (layout 1.9: the registry's root has 954 folders to pack again; names and imports 0.1) |
+    | the same: a file read again | 342 ms | 3.2 ms (read 0.6, imports 0.08, layout 2.5) |
+
+    A file made or deleted costs moving every node once and looking for its name in
+    every file's text (to resolve again the imports that may name it): a few ms
+    each on 30,000 files, linear but with a small constant.
 - `Page::rebuild_scene`: the scene's colours come from the theme, so a new theme
   needs a new scene. `Page::relayout` keeps the selection by path.
 - "Only changed" and "only connected" together: the changed files and what the
@@ -2130,6 +2272,9 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `colours` | `colours <path> <line>` | Logs "script: colours of <path> line N: keyword let · ident x · …": the kind of each token of that line (1-based) as the canvas draws it, from a grammar or the app's own. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
+| `remove` | `remove <path>` | Delete a file behind the app's back. |
+| `renamed` | `renamed <path> <new path>` | Rename (or move) a file behind the app's back. |
+| `count` | `count` | Logs "script: N files on the canvas, M cards", then whether the layout, the symbol index and the dependencies are what building them again gives ("script: not what building again gives: …" with what differs). |
 | `page` | `page <javascript>` | Run a line of script in the webview on screen: a click on something of an extension's page without the mouse. No `;` in it: that ends the step. |
 | `git` | `git stage [path]`, `git unstage [path]`, `git discard [path]`, `git commit <message>` | Source control. Discarding asks first. |
 | `install` | `install <publisher.name>` | Install an extension from Open VSX. |

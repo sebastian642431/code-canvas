@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -92,11 +93,21 @@ impl Relations {
 
 pub const MAX_PER_KIND: usize = 1500;
 
-#[derive(Default)]
+const COMPACT_AT: usize = 1 << 14;
+
+type Key = (u64, u32, u32);
+
+fn key(hash: u64, at: SymRef) -> Key {
+    (hash, at.file, at.index)
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Named {
     hashes: Vec<u64>,
     refs: Vec<SymRef>,
     clashing: HashMap<Box<str>, Vec<SymRef>>,
+    added: Vec<(u64, SymRef)>,
+    gone: Vec<u32>,
 }
 
 fn name_hash(name: &str) -> u64 {
@@ -133,18 +144,158 @@ impl Named {
         named
     }
 
-    fn get(&self, name: &str) -> &[SymRef] {
+    fn run(&self, hash: u64) -> std::ops::Range<usize> {
+        let first = self.hashes.partition_point(|h| *h < hash);
+        first..first + self.hashes[first..].partition_point(|h| *h == hash)
+    }
+
+    fn added_run(&self, hash: u64) -> std::ops::Range<usize> {
+        let first = self.added.partition_point(|e| e.0 < hash);
+        first..first + self.added[first..].partition_point(|e| e.0 == hash)
+    }
+
+    fn is_gone(&self, at: usize) -> bool {
+        self.gone.binary_search(&(at as u32)).is_ok()
+    }
+
+    fn get(&self, name: &str) -> Cow<'_, [SymRef]> {
         if let Some(found) = self.clashing.get(name) {
-            return found;
+            return Cow::Borrowed(found);
         }
         let hash = name_hash(name);
-        let first = self.hashes.partition_point(|h| *h < hash);
-        let run = self.hashes[first..].partition_point(|h| *h == hash);
-        &self.refs[first..first + run]
+        let run = self.run(hash);
+        let added = self.added_run(hash);
+        let gone_from = self.gone.partition_point(|&g| (g as usize) < run.start);
+        let gone_to = self.gone.partition_point(|&g| (g as usize) < run.end);
+        if added.is_empty() && gone_from == gone_to {
+            return Cow::Borrowed(&self.refs[run]);
+        }
+        let mut out: Vec<SymRef> = run.filter(|&at| !self.is_gone(at)).map(|at| self.refs[at]).collect();
+        out.extend(self.added[added].iter().map(|e| e.1));
+        out.sort_unstable_by_key(|at| (at.file, at.index));
+        Cow::Owned(out)
+    }
+
+    fn clashes(&self, hash: u64) -> bool {
+        !self.clashing.is_empty() && self.clashing.keys().any(|name| name_hash(name) == hash)
+    }
+
+    fn named_here(&self, hash: u64, mut same: impl FnMut(SymRef) -> bool) -> bool {
+        if let Some(at) = self.run(hash).find(|&at| !self.is_gone(at)) {
+            return same(self.refs[at]);
+        }
+        self.added[self.added_run(hash)].first().is_none_or(|e| same(e.1))
+    }
+
+    fn take(&mut self, hash: u64, at: SymRef) -> bool {
+        if self.clashes(hash) {
+            return false;
+        }
+        let wanted = key(hash, at);
+        if let Ok(i) = self.added.binary_search_by_key(&wanted, |e| key(e.0, e.1)) {
+            self.added.remove(i);
+            return true;
+        }
+        let (mut lo, mut hi) = (0, self.hashes.len());
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if key(self.hashes[mid], self.refs[mid]) < wanted {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == self.hashes.len() || key(self.hashes[lo], self.refs[lo]) != wanted {
+            return false;
+        }
+        match self.gone.binary_search(&(lo as u32)) {
+            Ok(_) => false,
+            Err(i) => {
+                self.gone.insert(i, lo as u32);
+                true
+            }
+        }
+    }
+
+    fn put(&mut self, hash: u64, at: SymRef, same: impl FnMut(SymRef) -> bool) -> bool {
+        if self.clashes(hash) || !self.named_here(hash, same) {
+            return false;
+        }
+        let wanted = key(hash, at);
+        match self.added.binary_search_by_key(&wanted, |e| key(e.0, e.1)) {
+            Ok(_) => false,
+            Err(i) => {
+                self.added.insert(i, (hash, at));
+                true
+            }
+        }
+    }
+
+    fn untidy(&self) -> usize {
+        self.added.len() + self.gone.len()
+    }
+
+    fn compact(&mut self) {
+        if self.untidy() == 0 {
+            return;
+        }
+        let (hashes, refs) = (std::mem::take(&mut self.hashes), std::mem::take(&mut self.refs));
+        let (added, gone) = (std::mem::take(&mut self.added), std::mem::take(&mut self.gone));
+        let len = hashes.len() + added.len() - gone.len();
+        let (mut out_h, mut out_r) = (Vec::with_capacity(len), Vec::with_capacity(len));
+        let (mut g, mut a) = (0, 0);
+        for (at, (hash, sym)) in hashes.into_iter().zip(refs).enumerate() {
+            if g < gone.len() && gone[g] as usize == at {
+                g += 1;
+                continue;
+            }
+            while a < added.len() && key(added[a].0, added[a].1) < key(hash, sym) {
+                out_h.push(added[a].0);
+                out_r.push(added[a].1);
+                a += 1;
+            }
+            out_h.push(hash);
+            out_r.push(sym);
+        }
+        for (hash, sym) in &added[a..] {
+            out_h.push(*hash);
+            out_r.push(*sym);
+        }
+        (self.hashes, self.refs) = (out_h, out_r);
+    }
+
+    fn shift_files(&mut self, from: u32, up: bool) {
+        self.compact();
+        let moved = |at: &mut SymRef| {
+            if at.file >= from {
+                at.file = if up { at.file + 1 } else { at.file - 1 };
+            }
+        };
+        self.refs.iter_mut().for_each(moved);
+        self.clashing.values_mut().flat_map(|found| found.iter_mut()).for_each(moved);
     }
 }
 
-#[derive(Default)]
+type Entry<'f> = (u64, SymRef, &'f str);
+
+fn own_names(fi: u32, f: &SourceFile, implementations: bool) -> impl Iterator<Item = Entry<'_>> {
+    let symbols = f.analysis.symbols.iter().enumerate();
+    let own = symbols.filter(move |(_, s)| (s.kind == SymbolKind::Impl) == implementations);
+    let own = own.map(move |(si, _)| (SymRef { file: fi, index: si as u32 }, f.symbol_name(si)));
+    let of_traits = f.implemented().filter(move |_| implementations);
+    let of_traits = of_traits.map(move |(sym, name)| (SymRef { file: fi, index: sym }, name));
+    own.chain(of_traits).map(|(at, name)| (name_hash(name), at, name))
+}
+
+fn carries(files: &[SourceFile], at: SymRef, name: &str, implementations: bool) -> bool {
+    let Some(f) = files.get(at.file as usize) else { return false };
+    let symbol = f.analysis.symbols.get(at.index as usize);
+    let own = symbol.is_some_and(|s| (s.kind == SymbolKind::Impl) == implementations);
+    (own && f.symbol_name(at.index as usize) == name)
+        || (implementations && f.implemented().any(|(sym, of)| sym == at.index && of == name))
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SymbolIndex {
     by_name: Named,
     impls: Named,
@@ -153,30 +304,93 @@ pub struct SymbolIndex {
 
 impl SymbolIndex {
     pub fn build(files: &[SourceFile]) -> Self {
-        let of_kind = |implementations: bool| -> Vec<(u64, SymRef, &str)> {
+        let of_kind = |implementations: bool| -> Vec<Entry<'_>> {
             files
                 .par_iter()
                 .enumerate()
-                .flat_map_iter(move |(fi, f)| {
-                    let symbols = f.analysis.symbols.iter().enumerate();
-                    let own = symbols.filter(move |(_, s)| (s.kind == SymbolKind::Impl) == implementations);
-                    let own = own.map(move |(si, _)| (SymRef { file: fi as u32, index: si as u32 }, f.symbol_name(si)));
-                    let of_traits = f.implemented().filter(move |_| implementations);
-                    let of_traits = of_traits.map(move |(sym, name)| (SymRef { file: fi as u32, index: sym }, name));
-                    own.chain(of_traits).map(|(at, name)| (name_hash(name), at, name))
-                })
+                .flat_map_iter(move |(fi, f)| own_names(fi as u32, f, implementations))
                 .collect()
         };
         let (by_name, impls) = rayon::join(|| Named::build(of_kind(false)), || Named::build(of_kind(true)));
         SymbolIndex { by_name, impls, count: files.iter().map(|f| f.analysis.symbols.len()).sum() }
     }
 
-    pub fn defs(&self, name: &str) -> &[SymRef] {
+    pub fn defs(&self, name: &str) -> Cow<'_, [SymRef]> {
         self.by_name.get(name)
     }
 
-    pub fn impls(&self, name: &str) -> &[SymRef] {
+    pub fn impls(&self, name: &str) -> Cow<'_, [SymRef]> {
         self.impls.get(name)
+    }
+
+    fn swap_names(&mut self, files: &[SourceFile], file: u32, old: Option<&SourceFile>) -> bool {
+        let new = files.get(file as usize);
+        for implementations in [false, true] {
+            let before: Vec<Entry> = old.into_iter().flat_map(|f| own_names(file, f, implementations)).collect();
+            let after: Vec<Entry> = new.into_iter().flat_map(|f| own_names(file, f, implementations)).collect();
+            if before == after {
+                continue;
+            }
+            let named = if implementations { &mut self.impls } else { &mut self.by_name };
+            for &(hash, at, _) in &before {
+                if !named.take(hash, at) {
+                    return false;
+                }
+            }
+            for &(hash, at, name) in &after {
+                let same = |other: SymRef| match other.file == file {
+                    true => after.iter().any(|e| e.1 == other && e.2 == name),
+                    false => carries(files, other, name, implementations),
+                };
+                if !named.put(hash, at, same) {
+                    return false;
+                }
+            }
+            if named.untidy() > COMPACT_AT {
+                named.compact();
+            }
+        }
+        true
+    }
+
+    pub fn replace_file(&mut self, files: &[SourceFile], file: u32, old: &SourceFile) {
+        if !self.swap_names(files, file, Some(old)) {
+            *self = SymbolIndex::build(files);
+            return;
+        }
+        self.count = self.count + files[file as usize].analysis.symbols.len() - old.analysis.symbols.len();
+    }
+
+    pub fn insert_file(&mut self, files: &[SourceFile], file: u32) {
+        self.by_name.shift_files(file, true);
+        self.impls.shift_files(file, true);
+        if !self.swap_names(files, file, None) {
+            *self = SymbolIndex::build(files);
+            return;
+        }
+        self.count += files[file as usize].analysis.symbols.len();
+    }
+
+    pub fn remove_file(&mut self, files: &[SourceFile], file: u32, old: &SourceFile) {
+        for implementations in [false, true] {
+            let named = if implementations { &mut self.impls } else { &mut self.by_name };
+            for (hash, at, _) in own_names(file, old, implementations) {
+                if !named.take(hash, at) {
+                    *self = SymbolIndex::build(files);
+                    return;
+                }
+            }
+        }
+        self.by_name.shift_files(file + 1, false);
+        self.impls.shift_files(file + 1, false);
+        self.count -= old.analysis.symbols.len();
+    }
+
+    pub fn tidied(&self) -> SymbolIndex {
+        let mut out = self.clone();
+        out.by_name.compact();
+        out.impls.compact();
+        out
     }
 }
 
@@ -409,7 +623,7 @@ impl Repo {
                 return self.nearest(&scoped, from_file, call);
             }
         }
-        self.nearest(cands, from_file, call)
+        self.nearest(&cands, from_file, call)
     }
 
     fn nearest(&self, cands: &[SymRef], from_file: u32, call: bool) -> Option<SymRef> {
@@ -578,7 +792,7 @@ impl Repo {
         }
 
         if !tsym.kind.is_callable() {
-            for &imp in self.symbols.impls(&name) {
+            for &imp in self.symbols.impls(&name).iter() {
                 if many_defs && self.resolve(&name, imp.file, None, false) != Some(target) {
                     continue;
                 }

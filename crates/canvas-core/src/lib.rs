@@ -9,6 +9,9 @@ pub mod symbols;
 pub mod syntax;
 pub mod wrap;
 
+#[cfg(test)]
+mod updates;
+
 pub use cache::{Painted, Painter, Piece, TokenCache};
 pub use geom::Rect;
 pub use layout::{Layout, LayoutFilter, Node, NodeKind};

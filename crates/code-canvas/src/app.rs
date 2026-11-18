@@ -41,6 +41,12 @@ struct Gfx {
     window: Arc<Window>,
 }
 
+impl Gfx {
+    fn gpu(&self) -> crate::page::Gpu<'_> {
+        crate::page::Gpu { renderer: &self.renderer, device: &self.device, queue: &self.queue }
+    }
+}
+
 fn key_name(key: &Key) -> Option<String> {
     let name = match key {
         Key::Character(c) if !c.is_empty() => return Some(c.to_lowercase()),
@@ -1080,7 +1086,7 @@ impl App {
             }
             if let (Some(g), Some(page)) = (self.gfx.as_mut(), self.pages.get_mut(i)) {
                 g.renderer.text.drop_page(page.id);
-                page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+                page.reload_file(&rel, "written", &g.gpu(), &self.ui.filters);
                 page.refresh_git();
             }
         }
@@ -1116,7 +1122,8 @@ impl App {
             batch.files.iter().take(4).collect::<Vec<_>>(),
             batch.git.len()
         );
-        let skip = crate::page::scan_options().skip_dirs;
+        let options = crate::page::scan_options();
+        let (skip, lockfiles) = (options.skip_dirs, options.skip_files);
         for root in &batch.git {
             if let Some(page) = self.pages.iter_mut().find(|p| &p.root == root) {
                 page.refresh_git();
@@ -1127,7 +1134,9 @@ impl App {
         let mut seen: Option<(usize, String, u32)> = None;
         for path in &batch.files {
             let Some((i, rel)) = self.locate_file(path) else { continue };
-            if rel.split('/').any(|part| skip.iter().any(|s| s == part)) {
+            if rel.split('/').any(|part| skip.iter().any(|s| s == part))
+                || lockfiles.iter().any(|name| rel.rsplit('/').next() == Some(name.as_str()))
+            {
                 continue;
             }
             if self.sharing.session.is_some() {
@@ -1151,6 +1160,10 @@ impl App {
                     other[i].push(rel)
                 }
                 (false, true) => other[i].push(rel),
+                (false, false) if !path.exists() => {
+                    let under = self.pages[i].ready().map(|r| r.repo.files_under(&rel).map(|f| f.rel_path.clone()));
+                    other[i].extend(under.into_iter().flatten());
+                }
                 (false, false) => {}
             }
         }
@@ -1168,7 +1181,28 @@ impl App {
                 continue;
             }
             self.pages[i].refresh_git();
-            let rescan = !fresh.is_empty() || known[i].len() > ONE_BY_ONE;
+            let rescan = self.pages[i].ready().is_none() || fresh.len() + known[i].len() > ONE_BY_ONE;
+            for rel in fresh.iter().filter(|_| !rescan) {
+                let made = root.join(rel).is_file();
+                let page = &mut self.pages[i];
+                if !made && page.editors.get(rel).is_some_and(|e| !e.dirty) {
+                    page.editors.remove(rel);
+                }
+                if page.editing.as_ref().is_some_and(|e| e == rel && !page.editors.contains_key(rel)) {
+                    page.editing = None;
+                }
+                let Some(g) = self.gfx.as_mut() else { continue };
+                g.renderer.text.drop_page(page.id);
+                let done = match made {
+                    true => page.file_made(rel, &g.gpu(), &self.ui.filters),
+                    false => page.file_gone(rel, &g.gpu(), &self.ui.filters),
+                };
+                let lines = page.ready().and_then(|r| Some(r.repo.files[r.repo.file_index(rel)?].line_count() as u32));
+                if let Some(lines) = lines.filter(|&lines| done && made && lines > 0) {
+                    page.touch(rel, vec![(0, lines)]);
+                    seen = Some((i, rel.clone(), 0));
+                }
+            }
             if rescan {
                 let reveal = fresh.iter().find(|rel| root.join(rel).is_file()).cloned();
                 if self.rescan_quietly(i, reveal) {
@@ -1185,7 +1219,7 @@ impl App {
                     if let Some((first, count)) = merged {
                         if let Some(g) = self.gfx.as_mut() {
                             g.renderer.text.drop_page(page.id);
-                            page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
+                            page.show_edit(&rel, "merged", &g.gpu(), &self.ui.filters);
                         }
                         page.want_head(&rel);
                         page.preview_unsaved();
@@ -1225,7 +1259,7 @@ impl App {
                 let before = text_of(page);
                 if let Some(g) = self.gfx.as_mut() {
                     g.renderer.text.drop_page(page.id);
-                    page.reload_file(&rel, &g.renderer, &g.device, &self.ui.filters);
+                    page.reload_file(&rel, "written", &g.gpu(), &self.ui.filters);
                 }
                 match (before, text_of(page)) {
                     (Some(before), Some(after)) => {
@@ -1652,7 +1686,7 @@ impl App {
         let Some(rel) = page.editing.clone() else { return };
         if let Some(g) = self.gfx.as_mut() {
             g.renderer.text.drop_page(page.id);
-            page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
+            page.show_edit(&rel, "typed", &g.gpu(), &self.ui.filters);
         }
         let id = page.id;
         if let Some(r) = page.ready_mut() {
@@ -1976,7 +2010,7 @@ impl App {
         self.ext.file_changed(&path);
         if let Some(g) = self.gfx.as_mut() {
             g.renderer.text.drop_page(page.id);
-            page.reload_file(rel, &g.renderer, &g.device, &self.ui.filters);
+            page.reload_file(rel, "saved", &g.gpu(), &self.ui.filters);
         }
         page.refresh_git();
         if format {
@@ -2078,7 +2112,7 @@ impl App {
             }
             if let Some(g) = self.gfx.as_mut() {
                 g.renderer.text.drop_page(page.id);
-                page.reload_file(rel, &g.renderer, &g.device, &self.ui.filters);
+                page.reload_file(rel, "read again", &g.gpu(), &self.ui.filters);
             }
         }
         if !dropped.is_empty() {
@@ -4291,6 +4325,24 @@ impl App {
                 }
                 self.last_input = Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or(self.last_input);
             }
+            Step::Remove(rel) => {
+                let file = self.pages.get(self.active).map(|page| page.root.join(&rel));
+                if file.is_none_or(|file| std::fs::remove_file(file).is_err()) {
+                    log::warn!("script: cannot remove '{rel}'");
+                }
+                self.last_input = Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or(self.last_input);
+            }
+            Step::Renamed(what) => {
+                let root = self.pages.get(self.active).map(|page| page.root.clone());
+                let moved = match (root, what.split_once(' ')) {
+                    (Some(root), Some((from, to))) => std::fs::rename(root.join(from), root.join(to.trim())).is_ok(),
+                    _ => false,
+                };
+                if !moved {
+                    log::warn!("script: cannot rename '{what}'");
+                }
+                self.last_input = Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or(self.last_input);
+            }
             Step::Drop(path) => self.drop_file(PathBuf::from(path)),
             Step::Mark(name) => {
                 let name: String =
@@ -4393,6 +4445,27 @@ impl App {
                 }
             }
             Step::Colours(arg) => self.script_colours(&arg),
+            Step::Count => match self.pages.get(self.active).and_then(|page| Some((page, page.ready()?))) {
+                Some((page, r)) => {
+                    let cards = r.layout.file_node.iter().filter(|&&n| n != canvas_core::layout::NONE).count();
+                    log::info!("script: {} files on the canvas, {} cards", r.repo.files.len(), cards);
+                    let whole = canvas_core::Layout::build_filtered(&r.repo, &page.layout_filter(&self.ui.filters));
+                    let mut wrong = r.layout.differences(&whole);
+                    if r.repo.symbols.tidied() != canvas_core::SymbolIndex::build(&r.repo.files) {
+                        wrong.push("the symbol index".into());
+                    }
+                    let (mut mine, mut built) = (r.deps.clone(), canvas_core::deps::analyze(&r.repo));
+                    (mine.ms, built.ms) = (0, 0);
+                    if mine != built {
+                        wrong.push("the dependencies".into());
+                    }
+                    match wrong.is_empty() {
+                        true => log::info!("script: the layout, the symbol index and the dependencies are what building them again gives"),
+                        false => log::warn!("script: not what building again gives: {}", wrong.join("; ")),
+                    }
+                }
+                None => log::warn!("script: no canvas is shown yet"),
+            },
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -4430,7 +4503,14 @@ impl App {
             for page in &mut self.pages {
                 if let PageState::Ready(r) = &mut page.state {
                     if !page.editors.is_empty() {
-                        r.repo.reindex_symbols();
+                        let typed = r.repo.reindex_symbols().into_iter().filter(|&index| {
+                            let rel = &r.repo.files[index].rel_path;
+                            page.editors.contains_key(rel) && !page.diffs.contains_key(rel)
+                        });
+                        let typed: std::collections::BTreeSet<u32> = typed.map(|index| index as u32).collect();
+                        if !typed.is_empty() {
+                            r.deps.update_files(&r.repo, &typed);
+                        }
                     }
                 }
             }
@@ -4673,7 +4753,7 @@ impl App {
                 }));
                 let kept: Vec<String> = page.editors.keys().cloned().collect();
                 for rel in &kept {
-                    page.show_edit(rel, &g.renderer, &g.device, &self.ui.filters);
+                    page.show_edit(rel, "kept", &g.gpu(), &self.ui.filters);
                 }
                 let there = |rel: &String| page.ready().is_some_and(|r| r.repo.file_index(rel).is_some());
                 if page.editing.as_ref().is_some_and(|rel| !there(rel)) {

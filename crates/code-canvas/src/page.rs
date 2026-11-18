@@ -14,6 +14,12 @@ use crate::ext::Found;
 use crate::git::{Change, Commit, CommitFile, FileChange, GitState, Row};
 use crate::session::PageSession;
 
+pub struct Gpu<'a> {
+    pub renderer: &'a Renderer,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+}
+
 pub struct Loaded {
     pub repo: Repo,
     pub deps: canvas_core::deps::Deps,
@@ -822,32 +828,23 @@ impl Page {
         true
     }
 
-    pub fn show_edit(&mut self, rel_path: &str, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
+    pub fn show_edit(&mut self, rel_path: &str, why: &str, gpu: &Gpu, filters: &RelFilters) {
+        let started = Instant::now();
         if self.diffs.remove(rel_path).is_some() {
             self.diff_stale = true;
         }
         let Some(source) = self.editors.get(rel_path).map(|e| e.display_source()) else { return };
         let PageState::Ready(r) = &mut self.state else { return };
         let Some(index) = r.repo.file_index(rel_path) else { return };
-        let before = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
         r.repo.replace_source(index, &source, &ScanOptions::default());
-        r.tokens.reset();
-        let after = (r.repo.files[index].line_count(), r.repo.files[index].max_cols);
+        r.tokens.forget_file(index);
         if !self.selections.is_empty() {
             self.selections.clear();
             self.want_exact.clear();
             self.curves_dirty = true;
         }
         self.search = None;
-        let node = r.layout.file_node.get(index).copied().filter(|&n| n != canvas_core::layout::NONE);
-        let wrap = canvas_core::layout::wrap_of(&r.repo.files[index]);
-        let rows = |wrap: &Option<Arc<canvas_core::Wrap>>| wrap.as_ref().map(|wrap| wrap.per());
-        let regrown = node.is_some_and(|n| rows(&r.layout.nodes[n as usize].wrap) != rows(&wrap));
-        if before != after || regrown {
-            self.relayout(renderer, device, filters);
-        } else if let Some(n) = node {
-            r.layout.nodes[n as usize].wrap = wrap;
-        }
+        self.card_changed(index, rel_path, why, started, gpu, filters, "");
     }
 
     pub fn edited_wrap(&self) -> Option<Arc<canvas_core::Wrap>> {
@@ -1223,7 +1220,7 @@ impl Page {
         }
     }
 
-    pub fn relayout(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
+    pub fn layout_filter(&self, filters: &RelFilters) -> LayoutFilter {
         let changed = match self.commit_files() {
             Some(of_commit) => Some(of_commit),
             None => self.only_changed.then(|| self.changed_files()),
@@ -1234,7 +1231,11 @@ impl Page {
             (Some(a), Some(b)) => Some(a.union(&b).copied().collect()),
             (a, b) => a.or(b),
         };
-        let filter = LayoutFilter { only_files: only, ..self.filter.clone() };
+        LayoutFilter { only_files: only, ..self.filter.clone() }
+    }
+
+    pub fn relayout(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
+        let filter = self.layout_filter(filters);
         let selected = self.selected;
         let PageState::Ready(r) = &mut self.state else { return };
         let t = Instant::now();
@@ -1250,23 +1251,132 @@ impl Page {
         log::debug!("relayout: {} nodes in {:.1} ms", r.layout.nodes.len(), t.elapsed().as_secs_f32() * 1000.0);
     }
 
-    pub fn reload_file(
+    #[allow(clippy::too_many_arguments)]
+    fn card_changed(
         &mut self,
+        index: usize,
         rel_path: &str,
-        renderer: &Renderer,
-        device: &wgpu::Device,
+        why: &str,
+        started: Instant,
+        gpu: &Gpu,
         filters: &RelFilters,
-    ) -> bool {
+        more: &str,
+    ) {
+        let filter = self.layout_filter(filters);
+        let PageState::Ready(r) = &mut self.state else { return };
+        let t = Instant::now();
+        let Some(changed) = r.layout.resize_file(&r.repo, &filter, index) else {
+            self.relayout(gpu.renderer, gpu.device, filters);
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            return log::info!("updated '{rel_path}' ({why}) with everything laid out again in {ms:.1} ms");
+        };
+        let laid = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        r.gpu.card_changed(gpu.device, gpu.queue, &gpu.renderer.origins_layout, &r.repo, &r.layout, index, &changed);
+        let drawn = t.elapsed().as_secs_f64() * 1000.0;
+        self.curves_dirty = true;
+        let placed: u32 = changed.iter().map(|range| range.end - range.start).sum();
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let boxes = r.layout.nodes.len();
+        log::info!(
+            "updated '{rel_path}' ({why}) alone in {ms:.2} ms: layout {laid:.2} ms ({placed} of {boxes} boxes placed again), scene {drawn:.2} ms{more}"
+        );
+    }
+
+    pub fn reload_file(&mut self, rel_path: &str, why: &str, gpu: &Gpu, filters: &RelFilters) -> bool {
+        let started = Instant::now();
         self.diffs.remove(rel_path);
         self.diff_stale = true;
         let selected = self.selected_names();
         let PageState::Ready(r) = &mut self.state else { return false };
         let Some(index) = r.repo.file_index(rel_path) else { return false };
         r.repo.reload_file(index, &ScanOptions::default());
-        r.tokens.reset();
+        let read = started.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let moved = r.deps.update_files(&r.repo, &[index as u32].into());
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let edges = if moved { " (edges changed)" } else { "" };
+        let imports = format!(", read and indexed {read:.2} ms, imports {ms:.2} ms{edges}");
+        r.tokens.forget_file(index);
         self.search = None;
         self.select_again(selected);
-        self.relayout(renderer, device, filters);
+        self.card_changed(index, rel_path, why, started, gpu, filters, &imports);
+        true
+    }
+
+    pub fn file_made(&mut self, rel_path: &str, gpu: &Gpu, filters: &RelFilters) -> bool {
+        self.file_came_or_went(rel_path, true, gpu, filters)
+    }
+
+    pub fn file_gone(&mut self, rel_path: &str, gpu: &Gpu, filters: &RelFilters) -> bool {
+        self.file_came_or_went(rel_path, false, gpu, filters)
+    }
+
+    fn file_came_or_went(&mut self, rel_path: &str, made: bool, gpu: &Gpu, filters: &RelFilters) -> bool {
+        let started = Instant::now();
+        let selected = self.selected_names();
+        let filter = self.layout_filter(filters);
+        let keep = self.selected.and_then(|n| self.ready()?.layout.nodes.get(n)).map(|n| n.rel_path.clone());
+        let PageState::Ready(r) = &mut self.state else { return false };
+        let (index, old) = match made {
+            true => match r.repo.add_file(rel_path, &scan_options()) {
+                Some(index) => (index, None),
+                None => return false,
+            },
+            false => match r.repo.file_index(rel_path) {
+                Some(index) => (index, Some(r.repo.remove_file(index))),
+                None => return false,
+            },
+        };
+        let t = Instant::now();
+        let resolved = match &old {
+            None => r.deps.insert_file(&r.repo, index as u32),
+            Some(old) => r.deps.remove_file(&r.repo, index as u32, old),
+        };
+        let resolved = resolved.unwrap_or_else(|| {
+            r.deps = canvas_core::deps::analyze(&r.repo);
+            r.repo.files.len()
+        });
+        let imports = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let from = match made {
+            true => r.layout.insert_file(&r.repo, &filter, index),
+            false => r.layout.remove_file(&r.repo, &filter, index, rel_path),
+        };
+        let laid = t.elapsed().as_secs_f64() * 1000.0;
+        let t = Instant::now();
+        let alone = match &from {
+            Some(from) => {
+                let (device, queue, origins) = (gpu.device, gpu.queue, &gpu.renderer.origins_layout);
+                r.gpu.relaid(device, queue, origins, &r.repo, &r.layout, from, index, made);
+                true
+            }
+            None => {
+                r.layout = Layout::build_filtered(&r.repo, &filter);
+                let scene = SceneData::build(&r.repo, &r.layout);
+                r.gpu = gpu.renderer.create_scene(gpu.device, &r.repo.name, scene);
+                false
+            }
+        };
+        let drawn = t.elapsed().as_secs_f64() * 1000.0;
+        r.tokens = Default::default();
+        r.tree_dirty = true;
+        self.selected = keep.and_then(|p| r.layout.node_for_path(&r.repo, &p));
+        let boxes = r.layout.nodes.len();
+        self.hover = None;
+        self.hover_cell = None;
+        self.search = None;
+        self.found = None;
+        self.curves_dirty = true;
+        self.diffs.remove(rel_path);
+        self.diff_stale = true;
+        self.select_again(selected);
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let why = if made { "made" } else { "deleted" };
+        let how = if alone { "alone" } else { "with everything laid out again" };
+        log::info!(
+            "updated '{rel_path}' ({why}) {how} in {ms:.2} ms: imports of {resolved} files resolved again in {imports:.2} ms, layout {laid:.2} ms ({boxes} boxes), scene {drawn:.2} ms"
+        );
         true
     }
 
@@ -1317,7 +1427,8 @@ impl Page {
         for (rel, name, line) in names {
             let found = self.ready().and_then(|r| {
                 let file = r.repo.file_index(&rel)? as u32;
-                let here = r.repo.symbols.defs(&name).iter().copied().filter(|sym| sym.file == file);
+                let defs = r.repo.symbols.defs(&name);
+                let here = defs.iter().copied().filter(|sym| sym.file == file);
                 here.min_by_key(|sym| r.repo.sym_site(*sym).line.abs_diff(line))
             });
             if let Some(sym) = found {

@@ -602,7 +602,7 @@ impl App {
             let page = &mut self.pages[index];
             if let Some(g) = self.gfx.as_mut() {
                 g.renderer.text.drop_page(page.id);
-                page.show_edit(&rel, &g.renderer, &g.device, &self.ui.filters);
+                page.show_edit(&rel, "shared", &g.gpu(), &self.ui.filters);
             }
             page.want_head(&rel);
             page.preview_unsaved();
@@ -653,7 +653,7 @@ impl App {
                         self.sharing.revs.insert((id, path.clone()), editor.rev);
                         if let Some(g) = self.gfx.as_mut() {
                             g.renderer.text.drop_page(id);
-                            self.pages[index].show_edit(&path, &g.renderer, &g.device, &self.ui.filters);
+                            self.pages[index].show_edit(&path, "shared", &g.gpu(), &self.ui.filters);
                         }
                     }
                 }

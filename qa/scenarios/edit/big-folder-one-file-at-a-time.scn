@@ -1,0 +1,53 @@
+title: On a folder of thirty thousand files, a file typed in and saved, written by another program, made, deleted and renamed is updated alone: nothing else is read or laid out again
+folders: big-folder
+limit: 240
+expect-log: updated 'src/app/app0/part0/app0_0_1\.ts' \(typed\) alone in
+expect-log: updated 'src/app/app0/part0/app0_0_1\.ts' \(saved\) alone in
+expect-log: updated 'src/core/core3/part2/core3_2_5\.ts' \(written\) alone in
+expect-log: updated 'src/ui/ui1/part1/made_outside\.ts' \(made\) alone in
+expect-log: updated 'src/net/net2/part3/net2_3_7\.ts' \(deleted\) alone in
+expect-log: updated 'src/util/util4/part4/util4_4_4\.ts' \(deleted\) alone in
+expect-log: updated 'src/util/util4/part4/renamed\.ts' \(made\) alone in
+expect-log: script: 30721 files on the canvas, 30721 cards
+expect-log: script: the layout, the symbol index and the dependencies are what building them again gives
+forbid-log: scanning again
+forbid-log: scanned 'big-folder': \d+ files \([1-9]\d* not read again
+forbid-log: with everything laid out again
+forbid-log: script: not what building again gives
+forbid-log: WARN.*script
+
+wait 2000
+goto src/app/app0/part0/app0_0_1.ts
+wait 800
+edit src/app/app0/part0/app0_0_1.ts 1 1
+type // typed here
+key enter
+wait 1200
+key save
+wait 1500
+touch src/core/core3/part2/core3_2_5.ts // written by another program\n// one\n// two\n// three\n// four\n// five\n// six\n// seven\n// eight\n// nine\n// ten\n// eleven\n// twelve\n// thirteen\n// fourteen\n// fifteen\n// sixteen\n// seventeen\n// eighteen\n// nineteen\n// twenty\n// twenty-one\n// twenty-two\n// twenty-three\n// twenty-four\n// twenty-five\n// twenty-six\n// twenty-seven\n// twenty-eight\n// twenty-nine\n// thirty\n// thirty-one\n// thirty-two\n// thirty-three\n// thirty-four\n// thirty-five\n// thirty-six\n// thirty-seven\n// thirty-eight\n// thirty-nine\n// forty
+wait 2500
+touch src/ui/ui1/part1/made_outside.ts export const made = 1;
+wait 2500
+remove src/net/net2/part3/net2_3_7.ts
+wait 2500
+renamed src/util/util4/part4/util4_4_4.ts src/util/util4/part4/renamed.ts
+wait 2500
+goto src/util/util4/part4/renamed.ts
+wait 1500
+mark renamed-shown
+wait 400
+count
+goto src/core/core3/part2
+wait 1500
+mark folder-after-the-changes
+wait 400
+quit
+
+=== again
+wait 3000
+goto src/core/core3/part2
+wait 1500
+mark folder-after-the-changes
+wait 400
+quit
