@@ -542,6 +542,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "image",
+ "irosashi",
  "log",
  "notify",
  "pollster 0.4.0",
@@ -1180,6 +1181,20 @@ name = "fearless_simd"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
+
+[[package]]
+name = "ferroni"
+version = "2.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8775b4fc21a3de1c772ef5273c45c94ee6a35030f5cc5e0eb0b6d51f3f5a49dd"
+dependencies = [
+ "aho-corasick",
+ "bitflags 2.13.2",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+ "smallvec",
+]
 
 [[package]]
 name = "field-offset"
@@ -2088,6 +2103,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "irosashi"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0e4dc2fdb4a196effcce35e4406b6008270e64556ec7eb6556a5fe8f3ff14f0"
+dependencies = [
+ "bitflags 2.13.2",
+ "ferroni",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

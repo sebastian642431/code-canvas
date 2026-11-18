@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -67,6 +67,7 @@ struct Loaded {
 
 static LOADED_BYTES: AtomicUsize = AtomicUsize::new(0);
 static CLOCK: AtomicU32 = AtomicU32::new(1);
+static SERIAL: AtomicU64 = AtomicU64::new(1);
 
 pub fn loaded_text_bytes() -> usize {
     LOADED_BYTES.load(Ordering::Relaxed)
@@ -127,6 +128,7 @@ pub struct SourceFile {
     pub note: Option<String>,
     pub fold: usize,
     pub numbers: Option<Box<[u32]>>,
+    serial: u64,
 }
 
 fn ident_bits(ident: &[u8], bits: usize) -> [usize; 3] {
@@ -252,6 +254,10 @@ impl SourceFile {
         }
     }
 
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
     pub fn line_count(&self) -> usize {
         self.lines as usize
     }
@@ -311,6 +317,7 @@ impl SourceFile {
             note: None,
             fold: 0,
             numbers: None,
+            serial: SERIAL.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -587,7 +594,7 @@ fn load_file(path: &Path, rel_path: String, size: Option<u64>, opts: &ScanOption
     file
 }
 
-fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
+pub(crate) fn build_file(rel_path: String, raw: &str, opts: &ScanOptions) -> SourceFile {
     let mut t = Instant::now();
     let (mut text, mut line_starts, max_cols) = normalise(raw);
     let mut note = None;

@@ -57,6 +57,10 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   Theme, Tokyo Night…) and pick it in Settings, Appearance: the window, the canvas
   and the code take its colours, light ones as well. Any colour can still be
   changed on top.
+- **Grammars of VS Code**: a language the app does not colour itself (Elm,
+  Terraform, Ink, your company's own…) is coloured by the TextMate grammar its
+  extension brings, on a thread of its own, also while you type in it. A setting
+  lets grammars colour the languages the app knows too.
 - **Settings** (the gear, or `Ctrl+,`) open over the app: version and updates, theme,
   file icons, every colour, every shortcut and who writes commit messages, with a
   search box across all of it. The window opens where and as big as it was left,
@@ -384,7 +388,9 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Webviews on Linux and macOS.
 - [x] Colour themes from extensions (Dracula, GitHub Theme, Tokyo Night…): the
       canvas, the panels and the code take their colours. File icon themes too.
-- [ ] Grammars from extensions (highlighting is the app's own).
+- [x] Grammars from extensions: languages the app does not know are coloured by
+      their extension's TextMate grammar (all of them, if asked).
+- [ ] Grammars: the far-away view of a file (its blocks) in the grammar's colours.
 - [x] The rest of a line longer than its card (160 columns) shown beside the card,
       under the pointer or the caret.
 - [x] **Soft wrapping** for lines longer than the card width, as an option: the

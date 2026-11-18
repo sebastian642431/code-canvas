@@ -9,7 +9,7 @@ pub mod symbols;
 pub mod syntax;
 pub mod wrap;
 
-pub use cache::TokenCache;
+pub use cache::{Painted, Painter, Piece, TokenCache};
 pub use geom::Rect;
 pub use layout::{Layout, LayoutFilter, Node, NodeKind};
 pub use refs::{RelKind, Relation, Relations, Site, SymRef, SymbolIndex};

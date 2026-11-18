@@ -49,6 +49,10 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - **Temas de VS Code**: instalá un tema de colores como extensión (Dracula, GitHub
   Theme, Tokyo Night…) y elegilo en Ajustes, Apariencia: la ventana, el lienzo y el
   código toman sus colores, también los claros.
+- **Gramáticas de VS Code**: un lenguaje que la app no colorea por su cuenta (Elm,
+  Terraform, Ink, el de tu empresa…) se colorea con la gramática TextMate que trae
+  su extensión, en un hilo aparte, también mientras escribís. Un ajuste deja que las
+  gramáticas coloreen también los lenguajes que la app ya conoce.
 - **Ajustes** (el engranaje, o `Ctrl+,`): se abren en una ventana sobre la app, con
   versión y actualizaciones, tema, íconos, cada color, cada atajo y un buscador que
   recorre todo. La ventana abre donde y como la dejaste (maximizada si lo estaba) y
@@ -211,7 +215,7 @@ lo próximo.
 ## Extensiones
 
 Cómo se ejecutan las extensiones de VS Code, cuáles están probadas y qué falta
-(*webviews*, vistas de árbol): [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
+(*webviews*, vistas de árbol, gramáticas): [docs/EXTENSIONS.md](docs/EXTENSIONS.md).
 
 ## Cómo aportar
 

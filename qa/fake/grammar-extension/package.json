@@ -1,0 +1,26 @@
+{
+  "name": "fake-grammars",
+  "publisher": "qa",
+  "displayName": "QA grammars",
+  "description": "Grammars and nothing else. Quill (.quill and Quillfile, made up) in JSON, with an ink block inside it and TODO lit in its comments by an injection; Ink (.ink) in a property list; and a grammar for Rust that paints every word as a number, to see the setting that lets grammars colour the languages the app knows.",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.80.0" },
+  "contributes": {
+    "languages": [
+      { "id": "quill", "aliases": ["Quill"], "extensions": [".quill"], "filenames": ["Quillfile"] },
+      { "id": "ink", "aliases": ["Ink"], "extensions": [".ink"] },
+      { "id": "rust", "extensions": [".rs"] }
+    ],
+    "grammars": [
+      {
+        "language": "quill",
+        "scopeName": "source.quill",
+        "path": "./syntaxes/quill.tmLanguage.json",
+        "embeddedLanguages": { "meta.embedded.block.ink": "ink" }
+      },
+      { "language": "ink", "scopeName": "source.ink", "path": "./syntaxes/ink.tmLanguage" },
+      { "scopeName": "todo.injection", "path": "./syntaxes/todo.tmLanguage.json", "injectTo": ["source.quill"] },
+      { "language": "rust", "scopeName": "source.rust.qa", "path": "./syntaxes/rust-qa.tmLanguage.json" }
+    ]
+  }
+}

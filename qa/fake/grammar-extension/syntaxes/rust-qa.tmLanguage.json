@@ -1,0 +1,8 @@
+{
+  "name": "Rust, painted by QA",
+  "scopeName": "source.rust.qa",
+  "patterns": [
+    { "match": "//.*$", "name": "comment.line.rust.qa" },
+    { "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b", "name": "constant.numeric.everything.rust.qa" }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "name": "Quill",
+  "scopeName": "source.quill",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#heredoc" },
+    { "include": "#strings" },
+    {
+      "match": "^\\s*(module)\\s+([A-Z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.module.quill" },
+        "2": { "name": "entity.name.namespace.quill" }
+      }
+    },
+    {
+      "match": "\\b(fun)\\s+([a-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.function.quill" },
+        "2": { "name": "entity.name.function.quill" }
+      }
+    },
+    { "match": "\\b(let|when|else|give|script)\\b", "name": "keyword.control.quill" },
+    { "match": "\\b(true|false|nothing)\\b", "name": "constant.language.quill" },
+    { "match": "\\b[0-9][0-9_]*(\\.[0-9]+)?\\b", "name": "constant.numeric.quill" },
+    { "match": "\\b[A-Z][A-Za-z0-9_]*\\b", "name": "support.type.quill" },
+    { "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()", "captures": { "1": { "name": "entity.name.function.call.quill" } } },
+    { "match": "->|\\+\\+|[-+*/=<>!]+", "name": "keyword.operator.quill" },
+    { "match": "[{}()\\[\\],:]", "name": "punctuation.separator.quill" },
+    { "match": "\\b[a-z_][A-Za-z0-9_]*\\b", "name": "variable.other.quill" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "begin": "\\{-",
+          "end": "-\\}",
+          "name": "comment.block.quill",
+          "captures": { "0": { "name": "punctuation.definition.comment.quill" } }
+        },
+        { "match": "--.*$", "name": "comment.line.double-dash.quill" }
+      ]
+    },
+    "strings": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.quill",
+      "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.quill" }]
+    },
+    "heredoc": {
+      "begin": "<<([A-Z]+)$",
+      "end": "^(\\1)$",
+      "beginCaptures": { "0": { "name": "punctuation.definition.heredoc.quill" } },
+      "endCaptures": { "1": { "name": "punctuation.definition.heredoc.quill" } },
+      "contentName": "meta.embedded.block.ink",
+      "patterns": [{ "include": "source.ink" }]
+    }
+  }
+}

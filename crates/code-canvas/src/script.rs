@@ -70,6 +70,7 @@ pub enum Step {
     Part(String),
     Find(String),
     Where,
+    Colours(String),
     Quit,
 }
 
@@ -157,6 +158,7 @@ fn parse_step(text: &str) -> Option<Step> {
         }
         "find" => Step::Find(arg.into()),
         "where" => Step::Where,
+        "colours" => Step::Colours(arg.into()),
         "account" => Step::Account(arg.into()),
         "drag" => {
             let mut parts = arg.split_whitespace().map(|n| n.parse::<f32>());
