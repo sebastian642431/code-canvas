@@ -934,23 +934,42 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
                         actions.push(if action == 1 { Action::ToggleMaximize } else { Action::Minimize });
                     }
                 }
-                ui.add_space(6.0);
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(34.0, 28.0), Sense::click());
-                if resp.hovered() || st.layout_open {
-                    ui.painter().rect_filled(rect, 7.0, pal().hover);
-                }
-                let col = if resp.hovered() || st.layout_open { pal().text } else { pal().text_dim };
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    icons::PANELS_TOP_LEFT,
-                    FontId::proportional(15.0),
-                    col,
-                );
-                if resp.on_hover_text("Customize the layout").clicked() {
+                ui.add_space(10.0);
+                let backdrop = ui.painter().add(egui::Shape::Noop);
+                let layout = layout_toggle(ui, icons::PANELS_TOP_LEFT, st.layout_open, false);
+                if layout.clone().on_hover_text("Customize the layout").clicked() {
                     st.layout_open = !st.layout_open;
                 }
-                st.layout_button = Some(rect);
+                st.layout_button = Some(layout.rect);
+                let mut prefs = st.prefs.clone();
+                let status = layout_toggle(ui, icons::PANEL_BOTTOM, prefs.status, true);
+                if status.clone().on_hover_text("Show or hide the status bar").clicked() {
+                    prefs.status = !prefs.status;
+                }
+                let toolbar = layout_toggle(ui, icons::MOUSE_POINTER_2, prefs.toolbar, true);
+                if toolbar.clone().on_hover_text("Show or hide the toolbar of the canvas").clicked() {
+                    prefs.toolbar = !prefs.toolbar;
+                }
+                let side = if prefs.dock_right { icons::PANEL_RIGHT } else { icons::PANEL_LEFT };
+                let files = layout_toggle(ui, side, st.files, true);
+                let tip = st.keys.hint("Show or hide the files and source control", Command::ToggleLeftPanel);
+                if files.clone().on_hover_text(tip).clicked() {
+                    st.files = !st.files;
+                }
+                if prefs != st.prefs {
+                    actions.push(Action::SetPrefs(prefs));
+                }
+                let group = files.rect.union(layout.rect).expand(3.0);
+                ui.painter().set(
+                    backdrop,
+                    egui::epaint::RectShape::new(
+                        group,
+                        9.0,
+                        pal().row,
+                        Stroke::new(1.0, pal().border),
+                        egui::StrokeKind::Inside,
+                    ),
+                );
                 right_start = ui.min_rect().left();
             });
         });
@@ -984,6 +1003,26 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             }
         }
     });
+}
+
+fn layout_toggle(ui: &mut egui::Ui, glyph: &str, on: bool, gap: bool) -> egui::Response {
+    if gap {
+        ui.add_space(2.0);
+    }
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 24.0), Sense::click());
+    let fill = if resp.hovered() {
+        Some(pal().hover)
+    } else if on {
+        Some(pal().raised)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(rect, 6.0, fill);
+    }
+    let col = if resp.hovered() || on { pal().text } else { pal().text_faint };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), col);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn layout_menu(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
