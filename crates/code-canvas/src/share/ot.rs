@@ -77,10 +77,28 @@ impl TextOp {
             return op;
         }
         op.retain(head);
-        op.insert(&is.iter().collect::<String>());
-        op.delete(was.len());
+        op.middle(was, is);
         op.retain(tail);
         op
+    }
+
+    fn middle(&mut self, was: &[char], is: &[char]) {
+        const FINE: usize = 4096;
+        if was.is_empty() || is.is_empty() || was.len() + is.len() > FINE {
+            self.insert(&is.iter().collect::<String>());
+            self.delete(was.len());
+            return;
+        }
+        let (was, is): (String, String) = (was.iter().collect(), is.iter().collect());
+        let by_chars =
+            similar::TextDiff::configure().timeout(std::time::Duration::from_millis(50)).diff_chars(&was, &is);
+        for change in by_chars.iter_all_changes() {
+            match change.tag() {
+                similar::ChangeTag::Equal => self.retain(change.value().chars().count()),
+                similar::ChangeTag::Delete => self.delete(change.value().chars().count()),
+                similar::ChangeTag::Insert => self.insert(change.value()),
+            }
+        }
     }
 
     fn lines(&mut self, gone: &mut Vec<&str>, come: &mut Vec<&str>) {
@@ -91,8 +109,7 @@ impl TextOp {
                 let head = (0..most).take_while(|i| a[*i] == b[*i]).count();
                 let tail = (0..most - head).take_while(|i| a[a.len() - 1 - i] == b[b.len() - 1 - i]).count();
                 self.retain(head);
-                self.insert(&b[head..b.len() - tail].iter().collect::<String>());
-                self.delete(a.len() - head - tail);
+                self.middle(&a[head..a.len() - tail], &b[head..b.len() - tail]);
                 self.retain(tail);
             }
         } else {
@@ -304,6 +321,22 @@ mod tests {
         assert_eq!(far.apply(was).as_deref(), Some(is));
         assert_eq!(far.place(4), 4, "changes at both ends of a file leave its middle alone");
         assert!(far.parts.len() >= 5, "{far:?}");
+    }
+
+    #[test]
+    fn typing_at_several_carets_of_one_line_is_one_edit_per_caret() {
+        let mine = TextOp::between("let a = b + b;", "let a = bx + bx;");
+        let inserts = mine.parts.iter().filter(|part| matches!(part, Part::Insert(_))).count();
+        assert_eq!(inserts, 2, "{mine:?}");
+        assert!(!mine.parts.iter().any(|part| matches!(part, Part::Delete(_))), "nothing between them is sent again");
+        let theirs = TextOp::between("let a = b + b;", "let a = b + 1 + b;");
+        let (mine_after, theirs_after) = TextOp::transform(&mine, &theirs).unwrap();
+        let one = theirs_after.apply(&mine.apply("let a = b + b;").unwrap()).unwrap();
+        let two = mine_after.apply(&theirs.apply("let a = b + b;").unwrap()).unwrap();
+        assert_eq!(one, two);
+        assert_eq!(one, "let a = bx + 1 + bx;", "what the other typed between the carets stays");
+        let lines = TextOp::between("a = b + b;\nc\n", "a = bx + bx;\nc\n");
+        assert_eq!(lines.apply("a = b + b;\nc\n").as_deref(), Some("a = bx + bx;\nc\n"));
     }
 
     #[test]

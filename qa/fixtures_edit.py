@@ -64,9 +64,24 @@ def edit_readonly(root):
     os.chmod(os.path.join(root, "locked.txt"), stat.S_IREAD)
 
 
+CARETS = (
+    "const width = 10;\n"
+    "const height = 20;\n"
+    "const depth = 30;\n"
+    "let area = width * height;\n"
+    "let volume = area * depth + width;\n"
+)
+
+
+def edit_carets(root):
+    write(root, "carets.ts", CARETS)
+    write(root, "other.ts", "export const other = 1;\n")
+
+
 FIXTURES = {
     "edit-readonly": edit_readonly,
     "edit-odd": edit_odd,
     "edit-deep": edit_deep,
     "edit-paths": edit_paths,
+    "edit-carets": edit_carets,
 }

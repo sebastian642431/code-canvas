@@ -14,6 +14,10 @@ pub enum Command {
     MoveTool,
     EditTool,
     DrawTool,
+    NextOccurrence,
+    AllOccurrences,
+    CaretAbove,
+    CaretBelow,
     GoToDefinition,
     OpenFolder,
     CloseFolder,
@@ -102,6 +106,38 @@ pub const COMMANDS: &[CommandInfo] = &[
     ),
     info(Command::DrawTool, "drawTool", "Draw: scribble over the canvas", "Editing", Scope::Canvas, &["d"]),
     info(
+        Command::NextOccurrence,
+        "addNextOccurrence",
+        "Select the word, then add a caret at its next occurrence",
+        "Editing",
+        Scope::Window,
+        &["ctrl+d"],
+    ),
+    info(
+        Command::AllOccurrences,
+        "selectAllOccurrences",
+        "A caret at every occurrence of the selection",
+        "Editing",
+        Scope::Window,
+        &["ctrl+shift+l"],
+    ),
+    info(
+        Command::CaretAbove,
+        "addCaretAbove",
+        "Add a caret on the line above",
+        "Editing",
+        Scope::Window,
+        &["ctrl+alt+up"],
+    ),
+    info(
+        Command::CaretBelow,
+        "addCaretBelow",
+        "Add a caret on the line below",
+        "Editing",
+        Scope::Window,
+        &["ctrl+alt+down"],
+    ),
+    info(
         Command::ToggleLeftPanel,
         "toggleLeftPanel",
         "Show or hide the left panel",
@@ -149,6 +185,10 @@ pub const COMMANDS: &[CommandInfo] = &[
 ];
 
 impl Command {
+    pub fn is_caret(self) -> bool {
+        matches!(self, Command::NextOccurrence | Command::AllOccurrences | Command::CaretAbove | Command::CaretBelow)
+    }
+
     pub fn info(self) -> &'static CommandInfo {
         COMMANDS.iter().find(|c| c.command == self).expect("every command is in COMMANDS")
     }
@@ -354,6 +394,8 @@ mod tests {
         assert_eq!(chord("shift+alt+f").label(), "Shift+Alt+F");
         assert_eq!(chord("ctrl+tab").label(), "Ctrl+Tab");
         assert_eq!(chord("alt+left").label(), "Alt+Left");
+        assert_eq!(chord("ctrl+alt+up").label(), "Ctrl+Alt+Up");
+        assert_eq!(Chord::new("ArrowDown", true, false, true), chord("ctrl+alt+down"));
         for text in ["ctrl+shift+p", "f1", "ctrl++", "shift+alt+f", "ctrl+,", "-"] {
             assert_eq!(chord(text).to_text(), text);
         }

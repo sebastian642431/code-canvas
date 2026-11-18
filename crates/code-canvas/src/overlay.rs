@@ -504,26 +504,35 @@ pub fn build(
         let node =
             repo.file_index(&editor.rel_path).and_then(|fi| layout.file_node.get(fi).copied()).filter(|&n| n != NONE);
         if let Some(n) = node.map(|n| &layout.nodes[n as usize]) {
-            let caret = editor.caret;
             let width = repo.file_index(&editor.rel_path).map_or(1, |fi| repo.files[fi].max_cols.max(1));
-            out.under.push(RectInstance::new(n.cell_rect(caret.line as u32, 0, width), 0xffffff0a, 0, 0.0, 0.0));
-            if let Some((a, b)) = editor.selection() {
-                for line in a.line..=b.line {
-                    let from = if line == a.line { editor.display_col(a) } else { 0 };
-                    let to = if line == b.line {
-                        editor.display_col(b)
-                    } else {
-                        editor.display_col(crate::editor::Pos::new(line, usize::MAX)) + 1
-                    };
-                    let cell = n.cell_rect(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
-                    if cell.intersects(&world) {
-                        out.under.push(RectInstance::new(cell, 0x5a96ff59, 0, 0.0, 0.0));
+            let w = (2.0 * s / z).max(0.6);
+            let mut lit = std::collections::HashSet::new();
+            for caret in editor.carets() {
+                let at = caret.at;
+                let row = n.cell_rect(at.line as u32, 0, width);
+                if row.intersects(&world) && lit.insert(at.line) {
+                    out.under.push(RectInstance::new(row, 0xffffff0a, 0, 0.0, 0.0));
+                }
+                if let Some((a, b)) = caret.selection() {
+                    for line in a.line..=b.line {
+                        let from = if line == a.line { editor.display_col(a) } else { 0 };
+                        let to = if line == b.line {
+                            editor.display_col(b)
+                        } else {
+                            editor.display_col(crate::editor::Pos::new(line, usize::MAX)) + 1
+                        };
+                        let cell = n.cell_rect(line as u32, from as u32, to.saturating_sub(from).max(1) as u32);
+                        if cell.intersects(&world) {
+                            out.under.push(RectInstance::new(cell, 0x5a96ff59, 0, 0.0, 0.0));
+                        }
                     }
                 }
+                let cell = n.cell_rect(at.line as u32, editor.display_col(at) as u32, 1);
+                if cell.intersects(&world) {
+                    let bar = Rect::new(cell.x - w * 0.5, cell.y, w, cell.h);
+                    out.over.push(RectInstance::new(bar, 0xffffffff, 0, 0.0, 0.0));
+                }
             }
-            let cell = n.cell_rect(caret.line as u32, editor.display_col(caret) as u32, 1);
-            let w = (2.0 * s / z).max(0.6);
-            out.over.push(RectInstance::new(Rect::new(cell.x - w * 0.5, cell.y, w, cell.h), 0xffffffff, 0, 0.0, 0.0));
         }
     }
 

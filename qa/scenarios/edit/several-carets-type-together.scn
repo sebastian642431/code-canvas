@@ -1,0 +1,51 @@
+title: Carets added below, by Alt+click, by Ctrl+D and by Ctrl+Shift+L type together, undo as one step, Esc leaves one
+folders: edit-carets
+limit: 60
+forbid-log: cannot edit
+forbid-log: no file is being edited
+forbid-log: no command is on the keys
+expect-log: editing with 3 carets
+expect-log: editing with 4 carets
+expect-log: editing with 2 carets
+expect-log: saved .*carets\.ts
+expect-file: edit-carets/carets.ts :: (?-i)\A//const w = 10;\n//const height = 20;\n//const depth = 30;\nlet surface = w \* height\nlet volume = surface \* depth \+ w;\n\z
+
+wait 3000
+goto carets.ts
+wait 1200
+tool edit
+edit carets.ts 1 1
+press ctrl+alt+down
+press ctrl+alt+down
+type //
+caret 4 1
+key end
+type !
+wait 300
+mark four-carets
+wait 500
+key undo
+key escape
+key backspace
+wait 300
+mark one-caret-again
+wait 500
+edit carets.ts 4 6
+press ctrl+d
+press ctrl+d
+wait 300
+mark two-areas
+wait 500
+type surface
+edit carets.ts 1 10
+press ctrl+shift+l
+wait 300
+mark every-width
+wait 500
+type w
+wait 300
+mark typed
+wait 400
+key save
+wait 600
+quit
