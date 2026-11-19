@@ -7,6 +7,7 @@ use egui::{
 };
 
 use crate::ext::Extensions;
+use crate::file_tabs::TabOp;
 use crate::icons;
 use crate::page::{build_tree, Page, PageState, RelFilters};
 use crate::tree_ops;
@@ -19,6 +20,8 @@ mod deps_panel;
 mod diffs_section;
 pub use diffs_section::DiffsInfo;
 mod ext_panels;
+mod file_tabs;
+mod file_view;
 mod files_tree;
 mod find_bar;
 mod git_panel;
@@ -376,6 +379,7 @@ pub struct UiState {
     file_icons: FileIcons,
     /// The views of a container's card that are folded away, by view id.
     tree_shut: std::collections::HashSet<String>,
+    pub tabs: crate::file_tabs::Tabs,
 }
 
 impl Default for UiState {
@@ -468,6 +472,7 @@ impl Default for UiState {
             commit_ai: Default::default(),
             file_icons: FileIcons::default(),
             tree_shut: Default::default(),
+            tabs: Default::default(),
         }
     }
 }
@@ -782,6 +787,7 @@ pub enum Action {
     ResetKey(Command),
     UnbindKey(Command),
     File(FileOp),
+    Tabs(crate::file_tabs::TabOp),
     DragWindow,
     ToggleMaximize,
     Minimize,
@@ -1076,6 +1082,10 @@ pub fn build(
         st.rails.put_in_tabs(&panel.key());
         actions.push(Action::RailsChanged);
     }
+    if !bare {
+        file_tabs::bar(ui, st, pages, actions);
+    }
+    let in_tab = !bare && st.tabs.front().is_some();
     let free = ui.available_rect_before_wrap();
 
     let canvas = match bare {
@@ -1085,6 +1095,11 @@ pub fn build(
     let ctx = ui.ctx().clone();
     let on_canvas = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(canvas);
     let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    if in_tab {
+        st.pictures.clear();
+        st.doodles.clear();
+        st.rubber = None;
+    }
     for (picture, at) in st.pictures.drain(..) {
         on_canvas.image(picture, at, whole, Color32::WHITE);
     }
@@ -1099,14 +1114,24 @@ pub fn build(
     if let Some((at, reach)) = st.rubber.take() {
         on_canvas.circle_stroke(at, reach, Stroke::new(1.0, pal().text));
     }
-    center_message(ui, canvas, pages.get(active), &st.keys);
-    switch_pill(ui, canvas, pages, active);
-    agent_marks(&ctx, &on_canvas, st, canvas);
-    peer_marks(&on_canvas, st, canvas);
+    if !in_tab {
+        center_message(ui, canvas, pages.get(active), &st.keys);
+        switch_pill(ui, canvas, pages, active);
+        agent_marks(&ctx, &on_canvas, st, canvas);
+        peer_marks(&on_canvas, st, canvas);
+        card_button(ui, &on_canvas, st, actions);
+    }
     if !bare {
         enclose(&ctx.layer_painter(egui::LayerId::background()), free, canvas);
         cards(&ctx, st, canvas, pages, active, ext, actions);
-        if st.prefs.toolbar {
+        if in_tab {
+            let reach = st.cards_reach;
+            let area = match canvas.width() - reach >= canvas.width() * 0.35 {
+                true => Rect::from_min_max(canvas.min, Pos2::new(canvas.right() - reach, canvas.bottom())),
+                false => canvas,
+            };
+            file_view::view(ui, st, pages, ext, canvas, area, actions);
+        } else if st.prefs.toolbar {
             toolbar(&ctx, st, canvas, info, actions);
         }
     }
@@ -1139,6 +1164,21 @@ pub fn build(
     quick_open(&ctx, st, canvas, pages.get(active), ext, actions);
     tooltip(&ctx, canvas, info);
     canvas
+}
+
+/// The button by the name of the card under the pointer that opens the file in a tab.
+fn card_button(ui: &egui::Ui, painter: &egui::Painter, st: &UiState, actions: &mut Vec<Action>) {
+    let Some((rect, path)) = st.tabs.card_button.clone() else { return };
+    let resp = ui.interact(rect, egui::Id::unique("open the card in a tab"), Sense::click());
+    let fill = if resp.hovered() { pal().hover } else { pal().card };
+    painter.rect(rect, 5.0, fill, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+    let glyph = file_tabs::codicon("go-to-file", icons::FILE);
+    let size = (rect.height() * 0.72).clamp(9.0, 14.0);
+    let color = if resp.hovered() { pal().text } else { pal().text_dim };
+    painter.text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(size), color);
+    if resp.on_hover_text("Open in a tab").clicked() {
+        actions.push(Action::Tabs(crate::file_tabs::TabOp::Open(path)));
+    }
 }
 
 fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
@@ -3352,6 +3392,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             if resp.double_clicked() && is_dir && on {
                 actions.push(Action::ToggleCollapsed(path.to_string()));
             }
+            if resp.double_clicked() && !is_dir && !ignored {
+                actions.push(Action::Tabs(crate::file_tabs::TabOp::Open(path.into())));
+            }
             resp.context_menu(|ui| {
                 let menu = MenuInfo {
                     acted: st.tree.acted_on(path),
@@ -3572,6 +3615,10 @@ fn file_menu(
     let mut op = None;
     let mut ask = None;
     let mut tree = None;
+    let mut tab = None;
+    if !is_dir && !ignored && menu_row(ui, file_tabs::codicon("go-to-file", icons::FILE), "Open in a tab") {
+        tab = Some(Action::Tabs(crate::file_tabs::TabOp::Open(path.into())));
+    }
 
     let reveal = if cfg!(windows) {
         "Reveal in File Explorer"
@@ -3658,7 +3705,7 @@ fn file_menu(
         *naming = Some(Naming { kind, path, text, focus: true });
         ui.close();
     }
-    if let Some(action) = op.map(Action::File).or(tree.map(Action::Tree)).or(canvas) {
+    if let Some(action) = op.map(Action::File).or(tree.map(Action::Tree)).or(canvas).or(tab) {
         actions.push(action);
         ui.close();
     }
@@ -3821,10 +3868,10 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
             vec![
                 ("Open another folder", format!("{}, or drop it", key(Command::OpenFolder))),
                 (
-                    "Next / previous folder",
+                    "Next / previous tab (folder, with no file tabs)",
                     format!("{} / {}", keys.label(Command::NextFolder), keys.label(Command::PreviousFolder)),
                 ),
-                ("Close the folder", key(Command::CloseFolder)),
+                ("Close the file tab in front, or the folder", key(Command::CloseFolder)),
                 ("Reload from disk", key(Command::Rescan)),
                 ("Toggle the left panel", key(Command::ToggleLeftPanel)),
                 ("Every folder on the canvas, or one at a time", key(Command::ToggleSideBySide)),
@@ -5556,6 +5603,10 @@ fn card_menu(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut 
             let any_folder = !menu.nothing_open;
             match &on {
                 MenuOn::File { path } => {
+                    if menu_row(ui, file_tabs::codicon("go-to-file", icons::FILE), "Open in a tab") {
+                        chosen.push(Action::Tabs(crate::file_tabs::TabOp::Open(path.into())));
+                    }
+                    menu_gap(ui);
                     let part = |what: Part, line: u32| Action::Git(GitOp::Part { path: path.clone(), line, what });
                     if let Some(line) = menu.line {
                         if menu.unstaged && menu_row(ui, icons::PLUS, "Stage this change") {
@@ -5844,6 +5895,7 @@ fn quick_open(
     ext: &Extensions,
     actions: &mut Vec<Action>,
 ) {
+    let in_tab = st.tabs.front().is_some();
     let Some(q) = &mut st.quick else { return };
     let file_icons = &mut st.file_icons;
     let mut close = false;
@@ -5975,6 +6027,7 @@ fn quick_open(
                             i.key_pressed(egui::Key::Escape),
                         )
                     });
+                    let other = ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt);
                     if down && !results.is_empty() {
                         q.selected = (q.selected + 1) % results.len();
                     }
@@ -6033,11 +6086,24 @@ fn quick_open(
                     if !query.is_empty() && results.is_empty() {
                         ui.label(RichText::new("No matches").color(pal().text_dim));
                     }
+                    if !results.is_empty() {
+                        let hint = match in_tab {
+                            true => "Enter opens it in a tab  ·  Ctrl+Enter shows it on the canvas",
+                            false => "Enter shows it on the canvas  ·  Ctrl+Enter opens it in a tab",
+                        };
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(hint).size(11.0).color(pal().text_faint));
+                    }
                     if enter {
                         chosen = chosen.or_else(|| results.get(q.selected).map(|r| r.1.to_string()));
                     }
+                    let is_dir = |path: &str| results.iter().any(|r| r.1 == path && r.2);
                     if let Some(path) = chosen {
-                        actions.push(Action::FlyToPath(path));
+                        match (other, in_tab, is_dir(path.as_str())) {
+                            (true, false, false) => actions.push(Action::Tabs(TabOp::Open(path.into()))),
+                            (true, true, _) => actions.extend([Action::Tabs(TabOp::Canvas), Action::FlyToPath(path)]),
+                            _ => actions.push(Action::FlyToPath(path)),
+                        }
                         close = true;
                     }
                     if esc || (edit.lost_focus() && !enter && !ui.rect_contains_pointer(ui.min_rect())) {

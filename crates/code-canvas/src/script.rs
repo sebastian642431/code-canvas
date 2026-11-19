@@ -46,6 +46,8 @@ pub enum Step {
     /// `action <row> pick|reword|squash|fixup|drop` or `reword <row> <message>`: what the rebase card plans (rows count from 1).
     Rebase(String),
     Tab(usize),
+    /// `tab open <path>`, `tab canvas`, `tab close`, and so on: the tabs above the canvas (`tab <n>` is a folder).
+    FileTab(String),
     Folders,
     Zoom(f32),
     Quick(String),
@@ -152,7 +154,11 @@ fn parse_step(text: &str) -> Option<Step> {
         "deps" => Step::Deps(arg.into()),
         "history" => Step::History(arg.into()),
         "rebase" => Step::Rebase(arg.into()),
-        "tab" => Step::Tab(arg.parse().ok()?),
+        "tab" => match arg.parse() {
+            Ok(n) => Step::Tab(n),
+            Err(_) if !arg.is_empty() => Step::FileTab(arg.into()),
+            Err(_) => return None,
+        },
         "folders" => Step::Folders,
         "zoom" => Step::Zoom(arg.parse().ok()?),
         "quick" => Step::Quick(arg.into()),
@@ -279,6 +285,15 @@ mod tests {
                 Step::ClickCell("src/a.rs".into(), 2, 170),
                 Step::Quit,
             ]
+        );
+    }
+
+    #[test]
+    fn a_tab_is_a_folder_by_number_and_a_file_tab_by_word() {
+        let s = Script::parse("tab 2; tab open src/a b.rs; tab canvas; tab");
+        assert_eq!(
+            s.steps,
+            vec![Step::Tab(2), Step::FileTab("open src/a b.rs".into()), Step::FileTab("canvas".into())]
         );
     }
 }

@@ -329,6 +329,7 @@ pub(super) fn quick_buttons(ui: &mut egui::Ui, row: Rect, quick: Quick, actions:
         }
     } else {
         if quick_button(ui, slot(), ids[0], icons::LOCATE_FIXED, "Show its card on the canvas").clicked() {
+            actions.push(Action::Tabs(crate::file_tabs::TabOp::Canvas));
             actions.push(Action::FlyToPath(path.to_string()));
         }
         if quick_button(ui, slot(), ids[1], icons::PENCIL, "Rename").clicked() {

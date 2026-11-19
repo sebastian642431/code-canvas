@@ -221,6 +221,10 @@ impl App {
             current: Some(find.at),
         });
         if let (true, Some(site)) = (travel, current) {
+            if self.site_in_tab(site) {
+                self.ui.tabs.mark = None;
+                return;
+            }
             self.moved_by_itself = true;
             self.frame_site(site);
             self.moved_by_itself = false;

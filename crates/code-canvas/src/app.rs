@@ -32,6 +32,7 @@ mod folder_links;
 mod find_bar;
 mod github_sync;
 mod sharing;
+mod tabs;
 mod term_steps;
 mod trust;
 mod version_hints;
@@ -367,6 +368,9 @@ impl App {
         ui.console.scripts = session::data_dir().join("console");
         ui.console.restore(&saved.consoles);
         ui.single = saved.single;
+        let roots: Vec<PathBuf> = initial.iter().map(|(root, _)| root.clone()).collect();
+        let open = |path: &Path| path.is_file() && roots.iter().any(|root| path.starts_with(root));
+        ui.tabs = crate::file_tabs::Tabs::restore(saved.tabs.clone(), saved.tab, open);
         let trust = crate::trust::Trust::load(&session::data_dir(), || {
             let open = saved.pages.iter().map(|p| p.path.clone());
             open.chain(saved.workspace.iter().map(|k| k.path.clone())).collect()
@@ -580,12 +584,13 @@ impl App {
     }
 
     fn over_ui(&self, p: [f32; 2]) -> bool {
-        if !self.canvas.contains(p) {
+        if !self.canvas.contains(p) || self.ui.tabs.front().is_some() {
             return true;
         }
         let s = self.scale();
         let pt = egui::Pos2::new(p[0] / s, p[1] / s);
-        self.ui.floating.iter().any(|r| r.contains(pt))
+        let on_button = self.ui.tabs.card_button.as_ref().is_some_and(|(at, _)| at.contains(pt));
+        on_button || self.ui.floating.iter().any(|r| r.contains(pt))
     }
 
     fn theme_changed(&mut self) {
@@ -627,6 +632,7 @@ impl App {
             }
         }
         let (window, window_pos, maximized) = (self.window_size, self.window_pos, self.start_maximized);
+        let (tabs, tab) = self.ui.tabs.saved();
         session::save(&Session {
             pages: self
                 .pages
@@ -646,6 +652,8 @@ impl App {
             maximized,
             single: self.ui.single,
             consoles: self.ui.console.saved(),
+            tabs,
+            tab,
         });
     }
 
@@ -1028,6 +1036,7 @@ impl App {
         }
         let was_active = i == self.active;
         let page = self.pages.remove(i);
+        self.ui.tabs.retain(|path| !path.starts_with(&page.root));
         self.grammars.forget_page(page.id);
         if let Some(g) = &mut self.gfx {
             g.renderer.text.drop_page(page.id);
@@ -1095,6 +1104,9 @@ impl App {
 
     fn show_path(&mut self, path: &Path, at: Option<Spot>) {
         let Some(path) = self.resolve_link(path) else { return };
+        if self.link_in_tab(&path, at.map(|spot| (spot.line, spot.col, spot.len))) {
+            return;
+        }
         if path.is_dir() {
             return self.show_dir(path);
         }
@@ -1252,7 +1264,7 @@ impl App {
         let by_index = r.repo.resolve_at(file, line, col).map(|(sym, _)| r.repo.sym_site(sym));
         let asked = page.line_of(rel, line).is_some_and(|line| self.ext.request_definition(&path, line, col));
         if !asked {
-            if let Some(site) = by_index {
+            if let Some(site) = by_index.filter(|site| !self.site_in_tab(*site)) {
                 self.frame_site(site);
             }
         }
@@ -2269,6 +2281,9 @@ impl App {
     }
 
     fn keep_caret_visible(&mut self) {
+        if self.caret_in_tab() {
+            return;
+        }
         let area = self.clear();
         let Some((tl, br)) = self.caret_cell() else { return };
         let Some(page) = self.pages.get_mut(self.active) else { return };
@@ -2670,8 +2685,9 @@ impl App {
                 return true;
             }
         }
+        let in_tab = self.ui.tabs.front().is_some();
         let Some(page) = self.pages.get_mut(self.active) else { return false };
-        let rows = page.edited_wrap();
+        let rows = if in_tab { None } else { page.edited_wrap() };
         let rows = rows.as_deref();
         let Some(editor) = page.editor_mut() else { return false };
         let mut changed = false;
@@ -2800,6 +2816,9 @@ impl App {
     }
 
     fn player_place(&self) -> Option<Rect> {
+        if self.ui.tabs.front().is_some() {
+            return None;
+        }
         let (card, area) = (self.player_card()?, self.canvas);
         let seen_w = card.right().min(area.right()) - card.x.max(area.x);
         let seen_h = card.bottom().min(area.bottom()) - card.y.max(area.y);
@@ -2998,6 +3017,9 @@ impl App {
     }
 
     fn current_file(&self) -> Option<PathBuf> {
+        if let Some(path) = self.ui.tabs.front_path() {
+            return Some(path.to_path_buf());
+        }
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
         [page.hover, page.selected].into_iter().flatten().find_map(|i| match r.layout.nodes.get(i)?.kind {
@@ -3678,12 +3700,18 @@ impl App {
                 return;
             }
         }
+        let in_tab = self.ui.tabs.front().is_some();
+        if in_tab && self.tab_key(event) {
+            return;
+        }
         let before_editor = bound.is_some_and(|i| i.command.is_caret()) || (bound.is_some() && alt && !cmd);
         if !before_editor && self.edit_key(event) {
             return;
         }
         if let Some(info) = bound {
-            self.run_command(info.command);
+            if !in_tab || info.scope != Scope::Canvas || info.command == Command::GoToDefinition {
+                self.run_command(info.command);
+            }
             return;
         }
         let Some(chord) = chord else { return };
@@ -3751,6 +3779,12 @@ impl App {
             }
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
+            Command::CloseFolder if self.ui.tabs.front().is_some() => {
+                self.tab_op(crate::file_tabs::TabOp::Close(self.ui.tabs.front().unwrap_or_default()))
+            }
+            Command::NextFolder | Command::PreviousFolder if !self.ui.tabs.list.is_empty() => {
+                self.tab_op(crate::file_tabs::TabOp::Cycle(if command == Command::NextFolder { 1 } else { -1 }))
+            }
             Command::CloseFolder => self.close_folder(self.active, false),
             Command::NextFolder => self.cycle(1),
             Command::PreviousFolder => self.cycle(-1),
@@ -3805,7 +3839,11 @@ impl App {
         }
         match action {
             Action::Tree(op) => self.tree_op(op),
-            Action::SwitchTab(i) => self.show_folder(i),
+            Action::SwitchTab(i) => {
+                self.ui.tabs.set_front(None);
+                self.show_folder(i);
+            }
+            Action::Tabs(op) => self.tab_op(op),
             Action::CloseTab(i) => self.close_folder(i, false),
             Action::OpenFolder => self.pick_folder(),
             Action::Rescan => self.rescan(),
@@ -3820,7 +3858,11 @@ impl App {
                 self.request_redraw();
             }
             Action::FrameSelection => self.frame_selection(),
-            Action::FlyToSite(site) => self.frame_site(site),
+            Action::FlyToSite(site) => {
+                if !self.site_in_tab(site) {
+                    self.frame_site(site);
+                }
+            }
             Action::OpenMedia(path) => {
                 if crate::media::kind(&path).is_some() {
                     self.reveal_file(&path);
@@ -3850,6 +3892,7 @@ impl App {
                 }
             }
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
+            Action::FlyToPath(path) if self.path_in_tab(&path) => {}
             Action::FlyToPath(path) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
                     self.open_media(&file);
@@ -4743,6 +4786,7 @@ impl App {
                 self.apply(Action::DepsChanged);
             }
             Step::Tab(n) => self.show_folder(n.saturating_sub(1)),
+            Step::FileTab(what) => self.tab_step(&what),
             Step::Folders => {
                 self.ui.show(Panel::Files);
                 self.ui.open_folder_menu = true;
@@ -5852,7 +5896,9 @@ impl App {
         if let Some(g) = self.gfx.as_ref() {
             self.pictures.begin_frame(&g.egui);
         }
+        self.front_changed();
         self.place_pictures();
+        self.place_card_button();
         self.place_doodles();
         let asked = self.ui.ask.as_ref().and_then(|ask| ask.preview.clone());
         self.ui.ask_picture = match &asked {

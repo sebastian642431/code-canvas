@@ -18,6 +18,9 @@ pub struct Session {
     pub single: bool,
     pub workspace: Vec<Known>,
     pub consoles: crate::consoles::Saved,
+    /// The files open in tabs above the canvas, and which of them is in front (none: the canvas).
+    pub tabs: Vec<PathBuf>,
+    pub tab: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
@@ -71,5 +74,23 @@ pub fn save(session: &Session) {
         .and_then(|_| std::fs::rename(&tmp, &path));
     if let Err(e) = result {
         log::warn!("could not save session to {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_tabs_survive_a_round_trip_and_old_sessions_have_none() {
+        let session = Session {
+            tabs: vec![PathBuf::from("/r/src/a.rs"), PathBuf::from("/r/b.ts")],
+            tab: Some(1),
+            ..Default::default()
+        };
+        let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        assert_eq!((back.tabs, back.tab), (session.tabs, Some(1)));
+        let old: Session = serde_json::from_str(r#"{"pages": [], "active": 0}"#).unwrap();
+        assert!(old.tabs.is_empty() && old.tab.is_none());
     }
 }
