@@ -1131,6 +1131,27 @@ impl App {
         self.request_redraw();
     }
 
+    /// The file is gone from the folder, so a copy of what it held goes to the data folder
+    /// and opens there like any file from outside the open folders.
+    fn show_deleted(&mut self, path: &str, staged: bool) {
+        let Some(page) = self.pages.get(self.active) else { return };
+        let prefix = page.git.as_ref().map(|git| git.prefix.clone()).unwrap_or_default();
+        let folder = page.root.file_name().map_or("folder".into(), |name| name.to_string_lossy().into_owned());
+        let Some(bytes) = crate::git::before_deleted(&page.root, &prefix, path, staged) else {
+            let text = format!("What {path} held before it was deleted could not be read from git.");
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        };
+        let copy = session::data_dir().join("deleted").join(folder).join(path);
+        let written = copy.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&copy, bytes));
+        if let Err(why) = written {
+            let text = format!("A copy of {path} could not be written: {why}.");
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        }
+        self.show_path(&copy, None);
+        let text = format!("{path} is deleted: this is a copy of it as it was before, outside the folder.");
+        self.ext.notice(ext::Level::Info, "Source Control", text);
+    }
+
     fn write_file(&mut self, path: &Path, text: &str) {
         if let Err(e) = self.watcher.write(path, text) {
             log::error!("cannot write {}: {e}", path.display());
@@ -4012,6 +4033,7 @@ impl App {
                 }
                 self.request_redraw();
             }
+            Action::ShowDeleted { path, staged } => self.show_deleted(&path, staged),
             Action::SetOnlyChanged(on) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.only_changed = on;

@@ -740,6 +740,11 @@ pub enum Action {
     Forward,
     SetDiff(crate::page::DiffView),
     ShowCommit(Option<crate::git::Commit>),
+    /// A deleted file of Source Control, opened as a copy of what it held before.
+    ShowDeleted {
+        path: String,
+        staged: bool,
+    },
     Answered(Asked, Answer),
     /// Ask first, in the app's own modal, before git does something that cannot be taken back.
     GitConfirm {
