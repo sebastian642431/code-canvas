@@ -203,6 +203,7 @@ pub struct App {
     was_shared: bool,
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
+    title_hits: Vec<(Rect, String)>,
     preview_hits: Vec<(Rect, String)>,
     lens_hits: Vec<(Rect, ext::views::Lens)>,
     version_hits: Vec<(Rect, String, u32)>,
@@ -366,6 +367,7 @@ impl App {
             was_shared: false,
             chip_hits: Vec::new(),
             toggle_hits: Vec::new(),
+            title_hits: Vec::new(),
             preview_hits: Vec::new(),
             lens_hits: Vec::new(),
             version_hits: Vec::new(),
@@ -1433,10 +1435,21 @@ impl App {
         self.following = Some((index, rel.to_string(), line, Instant::now()));
     }
 
+    /// The box or card whose name is drawn at `point`: names can stick out of their node
+    /// (the root's sits above its box, a folder's can run past its header).
+    fn title_under(&self, point: [f32; 2]) -> Option<usize> {
+        let path = overlay::title_at(&self.title_hits, point)?;
+        let r = self.pages.get(self.active)?.ready()?;
+        r.layout.node_for_path(&r.repo, path)
+    }
+
     fn code_under(&self, point: [f32; 2]) -> Option<String> {
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
         if Lod::for_zoom(page.camera.zoom) != Lod::Text || self.long_line.is_some_and(|(.., f)| f.contains(point)) {
+            return None;
+        }
+        if self.title_under(point).is_some() {
             return None;
         }
         let world = page.camera.view(self.viewport()).to_world(point);
@@ -1469,7 +1482,7 @@ impl App {
         let world = page.camera.view(self.viewport()).to_world(point);
         let scale = self.scale();
         let folder = (!page.only && page.shared.is_none()).then(|| (page.root.clone(), page.title.clone()));
-        let hit = r.layout.hit(world).map(|n| &r.layout.nodes[n]);
+        let hit = self.title_under(point).or_else(|| r.layout.hit(world)).map(|n| &r.layout.nodes[n]);
         let file = hit.and_then(|n| match n.kind {
             NodeKind::File(fi) => Some((n, fi)),
             NodeKind::Dir => None,
@@ -3017,12 +3030,13 @@ impl App {
             page.version_hover = version;
             self.request_redraw();
         }
+        let titled = on_canvas.then(|| self.title_under(cursor)).flatten();
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let (mut hover, mut cell) = (None, None);
         if on_canvas {
             if let PageState::Ready(r) = &page.state {
                 let world = page.camera.view(vp).to_world(cursor);
-                hover = r.layout.hit(world);
+                hover = titled.or_else(|| r.layout.hit(world));
                 if let Some(n) = hover.map(|h| &r.layout.nodes[h]) {
                     if let NodeKind::File(fi) = n.kind {
                         if page.camera.zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
@@ -3260,11 +3274,13 @@ impl App {
             let long = overlay::long_line(page, page.camera.view(vp), self.canvas, self.scale(), file, line)?;
             Some((file, line, long.rest.col_at(pos)?))
         });
+        let titled = self.title_under(pos);
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let world = page.camera.view(vp).to_world(pos);
         let card = in_strip.and_then(|(file, ..)| r.layout.file_node.get(file).copied());
-        let hit = card.filter(|&n| n != canvas_core::layout::NONE).map(|n| n as usize).or_else(|| r.layout.hit(world));
+        let card = card.filter(|&n| n != canvas_core::layout::NONE).map(|n| n as usize);
+        let hit = card.or(titled).or_else(|| r.layout.hit(world));
         let zoom = page.camera.zoom;
         let readable = Lod::for_zoom(zoom) == Lod::Text;
 
@@ -5733,6 +5749,7 @@ impl App {
         }
         self.chip_hits = std::mem::take(&mut canvas_overlay.chip_hits);
         self.toggle_hits = std::mem::take(&mut canvas_overlay.toggle_hits);
+        self.title_hits = std::mem::take(&mut canvas_overlay.title_hits);
         self.preview_hits = std::mem::take(&mut canvas_overlay.preview_hits);
         self.lens_hits = std::mem::take(&mut canvas_overlay.lens_hits);
         self.version_hits = std::mem::take(&mut canvas_overlay.version_hits);
