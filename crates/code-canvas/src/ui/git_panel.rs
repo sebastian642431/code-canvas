@@ -539,9 +539,27 @@ pub fn changes_panel(
                     arrow.on_hover_text("More ways to commit");
                 }
 
-                if let Some((ok, text)) = git_note.as_ref() {
-                    let color = if *ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
-                    ui.label(RichText::new(text).size(11.5).color(color));
+                let now = std::time::Instant::now();
+                if git_note.as_ref().is_some_and(|note| note.left(now).is_none()) {
+                    *git_note = None;
+                }
+                if let Some(note) = git_note.as_mut() {
+                    let color = if note.ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
+                    let row = ui.horizontal_top(|ui| {
+                        let text_size = Vec2::new((ui.available_width() - 26.0).max(0.0), 0.0);
+                        let wrapping = egui::Layout::top_down(egui::Align::Min);
+                        ui.allocate_ui_with_layout(text_size, wrapping, |ui| {
+                            ui.label(RichText::new(&note.text).size(11.5).color(color));
+                        });
+                        small_icon(ui, icons::X, "Dismiss")
+                    });
+                    if ui.rect_contains_pointer(row.response.rect) {
+                        note.since = now;
+                    }
+                    match (row.inner, note.left(now)) {
+                        (false, Some(left)) => ui.ctx().request_repaint_after(left),
+                        _ => *git_note = None,
+                    }
                 }
                 if !g.changes.is_empty() || diff.on {
                     super::diffs_section::show(ui, diff, *only_changed, *changed_folders, *changed_neighbours, &info, actions);
