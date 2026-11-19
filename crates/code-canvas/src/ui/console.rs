@@ -743,10 +743,9 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
         } else {
             None
         };
-        let close = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(18.0));
-        let closing = (hovered || front) && width > 70.0;
+        let dot_at = Pos2::new(rect.right() - 13.0, mid);
         let left = rect.left() + 28.0;
-        let right = if closing || dot.is_some() { close.left() - 2.0 } else { rect.right() - 8.0 };
+        let right = if dot.is_some() { dot_at.x - 11.0 } else { rect.right() - 8.0 };
         if renaming == Some(tab.id) {
             let field = Rect::from_min_max(
                 Pos2::new(left - 2.0, rect.top() + 2.0),
@@ -765,26 +764,8 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
             };
             text_fit(&painter, Pos2::new(left, mid), &tab.title, font.clone(), color, right - left);
         }
-        let mut closed = false;
-        if closing && renaming != Some(tab.id) {
-            let cross = ui.interact(close, egui::Id::unique(("console tab close", tab.id)), Sense::click());
-            if cross.hovered() {
-                ui.painter().rect_filled(close, 5.0, pal().border_strong);
-            }
-            let color = if cross.hovered() { pal().text } else { pal().text_faint };
-            painter.text(close.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(12.0), color);
-            closed = cross.on_hover_text("End this console").clicked();
-        } else if let Some(dot) = dot {
-            painter.circle_filled(close.center(), 3.5, dot);
-        }
-        if closing && !closed {
-            if let Some(dot) = dot {
-                painter.circle_filled(Pos2::new(rect.right() - 4.0, rect.top() + 4.0), 3.0, dot);
-            }
-        }
-        if closed {
-            actions.push(Action::Console(ConsoleOp::Kill(Some(tab.id))));
-            continue;
+        if let Some(dot) = dot.filter(|_| renaming != Some(tab.id)) {
+            painter.circle_filled(dot_at, 3.5, dot);
         }
         let tip = match (tab.broke, tab.news) {
             (true, _) => format!("{}\nSomething in it ended with an error", tab.title),
