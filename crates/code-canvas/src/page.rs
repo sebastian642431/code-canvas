@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use canvas_core::scan::{self, Dir, ScanProgress};
 use canvas_core::{Layout, LayoutFilter, RelKind, Relations, Repo, ScanOptions, Site, SymRef, TokenCache};
@@ -176,7 +176,7 @@ pub struct Page {
     pub dep_zoom: Option<i32>,
     pub commit_message: String,
     git_op: Option<Receiver<(crate::git::GitOp, Result<String, String>)>>,
-    pub git_note: Option<(bool, String)>,
+    pub git_note: Option<GitNote>,
     pub git_said: Option<(bool, String)>,
     message_rx: Option<Receiver<Result<String, String>>>,
     pub timeline: Timeline,
@@ -362,6 +362,26 @@ impl Touch {
     pub fn strength(&self) -> f32 {
         let age = self.at.elapsed().as_secs_f32();
         ((Self::SHOWN - age) / (Self::SHOWN * 0.5)).clamp(0.0, 1.0)
+    }
+}
+
+pub struct GitNote {
+    pub ok: bool,
+    pub text: String,
+    pub since: Instant,
+}
+
+impl GitNote {
+    pub const DONE_SHOWN: Duration = Duration::from_secs(6);
+    pub const ERROR_SHOWN: Duration = Duration::from_secs(20);
+
+    pub fn new(ok: bool, text: String) -> Self {
+        GitNote { ok, text, since: Instant::now() }
+    }
+
+    pub fn left(&self, now: Instant) -> Option<Duration> {
+        let shown = if self.ok { Self::DONE_SHOWN } else { Self::ERROR_SHOWN };
+        shown.checked_sub(now.saturating_duration_since(self.since)).filter(|left| !left.is_zero())
     }
 }
 
@@ -967,7 +987,7 @@ impl Page {
         let Some(rx) = &self.message_rx else { return false };
         match rx.try_recv() {
             Ok(Ok(message)) => self.commit_message = message,
-            Ok(Err(why)) => self.git_note = Some((false, why)),
+            Ok(Err(why)) => self.git_note = Some(GitNote::new(false, why)),
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {}
         }
@@ -982,7 +1002,7 @@ impl Page {
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {
                 self.git_op = None;
-                self.git_note = Some((false, "git stopped before it was done".to_string()));
+                self.git_note = Some(GitNote::new(false, "git stopped before it was done".to_string()));
                 self.refresh_git();
                 return true;
             }
@@ -997,33 +1017,39 @@ impl Page {
             }
             (crate::git::GitOp::Commit { .. }, Ok(line)) => {
                 self.commit_message.clear();
-                self.git_note = Some((true, line));
+                self.git_note = Some(GitNote::new(true, line));
             }
-            (crate::git::GitOp::Sync, Ok(_)) => self.git_note = Some((true, "Synced with the remote.".into())),
+            (crate::git::GitOp::Sync, Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, "Synced with the remote.".into()))
+            }
             (crate::git::GitOp::Push | crate::git::GitOp::Publish(_), Ok(_)) => {
-                self.git_note = Some((true, "Pushed.".into()))
+                self.git_note = Some(GitNote::new(true, "Pushed.".into()))
             }
-            (crate::git::GitOp::Pull, Ok(_)) => self.git_note = Some((true, "Pulled.".into())),
-            (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some((true, "Fetched.".into())),
-            (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some((true, "Changes stashed.".into())),
-            (crate::git::GitOp::Switch(branch), Ok(_)) => self.git_note = Some((true, format!("On branch {branch}."))),
+            (crate::git::GitOp::Pull, Ok(_)) => self.git_note = Some(GitNote::new(true, "Pulled.".into())),
+            (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some(GitNote::new(true, "Fetched.".into())),
+            (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some(GitNote::new(true, "Changes stashed.".into())),
+            (crate::git::GitOp::Switch(branch), Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, format!("On branch {branch}.")))
+            }
             (crate::git::GitOp::Track { name, .. }, Ok(_)) => {
-                self.git_note = Some((true, format!("On branch {name}.")))
+                self.git_note = Some(GitNote::new(true, format!("On branch {name}.")))
             }
             (crate::git::GitOp::NewBranch { name, .. }, Ok(_)) => {
-                self.git_note = Some((true, format!("On the new branch {name}.")))
+                self.git_note = Some(GitNote::new(true, format!("On the new branch {name}.")))
             }
             (crate::git::GitOp::NewTag { name, .. }, Ok(_)) => {
-                self.git_note = Some((true, format!("Tag {name} made.")))
+                self.git_note = Some(GitNote::new(true, format!("Tag {name} made.")))
             }
-            (crate::git::GitOp::Merge(branch), Ok(_)) => self.git_note = Some((true, format!("Merged {branch}."))),
+            (crate::git::GitOp::Merge(branch), Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, format!("Merged {branch}.")))
+            }
             (crate::git::GitOp::Rebase(branch), Ok(_)) => {
-                self.git_note = Some((true, format!("Rebased onto {branch}.")))
+                self.git_note = Some(GitNote::new(true, format!("Rebased onto {branch}.")))
             }
             (crate::git::GitOp::InteractiveRebase { stash, .. }, Ok(_)) => {
                 self.rebase = None;
                 let kept = if *stash { " Your changes are in Stashes: pop them to bring them back." } else { "" };
-                self.git_note = Some((true, format!("Rebased.{kept}")));
+                self.git_note = Some(GitNote::new(true, format!("Rebased.{kept}")));
             }
             (crate::git::GitOp::Carry { operation, how }, Ok(_)) => {
                 let done = match how {
@@ -1031,12 +1057,14 @@ impl Page {
                     crate::git::Carry::Skip => "went on without that step",
                     crate::git::Carry::Abort => "given up: everything is as it was",
                 };
-                self.git_note = Some((true, format!("{} {done}.", operation.noun())));
+                self.git_note = Some(GitNote::new(true, format!("{} {done}.", operation.noun())));
             }
-            (crate::git::GitOp::CherryPick(_), Ok(_)) => self.git_note = Some((true, "Cherry-picked.".into())),
-            (crate::git::GitOp::Revert(_), Ok(_)) => self.git_note = Some((true, "Reverted.".into())),
+            (crate::git::GitOp::CherryPick(_), Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, "Cherry-picked.".into()))
+            }
+            (crate::git::GitOp::Revert(_), Ok(_)) => self.git_note = Some(GitNote::new(true, "Reverted.".into())),
             (_, Ok(_)) => {}
-            (_, Err(e)) => self.git_note = Some((false, e)),
+            (_, Err(e)) => self.git_note = Some(GitNote::new(false, e)),
         }
         self.refresh_git();
         true
@@ -1802,6 +1830,18 @@ mod tests {
     fn folder(rel_path: &str, dirs: Vec<Dir>) -> Dir {
         let name = rel_path.rsplit('/').next().unwrap_or_default().to_string();
         Dir { name, rel_path: rel_path.to_string(), dirs, files: Vec::new() }
+    }
+
+    #[test]
+    fn a_git_note_goes_away_sooner_when_it_is_good_news() {
+        let done = GitNote::new(true, "Pushed.".into());
+        let at = done.since;
+        let error = GitNote { since: at, ..GitNote::new(false, "error: nope".into()) };
+        assert_eq!(done.left(at), Some(GitNote::DONE_SHOWN));
+        assert_eq!(done.left(at + Duration::from_secs(5)), Some(Duration::from_secs(1)));
+        assert_eq!(done.left(at + GitNote::DONE_SHOWN), None);
+        assert_eq!(error.left(at + Duration::from_secs(10)), Some(Duration::from_secs(10)));
+        assert_eq!(error.left(at + GitNote::ERROR_SHOWN + Duration::from_secs(1)), None);
     }
 
     #[test]
