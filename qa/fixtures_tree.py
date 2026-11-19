@@ -46,4 +46,17 @@ def tree_outside(root):
     write(root, "from-explorer.txt", "dropped from the system\n")
 
 
-FIXTURES = {"tree-move": tree_move, "tree-other": tree_other, "tree-outside": tree_outside}
+def tree_nested(root):
+    """Folders nested three deep, with a folder beside them, to open and close with Alt+click."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "core.autocrlf", "false")
+    git(root, "config", "user.name", "qa")
+    git(root, "config", "user.email", "qa@example.invalid")
+    for rel in ("top.txt", "app/one.txt", "app/ui/two.txt", "app/ui/parts/three.txt", "app/core/four.txt", "other/five.txt"):
+        write(root, rel, rel + "\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "first")
+
+
+FIXTURES = {"tree-nested": tree_nested, "tree-move": tree_move, "tree-other": tree_other, "tree-outside": tree_outside}

@@ -1,4 +1,6 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+// A window program in every build, debug too: a console program opens a console window each time it starts,
+// which takes the focus away from whoever is working while the QA tests run. The log goes to its file anyway.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod account;
 mod agents;

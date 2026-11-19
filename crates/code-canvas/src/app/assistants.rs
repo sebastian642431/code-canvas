@@ -58,12 +58,10 @@ impl App {
                 .iter()
                 .any(|root| path == *root || path.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/')))
         };
-        agent
-            .cwd
-            .iter()
-            .chain(agent.path.iter())
-            .chain(agent.trail.iter().map(|step| &step.path))
-            .any(|path| inside(path))
+        let mut known =
+            agent.cwd.iter().chain(agent.path.iter()).chain(agent.trail.iter().map(|step| &step.path)).peekable();
+        // Not known yet where it works (it has only been asked something): it shows until it says.
+        known.peek().is_none() || known.any(|path| inside(path))
     }
 
     fn agent_file(&self, agent: &Agent) -> Option<(usize, String)> {

@@ -22,7 +22,7 @@ wait 2500
 mark c-banner
 wait 500
 wait 500
-ui click 222 423
+ui click 222 650
 wait 2500
 mark d-took-theirs
 wait 500

@@ -16,6 +16,8 @@ mod branch_sidebar;
 mod conflict_row;
 mod console;
 mod deps_panel;
+mod diffs_section;
+pub use diffs_section::DiffsInfo;
 mod ext_panels;
 mod files_tree;
 mod git_panel;
@@ -684,6 +686,8 @@ pub enum Action {
     ToggleHidden(String),
     ToggleCollapsed(String),
     ToggleTreeOpen(String),
+    /// Alt+click on a folder of the file list: opens or closes it and every folder inside it.
+    ToggleTreeOpenDeep(String),
     HoverPath(String),
     RemoveSymbol(usize),
     ClearSymbols,
@@ -726,6 +730,11 @@ pub enum Action {
     InstallUpdate,
     AcceptCompletion(usize),
     SetOnlyChanged(bool),
+    /// With only the changed files shown: also the files of their folders, also their neighbours.
+    SetChangedAround {
+        folders: bool,
+        neighbours: bool,
+    },
     Find(FindOp),
     Back,
     Forward,
@@ -2084,11 +2093,45 @@ fn rail(
                         st.to_console = Some(entry.panel.clone());
                         ui.close();
                     }
+                    if menu_row(ui, icons::EYE_OFF, "Hide from the bar") {
+                        st.rails.set_hidden(&entry.panel.key(), true);
+                        log::info!("the icon {} is hidden from the bars", entry.panel.key());
+                        st.close_panel(&entry.panel);
+                        actions.push(Action::RailsChanged);
+                        ui.close();
+                    }
                 });
                 if resp.on_hover_text(format!("{}\nDrag it to reorder it or to the other bar", entry.tip)).clicked() {
                     st.toggle(entry.panel.clone());
                 }
             }
+            // A right click on the free part of a bar lists every icon of both bars, ticked when shown: the way
+            // back for one that was hidden.
+            let below = slots.last().map_or(zone.top(), |(_, last)| last.bottom() + 4.0);
+            let free = Rect::from_min_max(Pos2::new(zone.left(), below), zone.max);
+            let rest = ui.interact(free, ui.scope_id().with(("rail free", side.index())), Sense::click());
+            rest.context_menu(|ui| {
+                ui.set_width(240.0);
+                ui.label(RichText::new("Icons on the bars").size(11.0).color(pal().text_faint));
+                for entry in entries {
+                    let key = entry.panel.key();
+                    if st.rails.in_tabs(&key, false) {
+                        continue;
+                    }
+                    let shown = !st.rails.is_hidden(&key);
+                    let first = entry.tip.lines().next().unwrap_or_default();
+                    let name = first.split(':').next().unwrap_or(first).trim();
+                    if menu_row(ui, if shown { icons::CHECK } else { "" }, name) {
+                        st.rails.set_hidden(&key, shown);
+                        log::info!("the icon {key} is {} the bars", if shown { "hidden from" } else { "back on" });
+                        if shown {
+                            st.close_panel(&entry.panel);
+                        }
+                        actions.push(Action::RailsChanged);
+                        ui.close();
+                    }
+                }
+            });
             rail_drop_target(ui, st, side, zone, &slots);
             if side == Side::Right {
                 return;
@@ -2198,8 +2241,6 @@ fn sign_in_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action
     if !st.account.signing {
         return;
     }
-    st.floating.push(ctx.content_rect());
-    st.page_places.clear();
     let frame = Frame::NONE
         .fill(pal().card)
         .stroke(Stroke::new(1.0, pal().border_strong))
@@ -2990,7 +3031,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 && egui::Popup::is_id_open(ui.ctx(), ui.make_persistent_id(("tree quick", path, 0)).with("popup"));
             let hot = !dragging && !renamed && !ignored && (ui.rect_contains_pointer(rect) || alone || menu_up);
             let mut right_pad = if hot {
-                files_tree::quick_width(is_dir)
+                files_tree::quick_width()
             } else if is_dir && !ignored {
                 44.0
             } else {
@@ -3028,6 +3069,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 files_tree::quick_buttons(ui, rect, quick, actions);
             }
 
+            if is_dir && !ignored && !dragging {
+                resp.clone().on_hover_text("Alt+click opens or closes everything inside");
+            }
             if resp.hovered() && on && !dragging {
                 actions.push(Action::HoverPath(path.to_string()));
             }
@@ -3058,7 +3102,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 st.tree.sel = [path.to_string()].into();
                 st.tree.anchor = Some(path.to_string());
                 let x = resp.interact_pointer_pos().map(|p| p.x).unwrap_or(text_x);
-                if is_dir && x < x0 + 17.0 {
+                if is_dir && mods.alt && !(x0 + 17.0..x0 + 37.0).contains(&x) {
+                    actions.push(Action::ToggleTreeOpenDeep(path.to_string()));
+                } else if is_dir && x < x0 + 17.0 {
                     actions.push(Action::ToggleTreeOpen(path.to_string()));
                 } else if x < x0 + 37.0 {
                     if !locked {
@@ -3554,6 +3600,7 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
                 ("Back to where the canvas was", key(Command::Back)),
                 ("Forward again", key(Command::Forward)),
                 ("Collapse / expand a folder", fixed("Click − / + next to its name")),
+                ("Open or close a folder of the file list with everything inside it", fixed("Alt+click")),
             ],
         ),
         (
@@ -5111,9 +5158,8 @@ fn ask_modal(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>) {
     const SHOWN: usize = 8;
     const TALL: f32 = 210.0;
     st.ask_page = None;
+    // The pages stay where they are: only the box of the question is cut out of them (see `note_covers`).
     let Some(ask) = st.ask.as_mut() else { return };
-    st.floating.push(ctx.content_rect());
-    st.page_places.clear();
     let fresh = std::mem::take(&mut ask.fresh);
     let (entered, escaped) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
     let mut answer = None;
@@ -5635,6 +5681,15 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
             Action::SetDiff(crate::page::DiffView { on: true, ..diff }),
         ),
         (
+            "Source Control: Diffs Unified".into(),
+            Action::SetDiff(crate::page::DiffView { on: true, split: false, ..diff }),
+        ),
+        (
+            "Source Control: Diffs Split".into(),
+            Action::SetDiff(crate::page::DiffView { on: true, split: true, ..diff }),
+        ),
+        ("Source Control: Diffs Changes Only".into(), Action::SetDiff(crate::page::DiffView { on: false, ..diff })),
+        (
             "Source Control: Show the Files as They Are".into(),
             Action::SetDiff(crate::page::DiffView { on: false, ..diff }),
         ),
@@ -5901,8 +5956,23 @@ pub fn note_covers(ctx: &egui::Context, st: &mut UiState) {
     let cards = &st.card_places;
     let a_card = |layer: egui::LayerId| cards.iter().any(|card| card.layer == layer);
     let floating = st.floating.iter().enumerate().filter(|(at, _)| !cards.iter().any(|card| card.floating == *at));
+    // A modal's layer spans the whole window because of its dimmed backdrop; only its box is painted over the
+    // pages, so the pages keep showing around it (dimmed is not hidden) and lose just the box's place.
+    let screen = ctx.content_rect();
+    let over = |(layer, rect): (egui::LayerId, Rect)| -> Option<Rect> {
+        if !rect.contains_rect(screen) {
+            return Some(rect);
+        }
+        ctx.graphics(|all| {
+            let shapes = all.get(layer)?.all_entries();
+            let parts = shapes
+                .map(|clipped| clipped.shape.visual_bounding_rect())
+                .filter(|bounds| bounds.is_positive() && !bounds.contains_rect(screen.shrink(1.0)));
+            parts.reduce(|all, part| all.union(part))
+        })
+    };
     let mut covers: Vec<Rect> = floating.map(|(_, rect)| *rect).collect();
-    covers.extend(shown.into_iter().filter(|(layer, _)| !a_card(*layer) && drawn(*layer)).map(|(_, rect)| rect));
+    covers.extend(shown.into_iter().filter(|(layer, _)| !a_card(*layer) && drawn(*layer)).filter_map(over));
     st.covers = covers;
 }
 

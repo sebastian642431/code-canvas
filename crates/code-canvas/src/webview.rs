@@ -39,12 +39,16 @@ const INIT_JS: &str = r#"
   window.acquireVsCodeApi = () => api;
 
   let T = window.__ccTheme || {};
+  // The colour of what holds the page (a docked panel or a card), so the page does not show as a box of
+  // another grey inside it.
+  let B = null;
+  const back = () => B || T.card;
   const exact = () => ({
     'font-family': '"Segoe UI", system-ui, sans-serif', 'font-size': '13px', 'font-weight': 'normal',
     'editor-font-family': 'Consolas, "Cascadia Mono", monospace', 'editor-font-size': '13px', 'editor-font-weight': 'normal',
     'foreground': T.text, 'descriptionForeground': T.text_dim, 'disabledForeground': T.text_faint, 'errorForeground': T.problem_error,
-    'focusBorder': T.accent, 'editor-background': T.card, 'editor-foreground': T.text,
-    'sideBar-background': T.card, 'sideBar-foreground': T.text, 'panel-background': T.card, 'panel-border': T.border,
+    'focusBorder': T.accent, 'editor-background': back(), 'editor-foreground': T.text,
+    'sideBar-background': back(), 'sideBar-foreground': T.text, 'panel-background': back(), 'panel-border': T.border,
     'input-background': T.well, 'input-foreground': T.text, 'input-border': T.border, 'input-placeholderForeground': T.text_faint,
     'button-background': T.accent, 'button-foreground': T.on_accent, 'button-hoverBackground': T.accent_hover,
     'button-secondaryBackground': T.raised, 'button-secondaryForeground': T.text, 'button-secondaryHoverBackground': T.hover,
@@ -68,7 +72,7 @@ const INIT_JS: &str = r#"
     const tone = /error|deleted|removed/.test(n) ? T.problem_error : /warning|modified/.test(n) ? T.problem_warning : /added|inserted|success/.test(n) ? T.git_added : /info|link|focus|active|selection|highlight/.test(n) ? T.accent : null;
     if (/shadow/.test(n)) return T.shadow;
     if (/border|outline|separator/.test(n)) return tone || T.border;
-    if (/background/.test(n)) return tone ? tone.slice(0, 7) + '26' : /hover/.test(n) ? T.raised : T.card;
+    if (/background/.test(n)) return tone ? tone.slice(0, 7) + '26' : /hover/.test(n) ? T.raised : back();
     if (/foreground|color/.test(n)) return tone || T.text;
     return null;
   }
@@ -131,6 +135,10 @@ const INIT_JS: &str = r#"
 
   window.__codeCanvasTheme = (theme) => {
     T = theme;
+    applyTheme();
+  };
+  window.__codeCanvasBack = (colour) => {
+    B = colour;
     applyTheme();
   };
 
@@ -295,6 +303,8 @@ mod platform {
         theme: u64,
         holes: Vec<[i32; 4]>,
         veiled: bool,
+        /// The colour of what holds the page, as last given to it.
+        back: Option<String>,
     }
 
     const FAR: i32 = 1 << 20;
@@ -543,6 +553,7 @@ mod platform {
             if let Some(view) = self.views.get_mut(handle) {
                 view.ready = false;
                 view.queued.clear();
+                view.back = None;
                 let _ = view.web.load_url(&format!("{ORIGIN}/view/{handle}"));
             }
         }
@@ -565,6 +576,17 @@ mod platform {
         pub fn run_in(&mut self, handle: &str, script: &str) {
             if let Some(view) = self.views.get(handle) {
                 let _ = view.web.evaluate_script(script);
+            }
+        }
+
+        /// Gives a page the colour of the panel or card it is in, once it is loaded (and again after a reload).
+        pub fn backdrop(&mut self, handle: &str, colour: &str) {
+            let Some(view) = self.views.get_mut(handle).filter(|view| view.ready) else { return };
+            if view.back.as_deref() != Some(colour) {
+                let _ = view
+                    .web
+                    .evaluate_script(&format!("window.__codeCanvasBack && window.__codeCanvasBack('{colour}')"));
+                view.back = Some(colour.to_string());
             }
         }
 
@@ -611,8 +633,15 @@ mod platform {
                     match self.create(window, handle, area) {
                         Ok(web) => {
                             let theme = canvas_render::theme::revision();
-                            let view =
-                                View { web, ready: false, queued: Vec::new(), theme, holes: Vec::new(), veiled: false };
+                            let view = View {
+                                web,
+                                ready: false,
+                                queued: Vec::new(),
+                                theme,
+                                holes: Vec::new(),
+                                veiled: false,
+                                back: None,
+                            };
                             self.views.insert(handle.to_string(), view);
                         }
                         Err(e) => {
@@ -639,6 +668,7 @@ mod platform {
             }
             for (handle, _) in gone {
                 if let Some(view) = self.views.get(&handle) {
+                    log::info!("a page goes out of sight: {handle}");
                     let _ = view.web.set_visible(false);
                     self.hidden_at = Some(std::time::Instant::now());
                 }
@@ -852,6 +882,7 @@ mod platform {
         pub fn veil(&mut self, _handle: &str, _veiled: bool) {}
         pub fn run(&mut self, _script: &str) {}
         pub fn run_in(&mut self, _handle: &str, _script: &str) {}
+        pub fn backdrop(&mut self, _handle: &str, _colour: &str) {}
         pub fn show(&mut self, _window: &winit::window::Window, _targets: &[(&str, Rect, Vec<Rect>)]) -> bool {
             false
         }

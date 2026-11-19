@@ -32,6 +32,8 @@ pub struct Rails {
     pub homes: u32,
     pub cards: std::collections::BTreeMap<String, [f32; 4]>,
     pub tabs: Vec<String>,
+    /// Icons taken off the bars with a right click; they keep their place for when they are shown again.
+    pub hidden: Vec<String>,
 }
 
 pub const HOMES: u32 = 3;
@@ -94,7 +96,27 @@ impl Rails {
         Side::BOTH.into_iter().find(|side| self.list(*side).iter().any(|placed| placed == key))
     }
 
+    /// Takes an icon off its bar, or puts it back where it was.
+    pub fn set_hidden(&mut self, key: &str, hidden: bool) {
+        self.hidden.retain(|gone| gone != key);
+        if hidden {
+            self.hidden.push(key.to_string());
+        }
+    }
+
+    pub fn is_hidden(&self, key: &str) -> bool {
+        self.hidden.iter().any(|gone| gone == key)
+    }
+
     pub fn arrange(&self, available: &[(String, Side)]) -> [Vec<String>; 2] {
+        let mut order = self.arrange_all(available);
+        for list in &mut order {
+            list.retain(|key| !self.is_hidden(key));
+        }
+        order
+    }
+
+    fn arrange_all(&self, available: &[(String, Side)]) -> [Vec<String>; 2] {
         let mut order = [Vec::new(), Vec::new()];
         for side in Side::BOTH {
             for key in self.list(side) {
@@ -141,6 +163,20 @@ mod tests {
 
     fn keys(list: &[&str]) -> Vec<String> {
         list.iter().map(|key| key.to_string()).collect()
+    }
+
+    #[test]
+    fn a_hidden_icon_leaves_its_bar_and_comes_back_to_its_place() {
+        let mut rails = Rails::default();
+        let all = available();
+        let before = rails.arrange(&all);
+        let key = before[0][1].clone();
+        rails.set_hidden(&key, true);
+        let after = rails.arrange(&all);
+        assert!(!after[0].contains(&key) && !after[1].contains(&key), "hidden from both bars");
+        assert_eq!(after[0].len(), before[0].len() - 1);
+        rails.set_hidden(&key, false);
+        assert_eq!(rails.arrange(&all), before, "back where it was");
     }
 
     #[test]

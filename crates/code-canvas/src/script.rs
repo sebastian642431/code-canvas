@@ -31,6 +31,8 @@ pub enum Step {
     Press(String),
     Git(String),
     OnlyChanged(bool),
+    /// `folders on|off` or `neighbours on|off`: what else is shown with only the changed files.
+    ChangedAround(String),
     Right(String),
     CollapseAll,
     ExpandAll,
@@ -133,6 +135,7 @@ fn parse_step(text: &str) -> Option<Step> {
             Step::Caret(parts.next()?.ok()?, parts.next()?.ok()?)
         }
         "git" => Step::Git(arg.into()),
+        "changed" if arg.starts_with("folders ") || arg.starts_with("neighbours ") => Step::ChangedAround(arg.into()),
         "changed" => Step::OnlyChanged(arg == "on"),
         "right" => Step::Right(arg.into()),
         "collapse-all" => Step::CollapseAll,

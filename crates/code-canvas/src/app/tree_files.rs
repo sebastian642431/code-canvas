@@ -6,6 +6,14 @@ use crate::keys::Chord;
 use crate::tree_ops::{self, Clash, Job, Outcome};
 use crate::ui::{self, Action, FileOp, NamingKind, TreeOp};
 
+/// The relative path of every folder under `dir`, at any depth.
+fn collect_folders(dir: &canvas_core::scan::Dir, out: &mut Vec<String>) {
+    for sub in &dir.dirs {
+        out.push(sub.rel_path.clone());
+        collect_folders(sub, out);
+    }
+}
+
 pub struct Undoable {
     pub from_root: PathBuf,
     pub to_root: PathBuf,
@@ -32,15 +40,6 @@ impl App {
             TreeOp::Refused(why) => {
                 log::info!("files: refused: {why}");
                 self.ext.notice(ext::Level::Info, "files", why)
-            }
-            TreeOp::CollapseInside(path) => {
-                let inside = format!("{path}/");
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.tree_open.retain(|open| !open.starts_with(&inside));
-                    if let Some(r) = page.ready_mut() {
-                        r.tree_dirty = true;
-                    }
-                }
             }
             TreeOp::Cut(paths) => self.ui.tree.clip = Some(ui::TreeClip { root, paths, cut: true }),
             TreeOp::CopyFiles(paths) => self.ui.tree.clip = Some(ui::TreeClip { root, paths, cut: false }),
@@ -87,6 +86,17 @@ impl App {
             TreeOp::Delete(items) => self.ask_delete_many(root, items),
             TreeOp::Undo => self.undo_tree(),
         }
+        self.request_redraw();
+    }
+
+    /// Alt+click or Alt+Enter on a folder of the file list: opens it and every folder inside it, or closes them all.
+    pub(super) fn toggle_tree_deep(&mut self, path: &str) {
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let mut folders = Vec::new();
+        let Some(r) = page.ready_mut() else { return };
+        collect_folders(&r.repo.tree, &mut folders);
+        r.tree_dirty = true;
+        tree_ops::toggle_deep(&mut page.tree_open, &folders, path);
         self.request_redraw();
     }
 
@@ -331,6 +341,10 @@ impl App {
                 self.request_redraw();
                 return true;
             }
+            ("enter", false, false, true) if sel.len() == 1 && root.join(&sel[0]).is_dir() => {
+                self.apply(Action::ToggleTreeOpenDeep(sel[0].clone()));
+                return true;
+            }
             ("enter", false, false, false) if sel.len() == 1 => {
                 let path = sel[0].clone();
                 let action =
@@ -430,6 +444,7 @@ impl App {
                 self.script_mods = match *which {
                     "ctrl" => egui::Modifiers::CTRL,
                     "shift" => egui::Modifiers::SHIFT,
+                    "alt" => egui::Modifiers::ALT,
                     _ => egui::Modifiers::NONE,
                 };
                 self.ui_events.push_back(vec![egui::Event::ModifiersChanged(self.script_mods)]);

@@ -3593,6 +3593,7 @@ impl App {
                     self.request_redraw();
                 }
             }
+            Action::ToggleTreeOpenDeep(path) => self.toggle_tree_deep(&path),
             Action::ToggleHidden(path) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     if !page.filter.hidden.remove(&path) {
@@ -4005,6 +4006,16 @@ impl App {
                 self.relayout();
                 self.frame_all();
             }
+            Action::SetChangedAround { folders, neighbours } => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.changed_folders = folders;
+                    page.changed_neighbours = neighbours;
+                    if page.only_changed {
+                        self.relayout();
+                        self.frame_all();
+                    }
+                }
+            }
             Action::SetTheme(key) => {
                 self.ui.theme.outside = outside_theme(&self.ext, &key);
                 self.ui.theme.set_base(&key);
@@ -4207,6 +4218,16 @@ impl App {
                 }
             }
             Step::OnlyChanged(on) => self.apply(Action::SetOnlyChanged(on)),
+            Step::ChangedAround(what) => {
+                let (mut folders, mut neighbours) =
+                    self.pages.get(self.active).map_or((false, false), |p| (p.changed_folders, p.changed_neighbours));
+                match what.split_once(' ') {
+                    Some(("folders", on)) => folders = on.trim() == "on",
+                    Some(("neighbours", on)) => neighbours = on.trim() == "on",
+                    _ => log::warn!("script: changed needs on|off|folders on|off|neighbours on|off"),
+                }
+                self.apply(Action::SetChangedAround { folders, neighbours });
+            }
             Step::History(what) => {
                 let (verb, arg) = what.split_once(' ').unwrap_or((what.as_str(), ""));
                 let mode = match arg.trim() {
@@ -5570,6 +5591,19 @@ impl App {
                     Some((handle, scaled(r), Some(place)))
                 })
                 .collect();
+            // Each page gets the colour of what holds it: a docked panel is a list-row tint over the window's
+            // colour, anything else is a card.
+            let t = canvas_render::theme::get();
+            let (docked, card) = (
+                canvas_render::theme::to_hex(canvas_render::theme::over(t.row, t.chrome)),
+                canvas_render::theme::to_hex(t.card),
+            );
+            for (place, (panel, _)) in self.ui.page_places.iter().enumerate() {
+                let Some((handle, ..)) = places.iter().find(|(.., at)| *at == Some(place)) else { continue };
+                let held = self.ui.dock == *panel || self.ui.beside.as_ref() == Some(panel);
+                let back = if held && self.ui.place_of(panel) != ui::Place::Card { &docked } else { &card };
+                self.webviews.backdrop(handle, back);
+            }
             let mut places = places;
             let player = self.player_place();
             if std::mem::replace(&mut self.player_shown, player.is_some()) && player.is_none() {

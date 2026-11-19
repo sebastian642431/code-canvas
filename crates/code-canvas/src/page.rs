@@ -161,6 +161,12 @@ pub struct Page {
     pub rebase: Option<crate::rebase::Plan>,
     git_rx: Option<Receiver<Option<GitState>>>,
     pub only_changed: bool,
+    /// With only the changed files shown: also every file of a folder that has a changed file.
+    pub changed_folders: bool,
+    /// With only the changed files shown: also the files that import or are imported by a changed file.
+    pub changed_neighbours: bool,
+    /// How many files the canvas was last narrowed to (None: it shows them all).
+    pub narrowed_to: Option<usize>,
     pub editors: std::collections::HashMap<String, Editor>,
     pub doodles: Vec<crate::doodle::Stroke>,
     pub editing: Option<String>,
@@ -234,6 +240,8 @@ pub struct Diffed {
     pub plain: String,
     committed: Option<String>,
     symbols: Vec<(u32, u32)>,
+    /// Some unchanged lines of the file are folded away.
+    folded: bool,
 }
 
 impl Diffed {
@@ -408,6 +416,9 @@ impl Page {
             rebase: None,
             git_rx: None,
             only_changed: false,
+            changed_folders: false,
+            changed_neighbours: false,
+            narrowed_to: None,
             editors: Default::default(),
             doodles: Vec::new(),
             editing: None,
@@ -749,7 +760,8 @@ impl Page {
                     r.repo.files[index].numbers = Some(rows.iter().map(numbered).collect());
                     let plain = canvas_core::scan::normalise(&text).0;
                     let committed = committed.is_some().then(|| canvas_core::scan::normalise(new).0);
-                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, lines, plain, committed, symbols });
+                    let folded = rows.iter().any(|row| row.kind == crate::git::RowKind::Gap);
+                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, lines, plain, committed, symbols, folded });
                 }
                 None => {
                     if self.diffs.remove(rel).is_none() {
@@ -1107,6 +1119,40 @@ impl Page {
         git.changes.iter().filter_map(|c| r.repo.file_index(&c.path)).map(|i| i as u32).collect()
     }
 
+    /// The changed files, and with the options of the Diffs section on also the files of
+    /// their folders and the files one import away from them.
+    fn changed_and_around(&self) -> HashSet<u32> {
+        let changed = self.changed_files();
+        let Some(r) = self.ready().filter(|_| !changed.is_empty()) else { return changed };
+        let mut files = changed.clone();
+        if self.changed_folders {
+            let paths: Vec<&str> = r.repo.files.iter().map(|f| f.rel_path.as_str()).collect();
+            files.extend(files_in_folders_of(&changed, &paths));
+        }
+        if self.changed_neighbours {
+            let kinds = DepFilters::default().kinds;
+            let mut edges = Vec::new();
+            for &file in &changed {
+                edges.extend(r.deps.outgoing(file).iter().filter(|e| kinds[e.kind.index()]).map(|e| (e.from, e.to)));
+                edges.extend(r.deps.incoming(file).filter(|e| kinds[e.kind.index()]).map(|e| (e.from, e.to)));
+            }
+            files.extend(with_neighbours(&changed, &edges));
+        }
+        files
+    }
+
+    /// What the Diffs section of Source Control counts: the files with changes, the files the
+    /// canvas shows while narrowed to them (nothing when it is narrowed to something else),
+    /// and the files whose unchanged lines are folded away.
+    pub fn diffs_info(&self) -> crate::ui::DiffsInfo {
+        let clean = self.only_changed && !self.only_connected && self.showing.is_none();
+        crate::ui::DiffsInfo {
+            changed: self.changed_files().len(),
+            shown: self.narrowed_to.filter(|_| clean),
+            folded: self.diffs.values().filter(|shown| shown.folded).count(),
+        }
+    }
+
     pub fn start_scan(&mut self) {
         self.diffs.clear();
         self.diff_stale = true;
@@ -1310,7 +1356,7 @@ impl Page {
     pub fn layout_filter(&self, filters: &RelFilters) -> LayoutFilter {
         let changed = match self.commit_files() {
             Some(of_commit) => Some(of_commit),
-            None => self.only_changed.then(|| self.changed_files()),
+            None => self.only_changed.then(|| self.changed_and_around()),
         };
         let changed = changed.filter(|set| !set.is_empty());
         let connected = (self.only_connected && !self.selections.is_empty()).then(|| self.connected_files(filters));
@@ -1323,6 +1369,18 @@ impl Page {
 
     pub fn relayout(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) {
         let filter = self.layout_filter(filters);
+        let narrowed_to = filter.only_files.as_ref().map(|set| set.len());
+        if self.commit_shown().is_none() && self.only_changed {
+            let (folders, neighbours) = (self.changed_folders, self.changed_neighbours);
+            let what = match (folders, neighbours) {
+                (false, false) => "changed",
+                (true, false) => "changed, their folders",
+                (false, true) => "changed, their neighbours",
+                (true, true) => "changed, their folders, their neighbours",
+            };
+            log::info!("showing {} files: {what}", narrowed_to.unwrap_or(0));
+        }
+        self.narrowed_to = narrowed_to;
         let selected = self.selected;
         let PageState::Ready(r) = &mut self.state else { return };
         let t = Instant::now();
@@ -1627,6 +1685,33 @@ struct TreeView<'a> {
     ignored: HashMap<String, Vec<(String, bool)>>,
 }
 
+/// The folder a path is directly in ("" at the top of the folder).
+fn folder_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
+/// Every file that is in the same folder as one of the `changed` files. `paths` are the
+/// relative paths of all files, the index of a path being the number of its file.
+fn files_in_folders_of(changed: &HashSet<u32>, paths: &[&str]) -> HashSet<u32> {
+    let folders: HashSet<&str> = changed.iter().filter_map(|&i| paths.get(i as usize)).map(|p| folder_of(p)).collect();
+    paths.iter().enumerate().filter(|(_, p)| folders.contains(folder_of(p))).map(|(i, _)| i as u32).collect()
+}
+
+/// The `changed` files and the files at the other end of an import (`edges` are
+/// `(importing file, imported file)`) of one of them.
+fn with_neighbours(changed: &HashSet<u32>, edges: &[(u32, u32)]) -> HashSet<u32> {
+    let mut out = changed.clone();
+    for &(from, to) in edges {
+        if changed.contains(&from) {
+            out.insert(to);
+        }
+        if changed.contains(&to) {
+            out.insert(from);
+        }
+    }
+    out
+}
+
 fn folders_of(dir: &Dir, folders: &mut HashSet<String>) {
     folders.insert(dir.rel_path.clone());
     for inner in &dir.dirs {
@@ -1717,6 +1802,26 @@ mod tests {
     fn folder(rel_path: &str, dirs: Vec<Dir>) -> Dir {
         let name = rel_path.rsplit('/').next().unwrap_or_default().to_string();
         Dir { name, rel_path: rel_path.to_string(), dirs, files: Vec::new() }
+    }
+
+    #[test]
+    fn changed_files_bring_the_other_files_of_their_folder() {
+        let paths = ["a/one.rs", "a/two.rs", "b/three.rs", "b/four.rs", "top.rs", "c/deep/five.rs", "c/six.rs"];
+        let changed: HashSet<u32> = [0, 5].into_iter().collect();
+        let got = files_in_folders_of(&changed, &paths);
+        assert_eq!(got, [0, 1, 5].into_iter().collect::<HashSet<u32>>());
+        let top: HashSet<u32> = [4].into_iter().collect();
+        assert_eq!(files_in_folders_of(&top, &paths), top);
+        assert!(files_in_folders_of(&HashSet::new(), &paths).is_empty());
+    }
+
+    #[test]
+    fn changed_files_bring_the_files_one_import_away() {
+        let changed: HashSet<u32> = [1].into_iter().collect();
+        let edges = [(0, 1), (1, 2), (2, 3), (4, 0)];
+        let got = with_neighbours(&changed, &edges);
+        assert_eq!(got, [0, 1, 2].into_iter().collect::<HashSet<u32>>(), "importers and imported, one hop only");
+        assert_eq!(with_neighbours(&changed, &[]), changed);
     }
 
     #[test]

@@ -1,0 +1,25 @@
+title: A right click on an icon of a bar hides it, and a right click on the free part of a bar lists every icon, ticked when shown, to bring it back to its place
+folders: rust-small
+limit: 60
+expect-log: the icon deps is hidden from the bars
+expect-log: the icon deps is back on the bars
+forbid-log: WARN.*script
+
+wait 3000
+ui right 1680 98
+wait 800
+mark a-icon-menu
+wait 500
+ui click 1556 150
+wait 1000
+mark b-icon-hidden
+wait 500
+ui right 1680 500
+wait 800
+mark c-list-of-icons
+wait 500
+ui click 1500 693
+wait 1000
+mark d-icon-back
+wait 500
+quit

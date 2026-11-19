@@ -1,0 +1,22 @@
+title: A question of the app (here before deleting a file) dims what is behind it but hides no page: an extension's page beside it stays in sight, only the question's own box is cut out of what it covers
+folders: rust-small
+extensions: webview-extension
+limit: 80
+expect-log: script: Answer
+forbid-log: a page goes out of sight
+forbid-log: WARN.*script
+
+wait 3000
+right qa.chat
+wait 3000
+mark a-page-open
+wait 500
+delete src/lib.rs
+wait 1500
+mark b-question-over-the-pages
+wait 500
+answer Cancel
+wait 1200
+mark c-question-gone
+wait 500
+quit

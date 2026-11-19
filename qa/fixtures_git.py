@@ -211,7 +211,26 @@ def git_rebase(root):
         commit(root, f"c{n} adds a file")
 
 
+def git_diffs(root):
+    """Changes in two folders (alpha/one.ts, beta/three.ts), each with an unchanged file beside it,
+    a file of gamma that imports alpha/one.ts, and a file of delta that has nothing to do with them."""
+    init(root)
+    for rel, text in {
+        "alpha/one.ts": "export const one = 1;\nexport const uno = 11;\n\n" + "".join(f"// keep {i}\n" for i in range(20)),
+        "alpha/two.ts": "export const two = 2;\n",
+        "beta/three.ts": "export const three = 3;\n\n" + "".join(f"// keep {i}\n" for i in range(20)),
+        "beta/four.ts": "export const four = 4;\n",
+        "gamma/user.ts": 'import { one } from "../alpha/one";\nexport const user = one + 1;\n',
+        "delta/far.ts": "export const far = 0;\n",
+    }.items():
+        write(root, rel, text)
+    commit(root, "first")
+    write(root, "alpha/one.ts", "export const one = 100;\nexport const uno = 11;\n\n" + "".join(f"// keep {i}\n" for i in range(20)))
+    write(root, "beta/three.ts", "export const three = 3;\nexport const trio = 33;\n\n" + "".join(f"// keep {i}\n" for i in range(20)))
+
+
 FIXTURES = {
+    "git-diffs": git_diffs,
     "git-graph": git_graph,
     "git-conflict": git_conflict,
     "git-rebase": git_rebase,

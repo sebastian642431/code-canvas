@@ -27,7 +27,6 @@ pub enum TreeOp {
     Delete(Vec<String>),
     Undo,
     Refused(String),
-    CollapseInside(String),
 }
 
 pub struct TreeDrag {
@@ -283,12 +282,8 @@ fn quick_button(ui: &mut egui::Ui, at: Rect, id: egui::Id, glyph: &str, tip: &st
     resp.on_hover_text(tip)
 }
 
-pub(super) fn quick_width(is_dir: bool) -> f32 {
-    if is_dir {
-        3.0 * 22.0 + 6.0
-    } else {
-        2.0 * 22.0 + 6.0
-    }
+pub(super) fn quick_width() -> f32 {
+    2.0 * 22.0 + 6.0
 }
 
 pub(super) fn quick_buttons(ui: &mut egui::Ui, row: Rect, quick: Quick, actions: &mut Vec<Action>) {
@@ -302,7 +297,7 @@ pub(super) fn quick_buttons(ui: &mut egui::Ui, row: Rect, quick: Quick, actions:
             at
         }
     };
-    let ids: Vec<egui::Id> = (0..3).map(|k| ui.make_persistent_id(("tree quick", path, k))).collect();
+    let ids: Vec<egui::Id> = (0..2).map(|k| ui.make_persistent_id(("tree quick", path, k))).collect();
     if is_dir {
         let plus = quick_button(ui, slot(), ids[0], icons::PLUS, "New file or folder in it");
         egui::Popup::menu(&plus).show(|ui| {
@@ -325,9 +320,6 @@ pub(super) fn quick_buttons(ui: &mut egui::Ui, row: Rect, quick: Quick, actions:
         });
         if quick_button(ui, slot(), ids[1], icons::CODE, "Open a terminal in it").clicked() {
             actions.push(Action::File(FileOp::Terminal(path.to_string())));
-        }
-        if quick_button(ui, slot(), ids[2], icons::MINUS, "Close the folders inside it in this list").clicked() {
-            actions.push(Action::Tree(TreeOp::CollapseInside(path.to_string())));
         }
     } else {
         if quick_button(ui, slot(), ids[0], icons::LOCATE_FIXED, "Show its card on the canvas").clicked() {

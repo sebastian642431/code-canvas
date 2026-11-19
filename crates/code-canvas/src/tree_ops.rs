@@ -15,6 +15,23 @@ pub fn remap(path: &str, from: &str, to: &str) -> Option<String> {
     path.strip_prefix(from).and_then(|rest| rest.strip_prefix('/')).map(|rest| format!("{to}/{rest}"))
 }
 
+/// Alt+click on a folder of the file list: if it is closed it opens together with every folder inside it,
+/// if it is open it closes together with them. `folders` lists every folder of the project.
+pub fn toggle_deep(open: &mut std::collections::HashSet<String>, folders: &[String], path: &str) {
+    let inside = format!("{path}/");
+    let opening = !open.contains(path);
+    let all = folders.iter().filter(|f| f.starts_with(&inside));
+    if opening {
+        open.insert(path.to_string());
+        open.extend(all.cloned());
+    } else {
+        open.remove(path);
+        for folder in all {
+            open.remove(folder);
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
     Itself,
@@ -229,6 +246,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn alt_click_opens_or_closes_a_folder_with_everything_inside() {
+        let folders: Vec<String> =
+            ["docs", "docs/img", "docs/img/raw", "docs2", "src"].iter().map(|f| f.to_string()).collect();
+        let mut open: std::collections::HashSet<String> = ["src"].iter().map(|f| f.to_string()).collect();
+        toggle_deep(&mut open, &folders, "docs");
+        let mut now: Vec<&str> = open.iter().map(String::as_str).collect();
+        now.sort();
+        assert_eq!(now, ["docs", "docs/img", "docs/img/raw", "src"]);
+        toggle_deep(&mut open, &folders, "docs");
+        assert_eq!(open, ["src".to_string()].into());
+        open.insert("docs/img".into());
+        toggle_deep(&mut open, &folders, "docs");
+        assert!(open.contains("docs/img/raw"), "a closed folder opens all, even when a child was open");
     }
 
     #[test]

@@ -1,0 +1,48 @@
+title: The Diffs section of Source Control: mode chooser, only the files with changes, then with the other files of their folders, then with their dependency neighbours, and the unchanged lines collapsed or expanded
+folders: git-diffs
+expect-log: showing 2 files: changed
+expect-log: showing 4 files: changed, their folders
+expect-log: showing 3 files: changed, their neighbours
+expect-log: showing 5 files: changed, their folders, their neighbours
+forbid-log: script: ignoring
+
+wait 3500
+left changes
+wait 900
+mark 1-panel
+wait 500
+changed on
+wait 1500
+mark 2-only-changed
+wait 500
+diff on
+diff together
+wait 1500
+mark 3-unified
+wait 500
+changed folders on
+wait 1500
+mark 4-folders
+wait 500
+changed folders off
+changed neighbours on
+wait 1500
+mark 5-neighbours
+wait 500
+changed folders on
+wait 1500
+mark 6-folders-and-neighbours
+wait 500
+diff split
+wait 1500
+mark 7-split
+wait 500
+diff unfold
+wait 1000
+mark 8-expand
+wait 500
+changed off
+wait 1500
+mark 9-all
+wait 500
+quit

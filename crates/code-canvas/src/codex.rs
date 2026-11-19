@@ -180,6 +180,9 @@ impl Session {
         if !self.model.is_empty() {
             event.insert("model".into(), json!(self.model));
         }
+        if let Some(cwd) = &self.cwd {
+            event.insert("cwd".into(), json!(cwd.to_string_lossy()));
+        }
         if !note.is_empty() {
             event.insert("note".into(), json!(note));
         }
