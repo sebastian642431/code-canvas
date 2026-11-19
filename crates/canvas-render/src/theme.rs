@@ -86,6 +86,7 @@ theme! {
         code_selection: "Selected code";
         current_line: "Line with the caret";
         find_match: "Search matches";
+        line_mark: "Lines a link points to";
     }
     "Relations" {
         rel_def: "Definitions";
@@ -416,6 +417,7 @@ mod tests {
         for (name, color) in code {
             pairs.push((name, "card_fill", over(color, card), card, main));
             pairs.push((name, "code_selection", over(color, card), over(t.code_selection, card), second));
+            pairs.push((name, "line_mark", over(color, card), over(t.line_mark, card), second));
         }
         let status = [
             ("problem_error", t.problem_error),

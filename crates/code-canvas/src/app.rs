@@ -155,7 +155,22 @@ fn outside_theme(ext: &Extensions, key: &str) -> Option<canvas_render::theme::Th
     made
 }
 
-type Awaited = (PathBuf, Option<(u32, u32, u32)>);
+/// A place in a file to go to, and the last of the lines to mark from there.
+#[derive(Clone, Copy, Debug)]
+struct Spot {
+    line: u32,
+    col: u32,
+    len: u32,
+    mark: Option<u32>,
+}
+
+impl Spot {
+    fn at(line: u32, col: u32, len: u32) -> Spot {
+        Spot { line, col, len, mark: None }
+    }
+}
+
+type Awaited = (PathBuf, Option<Spot>);
 
 const WHEEL_NOTCH: f32 = 110.0;
 const LONG_LINE_STILL: Duration = Duration::from_millis(150);
@@ -1051,7 +1066,7 @@ impl App {
         inside.clone().find(on_canvas).or_else(|| inside.clone().next())
     }
 
-    fn show_path(&mut self, path: &Path, at: Option<(u32, u32, u32)>) {
+    fn show_path(&mut self, path: &Path, at: Option<Spot>) {
         let path = canvas_core::scan::clean_path(path.to_path_buf());
         let found = self.locate_file(&path);
         let shown = found.as_ref().is_some_and(|(i, rel)| {
@@ -1062,12 +1077,18 @@ impl App {
             self.show_when_read = None;
             let file = self.pages[*i].ready().and_then(|r| r.repo.file_index(rel));
             match (at, file) {
-                (Some((line, col, len)), Some(file)) => {
-                    let line = self.pages[*i].row_of(rel, line);
-                    let (col, len) = (col.min(u16::MAX as u32) as u16, len.clamp(1, 400) as u16);
+                (Some(spot), Some(file)) => {
+                    let line = self.pages[*i].row_of(rel, spot.line);
+                    let (col, len) = (spot.col.min(u16::MAX as u32) as u16, spot.len.clamp(1, 400) as u16);
                     let site = Site { file: file as u32, line, col, len };
                     self.frame_site(site);
-                    self.pages[*i].search = Some(crate::page::SearchResults::single(site));
+                    if let Some(last) = spot.mark {
+                        self.pages.iter_mut().for_each(|page| page.marked = None);
+                        self.pages[*i].marked = Some(crate::page::Marked::new(rel.clone(), spot.line, last));
+                    }
+                    if spot.mark.is_none() || col > 0 || len > 1 {
+                        self.pages[*i].search = Some(crate::page::SearchResults::single(site));
+                    }
                 }
                 _ => self.apply(Action::FlyToPath(rel.clone())),
             }
@@ -3156,7 +3177,7 @@ impl App {
     /// What "3 references" of a code lens does: the canvas goes to the name and selects it,
     /// which draws its uses.
     fn show_uses(&mut self, path: &Path, line: u32, col: u32) {
-        self.show_path(path, Some((line, col, 1)));
+        self.show_path(path, Some(Spot::at(line, col, 1)));
         let Some((i, rel)) = self.locate_file(path) else { return };
         if i != self.active {
             return;
@@ -3222,6 +3243,14 @@ impl App {
 
     fn on_canvas_click(&mut self, pos: [f32; 2]) {
         self.completion = None;
+        let vp = self.viewport();
+        let mut unmarked = false;
+        for page in &mut self.pages {
+            unmarked |= page.unmark_unless_on(page.camera.view(vp).to_world(pos));
+        }
+        if unmarked {
+            self.request_redraw();
+        }
         let now = Instant::now();
         let double = self.last_click.is_some_and(|(t, p)| {
             now.duration_since(t) < Duration::from_millis(400)
@@ -3251,7 +3280,6 @@ impl App {
             return;
         }
 
-        let vp = self.viewport();
         let (ctrl, shift) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
         let alt = self.mods.alt_key();
         let can_edit = self.ui.prefs.edit;
@@ -5074,7 +5102,9 @@ impl App {
             match event {
                 ext::Event::Write { path, text } => self.write_file(&path, &text),
                 ext::Event::Reveal(path) => self.reveal_file(&path),
-                ext::Event::GoTo { path, line, col, len } => self.show_path(&path, Some((line, col, len))),
+                ext::Event::GoTo { path, line, col, len, mark } => {
+                    self.show_path(&path, Some(Spot { line, col, len, mark }))
+                }
                 ext::Event::Suggestions(found) => self.offer_code(found),
                 ext::Event::Relations { page, of, found } => self.exact_relations(page, of, found),
                 ext::Event::ExtraEdits { path, edits } => self.extra_edits(&path, edits),

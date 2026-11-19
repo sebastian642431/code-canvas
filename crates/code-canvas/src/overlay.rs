@@ -780,6 +780,23 @@ pub fn build(
         }
     }
 
+    if let Some((n, rows)) = page.marked_rows() {
+        let mark = theme::get().line_mark;
+        let bar = (2.5 * s / z).min(CARD_PAD * 0.6);
+        for rect in n.line_rects(rows) {
+            let band = Rect::new(
+                rect.x - n.gutter - CARD_PAD,
+                rect.y,
+                rect.w + n.gutter + 2.0 * CARD_PAD,
+                rect.h.max(1.5 / z),
+            );
+            if band.intersects(&world) {
+                out.under.push(RectInstance::new(band, mark, 0, 0.0, 0.0));
+                out.over.push(RectInstance::new(Rect::new(band.x, band.y, bar, band.h), mark | 0xff, 0, 0.0, 0.0));
+            }
+        }
+    }
+
     let readable = z * LINE_H >= 2.5;
 
     if let Some(editor) = page.editor() {

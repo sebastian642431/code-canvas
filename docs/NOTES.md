@@ -1020,6 +1020,11 @@ Showing a path
 - The host answers `showTextDocument` with an editor even for a file the canvas
   has not opened, because extensions go on to call `revealRange` on it; that call
   is what carries the line.
+- The lines of that range (a link such as `package.json:22` or `:10-20` in Claude
+  Code's chat) are marked across the whole card in the theme's `line_mark`
+  (`Page::marked`), behind the text, until a click on the canvas lands off that
+  card or another range is shown. Go to definition and following an assistant
+  mark nothing: they keep the search marker on the name.
 
 Pictures and what plays
 

@@ -461,6 +461,8 @@ pub enum Event {
         line: u32,
         col: u32,
         len: u32,
+        /// The last of the lines to mark, when an extension asked for them to be shown.
+        mark: Option<u32>,
     },
     Suggestions(Suggestions),
     Relations {
@@ -2123,7 +2125,13 @@ impl Extensions {
                 let n = |key: &str| m.get(key).and_then(Value::as_u64).map(|n| n as u32);
                 let path = PathBuf::from(s("path"));
                 events.push(match n("line") {
-                    Some(line) => Event::GoTo { path, line, col: n("col").unwrap_or(0), len: n("len").unwrap_or(1) },
+                    Some(line) => Event::GoTo {
+                        path,
+                        line,
+                        col: n("col").unwrap_or(0),
+                        len: n("len").unwrap_or(1),
+                        mark: Some(n("endLine").unwrap_or(line)),
+                    },
                     None => Event::Reveal(path),
                 });
             }
@@ -2193,6 +2201,7 @@ impl Extensions {
                                     line: n(first, "line"),
                                     col: n(first, "col"),
                                     len: len.max(1),
+                                    mark: None,
                                 });
                             }
                             None => {
@@ -2370,6 +2379,29 @@ mod tests {
 
         ext.on_message(&json!({ "type": "diagnostics", "path": "C:\\Work\\App\\src\\a.ts", "items": [] }), &mut events);
         assert_eq!(ext.totals_under(Path::new(root)), (0, 0));
+    }
+
+    #[test]
+    fn a_range_shown_by_an_extension_marks_its_lines() {
+        let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
+        let mut events = Vec::new();
+        let reveal = |extra: Value| {
+            let mut m = json!({ "type": "reveal", "path": "/w/package.json", "line": 21, "col": 0, "len": 1 });
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            m
+        };
+        ext.on_message(&reveal(json!({ "endLine": 29 })), &mut events);
+        ext.on_message(&reveal(json!({})), &mut events);
+        ext.on_message(&json!({ "type": "reveal", "path": "/w/package.json" }), &mut events);
+        let marks: Vec<_> = events
+            .into_iter()
+            .map(|e| match e {
+                Event::GoTo { line: 21, mark, .. } => Some(mark),
+                Event::Reveal(_) => None,
+                _ => panic!("another event"),
+            })
+            .collect();
+        assert_eq!(marks, [Some(Some(29)), Some(Some(21)), None], "without an end the one line is marked");
     }
 
     #[test]
