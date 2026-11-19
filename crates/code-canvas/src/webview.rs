@@ -66,7 +66,21 @@ const INIT_JS: &str = r#"
     'charts-orange': T.tok_number, 'charts-purple': T.tok_keyword, 'icon-foreground': T.icon,
     'gitDecoration-addedResourceForeground': T.git_added, 'gitDecoration-modifiedResourceForeground': T.git_modified,
     'gitDecoration-deletedResourceForeground': T.git_removed,
+    // Diff editors inside pages (Claude Code's edits) draw no borders around changes in VS Code, only
+    // see-through washes; guessed from their names they came out as solid green and red boxes.
+    'diffEditor-insertedTextBorder': 'transparent', 'diffEditor-removedTextBorder': 'transparent',
+    'diffEditor-insertedTextBackground': tint(T.git_added, '40'), 'diffEditor-removedTextBackground': tint(T.git_removed, '40'),
+    'diffEditor-insertedLineBackground': tint(T.git_added, '1f'), 'diffEditor-removedLineBackground': tint(T.git_removed, '1f'),
+    'diffEditorGutter-insertedLineBackground': tint(T.git_added, '33'), 'diffEditorGutter-removedLineBackground': tint(T.git_removed, '33'),
+    'diffEditorOverview-insertedForeground': tint(T.git_added, '99'), 'diffEditorOverview-removedForeground': tint(T.git_removed, '99'),
+    'diffEditor-border': T.border, 'diffEditor-diagonalFill': tint(T.text_faint, '33'),
+    'diffEditor-unchangedRegionBackground': back(), 'diffEditor-unchangedRegionForeground': T.text_dim,
+    'diffEditor-unchangedCodeBackground': 'transparent',
+    'diffEditor-move-border': tint(T.text_faint, '9c'), 'diffEditor-moveActive-border': T.problem_warning,
   });
+  function tint(colour, alpha) {
+    return (colour || '#808080').slice(0, 7) + alpha;
+  }
   function guess(name) {
     const n = name.toLowerCase();
     const tone = /error|deleted|removed/.test(n) ? T.problem_error : /warning|modified/.test(n) ? T.problem_warning : /added|inserted|success/.test(n) ? T.git_added : /info|link|focus|active|selection|highlight/.test(n) ? T.accent : null;
