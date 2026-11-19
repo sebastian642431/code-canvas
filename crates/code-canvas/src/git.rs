@@ -98,7 +98,9 @@ pub fn settle(hunks: &mut [Hunk], lines: &[&str]) {
 fn settle_from_disk(root: &Path, changes: &mut [FileChange]) {
     const MOST_FILES: usize = 200;
     const MOST_BYTES: u64 = 2 << 20;
-    let added = |change: &&mut FileChange| change.hunks.iter().any(|hunk| hunk.kind == HunkKind::Added);
+    let added = |change: &&mut FileChange| {
+        change.hunks.iter().chain(&change.staged_hunks).any(|hunk| hunk.kind == HunkKind::Added)
+    };
     for change in changes.iter_mut().filter(added).take(MOST_FILES) {
         let file = root.join(&change.path);
         if !std::fs::metadata(&file).is_ok_and(|meta| meta.len() <= MOST_BYTES) {
@@ -107,6 +109,7 @@ fn settle_from_disk(root: &Path, changes: &mut [FileChange]) {
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
         let lines: Vec<&str> = text.lines().collect();
         settle(&mut change.hunks, &lines);
+        settle(&mut change.staged_hunks, &lines);
     }
 }
 
@@ -116,7 +119,10 @@ pub struct FileChange {
     pub change: Change,
     pub staged: Option<Change>,
     pub unstaged: Option<Change>,
+    /// What is not staged yet: the index against the working tree.
     pub hunks: Vec<Hunk>,
+    /// What is staged (the last commit against the index), moved to the lines of the working tree.
+    pub staged_hunks: Vec<Hunk>,
     pub insertions: u32,
     pub deletions: u32,
     pub unsaved: bool,
@@ -157,6 +163,11 @@ pub fn what_is_lost(files: &[(String, Back)]) -> Option<String> {
 
 pub fn head_texts(root: &Path, prefix: &str, paths: &[String]) -> Vec<Option<String>> {
     let named: Vec<String> = paths.iter().map(|path| format!("HEAD:{prefix}{path}")).collect();
+    texts(root, &named)
+}
+
+pub fn index_texts(root: &Path, prefix: &str, paths: &[String]) -> Vec<Option<String>> {
+    let named: Vec<String> = paths.iter().map(|path| format!(":{prefix}{path}")).collect();
     texts(root, &named)
 }
 
@@ -1289,61 +1300,76 @@ fn git(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 
 pub fn load(root: &Path) -> Option<GitState> {
     let started = Instant::now();
-    let (status, prefix, diff, log, list, ignored, remote_refs, remote_names, tag_refs, stash_list, git_dir, reflog) =
-        std::thread::scope(|s| {
-            let status = s.spawn(|| {
-                git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."])
-            });
-            let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
-            let diff =
-                s.spawn(|| git(root, &["diff", "HEAD", "-U0", "--no-color", "--no-ext-diff", "--relative", "--", "."]));
-            let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
-            let list = s.spawn(|| {
-                git(
-                    root,
-                    &[
-                        "for-each-ref",
-                        "refs/heads",
-                        "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)",
-                    ],
-                )
-            });
-            let remote_refs =
-                s.spawn(|| git(root, &["for-each-ref", "refs/remotes", "--format=%(refname:short)%1f%(symref)"]));
-            let remote_names = s.spawn(|| git(root, &["remote"]));
-            let tag_refs = s.spawn(|| {
-                git(root, &["for-each-ref", "refs/tags", "--sort=-creatordate", "--format=%(refname:short)"])
-            });
-            let stash_list = s.spawn(|| git(root, &["stash", "list", "--format=%gd%x1f%s"]));
-            let git_dir = s.spawn(|| git(root, &["rev-parse", "--git-dir"]));
-            let reflog = s.spawn(|| git(root, &["reflog", "-n", "30", "--format=%H%x1f%gd%x1f%gs%x1f%ct"]));
-            let ignored = s.spawn(|| {
-                git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
-            });
-            let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
-            (
-                done(status),
-                done(prefix),
-                done(diff),
-                done(log),
-                done(list),
-                done(ignored),
-                done(remote_refs),
-                done(remote_names),
-                done(tag_refs),
-                done(stash_list),
-                done(git_dir),
-                done(reflog),
+    let (
+        status,
+        prefix,
+        (staged, unstaged),
+        log,
+        list,
+        ignored,
+        remote_refs,
+        remote_names,
+        tag_refs,
+        stash_list,
+        git_dir,
+        reflog,
+    ) = std::thread::scope(|s| {
+        let status =
+            s.spawn(|| git(root, &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all", "--", "."]));
+        let prefix = s.spawn(|| git(root, &["rev-parse", "--show-prefix"]));
+        let diff = |staged: bool| {
+            let mut args = vec!["diff", "-U0", "--no-color", "--no-ext-diff", "--relative"];
+            args.extend(staged.then_some("--cached"));
+            args.extend(["--", "."]);
+            git(root, &args)
+        };
+        let staged = s.spawn(move || diff(true));
+        let unstaged = s.spawn(move || diff(false));
+        let log = s.spawn(|| git(root, &["log", "-n", "40", "--format=%H%x1f%an%x1f%at%x1f%D%x1f%s"]));
+        let list = s.spawn(|| {
+            git(
+                root,
+                &[
+                    "for-each-ref",
+                    "refs/heads",
+                    "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)",
+                ],
             )
         });
+        let remote_refs =
+            s.spawn(|| git(root, &["for-each-ref", "refs/remotes", "--format=%(refname:short)%1f%(symref)"]));
+        let remote_names = s.spawn(|| git(root, &["remote"]));
+        let tag_refs =
+            s.spawn(|| git(root, &["for-each-ref", "refs/tags", "--sort=-creatordate", "--format=%(refname:short)"]));
+        let stash_list = s.spawn(|| git(root, &["stash", "list", "--format=%gd%x1f%s"]));
+        let git_dir = s.spawn(|| git(root, &["rev-parse", "--git-dir"]));
+        let reflog = s.spawn(|| git(root, &["reflog", "-n", "30", "--format=%H%x1f%gd%x1f%gs%x1f%ct"]));
+        let ignored = s.spawn(|| {
+            git(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", "."])
+        });
+        let done = |h: std::thread::ScopedJoinHandle<Option<Vec<u8>>>| h.join().ok().flatten();
+        (
+            done(status),
+            done(prefix),
+            (done(staged), done(unstaged)),
+            done(log),
+            done(list),
+            done(ignored),
+            done(remote_refs),
+            done(remote_names),
+            done(tag_refs),
+            done(stash_list),
+            done(git_dir),
+            done(reflog),
+        )
+    });
     let status = status?;
     let prefix = prefix.map(|b| String::from_utf8_lossy(&b).trim().to_string()).unwrap_or_default();
     let mut state = parse_status(&String::from_utf8_lossy(&status), &prefix);
     state.prefix = prefix;
-    if let Some(diff) = diff {
-        apply_diff(&mut state, &String::from_utf8_lossy(&diff));
-        settle_from_disk(root, &mut state.changes);
-    }
+    let text = |diff: Option<Vec<u8>>| diff.map(|diff| String::from_utf8_lossy(&diff).into_owned()).unwrap_or_default();
+    apply_diffs(&mut state, &text(staged), &text(unstaged));
+    settle_from_disk(root, &mut state.changes);
     if let Some(log) = log {
         state.graph = parse_graph(&String::from_utf8_lossy(&log));
         state.head = state.graph.first().map(|first| first.commit.hash.clone()).unwrap_or_default();
@@ -1444,6 +1470,7 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
             staged: if x == b'?' { None } else { side(x) },
             unstaged: side(y),
             hunks: Vec::new(),
+            staged_hunks: Vec::new(),
             insertions: 0,
             deletions: 0,
             unsaved: false,
@@ -1454,31 +1481,106 @@ fn parse_status(text: &str, prefix: &str) -> GitState {
     state
 }
 
-fn apply_diff(state: &mut GitState, diff: &str) {
-    let mut current: Option<usize> = None;
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Span {
+    old: u32,
+    old_count: u32,
+    new: u32,
+    new_count: u32,
+}
+
+impl Span {
+    /// From what follows "@@ -" in a header. Lines are counted from 0; a side with no lines
+    /// keeps the place where they would be (before the line of that number).
+    fn parse(header: &str) -> Option<Span> {
+        let pair = |s: &str| -> (u32, u32) {
+            let mut it = s.split(',');
+            let start = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let count = it.next().map_or(1, |v| v.parse().unwrap_or(0));
+            (if count == 0 { start } else { start.saturating_sub(1) }, count)
+        };
+        let mut parts = header.split(' ');
+        let (old, old_count) = pair(parts.next()?);
+        let (new, new_count) = pair(parts.next()?.strip_prefix('+')?);
+        Some(Span { old, old_count, new, new_count })
+    }
+
+    fn hunk(self) -> Hunk {
+        let kind = match (self.old_count, self.new_count) {
+            (_, 0) => HunkKind::Removed,
+            (0, _) => HunkKind::Added,
+            _ => HunkKind::Modified,
+        };
+        Hunk { line: self.new, count: self.new_count, kind }
+    }
+}
+
+fn spans_of(diff: &str) -> Vec<(&str, Vec<Span>)> {
+    let mut files: Vec<(&str, Vec<Span>)> = Vec::new();
+    let mut header = false;
     for line in diff.lines() {
-        if let Some(path) = line.strip_prefix("+++ ") {
-            let path = path.strip_prefix("b/").unwrap_or(path).trim_end_matches('\t');
-            current = state.changes.binary_search_by(|c| Path::new(&c.path).cmp(Path::new(path))).ok();
-        } else if line.starts_with("diff --git ") {
-            current = None;
-        } else if let (Some(i), Some(rest)) = (current, line.strip_prefix("@@ -")) {
-            let mut parts = rest.split(' ');
-            let pair = |s: &str| -> (u32, u32) {
-                let mut it = s.split(',');
-                let start = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                (start, it.next().map_or(1, |v| v.parse().unwrap_or(0)))
-            };
-            let (_, old_count) = pair(parts.next().unwrap_or(""));
-            let (new_start, new_count) = pair(parts.next().unwrap_or("").trim_start_matches('+'));
-            let c = &mut state.changes[i];
-            c.insertions += new_count;
-            c.deletions += old_count;
-            c.hunks.push(match (old_count, new_count) {
-                (_, 0) => Hunk { line: new_start, count: 0, kind: HunkKind::Removed },
-                (0, n) => Hunk { line: new_start.saturating_sub(1), count: n, kind: HunkKind::Added },
-                (_, n) => Hunk { line: new_start.saturating_sub(1), count: n, kind: HunkKind::Modified },
-            });
+        if line.starts_with("diff --git ") {
+            header = true;
+        } else if let (true, Some(path)) = (header, line.strip_prefix("+++ ")) {
+            files.push((path.strip_prefix("b/").unwrap_or(path).trim_end_matches('\t'), Vec::new()));
+        } else if let Some(rest) = line.strip_prefix("@@ -") {
+            header = false;
+            if let (Some(span), Some((_, spans))) = (Span::parse(rest), files.last_mut()) {
+                spans.push(span);
+            }
+        }
+    }
+    files
+}
+
+/// Where the place `at` of the index is in the working tree, through what is not staged.
+/// `late` puts it after lines added right there (for the first line of a range).
+fn moved(at: u32, late: bool, unstaged: &[Span]) -> u32 {
+    let mut shift = 0i64;
+    for span in unstaged {
+        let past = match span.old_count {
+            0 => at > span.old || (late && at == span.old),
+            n => at >= span.old + n,
+        };
+        if past {
+            shift += span.new_count as i64 - span.old_count as i64;
+        } else if at <= span.old {
+            break;
+        } else {
+            return span.new + (at - span.old).min(span.new_count);
+        }
+    }
+    (at as i64 + shift).max(0) as u32
+}
+
+/// A staged hunk on the lines of the working tree; None when the lines it brought are gone there.
+fn in_working_tree(staged: Span, unstaged: &[Span]) -> Option<Hunk> {
+    let hunk = staged.hunk();
+    if hunk.kind == HunkKind::Removed {
+        return Some(Hunk { line: moved(hunk.line, false, unstaged), ..hunk });
+    }
+    let first = moved(hunk.line, true, unstaged);
+    let count = moved(hunk.line + hunk.count, false, unstaged).saturating_sub(first);
+    (count > 0).then_some(Hunk { line: first, count, kind: hunk.kind })
+}
+
+/// The staged diff (last commit against the index) and the unstaged one (index against the
+/// working tree), both read with -U0. Lines touched on both sides count in both.
+fn apply_diffs(state: &mut GitState, staged: &str, unstaged: &str) {
+    let unstaged: std::collections::HashMap<&str, Vec<Span>> = spans_of(unstaged).into_iter().collect();
+    let staged = spans_of(staged);
+    let both = staged.iter().map(|(path, spans)| (*path, spans, true));
+    for (path, spans, is_staged) in both.chain(unstaged.iter().map(|(path, spans)| (*path, spans, false))) {
+        let Ok(i) = state.changes.binary_search_by(|c| Path::new(&c.path).cmp(Path::new(path))) else { continue };
+        let c = &mut state.changes[i];
+        c.insertions += spans.iter().map(|span| span.new_count).sum::<u32>();
+        c.deletions += spans.iter().map(|span| span.old_count).sum::<u32>();
+        match is_staged {
+            true => {
+                let through = unstaged.get(path).map_or(&[][..], Vec::as_slice);
+                c.staged_hunks = spans.iter().filter_map(|span| in_working_tree(*span, through)).collect();
+            }
+            false => c.hunks = spans.iter().map(|span| span.hunk()).collect(),
         }
     }
 }
@@ -2636,7 +2738,7 @@ mod tests {
     fn diff_hunks() {
         let mut s = parse_status(" M src/a.ts\0 M src/b.ts\0", "");
         let diff = "diff --git a/src/a.ts b/src/a.ts\nindex 1..2 100644\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -3 +3,2 @@ fn x\n-old\n+new\n+more\n@@ -10,2 +10,0 @@\n-gone\n-gone\n@@ -20,0 +19,3 @@\n+a\n+b\n+c\ndiff --git a/other b/other\n+++ b/other\n@@ -1 +1 @@\n";
-        apply_diff(&mut s, diff);
+        apply_diffs(&mut s, "", diff);
         let a = &s.changes[0];
         assert_eq!(
             a.hunks,
@@ -2649,6 +2751,91 @@ mod tests {
         assert_eq!((a.insertions, a.deletions), (5, 3));
         assert!(s.changes[1].hunks.is_empty(), "a file not in the diff keeps no hunks");
     }
+
+    #[test]
+    fn staged_hunks_move_with_what_is_not_staged() {
+        let mut s = parse_status("MM f\0MM g\0", "");
+        let file =
+            |name: &str, hunks: &str| format!("diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n{hunks}");
+        let staged = file("f", "@@ -3 +3 @@\n-x\n+y\n") + &file("g", "@@ -3 +3 @@\n-x\n+y\n");
+        let unstaged = file("f", "@@ -2,0 +3,2 @@\n+a\n+b\n") + &file("g", "@@ -3 +2,0 @@\n-y\n");
+        apply_diffs(&mut s, &staged, &unstaged);
+        let (f, g) = (&s.changes[0], &s.changes[1]);
+        assert_eq!(f.hunks, vec![Hunk { line: 2, count: 2, kind: HunkKind::Added }]);
+        assert_eq!(
+            f.staged_hunks,
+            vec![Hunk { line: 4, count: 1, kind: HunkKind::Modified }],
+            "lines added right above a staged line push it down"
+        );
+        assert_eq!(g.hunks, vec![Hunk { line: 2, count: 0, kind: HunkKind::Removed }]);
+        assert!(g.staged_hunks.is_empty(), "a staged line removed from the file is not marked");
+        assert_eq!((f.insertions, f.deletions, g.insertions, g.deletions), (3, 1, 1, 2));
+    }
+
+    #[test]
+    fn staged_and_unstaged_changes_of_one_file() {
+        let Some(dir) = repository("sides") else { return };
+        let lines: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(dir.join("a.txt"), &lines).unwrap();
+        said(&dir, &["add", "."]);
+        said(&dir, &["commit", "-q", "-m", "first"]);
+        let staged = lines.replace("line 2\n", "LINE 2\n").replace("line 6\n", "");
+        std::fs::write(dir.join("a.txt"), &staged).unwrap();
+        said(&dir, &["add", "a.txt"]);
+        let working = format!("new 1\nnew 2\n{}", staged.replace("line 9\n", "LINE 9\nmore\n"));
+        std::fs::write(dir.join("a.txt"), &working).unwrap();
+
+        let state = load(&dir).expect("a repository");
+        let a = state.change("a.txt").expect("a.txt changed");
+        assert_eq!((a.staged, a.unstaged), (Some(Change::Modified), Some(Change::Modified)));
+        assert_eq!(
+            a.hunks,
+            vec![
+                Hunk { line: 0, count: 2, kind: HunkKind::Added },
+                Hunk { line: 9, count: 2, kind: HunkKind::Modified }
+            ],
+            "what is not staged, on the lines of the file"
+        );
+        assert_eq!(
+            a.staged_hunks,
+            vec![
+                Hunk { line: 3, count: 1, kind: HunkKind::Modified },
+                Hunk { line: 7, count: 0, kind: HunkKind::Removed }
+            ],
+            "what is staged, moved down by the two lines added on top"
+        );
+        assert_eq!((a.insertions, a.deletions), (5, 3));
+
+        let paths = ["a.txt".to_string()];
+        let head = head_texts(&dir, "", &paths).pop().flatten().expect("in the last commit");
+        let index = index_texts(&dir, "", &paths).pop().flatten().expect("in the index");
+        assert_eq!((head.as_str(), index.as_str()), (lines.as_str(), staged.as_str()));
+        let changed = |old: &str, new: &str| -> Vec<(RowKind, String)> {
+            let shown = unified(old, new, None).expect("a difference");
+            let rows = shown.rows.iter().zip(shown.text.lines());
+            rows.filter(|(row, _)| row.kind != RowKind::Same).map(|(row, text)| (row.kind, text.to_string())).collect()
+        };
+        let pairs = |rows: &[(RowKind, &str)]| -> Vec<(RowKind, String)> {
+            rows.iter().map(|(kind, text)| (*kind, text.to_string())).collect()
+        };
+        assert_eq!(
+            changed(&head, &index),
+            pairs(&[(RowKind::Removed, "line 2"), (RowKind::Added, "LINE 2"), (RowKind::Removed, "line 6")]),
+            "staged: the last commit against the index"
+        );
+        assert_eq!(
+            changed(&index, &working),
+            pairs(&[
+                (RowKind::Added, "new 1"),
+                (RowKind::Added, "new 2"),
+                (RowKind::Removed, "line 9"),
+                (RowKind::Added, "LINE 9"),
+                (RowKind::Added, "more"),
+            ]),
+            "not staged: the index against the file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -2659,7 +2846,7 @@ mod change_tests {
     fn an_added_block_covers_exactly_its_lines() {
         let mut s = parse_status(" M automations.ts\0", "");
         let diff = "diff --git a/automations.ts b/automations.ts\n--- a/automations.ts\n+++ b/automations.ts\n@@ -446,0 +447,57 @@ export\n+x\n@@ -600 +656,2 @@\n-y\n+y\n+z\n";
-        apply_diff(&mut s, diff);
+        apply_diffs(&mut s, "", diff);
         let hunks = &s.changes[0].hunks;
         assert_eq!(hunks[0].lines(), 446..503, "lines 447 to 503 as git counts them, the closing }} included");
         assert_eq!(hunks[1].lines(), 655..657);

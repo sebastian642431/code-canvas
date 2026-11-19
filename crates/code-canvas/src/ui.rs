@@ -690,6 +690,8 @@ pub enum Action {
     /// A changed file of Source Control: the canvas goes to its first change, or to the next one
     /// when it is clicked again.
     FlyToChange(String),
+    /// A row of Source Control: its file shown as the diff of that side, and flown to.
+    FocusDiff(String, crate::page::DiffSide),
     FlyToSite(Site),
     /// The minimap moves the canvas to a line of the selected file: the world y of the line, and
     /// the left of its column when that is not on screen.

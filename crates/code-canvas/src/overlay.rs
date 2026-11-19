@@ -743,10 +743,10 @@ pub fn build(
                         let shown = fitted(text, &shown, "", size, false, w_px);
                         let shown_w = text.measure(&shown, size, false).max(tw).min(w_px);
                         out.title_hits.push((title_rect(left, top, shown_w, size), n.rel_path.clone()));
+                        let mut after = left + text.measure(&shown, size, false).max(tw) + 10.0 * s;
                         if crate::markdown::is_markdown(std::path::Path::new(&n.name)) {
                             let word = "Preview";
                             let word_w = text.measure(word, size, false);
-                            let after = left + text.measure(&shown, size, false).max(tw) + 10.0 * s;
                             let button = Rect::new(after - 3.0 * s, top, word_w + 6.0 * s, size * 1.3);
                             if button.right() <= tl[0] + w_px && free(button, &mut placed) {
                                 out.labels.push(OwnedLabel {
@@ -759,6 +759,23 @@ pub fn build(
                                     bold: false,
                                 });
                                 out.preview_hits.push((button, n.rel_path.clone()));
+                                after += word_w + 10.0 * s;
+                            }
+                        }
+                        let side = page.diff_side(&n.rel_path).filter(|side| *side != crate::page::DiffSide::All);
+                        if let Some(word) = side.map(crate::page::DiffSide::label) {
+                            let word_w = text.measure(word, size, false);
+                            let place = Rect::new(after, top, word_w + 2.0, size * 1.3);
+                            if place.right() <= tl[0] + w_px && free(place, &mut placed) {
+                                out.labels.push(OwnedLabel {
+                                    text: word.into(),
+                                    left: after,
+                                    top,
+                                    size,
+                                    color: theme::get().ui_text_dim,
+                                    max_w: word_w + 2.0,
+                                    bold: false,
+                                });
                             }
                         }
                         out.labels.push(OwnedLabel {
@@ -890,15 +907,18 @@ pub fn build(
     }
 
     {
-        let marked: Vec<(&str, Change, &[crate::git::Hunk])> = match (page.commit_shown(), &page.git) {
-            (Some(showing), _) => showing.files.iter().map(|file| (file.path.as_str(), file.change, &[][..])).collect(),
+        type Hunks<'a> = &'a [crate::git::Hunk];
+        let marked: Vec<(&str, Change, Hunks<'_>, Hunks<'_>)> = match (page.commit_shown(), &page.git) {
+            (Some(showing), _) => {
+                showing.files.iter().map(|file| (file.path.as_str(), file.change, &[][..], &[][..])).collect()
+            }
             (None, Some(git)) => {
                 let some = git.changes.iter().take(MAX_MARKERS);
-                some.map(|change| (change.path.as_str(), change.change, change.hunks.as_slice())).collect()
+                some.map(|c| (c.path.as_str(), c.change, &c.staged_hunks[..], &c.hunks[..])).collect()
             }
             _ => Vec::new(),
         };
-        for (path, kind_of_change, hunks) in marked {
+        for (path, kind_of_change, staged_hunks, hunks) in marked {
             let Some(fi) = repo.file_index(path) else { continue };
             let Some(n) = layout.file_node.get(fi).filter(|&&n| n != NONE).map(|&n| &layout.nodes[n as usize]) else {
                 continue;
@@ -956,7 +976,11 @@ pub fn build(
                 }
                 continue;
             }
-            for h in hunks {
+            // What is staged is drawn first and lighter, its bars cut in dashes (one a line);
+            // what is not staged yet goes over it, solid.
+            let dashed = z * LINE_H >= 6.0;
+            let all = staged_hunks.iter().map(|h| (h, true)).chain(hunks.iter().map(|h| (h, false)));
+            for (h, staged) in all {
                 if h.line > lines || out.under.len() >= MAX_MARKERS {
                     continue;
                 }
@@ -966,11 +990,16 @@ pub fn build(
                     if readable && cell.intersects(&seen) {
                         let y = if h.line >= lines { cell.bottom() } else { n.cell_rect(at, 0, 1).y };
                         let tick = Rect::new(cell.x - CARD_PAD * 0.9, y - bar * 0.5, CARD_PAD * 0.8, bar);
-                        out.over.push(RectInstance::new(tick, theme::get().git_removed, 0, 0.0, 0.0));
+                        let parts: &[(f32, f32)] = if staged { &[(0.0, 0.35), (0.55, 0.35)] } else { &[(0.0, 1.0)] };
+                        for &(from, part) in parts {
+                            let piece = Rect::new(tick.x + tick.w * from, tick.y, tick.w * part, tick.h);
+                            out.over.push(RectInstance::new(piece, theme::get().git_removed, 0, 0.0, 0.0));
+                        }
                     }
                     continue;
                 }
                 let c = if h.kind == HunkKind::Added { theme::get().git_added } else { theme::get().git_modified };
+                let wash = if staged { wash * 0.5 } else { wash };
                 let covered = h.lines();
                 for mut rect in n.line_rects(covered.start..covered.end.min(lines)) {
                     if !rect.intersects(&seen) {
@@ -978,9 +1007,25 @@ pub fn build(
                     }
                     rect.h = rect.h.max(1.5 / z);
                     out.under.push(RectInstance::new(rect, with_alpha(c, wash), 0, 0.0, 0.0));
-                    if readable {
-                        let edge = Rect::new(rect.x - CARD_PAD * 0.75, rect.y, bar, rect.h);
-                        out.over.push(RectInstance::new(edge, c, 0, 0.0, 0.0));
+                    if !readable {
+                        continue;
+                    }
+                    let edge = Rect::new(rect.x - CARD_PAD * 0.75, rect.y, bar, rect.h);
+                    match (staged, dashed) {
+                        (false, _) => out.over.push(RectInstance::new(edge, c, 0, 0.0, 0.0)),
+                        (true, false) => out.over.push(RectInstance::new(edge, with_alpha(c, 0.5), 0, 0.0, 0.0)),
+                        (true, true) => {
+                            let from = ((seen.y - edge.y) / LINE_H).floor().max(0.0) as u32;
+                            let to = ((seen.bottom() - edge.y) / LINE_H).ceil().min((edge.h / LINE_H).ceil()) as u32;
+                            for k in from..to {
+                                let y = edge.y + k as f32 * LINE_H + LINE_H * 0.2;
+                                let tall = (LINE_H * 0.6).min(edge.bottom() - y);
+                                if tall > 0.0 {
+                                    let dash = Rect::new(edge.x, y, edge.w, tall);
+                                    out.over.push(RectInstance::new(dash, c, 0, 0.0, 0.0));
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -289,6 +289,9 @@ pub struct App {
     /// The changed file last gone to from Source Control and which of its changes, so a click
     /// on it again goes to the next one.
     change_turn: Option<(u32, String, usize)>,
+    /// A row of Source Control clicked to show a side of its diff: the canvas goes to the first
+    /// change once the card shows that side (or after a while, if it never does).
+    change_when_diffed: Option<(u32, String, crate::page::DiffSide, Instant)>,
     text_checked: Instant,
     show_when_read: Option<Awaited>,
     back: Vec<Place>,
@@ -463,6 +466,7 @@ impl App {
             checkers_offered: HashSet::new(),
             following: None,
             change_turn: None,
+            change_when_diffed: None,
             text_checked: Instant::now(),
             show_when_read: None,
             back: Vec::new(),
@@ -1675,15 +1679,17 @@ impl App {
         let f = &r.repo.files[fi];
         let change = page.git.as_ref().and_then(|git| git.change(&f.rel_path));
         let readable = Lod::for_zoom(page.camera.zoom) == Lod::Text;
-        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none()).map(|(row, _)| row);
+        let index_shown = page.diff_side(&f.rel_path) == Some(crate::page::DiffSide::Staged);
+        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none() && !index_shown);
+        let row = row.map(|(row, _)| row);
         let line = row.and_then(|row| match page.rows(&f.rel_path) {
             Some(rows) => rows.get(row as usize).filter(|row| row.kind != crate::git::RowKind::Gap).map(|row| row.line),
             None => Some(row),
         });
         let changed_here = |line: &u32| {
-            let hunks =
-                change.filter(|change| !change.unsaved).map(|change| change.hunks.as_slice()).unwrap_or_default();
-            hunks.iter().any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
+            let Some(change) = change.filter(|change| !change.unsaved) else { return false };
+            let mut all = change.hunks.iter().chain(&change.staged_hunks);
+            all.any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
         };
         self.ui.card_menu = Some(ui::CardMenu {
             at: egui::Pos2::new(point[0] / scale, point[1] / scale),
@@ -3185,17 +3191,61 @@ impl App {
             Some((id, last, turn)) if *id == page.id && last == path => turn + 1,
             _ => 0,
         };
-        let line = crate::git::nth_change(hunks, turn);
-        let (Some(n), Some(line), None) = (card, line, canvas_core::scan::media_kind(path)) else {
+        // A card showing a diff has its changes at its own rows; a plain one at the lines of its hunks.
+        let row = match page.change_rows(path) {
+            Some(rows) => turn.checked_rem(rows.len()).map(|at| rows[at]),
+            None => crate::git::nth_change(hunks, turn).map(|line| page.row_of(path, line)),
+        };
+        let (Some(n), Some(row), None) = (card, row, canvas_core::scan::media_kind(path)) else {
             self.change_turn = None;
             return self.apply(Action::FlyToPath(path.to_string()));
         };
-        let row = page.row_of(path, line).saturating_sub(ABOVE);
+        let row = row.saturating_sub(ABOVE);
         self.change_turn = Some((page.id, path.to_string(), turn));
         if let Some(page) = self.pages.get_mut(self.active) {
             page.selected = Some(n);
         }
         self.frame_row(n, row);
+    }
+
+    /// A row of Source Control: the first click shows its file as the diff of that side and goes
+    /// to its first change, the same row again goes to the next one, and after the last one the
+    /// card goes back to how it was.
+    fn focus_change(&mut self, path: String, side: crate::page::DiffSide) {
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let focused = page.diff_focus.as_ref().is_some_and(|(was, on)| *was == path && *on == side);
+        let walked = match &self.change_turn {
+            Some((id, last, turn)) if *id == page.id && *last == path => Some(*turn),
+            _ => None,
+        };
+        if let (true, Some(turn)) = (focused, walked) {
+            let count = page.change_rows(&path).map_or(0, |rows| rows.len());
+            if turn + 1 < count {
+                return self.fly_to_change(&path);
+            }
+            page.focus_diff(&path, side);
+            self.change_turn = None;
+            return self.request_redraw();
+        }
+        if !focused {
+            page.focus_diff(&path, side);
+        }
+        self.change_turn = None;
+        self.change_when_diffed = Some((page.id, path, side, Instant::now()));
+        self.request_redraw();
+    }
+
+    fn change_when_diffed(&mut self) {
+        const WAIT: Duration = Duration::from_secs(2);
+        let Some((id, path, side, since)) = self.change_when_diffed.clone() else { return };
+        let Some(page) = self.pages.get(self.active).filter(|page| page.id == id) else {
+            self.change_when_diffed = None;
+            return;
+        };
+        if page.diff_side(&path) == Some(side) || since.elapsed() > WAIT {
+            self.change_when_diffed = None;
+            self.fly_to_change(&path);
+        }
     }
 
     /// Goes to a row of a card at a size to read it, the row near the top of what is free of
@@ -3964,6 +4014,8 @@ impl App {
             }
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
             Action::FlyToPath(path) if self.path_in_tab(&path) => {}
+            Action::FocusDiff(path, _) if self.path_in_tab(&path) => {}
+            Action::FocusDiff(path, side) => self.focus_change(path, side),
             Action::FlyToPath(path) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
                     self.open_media(&file);
@@ -5098,7 +5150,12 @@ impl App {
                     ("split", _) => view.split = true,
                     ("together", _) => view.split = false,
                     ("around", lines) => view.around = lines.trim().parse().unwrap_or(view.around),
-                    _ => log::warn!("script: diff needs on|off|split|together|fold|unfold|around <lines>"),
+                    ("all", _) => view.side = crate::page::DiffSide::All,
+                    ("staged", _) => view.side = crate::page::DiffSide::Staged,
+                    ("unstaged", _) => view.side = crate::page::DiffSide::Unstaged,
+                    _ => log::warn!(
+                        "script: diff needs on|off|split|together|fold|unfold|around <lines>|all|staged|unstaged"
+                    ),
                 }
                 self.apply(Action::SetDiff(view));
             }
@@ -5573,7 +5630,9 @@ impl App {
             self.show_versions();
             changed = true;
         }
-        if self.sync_diffs() {
+        let diffed = self.sync_diffs();
+        self.change_when_diffed();
+        if diffed {
             self.find_refresh(false);
             changed = true;
         }

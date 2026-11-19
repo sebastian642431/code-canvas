@@ -200,8 +200,13 @@ pub struct Page {
     heads: HashMap<String, Option<String>>,
     heads_asked: HashSet<String>,
     heads_round: u32,
-    heads_tx: mpsc::Sender<(u32, String, Option<String>)>,
-    heads_rx: Receiver<(u32, String, Option<String>)>,
+    heads_tx: mpsc::Sender<(bool, u32, String, Option<String>)>,
+    heads_rx: Receiver<(bool, u32, String, Option<String>)>,
+    indexes: HashMap<String, Option<String>>,
+    indexes_asked: HashSet<String>,
+    indexes_round: u32,
+    /// The file of the row clicked in Source Control, shown as a diff of that side.
+    pub diff_focus: Option<(String, DiffSide)>,
     previewed: Vec<(String, Option<FileChange>)>,
     pub changed_dirs: HashSet<String>,
     pub touched: Vec<Touch>,
@@ -232,11 +237,47 @@ pub struct DiffView {
     pub split: bool,
     pub fold: bool,
     pub around: u32,
+    pub side: DiffSide,
 }
 
 impl Default for DiffView {
     fn default() -> Self {
-        DiffView { on: false, split: false, fold: true, around: 3 }
+        DiffView { on: false, split: false, fold: true, around: 3, side: DiffSide::All }
+    }
+}
+
+/// What a diff compares: the last commit against the files (All), against the index (Staged),
+/// or the index against the files (Unstaged).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum DiffSide {
+    All,
+    Staged,
+    Unstaged,
+}
+
+impl DiffSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffSide::All => "All changes",
+            DiffSide::Staged => "Staged",
+            DiffSide::Unstaged => "Not staged",
+        }
+    }
+
+    pub fn of(self, change: &FileChange) -> bool {
+        match self {
+            DiffSide::All => true,
+            DiffSide::Staged => change.staged.is_some(),
+            DiffSide::Unstaged => change.unstaged.is_some(),
+        }
+    }
+
+    fn from_head(self) -> bool {
+        self != DiffSide::Unstaged
+    }
+
+    fn from_index(self) -> bool {
+        self != DiffSide::All
     }
 }
 
@@ -257,6 +298,7 @@ pub struct Diffed {
     symbols: Vec<(u32, u32)>,
     /// Some unchanged lines of the file are folded away.
     folded: bool,
+    pub side: DiffSide,
 }
 
 impl Diffed {
@@ -491,6 +533,10 @@ impl Page {
             heads_round: 0,
             heads_tx,
             heads_rx,
+            indexes: HashMap::new(),
+            indexes_asked: HashSet::new(),
+            indexes_round: 0,
+            diff_focus: None,
             previewed: Vec::new(),
             changed_dirs: HashSet::new(),
             touched: Vec::new(),
@@ -612,19 +658,31 @@ impl Page {
     }
 
     fn want_heads(&mut self, paths: Vec<String>) {
+        self.want_texts(paths, false);
+    }
+
+    /// Reads, away from the UI thread, the texts of the files in the last commit or in the index.
+    fn want_texts(&mut self, paths: Vec<String>, index: bool) {
         let Some(git) = &self.git else { return };
-        let paths: Vec<String> = paths.into_iter().filter(|path| self.heads_asked.insert(path.clone())).collect();
+        let asked = if index { &mut self.indexes_asked } else { &mut self.heads_asked };
+        let paths: Vec<String> = paths.into_iter().filter(|path| asked.insert(path.clone())).collect();
         if paths.is_empty() {
             return;
         }
         let committed_as = |path: &String| git.change(path).and_then(|change| change.from.clone());
-        let named: Vec<String> = paths.iter().map(|path| committed_as(path).unwrap_or_else(|| path.clone())).collect();
-        let (root, prefix, round, tx) =
-            (self.root.clone(), git.prefix.clone(), self.heads_round, self.heads_tx.clone());
+        let named: Vec<String> = match index {
+            true => paths.clone(),
+            false => paths.iter().map(|path| committed_as(path).unwrap_or_else(|| path.clone())).collect(),
+        };
+        let round = if index { self.indexes_round } else { self.heads_round };
+        let (root, prefix, tx) = (self.root.clone(), git.prefix.clone(), self.heads_tx.clone());
         std::thread::spawn(move || {
-            let texts = crate::git::head_texts(&root, &prefix, &named);
+            let texts = match index {
+                true => crate::git::index_texts(&root, &prefix, &named),
+                false => crate::git::head_texts(&root, &prefix, &named),
+            };
             for (rel, text) in paths.into_iter().zip(texts) {
-                let _ = tx.send((round, rel, text));
+                let _ = tx.send((index, round, rel, text));
             }
             crate::ext::wake_ui();
         });
@@ -632,11 +690,13 @@ impl Page {
 
     pub fn poll_heads(&mut self) -> bool {
         let mut arrived = false;
-        while let Ok((round, rel, text)) = self.heads_rx.try_recv() {
-            if round == self.heads_round {
-                self.heads.insert(rel, text);
-                arrived = true;
-            }
+        while let Ok((index, round, rel, text)) = self.heads_rx.try_recv() {
+            match index {
+                false if round == self.heads_round => self.heads.insert(rel, text),
+                true if round == self.indexes_round => self.indexes.insert(rel, text),
+                _ => continue,
+            };
+            arrived = true;
         }
         self.diff_stale |= arrived;
         arrived
@@ -644,6 +704,22 @@ impl Page {
 
     pub fn rows(&self, rel_path: &str) -> Option<&[Row]> {
         self.diffs.get(rel_path).map(|shown| shown.rows.as_slice())
+    }
+
+    /// The rows where the changes of a card showing a diff start; None when it shows the file.
+    pub fn change_rows(&self, rel_path: &str) -> Option<Vec<u32>> {
+        use crate::git::RowKind;
+        let shown = self.diffs.get(rel_path)?;
+        let mut starts = Vec::new();
+        let mut was = false;
+        for (at, row) in shown.rows.iter().enumerate() {
+            let changed = matches!(row.kind, RowKind::Added | RowKind::Removed);
+            if changed && !was {
+                starts.push(at as u32);
+            }
+            was = changed;
+        }
+        Some(starts)
     }
 
     pub fn row_of(&self, rel_path: &str, line: u32) -> u32 {
@@ -661,6 +737,28 @@ impl Page {
         log::info!("what changed inside the files: {shown}, {sides} sides, {folded}");
         self.diff = view;
         self.diff_stale = true;
+    }
+
+    /// Shows the file of a clicked row of Source Control as the diff of its side; the same row
+    /// again stops it.
+    pub fn focus_diff(&mut self, rel_path: &str, side: DiffSide) {
+        let again = self.diff_focus.as_ref().is_some_and(|(path, was)| path == rel_path && *was == side);
+        self.diff_focus = (!again).then(|| (rel_path.to_string(), side));
+        let what = if again { "no longer shown" } else { side.label() };
+        log::info!("the diff of {rel_path}: {what}");
+        self.diff_stale = true;
+    }
+
+    /// The side of the diff the card of the file shows, if it shows one.
+    pub fn diff_side(&self, rel_path: &str) -> Option<DiffSide> {
+        self.diffs.get(rel_path).map(|shown| shown.side).filter(|_| self.showing.is_none())
+    }
+
+    fn side_for(&self, rel_path: &str) -> DiffSide {
+        match &self.diff_focus {
+            Some((path, side)) if path == rel_path => *side,
+            _ => self.diff.side,
+        }
     }
 
     pub fn show_commit(&mut self, commit: Option<Commit>) {
@@ -710,7 +808,8 @@ impl Page {
         if self.showing.as_ref().is_some_and(|showing| showing.loading) {
             return false;
         }
-        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed && self.showing.is_none() {
+        let quiet = self.diff_focus.is_none() && self.showing.is_none();
+        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed && quiet {
             self.diff_stale = false;
         }
         self.diff_stale && self.ready().is_some()
@@ -719,25 +818,43 @@ impl Page {
     pub fn diff_settled(&self, rel_path: &str) -> bool {
         let waiting = self.git_rx.is_some()
             || self.diff_stale
-            || (self.heads_asked.contains(rel_path) && !self.heads.contains_key(rel_path));
-        !self.diff.on || self.diffs.contains_key(rel_path) || !waiting
+            || (self.heads_asked.contains(rel_path) && !self.heads.contains_key(rel_path))
+            || (self.indexes_asked.contains(rel_path) && !self.indexes.contains_key(rel_path));
+        let focused = self.diff_focus.as_ref().is_some_and(|(path, _)| path == rel_path);
+        !(self.diff.on || focused) || self.diffs.contains_key(rel_path) || !waiting
     }
 
     pub fn sync_diff(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) -> bool {
         use std::hash::{Hash, Hasher};
         self.diff_stale = false;
         let split = self.diff.split;
-        let wanted: Vec<String> = match (self.commit_shown(), &self.git, self.diff.on) {
-            (Some(showing), ..) => showing
+        let gone = match (&self.diff_focus, &self.git) {
+            (Some((path, side)), Some(git)) => !git.change(path).is_some_and(|change| side.of(change)),
+            _ => false,
+        };
+        if gone {
+            self.diff_focus = None;
+        }
+        let focused = |c: &&FileChange| self.diff_focus.as_ref().is_some_and(|(path, _)| *path == c.path);
+        let wanted: Vec<String> = match (self.commit_shown(), &self.git) {
+            (Some(showing), _) => showing
                 .files
                 .iter()
                 .filter(|file| self.editing.as_deref() != Some(file.path.as_str()))
                 .map(|file| file.path.clone())
                 .collect(),
-            (None, Some(git), true) => git
+            (None, Some(git)) => git
                 .changes
                 .iter()
-                .filter(|c| !matches!(c.change, Change::Untracked | Change::Added | Change::Deleted))
+                .filter(|c| self.diff.on || focused(c))
+                .filter(|c| {
+                    let side = self.side_for(&c.path);
+                    match c.change {
+                        Change::Untracked | Change::Deleted => false,
+                        Change::Added => !side.from_head() && side.of(c),
+                        _ => side.of(c),
+                    }
+                })
                 .filter(|c| self.editing.as_deref() != Some(c.path.as_str()))
                 .map(|c| c.path.clone())
                 .take(MAX_DIFFS)
@@ -745,9 +862,16 @@ impl Page {
             _ => Vec::new(),
         };
         if self.commit_shown().is_none() {
-            let unknown: Vec<String> = wanted.iter().filter(|path| !self.heads.contains_key(*path)).cloned().collect();
-            self.want_heads(unknown);
+            let unknown = |texts: &HashMap<String, Option<String>>, index: bool| -> Vec<String> {
+                let needs = |side: DiffSide| if index { side.from_index() } else { side.from_head() };
+                let wanted = wanted.iter().filter(|path| needs(self.side_for(path)) && !texts.contains_key(*path));
+                wanted.cloned().collect()
+            };
+            let (heads, indexes) = (unknown(&self.heads, false), unknown(&self.indexes, true));
+            self.want_texts(heads, false);
+            self.want_texts(indexes, true);
         }
+        let sides: HashMap<&str, DiffSide> = wanted.iter().map(|path| (path.as_str(), self.side_for(path))).collect();
         let around = self.diff.fold.then_some(self.diff.around);
         let laid = std::mem::take(&mut self.showing_changed);
         let committed: Option<HashMap<&str, &CommitFile>> = self
@@ -780,18 +904,29 @@ impl Page {
                 continue;
             }
             let Some(text) = current(&self.editors, rel) else { continue };
+            let side = match committed {
+                Some(_) => DiffSide::All,
+                None => sides.get(rel.as_str()).copied().unwrap_or(DiffSide::All),
+            };
             let (old, new): (&str, &str) = match &committed {
                 Some(files) => {
                     let Some(file) = files.get(rel.as_str()) else { continue };
                     (file.before.as_deref().unwrap_or(""), file.after.as_deref().unwrap_or(""))
                 }
                 None => {
-                    let Some(Some(head)) = self.heads.get(rel) else { continue };
-                    (head, &text)
+                    let head = self.heads.get(rel).and_then(|head| head.as_deref());
+                    let index = self.indexes.get(rel).and_then(|index| index.as_deref());
+                    let pair = match side {
+                        DiffSide::All => head.zip(Some(text.as_str())),
+                        DiffSide::Staged => head.zip(index),
+                        DiffSide::Unstaged => index.zip(Some(text.as_str())),
+                    };
+                    let Some(pair) = pair else { continue };
+                    pair
                 }
             };
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (old, new, &text, around, split).hash(&mut hasher);
+            (old, new, &text, around, split, side).hash(&mut hasher);
             let stamp = hasher.finish();
             if self.diffs.get(rel).is_some_and(|shown| shown.stamp == stamp) {
                 continue;
@@ -812,9 +947,11 @@ impl Page {
                     };
                     r.repo.files[index].numbers = Some(rows.iter().map(numbered).collect());
                     let plain = canvas_core::scan::normalise(&text).0;
-                    let committed = committed.is_some().then(|| canvas_core::scan::normalise(new).0);
+                    let other = committed.is_some() || side == DiffSide::Staged;
+                    let committed = other.then(|| canvas_core::scan::normalise(new).0);
                     let folded = rows.iter().any(|row| row.kind == crate::git::RowKind::Gap);
-                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, lines, plain, committed, symbols, folded });
+                    let shown = Diffed { stamp, rows, lines, plain, committed, symbols, folded, side };
+                    self.diffs.insert(rel.clone(), shown);
                 }
                 None => {
                     if self.diffs.remove(rel).is_none() {
@@ -890,6 +1027,7 @@ impl Page {
                         unstaged: differs
                             .then(|| original.as_ref().and_then(|o| o.unstaged).unwrap_or(Change::Modified)),
                         hunks,
+                        staged_hunks: Vec::new(),
                         insertions,
                         deletions,
                         unsaved: true,
@@ -1219,6 +1357,9 @@ impl Page {
                     self.heads_asked.remove(path);
                 }
                 self.heads.retain(|path, text| text.is_some() || !moved.contains(path));
+                self.indexes.clear();
+                self.indexes_asked.clear();
+                self.indexes_round += 1;
                 let unsaved: Vec<String> = self.unsaved().map(|e| e.rel_path.clone()).collect();
                 self.want_heads(unsaved);
                 self.previewed.clear();
@@ -1307,6 +1448,7 @@ impl Page {
             changed: self.changed_files().len(),
             shown: self.narrowed_to.filter(|_| clean),
             folded: self.diffs.values().filter(|shown| shown.folded).count(),
+            focus: self.diff_focus.clone().filter(|(path, _)| self.diffs.contains_key(path)),
         }
     }
 
