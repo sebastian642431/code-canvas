@@ -1197,11 +1197,15 @@ impl Extensions {
     }
 
     pub fn ask(&mut self, source: &str, text: impl Into<String>, choices: &[&str], about: &str) {
+        self.ask_at(Level::Info, source, text, choices, about);
+    }
+
+    pub fn ask_at(&mut self, level: Level, source: &str, text: impl Into<String>, choices: &[&str], about: &str) {
         let text = text.into();
         self.log_line(&format!("[{source}] {text}"));
         self.notices.retain(|n| n.own.as_deref() != Some(about));
         self.notices.push(Notice {
-            level: Level::Info,
+            level,
             source: source.to_string(),
             text,
             at: Instant::now(),

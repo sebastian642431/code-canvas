@@ -87,6 +87,8 @@ pub enum Step {
     Bars(String),
     Count,
     Trust,
+    /// `churn`: log what kept the app busy in the last minute.
+    Churn,
     Quit,
 }
 
@@ -200,6 +202,7 @@ fn parse_step(text: &str) -> Option<Step> {
         },
         "hover" => Step::Hover(arg.into()),
         "trust" => Step::Trust,
+        "churn" => Step::Churn,
         "quit" => Step::Quit,
         _ => return None,
     })

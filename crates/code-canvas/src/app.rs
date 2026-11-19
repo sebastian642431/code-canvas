@@ -26,6 +26,7 @@ use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState
 mod tree_files;
 
 mod assistants;
+mod churn_watch;
 mod consoles;
 mod github_sync;
 mod sharing;
@@ -215,6 +216,9 @@ pub struct App {
     stats: FrameStats,
     bench: Option<Bench>,
     next_repaint: Option<Instant>,
+    churn: crate::churn::Churn,
+    /// Files whose changes are skipped for the session (`ext::path_key` of the whole path).
+    unfollowed: HashMap<String, (PathBuf, String)>,
     script: Option<Script>,
     exit_requested: bool,
     exit_confirmed: bool,
@@ -377,6 +381,8 @@ impl App {
             stats: FrameStats::default(),
             bench: Bench::from_env(),
             next_repaint: None,
+            churn: Default::default(),
+            unfollowed: HashMap::new(),
             script: Script::from_env(),
             exit_requested: false,
             exit_confirmed: false,
@@ -1200,8 +1206,13 @@ impl App {
         let mut known: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         let mut other: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         let mut seen: Option<(usize, String, u32)> = None;
+        let now = Instant::now();
         for path in &batch.files {
+            if self.is_unfollowed(path) {
+                continue;
+            }
             let Some((i, rel)) = self.locate_file(path) else { continue };
+            self.churn.wrote(now, &self.pages[i].root, &rel);
             if rel.split('/').any(|part| skip.iter().any(|s| s == part))
                 || lockfiles.iter().any(|name| rel.rsplit('/').next() == Some(name.as_str()))
             {
@@ -3825,6 +3836,8 @@ impl App {
             Action::Versions(op) => self.versions_op(op),
             Action::Answered(about, answer) => self.answered(about, answer),
             Action::TrustFolders => self.trust_from_status(),
+            Action::ShowChurn => self.show_churn(),
+            Action::FollowAgain => self.follow_again(),
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
             Action::Agent(op) => self.agent_op(op),
@@ -4897,6 +4910,7 @@ impl App {
                 None => log::warn!("script: no canvas is shown yet"),
             },
             Step::Trust => self.apply(Action::TrustFolders),
+            Step::Churn => self.script_churn(),
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -5065,6 +5079,7 @@ impl App {
             changed = true;
         }
         busy |= self.watcher.busy();
+        self.watch_churn();
         let (folders, trusted) = self.host_folders();
         self.ext.set_folders(folders, trusted);
         let (events, ext_changed) = self.ext.poll();
@@ -5266,6 +5281,10 @@ impl App {
             None => {}
         }
         for (about, choice) in self.ext.take_answers() {
+            if let Some(about) = about.strip_prefix(churn_watch::ASKED) {
+                self.churn_answered(about, &choice);
+                continue;
+            }
             if let Some(path) = about.strip_prefix(version_hints::INSTALL) {
                 self.install_answered(path, &choice);
                 continue;
@@ -6350,10 +6369,8 @@ impl ApplicationHandler for App {
             (false, t) => t,
         };
         let look_again = self.own_build.is_some().then(|| self.build_checked + Duration::from_secs(5));
-        let wake = match (wake, look_again) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let churn_again = self.churn.is_busy().then(|| now + Duration::from_secs(5));
+        let wake = [wake, look_again, churn_again].into_iter().flatten().min();
         let shown =
             self.gfx.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && can_show(g.window.inner_size()));
         if loading && shown {

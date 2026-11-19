@@ -160,6 +160,9 @@ pub struct Page {
     /// The interactive rebase being arranged in its card.
     pub rebase: Option<crate::rebase::Plan>,
     git_rx: Option<Receiver<Option<GitState>>>,
+    /// Git reads and scans started since `App::watch_churn` last took them.
+    pub git_loads: u32,
+    pub scans: u32,
     pub only_changed: bool,
     /// With only the changed files shown: also every file of a folder that has a changed file.
     pub changed_folders: bool,
@@ -415,6 +418,8 @@ impl Page {
             history: Default::default(),
             rebase: None,
             git_rx: None,
+            git_loads: 0,
+            scans: 0,
             only_changed: false,
             changed_folders: false,
             changed_neighbours: false,
@@ -540,6 +545,7 @@ impl Page {
         if self.no_git {
             return;
         }
+        self.git_loads += 1;
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
@@ -1154,6 +1160,7 @@ impl Page {
     }
 
     pub fn start_scan(&mut self) {
+        self.scans += 1;
         self.diffs.clear();
         self.diff_stale = true;
         self.showing_changed = self.showing.is_some();
