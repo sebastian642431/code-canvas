@@ -5365,14 +5365,12 @@ impl App {
                         if let Some(tip) = known {
                             return (status, Some(tip));
                         }
-                        let tip = on_canvas.then(|| match (sym, page.hover_cell) {
-                            (Some(sym), Some((_, line, _))) => (
-                                format!("{} {}", r.repo.sym(sym).kind.badge(), r.repo.sym_name(sym)),
-                                format!("{}:{}", f.rel_path, line + 1),
-                            ),
-                            _ => (f.name.clone(), f.rel_path.clone()),
-                        });
-                        (status, tip)
+                        // The name and place of what is under the pointer are in the status bar; a box
+                        // following the pointer over every line of code only got in the way.
+                        if let Some(sym) = sym {
+                            status = format!("{status}  ·  {} {}", r.repo.sym(sym).kind.badge(), r.repo.sym_name(sym));
+                        }
+                        (status, None)
                     }
                     NodeKind::Dir => {
                         let path = if n.rel_path.is_empty() { r.repo.name.clone() } else { n.rel_path.clone() };
