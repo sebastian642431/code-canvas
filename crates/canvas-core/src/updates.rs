@@ -34,7 +34,7 @@ fn shape(layout: &Layout, repo: &Repo) -> BTreeMap<String, String> {
             NodeKind::File(fi) => repo.files[fi].rel_path.clone(),
             NodeKind::Dir => "dir".into(),
         };
-        let rows = n.wrap.as_ref().map(|w| w.per());
+        let rows = n.wrap.as_ref().map(|w| w.all_rows());
         let what = (&n.name, n.rect, n.depth, parent, n.files, n.lines, n.collapsed, n.col_stride, n.fold, n.gutter);
         let more = (n.offset, n.slot, kind, rows, inside.into_iter().collect::<BTreeSet<_>>());
         assert!(out.insert(key(layout, i as u32), format!("{what:?} {more:?}")).is_none(), "one node per path");

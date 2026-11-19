@@ -16,7 +16,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 - Folders are nested boxes, files are cards sized after their code; five levels of
   detail from "whole repository" down to readable text.
 - Folders collapse (`−` / `+`), single-child chains merge into `a/b/c/`, files and
-  folders can be hidden, long files fold into columns.
+  folders can be hidden; a long file is one column that goes on down.
 - Several folders open at once on the same canvas (e.g. a frontend and a backend).
 
 **Symbols — "where is this used?"**

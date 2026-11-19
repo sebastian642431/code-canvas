@@ -1,14 +1,11 @@
 use std::ops::Range;
 
-use crate::layout::FOLD_LINES;
-
 pub const WRAP_INDENT: u32 = 2;
 const MOST_INDENT: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wrap {
     width: u32,
-    per: u32,
     first: Box<[u32]>,
     breaks: Box<[[u32; 2]]>,
 }
@@ -53,17 +50,15 @@ impl Wrap {
         if breaks.is_empty() {
             return None;
         }
-        let mut wrap = Wrap { width, per: 1, first: first.into(), breaks: breaks.into() };
-        wrap.per = (0..lines.div_ceil(FOLD_LINES)).map(|fold| wrap.column_rows(fold)).max().unwrap_or(1).max(1);
-        Some(wrap)
+        Some(Wrap { width, first: first.into(), breaks: breaks.into() })
     }
 
     pub fn width(&self) -> u32 {
         self.width
     }
 
-    pub fn per(&self) -> u32 {
-        self.per
+    pub fn all_rows(&self) -> u32 {
+        (self.lines() + self.breaks.len()) as u32
     }
 
     pub fn lines(&self) -> usize {
@@ -88,28 +83,12 @@ impl Wrap {
         }
     }
 
-    fn in_column(&self, line: usize) -> u32 {
-        let base = line / FOLD_LINES * FOLD_LINES;
-        (line - base) as u32 + self.first[line] - self.first[base]
-    }
-
-    pub fn column_rows(&self, fold: usize) -> u32 {
-        let base = fold * FOLD_LINES;
-        let lines = self.lines();
-        if base >= lines {
-            return 0;
-        }
-        let end = (base + FOLD_LINES).min(lines);
-        (end - base) as u32 + self.first[end] - self.first[base]
-    }
-
     pub fn row(&self, line: usize) -> u32 {
         let lines = self.lines();
         if line >= lines {
-            let last = lines.saturating_sub(1);
-            return self.row(last) + self.rows(last) + (line - lines) as u32;
+            return self.all_rows() + (line - lines) as u32;
         }
-        (line / FOLD_LINES) as u32 * self.per + self.in_column(line)
+        line as u32 + self.first[line]
     }
 
     pub fn place(&self, line: usize, col: u32) -> (u32, u32) {
@@ -138,27 +117,25 @@ impl Wrap {
         })
     }
 
-    fn last_at_or_before(&self, base: usize, end: usize, row: u32) -> usize {
-        let (mut lo, mut hi) = (base, end);
+    fn last_at_or_before(&self, row: u32) -> usize {
+        let (mut lo, mut hi) = (0, self.lines());
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.in_column(mid) <= row {
+            if self.row(mid) <= row {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        lo.saturating_sub(1).max(base)
+        lo.saturating_sub(1)
     }
 
-    pub fn line_at(&self, vrow: u32) -> Option<(usize, u32)> {
-        let (fold, row) = ((vrow / self.per) as usize, vrow % self.per);
-        let (base, lines) = (fold * FOLD_LINES, self.lines());
-        if base >= lines {
+    pub fn line_at(&self, row: u32) -> Option<(usize, u32)> {
+        if self.lines() == 0 {
             return None;
         }
-        let line = self.last_at_or_before(base, (base + FOLD_LINES).min(lines), row);
-        let sub = row - self.in_column(line);
+        let line = self.last_at_or_before(row);
+        let sub = row - self.row(line);
         (sub < self.rows(line)).then_some((line, sub))
     }
 
@@ -175,17 +152,15 @@ impl Wrap {
         own.get(sub as usize).map_or(col, |next| col.min(next[0]))
     }
 
-    pub fn lines_in(&self, fold: usize, rows: Range<u32>) -> Range<usize> {
-        let (base, lines) = (fold * FOLD_LINES, self.lines());
-        if base >= lines || rows.is_empty() {
+    pub fn lines_in(&self, rows: Range<u32>) -> Range<usize> {
+        if self.lines() == 0 || rows.is_empty() {
             return 0..0;
         }
-        let end = (base + FOLD_LINES).min(lines);
-        let first = self.last_at_or_before(base, end, rows.start);
-        let (mut lo, mut hi) = (first, end);
+        let first = self.last_at_or_before(rows.start);
+        let (mut lo, mut hi) = (first, self.lines());
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if self.in_column(mid) < rows.end {
+            if self.row(mid) < rows.end {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -248,7 +223,7 @@ mod tests {
         assert_eq!(w.lines(), 3);
         assert_eq!((w.rows(0), w.rows(1), w.rows(2)), (1, 4, 1), "10 columns, then 8 a row after the indent");
         assert_eq!((w.row(0), w.row(1), w.row(2)), (0, 1, 5));
-        assert_eq!(w.per(), 6);
+        assert_eq!(w.all_rows(), 6);
         assert_eq!(w.place(1, 0), (1, 0));
         assert_eq!(w.place(1, 9), (1, 9));
         assert_eq!(w.place(1, 10), (2, 2), "continues indented");
@@ -304,11 +279,11 @@ mod tests {
     #[test]
     fn rows_seen_give_the_lines_drawn() {
         let w = of("a\n0123456789abcdefghijklmnopqrst\nb\nc\n", 10).unwrap();
-        assert_eq!(w.lines_in(0, 0..1), 0..1);
-        assert_eq!(w.lines_in(0, 2..4), 1..2, "rows inside a wrapped line draw that line");
-        assert_eq!(w.lines_in(0, 3..7), 1..4);
-        assert_eq!(w.lines_in(0, 0..100), 0..4);
-        assert_eq!(w.lines_in(1, 0..10), 0..0);
+        assert_eq!(w.lines_in(0..1), 0..1);
+        assert_eq!(w.lines_in(2..4), 1..2, "rows inside a wrapped line draw that line");
+        assert_eq!(w.lines_in(3..7), 1..4);
+        assert_eq!(w.lines_in(0..100), 0..4);
+        assert_eq!(w.lines_in(5..5), 0..0);
     }
 
     #[test]
@@ -326,18 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn folded_columns_count_rows_of_their_own_lines() {
+    fn a_long_file_is_one_column_of_rows() {
         let mut text = String::new();
-        for i in 0..FOLD_LINES + 3 {
-            text.push_str(if i == 1 || i == FOLD_LINES + 1 { "0123456789abcdefghij\n" } else { "x\n" });
+        for i in 0..3000 {
+            text.push_str(if i == 1 || i == 2500 { "0123456789abcdefghij\n" } else { "x\n" });
         }
         let w = of(&text, 10).unwrap();
-        assert_eq!(w.column_rows(0), FOLD_LINES as u32 + 2);
-        assert_eq!(w.column_rows(1), 3 + 2);
-        assert_eq!(w.per(), FOLD_LINES as u32 + 2);
-        assert_eq!(w.row(FOLD_LINES), w.per(), "the second column starts at its own top");
-        assert_eq!(w.row(FOLD_LINES + 2), w.per() + 4);
-        assert_eq!(w.line_at(w.per() + 4), Some((FOLD_LINES + 2, 0)));
-        assert_eq!(w.line_at(w.per() + 6), None, "below the shorter column is nothing");
+        assert_eq!(w.all_rows(), 3000 + 4);
+        assert_eq!(w.row(2500), 2500 + 2, "a line far down is only further down");
+        assert_eq!(w.row(2501), 2501 + 4);
+        assert_eq!(w.line_at(2501 + 4), Some((2501, 0)));
+        assert_eq!(w.line_at(2503), Some((2500, 1)));
+        assert_eq!(w.line_at(3000 + 4), None, "below the last row is nothing");
+        assert_eq!(w.lines_in(2500..2505), 2498..2501);
     }
 }
