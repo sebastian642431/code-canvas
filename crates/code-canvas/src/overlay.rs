@@ -845,14 +845,14 @@ pub fn build(
                 Change::Deleted | Change::Conflicted => theme::get().git_removed,
                 Change::Modified | Change::Renamed => theme::get().git_modified,
             };
+            // Up close each change has its own gutter mark: the card gets a thin line along its top,
+            // not a bar down its whole side that reads as every line changed.
             let strip = (3.0 * s / z).max(1.5);
-            out.over.push(RectInstance::new(
-                Rect::new(n.rect.x - strip, n.rect.y, strip, n.rect.h),
-                color,
-                0,
-                0.0,
-                0.0,
-            ));
+            let mark = match readable {
+                true => Rect::new(n.rect.x, n.rect.y, n.rect.w, (2.0 * s / z).min(CARD_PAD * 0.5)),
+                false => Rect::new(n.rect.x - strip, n.rect.y, strip, n.rect.h),
+            };
+            out.over.push(RectInstance::new(mark, color, 0, 0.0, 0.0));
             if !readable {
                 let side = 7.0 * s / z;
                 let dot = Rect::new(n.rect.x - side * 0.5, n.rect.y - side * 0.5, side, side);
@@ -905,7 +905,8 @@ pub fn build(
                     continue;
                 }
                 let c = if h.kind == HunkKind::Added { theme::get().git_added } else { theme::get().git_modified };
-                for mut rect in n.line_rects(h.line..(h.line + h.count).min(lines)) {
+                let covered = h.lines();
+                for mut rect in n.line_rects(covered.start..covered.end.min(lines)) {
                     if !rect.intersects(&seen) {
                         continue;
                     }

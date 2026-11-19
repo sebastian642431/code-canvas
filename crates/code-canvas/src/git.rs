@@ -50,6 +50,66 @@ pub struct Hunk {
     pub kind: HunkKind,
 }
 
+impl Hunk {
+    /// The lines of the file it covers, from 0; empty for what was removed.
+    pub fn lines(&self) -> std::ops::Range<u32> {
+        self.line..self.line + self.count
+    }
+}
+
+/// The line a click on a changed file goes to: its `turn`th change, counting round.
+pub fn nth_change(hunks: &[Hunk], turn: usize) -> Option<u32> {
+    hunks.get(turn.checked_rem(hunks.len())?).map(|hunk| hunk.line)
+}
+
+const MOST_SHIFT: usize = 100;
+
+fn indent_of(lines: &[&str], at: usize) -> usize {
+    lines.get(at).map_or(0, |line| line.len() - line.trim_start_matches([' ', '\t']).len())
+}
+
+/// Lines added between two equal lines can be told apart in more than one place (a block that
+/// ends with `}` after a `}`): each is put where VS Code puts it, where the lines around its
+/// edges are the least indented, the highest of the ties.
+pub fn settle(hunks: &mut [Hunk], lines: &[&str]) {
+    let around = |at: usize| (if at == 0 { 0 } else { indent_of(lines, at - 1) }) + indent_of(lines, at);
+    for hunk in hunks.iter_mut().filter(|hunk| hunk.kind == HunkKind::Added && hunk.count > 0) {
+        let (start, end) = (hunk.line as usize, (hunk.line + hunk.count) as usize);
+        if end > lines.len() {
+            continue;
+        }
+        let mut up = 0;
+        while up < MOST_SHIFT && up < start && lines[start - up - 1] == lines[end - up - 1] {
+            up += 1;
+        }
+        let mut down = 0;
+        while down < MOST_SHIFT && end + down < lines.len() && lines[start + down] == lines[end + down] {
+            down += 1;
+        }
+        let cost = |start: usize, end: usize| {
+            let before = if start == 0 { 0 } else { indent_of(lines, start - 1) };
+            around(start) + around(end) + before + indent_of(lines, end)
+        };
+        let best = (start - up..=start + down).min_by_key(|&at| cost(at, at + hunk.count as usize));
+        hunk.line = best.unwrap_or(start) as u32;
+    }
+}
+
+fn settle_from_disk(root: &Path, changes: &mut [FileChange]) {
+    const MOST_FILES: usize = 200;
+    const MOST_BYTES: u64 = 2 << 20;
+    let added = |change: &&mut FileChange| change.hunks.iter().any(|hunk| hunk.kind == HunkKind::Added);
+    for change in changes.iter_mut().filter(added).take(MOST_FILES) {
+        let file = root.join(&change.path);
+        if !std::fs::metadata(&file).is_ok_and(|meta| meta.len() <= MOST_BYTES) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let lines: Vec<&str> = text.lines().collect();
+        settle(&mut change.hunks, &lines);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FileChange {
     pub path: String,
@@ -379,6 +439,7 @@ pub fn compare(old: &str, new: &str) -> (Vec<Hunk>, u32, u32) {
         };
         hunks.push(Hunk { line: line as u32, count: added as u32, kind });
     }
+    settle(&mut hunks, &after);
     (hunks, insertions, deletions)
 }
 
@@ -1266,6 +1327,7 @@ pub fn load(root: &Path) -> Option<GitState> {
     state.prefix = prefix;
     if let Some(diff) = diff {
         apply_diff(&mut state, &String::from_utf8_lossy(&diff));
+        settle_from_disk(root, &mut state.changes);
     }
     if let Some(log) = log {
         state.graph = parse_graph(&String::from_utf8_lossy(&log));
@@ -2489,5 +2551,63 @@ mod tests {
         );
         assert_eq!((a.insertions, a.deletions), (5, 3));
         assert!(s.changes[1].hunks.is_empty(), "a file not in the diff keeps no hunks");
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    #[test]
+    fn an_added_block_covers_exactly_its_lines() {
+        let mut s = parse_status(" M automations.ts\0", "");
+        let diff = "diff --git a/automations.ts b/automations.ts\n--- a/automations.ts\n+++ b/automations.ts\n@@ -446,0 +447,57 @@ export\n+x\n@@ -600 +656,2 @@\n-y\n+y\n+z\n";
+        apply_diff(&mut s, diff);
+        let hunks = &s.changes[0].hunks;
+        assert_eq!(hunks[0].lines(), 446..503, "lines 447 to 503 as git counts them, the closing } included");
+        assert_eq!(hunks[1].lines(), 655..657);
+    }
+
+    #[test]
+    fn a_block_closed_like_the_one_before_it_is_washed_where_it_was_typed() {
+        let lines = ["fn a() {", "    one();", "}", "fn b() {", "    two();", "}", "", "fn c() {}"];
+        let typed = Hunk { line: 3, count: 3, kind: HunkKind::Added };
+        let mut one_up = [Hunk { line: 2, ..typed }];
+        settle(&mut one_up, &lines);
+        assert_eq!(one_up[0], typed, "the } before the block is not part of it, its own } is");
+        let mut right = [typed];
+        settle(&mut right, &lines);
+        assert_eq!(right[0], typed);
+        let mut removed = [Hunk { line: 2, count: 0, kind: HunkKind::Removed }];
+        settle(&mut removed, &lines);
+        assert_eq!(removed[0].line, 2, "only added lines move");
+    }
+
+    #[test]
+    fn of_blocks_as_good_as_each_other_the_highest_is_kept() {
+        let lines = ["}", "", "fn b() {}", "", "fn c() {}"];
+        let mut hunks = [Hunk { line: 1, count: 2, kind: HunkKind::Added }];
+        settle(&mut hunks, &lines);
+        assert_eq!(hunks[0].line, 1);
+    }
+
+    #[test]
+    fn comparing_texts_puts_an_added_block_after_the_brace_before_it() {
+        let old = "fn a() {\n    one();\n}\n\nfn c() {}\n";
+        let new = "fn a() {\n    one();\n}\nfn b() {\n    two();\n}\n\nfn c() {}\n";
+        let (hunks, _, _) = compare(old, new);
+        assert_eq!(hunks, vec![Hunk { line: 3, count: 3, kind: HunkKind::Added }]);
+    }
+
+    #[test]
+    fn clicking_a_changed_file_again_goes_to_its_next_change() {
+        let hunks = [
+            Hunk { line: 40, count: 2, kind: HunkKind::Modified },
+            Hunk { line: 90, count: 0, kind: HunkKind::Removed },
+        ];
+        assert_eq!(nth_change(&hunks, 0), Some(40));
+        assert_eq!(nth_change(&hunks, 1), Some(90));
+        assert_eq!(nth_change(&hunks, 2), Some(40), "after the last one it starts again");
+        assert_eq!(nth_change(&[], 0), None);
     }
 }

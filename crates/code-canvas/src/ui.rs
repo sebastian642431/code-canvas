@@ -22,6 +22,7 @@ mod ext_panels;
 mod files_tree;
 mod git_panel;
 mod history_panel;
+mod minimap;
 mod progress_banner;
 mod rebase_panel;
 mod settings;
@@ -32,6 +33,7 @@ use crate::keys::{Command, Keymap};
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
 pub use files_tree::{Clip as TreeClip, DropAt, TreeOp};
+pub use minimap::{Minimap, REACH as MINIMAP_REACH};
 pub use settings::{ask_reset as settings_ask_reset, SettingsView, Tab as SettingsTab};
 pub use versions_menu::VersionMenu;
 
@@ -314,6 +316,7 @@ pub struct UiState {
     pub account: crate::account::Account,
     pub cards: Vec<Panel>,
     pub cards_reach: f32,
+    pub minimap: Minimap,
     pub card_places: Vec<CardPlace>,
     pub console: crate::consoles::Consoles,
     card_widths: std::collections::HashMap<String, f32>,
@@ -405,6 +408,7 @@ impl Default for UiState {
             account: Default::default(),
             cards: Vec::new(),
             cards_reach: 0.0,
+            minimap: Minimap::default(),
             card_places: Vec::new(),
             console: Default::default(),
             card_widths: Default::default(),
@@ -682,7 +686,16 @@ pub enum Action {
     OpenFolder,
     Rescan,
     FlyToPath(String),
+    /// A changed file of Source Control: the canvas goes to its first change, or to the next one
+    /// when it is clicked again.
+    FlyToChange(String),
     FlyToSite(Site),
+    /// The minimap moves the canvas to a line of the selected file: the world y of the line, and
+    /// the left of its column when that is not on screen.
+    MinimapTo {
+        y: f32,
+        left: Option<f32>,
+    },
     ToggleHidden(String),
     ToggleCollapsed(String),
     ToggleTreeOpen(String),
@@ -1122,6 +1135,9 @@ pub fn build(
     files_tree::drag_step(&ctx, st, pages.get(active).map(|page| page.root.as_path()), actions);
     let commit_shown = pages.get(active).is_some_and(|page| page.showing.is_some());
     following_bar(&ctx, st, canvas, commit_shown, actions);
+    if !bare && st.prefs.minimap {
+        minimap::minimap(&ctx, st, canvas, pages.get(active), ext, actions);
+    }
     share_panel(&ctx, st, actions);
     card_menu(&ctx, st, canvas, actions);
     versions_menu::version_menu(&ctx, st, canvas, actions);

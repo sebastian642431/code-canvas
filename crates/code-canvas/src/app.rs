@@ -260,6 +260,9 @@ pub struct App {
     last_input: Instant,
     checkers_offered: HashSet<&'static str>,
     following: Option<(usize, String, u32, Instant)>,
+    /// The changed file last gone to from Source Control and which of its changes, so a click
+    /// on it again goes to the next one.
+    change_turn: Option<(u32, String, usize)>,
     text_checked: Instant,
     show_when_read: Option<Awaited>,
     back: Vec<Place>,
@@ -427,6 +430,7 @@ impl App {
             last_input: Instant::now(),
             checkers_offered: HashSet::new(),
             following: None,
+            change_turn: None,
             text_checked: Instant::now(),
             show_when_read: None,
             back: Vec::new(),
@@ -2015,8 +2019,17 @@ impl App {
         self.request_redraw();
     }
 
+    fn minimap_shown(&self) -> bool {
+        let page = self.pages.get(self.active);
+        let node = page.and_then(|page| page.ready()?.layout.nodes.get(page.selected?));
+        !self.ui.bare && self.ui.prefs.minimap && node.is_some_and(|node| !node.is_dir())
+    }
+
     fn clear(&self) -> Rect {
-        let taken = if self.ui.bare { 0.0 } else { self.ui.cards_reach * self.scale() };
+        let mut taken = if self.ui.bare { 0.0 } else { self.ui.cards_reach * self.scale() };
+        if self.minimap_shown() {
+            taken += ui::MINIMAP_REACH * self.scale();
+        }
         let left = self.canvas.w - taken;
         match left >= self.canvas.w * 0.35 {
             true => Rect::new(self.canvas.x, self.canvas.y, left, self.canvas.h),
@@ -2868,6 +2881,50 @@ impl App {
         self.request_redraw();
     }
 
+    fn fly_to_change(&mut self, path: &str) {
+        const ABOVE: u32 = 4;
+        let Some(page) = self.pages.get(self.active) else { return };
+        let change = page.git.as_ref().and_then(|git| git.changes.iter().find(|change| change.path == path));
+        let hunks = change.map(|change| change.hunks.as_slice()).unwrap_or_default();
+        let node = page.ready().and_then(|r| r.layout.node_for_path(&r.repo, path));
+        let card = node.filter(|&n| page.ready().is_some_and(|r| !r.layout.nodes[n].is_dir()));
+        let turn = match &self.change_turn {
+            Some((id, last, turn)) if *id == page.id && last == path => turn + 1,
+            _ => 0,
+        };
+        let line = crate::git::nth_change(hunks, turn);
+        let (Some(n), Some(line), None) = (card, line, canvas_core::scan::media_kind(path)) else {
+            self.change_turn = None;
+            return self.apply(Action::FlyToPath(path.to_string()));
+        };
+        let row = page.row_of(path, line).saturating_sub(ABOVE);
+        self.change_turn = Some((page.id, path.to_string(), turn));
+        if let Some(page) = self.pages.get_mut(self.active) {
+            page.selected = Some(n);
+        }
+        self.frame_row(n, row);
+    }
+
+    /// Goes to a row of a card at a size to read it, the row near the top of what is free of
+    /// the canvas, and the card's code from its left edge when it is wider than that.
+    fn frame_row(&mut self, node: usize, row: u32) {
+        self.remember_place();
+        let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let PageState::Ready(r) = &page.state else { return };
+        let Some(n) = r.layout.nodes.get(node) else { return };
+        let fit = (area.w * 0.7 / n.rect.w).clamp(1.25 * s, 2.0 * s);
+        let z = if (1.0 * s..=3.0 * s).contains(&page.camera.zoom) { page.camera.zoom } else { fit };
+        let cell = n.cell_rect(row, 0, 1);
+        let (x, at) = match n.rect.w * z <= area.w - 48.0 * s {
+            true => (n.rect.center()[0], area.x + area.w * 0.5),
+            false => (cell.x - n.gutter - canvas_core::layout::CARD_PAD, area.x + 24.0 * s),
+        };
+        let y = (cell.y, area.y + 48.0 * s);
+        page.target = Some(Camera { center: [x - (at - vp[0] * 0.5) / z, y.0 - (y.1 - vp[1] * 0.5) / z], zoom: z });
+        self.request_redraw();
+    }
+
     fn frame_site(&mut self, site: Site) {
         self.remember_place();
         let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
@@ -3537,6 +3594,19 @@ impl App {
             }
             Action::FrameSelection => self.frame_selection(),
             Action::FlyToSite(site) => self.frame_site(site),
+            Action::FlyToChange(path) => self.fly_to_change(&path),
+            Action::MinimapTo { y, left } => {
+                let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    let z = page.camera.zoom;
+                    page.target = None;
+                    page.camera.center[1] = y - (area.y + area.h * 0.5 - vp[1] * 0.5) / z;
+                    if let Some(left) = left {
+                        page.camera.center[0] = left - (area.x + 24.0 * s - vp[0] * 0.5) / z;
+                    }
+                    self.request_redraw();
+                }
+            }
             Action::OpenMedia(path) => {
                 if crate::media::kind(&path).is_some() {
                     self.reveal_file(&path);
@@ -5538,6 +5608,12 @@ impl App {
         let standing = self.stand_still();
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
+        self.ui.minimap.seen = self.pages.get(self.active).map(|page| {
+            let view = page.camera.view(self.viewport());
+            let a = view.to_world([self.canvas.x, self.canvas.y]);
+            let b = view.to_world([self.canvas.right(), self.canvas.bottom()]);
+            Rect::new(a[0], a[1], b[0] - a[0], b[1] - a[1])
+        });
         let mut actions = Vec::new();
         self.ui.tree.os_over = None;
         if self.os_hover {
