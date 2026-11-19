@@ -268,7 +268,7 @@ fn change_row(
     if action.is_none() && resp.clicked() {
         action = Some(match deleted {
             true => Action::ShowDeleted { path: change.path.clone(), staged },
-            false => Action::FlyToPath(change.path.clone()),
+            false => Action::FlyToChange(change.path.clone()),
         });
     }
     let unsaved = if change.unsaved && !staged { " · not saved yet (staging or committing it saves it)" } else { "" };

@@ -169,6 +169,11 @@ const SYMBOLS_PANEL: (&str, &str) = (
     "The panel with the filters and the uses of the names you click. Off, a click still draws the curves on the canvas, and the panel opens from its icon.",
 );
 
+const MINIMAP: (&str, &str) = (
+    "Show a minimap of the selected file",
+    "A narrow strip on the right of the canvas with the whole file in small, its changes and problems, and the part on screen. Click or drag on it to move along the file.",
+);
+
 const TRAILS: (&str, &str) = (
     "Show where each assistant has been",
     "Its last places, faint in its colour and joined by a dotted line: a ring where it read, a dot where it edited. They fade out in ten minutes. Point at one to see what it did there.",
@@ -379,8 +384,10 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, "", &mut next.check_updates, UPDATES);
         });
     }
-    let editing =
-        EDITING.iter().chain([&SYMBOLS_PANEL]).any(|(label, about)| hit(f, &[label, about, "Help while editing"]));
+    let editing = EDITING
+        .iter()
+        .chain([&SYMBOLS_PANEL, &MINIMAP])
+        .any(|(label, about)| hit(f, &[label, about, "Help while editing"]));
     if editing {
         let f = if hit(f, &["Help while editing"]) { "" } else { f };
         section(ui, icons::PACKAGE, "Help while editing");
@@ -395,6 +402,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.follow_changes, EDITING[3]);
             option(ui, f, &mut next.line_numbers, EDITING[4]);
             option(ui, f, &mut next.wrap, EDITING[8]);
+            option(ui, f, &mut next.minimap, MINIMAP);
             option(ui, f, &mut next.autosave, EDITING[6]);
             option(ui, f, &mut next.code_lenses, EDITING[7]);
             option(ui, f, &mut next.symbols_panel, SYMBOLS_PANEL);
