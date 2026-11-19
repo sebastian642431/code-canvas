@@ -81,7 +81,8 @@ muy grandes. Código abierto: cualquiera puede aportar.
 - Las tarjetas (Source Control, Search, el chat de un asistente…) se arrastran por su
   título a cualquier lugar del lienzo y se agrandan o achican por sus bordes y la
   esquina; doble clic en el título las vuelve a acomodar.
-- **Buscar y reemplazar** en un archivo con `Ctrl+F`; con el cursor, arrastrar selecciona.
+- **Buscar** archivos y carpetas del lienzo por nombre con `Ctrl+F`, o texto en el
+  archivo seleccionado; **reemplazar** con `Ctrl+H`. Con el cursor, arrastrar selecciona.
 - **Líneas largas**: una tarjeta muestra hasta 160 columnas. Con el puntero sobre una
   línea más larga, el resto aparece al lado de la tarjeta, del mismo tamaño y con los
   mismos colores, en varias filas si no entra. Un clic ahí pone el cursor en ese lugar,

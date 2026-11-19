@@ -95,6 +95,12 @@ pub struct SearchResults {
 
 type FoundLines = HashMap<usize, (u32, String)>;
 
+/// The files and folders the find bar found by name, best first; marked on the canvas.
+pub struct FoundNames {
+    pub paths: Vec<String>,
+    pub current: Option<usize>,
+}
+
 pub struct Selection {
     pub sym: SymRef,
     pub rel: Relations,
@@ -154,6 +160,7 @@ pub struct Page {
     pub only_connected: bool,
     pub curves_dirty: bool,
     pub search: Option<SearchResults>,
+    pub found_names: Option<FoundNames>,
     found: Option<(Vec<Site>, FoundLines)>,
     pub git: Option<GitState>,
     pub history: crate::history::HistoryView,
@@ -410,6 +417,7 @@ impl Page {
             only_connected: false,
             curves_dirty: true,
             search: None,
+            found_names: None,
             found: None,
             git: None,
             history: Default::default(),

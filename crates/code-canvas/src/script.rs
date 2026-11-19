@@ -82,6 +82,8 @@ pub enum Step {
     Ignored(String),
     Part(String),
     Find(String),
+    FindFiles(String),
+    FindOption(String),
     Where,
     Colours(String),
     Bars(String),
@@ -182,6 +184,8 @@ fn parse_step(text: &str) -> Option<Step> {
             Step::Menu(parts.next()?.ok()?, parts.next()?.ok()?)
         }
         "find" => Step::Find(arg.into()),
+        "find-files" => Step::FindFiles(arg.into()),
+        "find-option" => Step::FindOption(arg.into()),
         "where" => Step::Where,
         "colours" => Step::Colours(arg.into()),
         "colour" => Step::Colour(arg.into()),

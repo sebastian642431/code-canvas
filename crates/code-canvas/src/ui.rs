@@ -20,6 +20,7 @@ mod diffs_section;
 pub use diffs_section::DiffsInfo;
 mod ext_panels;
 mod files_tree;
+mod find_bar;
 mod git_panel;
 mod history_panel;
 mod progress_banner;
@@ -32,6 +33,7 @@ use crate::keys::{Command, Keymap};
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
 pub use files_tree::{Clip as TreeClip, DropAt, TreeOp};
+pub use find_bar::{Find, FindIn, FindKept, FindOp};
 pub use settings::{ask_reset as settings_ask_reset, SettingsView, Tab as SettingsTab};
 pub use versions_menu::VersionMenu;
 
@@ -269,27 +271,6 @@ pub struct QuickOpen {
     pub focus: bool,
 }
 
-#[derive(Default)]
-pub struct Find {
-    pub query: String,
-    pub with: String,
-    pub focus: bool,
-    pub at: usize,
-    pub count: usize,
-    pub file: String,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FindOp {
-    Open,
-    Changed,
-    Next,
-    Previous,
-    Replace,
-    ReplaceAll,
-    Close,
-}
-
 pub struct CardPlace {
     pub over: Rect,
     pub pages: std::ops::Range<usize>,
@@ -354,6 +335,7 @@ pub struct UiState {
     pub update: crate::update::State,
     pub completion: Option<CompletionView>,
     pub find: Option<Find>,
+    pub find_kept: FindKept,
     pub card_menu: Option<CardMenu>,
     pub version_menu: Option<VersionMenu>,
     pub ask: Option<Ask>,
@@ -443,6 +425,7 @@ impl Default for UiState {
             update: Default::default(),
             completion: None,
             find: None,
+            find_kept: Default::default(),
             card_menu: None,
             version_menu: None,
             ask: None,
@@ -1116,7 +1099,7 @@ pub fn build(
     layout_menu(&ctx, st, actions);
     account_menu(&ctx, st, actions);
     sign_in_modal(&ctx, st, actions);
-    find_bar(&ctx, st, canvas, actions);
+    find_bar::find_bar(&ctx, st, canvas, actions);
     commit_bar(&ctx, st, pages.get(active), canvas, actions);
     workspace_drop(&ctx, st, canvas);
     files_tree::drag_step(&ctx, st, pages.get(active).map(|page| page.root.as_path()), actions);
@@ -3646,7 +3629,8 @@ fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
             vec![
                 ("Go to a file or folder", key(Command::GoToFile)),
                 ("Search in files", key(Command::SearchInFiles)),
-                ("Find and replace in a file", key(Command::Find)),
+                ("Find files on the canvas (or in the selected file)", key(Command::Find)),
+                ("Replace in the selected file", key(Command::Replace)),
                 ("Run a command", key(Command::Palette)),
             ],
         ),
@@ -5534,84 +5518,6 @@ fn commit_bar(ctx: &egui::Context, st: &mut UiState, page: Option<&Page>, canvas
     st.floating.push(resp.response.rect);
 }
 
-fn find_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, actions: &mut Vec<Action>) {
-    let can_replace = st.prefs.edit;
-    let Some(find) = st.find.as_mut() else { return };
-    let area = egui::Area::new(egui::Id::unique("find in file"))
-        .pivot(Align2::RIGHT_TOP)
-        .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 10.0))
-        .order(egui::Order::Foreground);
-    let resp = area.show(ctx, |ui| {
-        let frame = Frame::NONE
-            .fill(pal().card)
-            .stroke(Stroke::new(1.0, pal().border))
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(Margin::symmetric(8, 6));
-        frame.show(ui, |ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-            let field = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
-                let edit = egui::TextEdit::singleline(text).hint_text(hint).desired_width(210.0);
-                ui.add(edit.font(FontId::proportional(13.0)))
-            };
-            let glyph = |name: &str, or: &'static str| crate::codicons::glyph(name).unwrap_or(or);
-            ui.horizontal(|ui| {
-                let query = field(ui, &mut find.query, "Find in the file");
-                if std::mem::take(&mut find.focus) {
-                    query.request_focus();
-                }
-                if query.changed() {
-                    actions.push(Action::Find(FindOp::Changed));
-                }
-                let entered = query.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if entered {
-                    let back = ui.input(|i| i.modifiers.shift);
-                    actions.push(Action::Find(if back { FindOp::Previous } else { FindOp::Next }));
-                    find.focus = true;
-                }
-                let count = match (find.query.is_empty(), find.count) {
-                    (true, _) => String::new(),
-                    (false, 0) => "nothing".to_string(),
-                    (false, n) => format!("{} of {n}", find.at + 1),
-                };
-                let (slot, _) = ui.allocate_exact_size(Vec2::new(64.0, 22.0), Sense::hover());
-                let tint =
-                    if find.count == 0 && !find.query.is_empty() { c(theme::get().ui_warn) } else { pal().text_dim };
-                ui.painter().text(slot.left_center(), Align2::LEFT_CENTER, count, FontId::proportional(12.0), tint);
-                if small_icon(ui, glyph("arrow-up", icons::ARROW_UP), "The one before (Shift+Enter)") {
-                    actions.push(Action::Find(FindOp::Previous));
-                }
-                if small_icon(ui, glyph("arrow-down", icons::CHEVRON_DOWN), "The next one (Enter)") {
-                    actions.push(Action::Find(FindOp::Next));
-                }
-                if small_icon(ui, icons::X, "Close (Esc)") {
-                    actions.push(Action::Find(FindOp::Close));
-                }
-            });
-            ui.horizontal(|ui| {
-                if can_replace {
-                    let with = field(ui, &mut find.with, "Replace with");
-                    if with.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        actions.push(Action::Find(FindOp::Replace));
-                    }
-                    if small_icon(ui, glyph("replace", icons::CORNER_DOWN_LEFT), "Replace this one") {
-                        actions.push(Action::Find(FindOp::Replace));
-                    }
-                    if small_icon(ui, glyph("replace-all", icons::COPY), "Replace every one") {
-                        actions.push(Action::Find(FindOp::ReplaceAll));
-                    }
-                }
-                let name = find.file.rsplit('/').next().unwrap_or(&find.file);
-                let about = if can_replace { name.to_string() } else { format!("{name}  ·  the pencil replaces") };
-                ui.label(RichText::new(about).size(11.5).color(pal().text_faint));
-            });
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                actions.push(Action::Find(FindOp::Close));
-            }
-        });
-    });
-    st.floating.push(resp.response.rect);
-}
-
 fn quick_score(path: &str, query: &str) -> Option<i32> {
     let lower = path.to_lowercase();
     let name = lower.rsplit('/').next().unwrap_or(&lower);
@@ -5651,7 +5557,8 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
         ("File: Open Folder…".into(), Action::OpenFolder),
         ("File: Save (the file being edited, or every unsaved file)".into(), Action::SaveFile),
         ("Format Document".into(), Action::FormatFile(None)),
-        ("Find and Replace in the File".into(), Action::Find(FindOp::Open)),
+        ("Find Files and Folders on the Canvas (or in the Selected File)".into(), Action::Find(FindOp::Open)),
+        ("Replace in the Selected File".into(), Action::Find(FindOp::OpenReplace)),
         ("Markdown: Open Preview".into(), Action::PreviewSelected),
         ("View: Explorer".into(), Action::Show(Panel::Files)),
         ("View: Search".into(), Action::Show(Panel::Search)),

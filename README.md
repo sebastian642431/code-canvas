@@ -107,8 +107,11 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
   talk about the code with someone: six colours, three widths, a rubber that takes
   away only what it passes over, and a bin that clears it all. What is drawn stays
   on the code it was drawn over as the canvas moves and zooms.
-- `Ctrl+F` finds in the file being edited or selected: every match is marked, Enter
-  and Shift+Enter walk them, and with the pointer one or all can be replaced.
+- `Ctrl+F` finds files and folders on the canvas by name, or, with a file selected,
+  text in that file ("Files", "Text in files" and "This file" switch between them;
+  "Text in files" is the Search panel). Every match is marked, Enter and Shift+Enter
+  (or F3 and Shift+F3) walk them, Match Case, Whole Word and regular expressions are
+  `Alt+C`, `Alt+W` and `Alt+R`, and with the pointer `Ctrl+H` replaces one or all.
 - **Long lines**: a card shows up to 160 columns. With the pointer on a longer
   line, the rest of it is shown beside the card, in the same size and colours, in
   several rows when it does not fit; a click on it puts the caret there, and typing
