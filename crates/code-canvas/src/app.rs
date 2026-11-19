@@ -897,6 +897,11 @@ impl App {
                     self.close_folder(page, false);
                 }
             }
+            WorkspaceOp::Git(path, op) => {
+                if let Some(page) = on(self, &path) {
+                    self.run_git(page, op);
+                }
+            }
             WorkspaceOp::Forget(path) => match on(self, &path) {
                 Some(page) => self.close_folder(page, true),
                 None => self.workspace.retain(|known| known.path != path),
@@ -4991,7 +4996,16 @@ impl App {
         }
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
-            changed |= page.poll_git_op();
+            let done = page.poll_git_op();
+            changed |= done;
+            // The note under Commit is only seen for the folder in view; a branch switched from the
+            // workspace list for another folder says how it went in a notice.
+            if done && i != self.active {
+                if let Some((ok, text)) = &page.git_note {
+                    let level = if *ok { ext::Level::Info } else { ext::Level::Warn };
+                    self.ext.notice(level, "Source Control", format!("{}: {text}", page.title));
+                }
+            }
             if i == self.active && page.rebase.is_none() && self.ui.cards.contains(&Panel::Rebase) {
                 self.ui.close_panel(&Panel::Rebase);
                 changed = true;
