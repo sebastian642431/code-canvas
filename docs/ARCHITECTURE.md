@@ -141,6 +141,15 @@ for huge repositories); cameras and selections survive by path.
 
 - `Page` = one opened folder: scan state, camera, filter, selected symbols, git changes,
   search results.
+- The Search panel (`ui/search_panel.rs`, `search.rs`) searches in a background thread:
+  `canvas_core::grep` reads the files on the canvas from disk in parallel (the text of an editor
+  with unsaved changes, or of the commit shown, is handed to it), matches line by line with the
+  regex crate (plain text is escaped; whole word is checked around each match) and stops at
+  5000 results. A new query cancels the search running. Files written or typed in are searched
+  again one by one a moment later; a folder read again is searched again whole. Results keep
+  real line numbers and are turned into places on the canvas (rows of a diff) only to mark them.
+  Replacing rewrites the files in the background; the app then writes them through the
+  watcher, or puts the text in the editor when the file has unsaved changes.
 - `ui.rs` builds the chrome with egui: our own title bar (the window has no system
   frame), an icon rail per side, and panels. It never mutates pages; it returns
   `Action`s that `App::apply` executes.
@@ -198,7 +207,9 @@ camera animations:
 CODE_CANVAS_DATA_DIR=/tmp/cc-test CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800; select main; locate; wait 1000; quit"   cargo run --release -- .
 ```
 
-Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <text>`,
+Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <text>` (the Search panel,
+with its query), `search-option case|word|regex|list on|off`, `search-option include|exclude|replace <text>`,
+`search-option replace-all|next|previous` (the options and buttons of the Search panel; `replace-all` asks first),
 `left files|search|extensions|problems|changes|settings|<publisher.name>|help|none`,
 `right symbols|<extension id>|none`, `folders`, `collapse-all`, `expand-all`, `connected on|off`,
 `changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `palette <text>`, `edit <path> <line> <column>`, `type <text>`,

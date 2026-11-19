@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 ignore.workspace = true
 rayon.workspace = true
+regex.workspace = true
 log.workspace = true

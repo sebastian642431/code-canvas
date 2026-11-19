@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod deps;
 pub mod geom;
+pub mod grep;
 pub mod layout;
 pub mod order;
 pub mod refs;
