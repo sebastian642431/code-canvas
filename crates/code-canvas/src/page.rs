@@ -272,11 +272,11 @@ impl DiffSide {
         }
     }
 
-    fn from_head(self) -> bool {
+    fn uses_head(self) -> bool {
         self != DiffSide::Unstaged
     }
 
-    fn from_index(self) -> bool {
+    fn uses_index(self) -> bool {
         self != DiffSide::All
     }
 }
@@ -851,7 +851,7 @@ impl Page {
                     let side = self.side_for(&c.path);
                     match c.change {
                         Change::Untracked | Change::Deleted => false,
-                        Change::Added => !side.from_head() && side.of(c),
+                        Change::Added => !side.uses_head() && side.of(c),
                         _ => side.of(c),
                     }
                 })
@@ -863,7 +863,7 @@ impl Page {
         };
         if self.commit_shown().is_none() {
             let unknown = |texts: &HashMap<String, Option<String>>, index: bool| -> Vec<String> {
-                let needs = |side: DiffSide| if index { side.from_index() } else { side.from_head() };
+                let needs = |side: DiffSide| if index { side.uses_index() } else { side.uses_head() };
                 let wanted = wanted.iter().filter(|path| needs(self.side_for(path)) && !texts.contains_key(*path));
                 wanted.cloned().collect()
             };
@@ -1185,7 +1185,9 @@ impl Page {
                 self.spawn_git(op);
                 return self.show_switch();
             }
-            (Next::Arrived, _) => self.git_note = Some(GitNote::new(true, format!("On branch {}.", switch.plan.shown()))),
+            (Next::Arrived, _) => {
+                self.git_note = Some(GitNote::new(true, format!("On branch {}.", switch.plan.shown())))
+            }
             (_, Err(why)) => {
                 let hint = match why.contains("would be overwritten") {
                     true => "\n\nCommit or stash those changes (Stash is in the menu at the top of Source Control), then switch again.",

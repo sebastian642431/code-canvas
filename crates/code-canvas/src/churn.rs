@@ -405,7 +405,8 @@ mod tests {
         assert_eq!(verdict.top.len(), 2);
         write(&mut churn, s(30), "other.log", PATH_WRITES);
         assert!(churn.check(s(30)).unwrap().warning.is_some(), "another file is another cause");
-        let later = WARN_AGAIN.as_secs();
+        // The notice at 30 s covered server.log too: one notice tells all a folder sets off.
+        let later = 30 + WARN_AGAIN.as_secs();
         write(&mut churn, s(later - 1), "server.log", PATH_WRITES);
         assert!(churn.check(s(later - 1)).unwrap().warning.is_none());
         write(&mut churn, s(later + 1), "server.log", PATH_WRITES);

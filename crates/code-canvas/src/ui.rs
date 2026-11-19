@@ -38,9 +38,9 @@ use crate::keys::{Command, Keymap};
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
 pub use files_tree::{Clip as TreeClip, DropAt, TreeOp};
-pub use search_panel::{SearchOp, SearchView};
 pub use find_bar::{Find, FindIn, FindKept, FindOp};
 pub use minimap::{Minimap, REACH as MINIMAP_REACH};
+pub use search_panel::{SearchOp, SearchView};
 pub use settings::{ask_reset as settings_ask_reset, SettingsView, Tab as SettingsTab};
 pub use versions_menu::VersionMenu;
 
@@ -2977,10 +2977,14 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 about.push_str(&format!(" · {files} files"));
             }
             let tip = match on {
-                true if row.active => format!("{about}
-The folder in view; right click to take it off the canvas."),
-                true => format!("{about}
-On the canvas. Click to go to it; right click to take it off."),
+                true if row.active => format!(
+                    "{about}
+The folder in view; right click to take it off the canvas."
+                ),
+                true => format!(
+                    "{about}
+On the canvas. Click to go to it; right click to take it off."
+                ),
                 false => format!("{about}\nNot on the canvas. Click, or drag it onto the canvas, to put it there."),
             };
             if resp.clicked() {

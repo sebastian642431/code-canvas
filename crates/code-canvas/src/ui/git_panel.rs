@@ -281,8 +281,12 @@ fn change_row(
         (true, ..) => "\nClick to see it as it was before",
         (false, false, ..) => "\nClick to go to its first change, again for the next one",
         (false, true, true, _) => "\nClick for its next change; after the last one the card goes back to how it was",
-        (false, true, false, true) => "\nClick to see what is staged (last commit against the index) from its first change",
-        (false, true, false, false) => "\nClick to see what is not staged yet (index against the file) from its first change",
+        (false, true, false, true) => {
+            "\nClick to see what is staged (last commit against the index) from its first change"
+        }
+        (false, true, false, false) => {
+            "\nClick to see what is not staged yet (index against the file) from its first change"
+        }
     };
     resp.on_hover_text(format!("{} · {}{unsaved}{click}", change.path, side.label()));
     action

@@ -59,7 +59,7 @@ impl Plan {
     /// A switch from the branch git is on; none when it goes nowhere.
     pub fn start(real: String, op: GitOp) -> Option<Plan> {
         let to = target(&op)?;
-        (to != real).then(|| Plan { real, running: Some(op), queued: None, moved: false })
+        (to != real).then_some(Plan { real, running: Some(op), queued: None, moved: false })
     }
 
     /// The branch shown as the current one: the last one asked for.
