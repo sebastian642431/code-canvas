@@ -859,6 +859,12 @@ impl App {
                 branches: open.map(|git| git.branches.clone()).unwrap_or_default(),
                 locals: open.map(|git| git.locals.clone()).unwrap_or_default(),
                 remotes: open.map(|git| git.remote_branches.clone()).unwrap_or_default(),
+                behind: open.filter(|git| git.upstream).map(|git| git.behind),
+                git_busy: page.is_some_and(|page| self.pages[page].git_busy()),
+                git_failed: page.and_then(|page| match &self.pages[page].git_note {
+                    Some((false, why)) => Some(why.clone()),
+                    _ => None,
+                }),
                 path: known.path.clone(),
                 title: name.unwrap_or_else(|| known.path.display().to_string()),
                 files: known.files,
@@ -873,6 +879,12 @@ impl App {
     fn workspace_op(&mut self, op: ui::WorkspaceOp) {
         use ui::WorkspaceOp;
         let on = |me: &App, path: &Path| me.pages.iter().position(|page| page.root == path);
+        if let WorkspaceOp::Pull(path) = &op {
+            if let Some(page) = on(self, path) {
+                self.run_git(page, crate::git::GitOp::Pull);
+            }
+            return;
+        }
         match op {
             WorkspaceOp::Put(path) => match on(self, &path) {
                 Some(page) => {
@@ -4399,11 +4411,12 @@ impl App {
                     "commit" if !arg.is_empty() => Some(GitOp::commit(arg)),
                     "discard" if arg.is_empty() => Some(GitOp::DiscardAll),
                     "discard" => Some(GitOp::Discard(arg.to_string())),
+                    "pull" => Some(GitOp::Pull),
                     _ => None,
                 };
                 match op {
                     Some(op) => self.apply(Action::Git(op)),
-                    None => log::warn!("script: git needs stage|unstage|discard [path] or commit <message>"),
+                    None => log::warn!("script: git needs stage|unstage|discard [path], commit <message> or pull"),
                 }
             }
             Step::Right(which) => match which.as_str() {
