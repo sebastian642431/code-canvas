@@ -545,18 +545,36 @@ pub fn changes_panel(
                 }
                 if let Some(note) = git_note.as_mut() {
                     let color = if note.ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
-                    let row = ui.horizontal_top(|ui| {
-                        let text_size = Vec2::new((ui.available_width() - 26.0).max(0.0), 0.0);
-                        let wrapping = egui::Layout::top_down(egui::Align::Min);
-                        ui.allocate_ui_with_layout(text_size, wrapping, |ui| {
-                            ui.label(RichText::new(&note.text).size(11.5).color(color));
+                    // Floats over what is below instead of taking room, so the panel does not jump
+                    // every time a note comes and goes.
+                    let (at, width) = (ui.cursor().min + Vec2::new(0.0, 2.0), ui.available_width());
+                    let shown = egui::Area::new(ui.scope_id().with("git note"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(at)
+                        .show(ui.ctx(), |ui| {
+                            Frame::NONE
+                                .fill(pal().raised)
+                                .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.6)))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(Margin::symmetric(8, 5))
+                                .show(ui, |ui| {
+                                    ui.set_width((width - 18.0).max(0.0));
+                                    ui.horizontal_top(|ui| {
+                                        let text_size = Vec2::new((ui.available_width() - 26.0).max(0.0), 0.0);
+                                        let wrapping = egui::Layout::top_down(egui::Align::Min);
+                                        ui.allocate_ui_with_layout(text_size, wrapping, |ui| {
+                                            ui.label(RichText::new(&note.text).size(11.5).color(color));
+                                        });
+                                        small_icon(ui, icons::X, "Dismiss")
+                                    })
+                                    .inner
+                                })
+                                .inner
                         });
-                        small_icon(ui, icons::X, "Dismiss")
-                    });
-                    if ui.rect_contains_pointer(row.response.rect) {
+                    if shown.response.contains_pointer() {
                         note.since = now;
                     }
-                    match (row.inner, note.left(now)) {
+                    match (shown.inner, note.left(now)) {
                         (false, Some(left)) => ui.ctx().request_repaint_after(left),
                         _ => *git_note = None,
                     }
