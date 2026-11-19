@@ -3,7 +3,9 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 
-use super::{c, icon, pal, panel_title, search_field, section, small_icon, well, Action, Panel, UiState, ROW_H};
+use super::{
+    c, icon, menu_row, pal, panel_title, search_field, section, small_icon, well, Action, Panel, UiState, ROW_H,
+};
 use crate::ext::views::{MenuItem, ShownRow, TreeRow};
 use crate::ext::{Extensions, Installed, Level, NodeStatus, Severity, Status};
 use crate::icons;
@@ -465,9 +467,24 @@ pub fn problems_panel(ui: &mut egui::Ui, pages: &[Page], active: usize, ext: &Ex
     }
     let lookup = |rel: &str| files.iter().find(|(r, _)| *r == rel).map(|(_, d)| *d);
 
+    let everything = |rel: &str| {
+        let Some(found) = lookup(rel) else { return String::new() };
+        found.items.iter().map(|d| problem_line(rel, d)).collect::<Vec<_>>().join("\n")
+    };
+
     ui.spacing_mut().item_spacing.y = 0.0;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, ROW_H, rows.len(), |ui, range| {
-        for row in &rows[range] {
+    // Rows are as tall as their whole message, so they cannot be skipped by a fixed height; past
+    // this many the list goes back to one line per problem to stay cheap.
+    let whole = rows.len() <= WHOLE_MESSAGES;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        for row in &rows {
+            if let (true, Row::Item(rel, i)) = (whole, row) {
+                let Some(d) = lookup(rel).and_then(|f| f.items.get(*i)) else { continue };
+                if let Some(action) = problem_row(ui, repo, rel, d, &everything) {
+                    actions.push(action);
+                }
+                continue;
+            }
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
             if !ui.is_rect_visible(rect) {
                 continue;
@@ -502,7 +519,17 @@ pub fn problems_panel(ui: &mut egui::Ui, pages: &[Page], active: usize, ext: &Ex
                     if resp.clicked() {
                         actions.push(Action::FlyToPath(rel.to_string()));
                     }
-                    resp.on_hover_text(*rel);
+                    resp.on_hover_text(*rel).context_menu(|ui| {
+                        ui.set_width(220.0);
+                        if menu_row(ui, icons::COPY, "Copy path") {
+                            ui.ctx().copy_text(rel.to_string());
+                            ui.close();
+                        }
+                        if menu_row(ui, icons::COPY, "Copy all its problems") {
+                            ui.ctx().copy_text(everything(rel));
+                            ui.close();
+                        }
+                    });
                 }
                 Row::Item(rel, i) => {
                     let Some(d) = lookup(rel).and_then(|f| f.items.get(*i)) else { continue };
@@ -530,21 +557,99 @@ pub fn problems_panel(ui: &mut egui::Ui, pages: &[Page], active: usize, ext: &Ex
                         pal().text,
                     );
                     if resp.clicked() {
-                        if let Some(file) = repo.file_index(rel) {
-                            let len = d.end_col.saturating_sub(d.col).clamp(1, 400) as u16;
-                            actions.push(Action::FlyToSite(Site {
-                                file: file as u32,
-                                line: d.line,
-                                col: d.col.min(u16::MAX as u32) as u16,
-                                len,
-                            }));
-                        }
+                        actions.extend(go_to_problem(repo, rel, d));
                     }
                     resp.on_hover_text(format!("{}\n{}", d.title(), d.message));
                 }
             }
         }
     });
+}
+
+const WHOLE_MESSAGES: usize = 1500;
+
+fn go_to_problem(repo: &canvas_core::Repo, rel: &str, d: &crate::ext::Diagnostic) -> Option<Action> {
+    let file = repo.file_index(rel)?;
+    let len = d.end_col.saturating_sub(d.col).clamp(1, 400) as u16;
+    Some(Action::FlyToSite(Site { file: file as u32, line: d.line, col: d.col.min(u16::MAX as u32) as u16, len }))
+}
+
+/// `src/a.ts:12:5 warning: the message (source(code))`, the way a terminal would print it.
+fn problem_line(rel: &str, d: &crate::ext::Diagnostic) -> String {
+    let kind = match d.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        _ => "info",
+    };
+    format!("{rel}:{}:{} {kind}: {} ({})", d.line + 1, d.col + 1, d.message, d.title())
+}
+
+/// One problem with its whole message, wrapped, and a menu to copy it in the ways people paste it.
+fn problem_row(
+    ui: &mut egui::Ui,
+    repo: &canvas_core::Repo,
+    rel: &str,
+    d: &crate::ext::Diagnostic,
+    everything: &dyn Fn(&str) -> String,
+) -> Option<Action> {
+    let width = ui.available_width();
+    let place = ui.painter().layout_no_wrap(format!("{}", d.line + 1), FontId::monospace(11.0), pal().text_faint);
+    let text_w = (width - 42.0 - 18.0 - place.size().x).max(40.0);
+    let message = ui.painter().layout(d.message.clone(), FontId::proportional(12.0), pal().text, text_w);
+    let source = ui.painter().layout_no_wrap(d.title(), FontId::proportional(11.0), pal().text_faint);
+    let height = (message.size().y + source.size().y + 10.0).max(ROW_H);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return None;
+    }
+    let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
+    }
+    let top = rect.top() + 4.0;
+    let first_mid = top + ROW_H.min(message.size().y.max(14.0)) * 0.5;
+    painter.text(
+        Pos2::new(rect.left() + 22.0, first_mid),
+        Align2::LEFT_CENTER,
+        severity_glyph(d.severity),
+        FontId::proportional(13.0),
+        severity_color(d.severity),
+    );
+    let px = rect.right() - 12.0 - place.size().x;
+    painter.galley(Pos2::new(px, first_mid - place.size().y * 0.5), place, pal().text_faint);
+    let message_h = message.size().y;
+    painter.galley(Pos2::new(rect.left() + 42.0, top), message, pal().text);
+    painter.galley(Pos2::new(rect.left() + 42.0, top + message_h + 1.0), source, pal().text_faint);
+
+    let mut action = None;
+    if resp.clicked() {
+        action = go_to_problem(repo, rel, d);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).context_menu(|ui| {
+        ui.set_width(240.0);
+        ui.spacing_mut().item_spacing.y = 1.0;
+        if menu_row(ui, icons::ARROW_RIGHT, "Go to the problem") {
+            action = go_to_problem(repo, rel, d);
+            ui.close();
+        }
+        if menu_row(ui, icons::COPY, "Copy the message") {
+            ui.ctx().copy_text(d.message.clone());
+            ui.close();
+        }
+        if menu_row(ui, icons::COPY, "Copy with file and line") {
+            ui.ctx().copy_text(problem_line(rel, d));
+            ui.close();
+        }
+        if !d.code.is_empty() && menu_row(ui, icons::COPY, &format!("Copy the rule ({})", d.code)) {
+            ui.ctx().copy_text(d.code.clone());
+            ui.close();
+        }
+        if menu_row(ui, icons::COPY, "Copy every problem of this file") {
+            ui.ctx().copy_text(everything(rel));
+            ui.close();
+        }
+    });
+    action
 }
 
 pub fn extension_icon(
