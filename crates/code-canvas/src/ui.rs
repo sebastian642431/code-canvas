@@ -368,6 +368,10 @@ pub struct UiState {
     pub agent_trails: Vec<AgentTrail>,
     pub claude_connected: bool,
     pub restricted: bool,
+    /// What kept the app busy in the last minute, one line each, while something is over its limit.
+    pub busy: Vec<String>,
+    /// The files whose changes are not followed this session.
+    pub unfollowed: Vec<String>,
     faces: Vec<egui::TextureHandle>,
     pub workspace_shut: bool,
     branch_filter: String,
@@ -458,6 +462,8 @@ impl Default for UiState {
             agent_trails: Vec::new(),
             claude_connected: false,
             restricted: false,
+            busy: Vec::new(),
+            unfollowed: Vec::new(),
             faces: Vec::new(),
             workspace_shut: false,
             branch_filter: String::new(),
@@ -682,6 +688,8 @@ impl UiState {
 pub enum Action {
     Tree(TreeOp),
     TrustFolders,
+    ShowChurn,
+    FollowAgain,
     SwitchTab(usize),
     CloseTab(usize),
     OpenFolder,
@@ -1513,6 +1521,36 @@ fn status_bar(
                 let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
                     panel_to_show = Some(Panel::Problems);
+                }
+            }
+            if !st.unfollowed.is_empty() {
+                let text = format!("{}  {} not followed", icons::EYE_OFF, st.unfollowed.len());
+                let label =
+                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text_dim)).sense(Sense::click()));
+                let tip = format!(
+                    "Changes to these files are not followed until Code Canvas restarts:
+{}
+Click to follow them again.",
+                    st.unfollowed.join("
+")
+                );
+                if label.on_hover_text(tip).clicked() {
+                    actions.push(Action::FollowAgain);
+                }
+            }
+            if !st.busy.is_empty() {
+                let text = format!("{}  Busy", icons::TRIANGLE_ALERT);
+                let color = c(theme::get().problem_warning);
+                let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
+                let tip = format!(
+                    "What kept Code Canvas busy in the last minute:
+{}
+Click for what you can do about it.",
+                    st.busy.join("
+")
+                );
+                if label.on_hover_text(tip).clicked() {
+                    actions.push(Action::ShowChurn);
                 }
             }
             for (_, text) in ext.status_items.iter().rev() {

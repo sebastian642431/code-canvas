@@ -43,6 +43,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [main.rs](#cratescode-canvassrcmainrs) ·
   [app.rs](#cratescode-canvassrcapprs) ·
   [bench.rs](#cratescode-canvassrcbenchrs) ·
+  [churn.rs](#cratescode-canvassrcchurnrs) ·
   [codicons.rs, icons.rs](#cratescode-canvassrccodiconsrs-and-iconsrs) ·
   [commit_ai.rs](#cratescode-canvassrccommit_airs) ·
   [editor.rs](#cratescode-canvassrceditorrs) ·
@@ -1544,6 +1545,39 @@ Camera
 - Frame-interval statistics are logged every few seconds. The first sample of each
   window includes the report itself and is skipped.
 
+### crates/code-canvas/src/churn.rs
+
+A watchdog for loops nobody asked for: a dev server in an error loop appending to
+`logs/<day>.log` made every write read git again (about 12 processes) and kept the
+CPU busy with nothing on screen saying why. No AI, plain counts.
+
+- What is counted, over a sliding minute of one-second buckets (`Window`, fixed
+  size, O(1) per event): each path of each watcher batch, in `App::on_disk_changes`
+  right after `locate_file` and before any skipping, so ignored and skipped files
+  count too; git reads (`Page::refresh_git`) and scans (`Page::start_scan`) per
+  folder, which the page counts in `git_loads` / `scans` and `App::watch_churn`
+  takes every loop.
+- At most `MAX_PATHS` = 256 paths are tracked; when full, the quarter written least
+  (the least recent first among equals) is dropped, so a noisy file outlives a
+  checkout touching thousands of files. Paths and folders gone quiet are dropped at
+  the next check.
+- Limits per minute: one file written `PATH_WRITES` = 30 times, git of one folder
+  read `GIT_RELOADS` = 20 times, one folder scanned `RESCANS` = 5 times.
+- `Churn::check` runs at most once a second. While something is over its limit
+  the status bar shows *Busy* (hover: the top 5 of the minute; click: the notice
+  again), the app wakes every 5 s so the item goes away once things calm down, and
+  the top 3 are logged (`log::warn`) once a minute.
+- One notice per folder for one loop: when a cause warns, every cause over its limit
+  in that folder and the folder's git reads and scans are marked told, so git read
+  for a noisy log does not warn apart. The same cause warns again after
+  `WARN_AGAIN` = 10 minutes; another file is another cause.
+- The notice about a file asks: *Stop following this file* (its path goes in
+  `App::unfollowed`, checked first in `on_disk_changes`, before `locate_file`, so
+  its writes cost a key lookup; for the session only), *Hide it from the canvas*
+  (the page's hidden filter, offered when the file is on the canvas) or *Dismiss*.
+  *N not followed* in the status bar lists the files not followed; a click follows
+  them again and reads them as changed.
+
 ### crates/code-canvas/src/codicons.rs and icons.rs
 
 - Both are **generated: do not edit by hand.** `codicons.rs` comes from
@@ -2563,6 +2597,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `resize` | `resize <width> <height>` | Resize the window, in physical pixels. |
 | `maximize` | `maximize` | Maximize the window. |
 | `trust` | `trust` | What a click on *Restricted mode* in the status bar does: ask about the first folder not trusted. |
+| `churn` | `churn` | Log what kept the app busy in the last minute as "script: churn: a in folder: written N times; ...". |
 | `quit` | `quit` | Leave. |
 
 `UiState::open_folder_menu` exists for `folders`: a script has no click to open

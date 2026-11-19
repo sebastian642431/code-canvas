@@ -7,6 +7,7 @@ mod agents;
 mod app;
 mod bench;
 mod camera;
+mod churn;
 mod codex;
 mod codicons;
 mod commit_ai;

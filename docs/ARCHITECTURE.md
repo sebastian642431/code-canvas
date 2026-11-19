@@ -171,6 +171,9 @@ for huge repositories); cameras and selections survive by path.
   is rebuilt from that text; the layout only when its size changes.
 - `watch.rs` reports files that change on disk; a few are reloaded one by one, new or
   removed files mean a rescan (left to the user for huge folders).
+- `churn.rs` counts, over the last minute, writes per file, git reads and scans per
+  folder, and says which one keeps the app busy (a "Busy" item in the status bar and
+  one notice per cause every ten minutes).
 - `session.rs` persists folders, cameras, collapsed/hidden paths and panel state.
 - `script.rs` drives the app from `CODE_CANVAS_SCRIPT` (see below).
 
