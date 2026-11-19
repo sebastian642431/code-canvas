@@ -1301,6 +1301,17 @@ pub fn load(root: &Path) -> Option<GitState> {
 
 const MAX_IGNORED: usize = 400;
 
+impl GitState {
+    /// Whether git ignores `rel` (relative to the folder), as far as the kept list of ignored paths tells;
+    /// a path the list does not reach counts as not ignored.
+    pub fn ignores(&self, rel: &str) -> bool {
+        self.ignored.iter().any(|path| match path.strip_suffix('/') {
+            Some(dir) => rel.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/')),
+            None => path == rel,
+        })
+    }
+}
+
 fn parse_ignored(text: &str) -> Vec<String> {
     text.split('\0').filter(|path| !path.is_empty() && *path != "./").take(MAX_IGNORED).map(str::to_string).collect()
 }
@@ -1748,6 +1759,17 @@ pub fn head_named(head: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignored_folders_cover_what_is_inside_them_only() {
+        let state = GitState { ignored: vec!["logs/".into(), ".env".into()], ..Default::default() };
+        assert!(state.ignores("logs/2026-11-19.log"));
+        assert!(state.ignores("logs/exceptions/exceptions.log"));
+        assert!(state.ignores(".env"));
+        assert!(!state.ignores("logs.ts"), "a file named like the folder is not in it");
+        assert!(!state.ignores("src/app.ts"));
+        assert!(!state.ignores(".env.example"));
+    }
 
     #[test]
     fn the_branch_is_read_from_head() {

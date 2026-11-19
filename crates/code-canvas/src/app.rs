@@ -1248,7 +1248,13 @@ impl App {
             if known[i].is_empty() && fresh.is_empty() {
                 continue;
             }
-            self.pages[i].refresh_git();
+            // A file git ignores (a log a running server keeps writing) changes nothing git says, and
+            // reading git again for each of its writes kept a dozen git processes running all the time.
+            let page = &self.pages[i];
+            let ignored = |rel: &String| page.git.as_ref().is_some_and(|git| git.ignores(rel));
+            if !fresh.is_empty() || known[i].iter().any(|rel| !ignored(rel)) {
+                self.pages[i].refresh_git();
+            }
             let rescan = self.pages[i].ready().is_none() || fresh.len() + known[i].len() > ONE_BY_ONE;
             for rel in fresh.iter().filter(|_| !rescan) {
                 let made = root.join(rel).is_file();
