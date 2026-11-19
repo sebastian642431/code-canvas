@@ -2340,14 +2340,71 @@ fn finish_rail_drag(ui: &egui::Ui, st: &mut UiState, ext: &Extensions, entries: 
     }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     let Some(pointer) = pointer else { return };
-    egui::Area::new(egui::Id::unique("rail drag"))
+    let ghost = Ghost { size: RAIL_ICON, title: "", more: 0, copy: false, blocked: false };
+    drag_ghost(ui.ctx(), pointer, RAIL_ICON * 0.5, ghost, |ui, at| {
+        paint_rail_icon(ui, st, ext, entry, at, None, None, false);
+    });
+}
+
+/// What a drag carries, as [`drag_ghost`] draws it: at least `size`, an icon, the name of the first thing, how
+/// many more go along with it, and whether they are copied or cannot be dropped where the pointer is.
+struct Ghost<'a> {
+    size: Vec2,
+    title: &'a str,
+    more: usize,
+    copy: bool,
+    blocked: bool,
+}
+
+/// Floats what is being dragged above every panel, held at the point of it where the pointer picked it up (`grab`,
+/// from its top left corner). `icon` paints the icon in the rect it is given.
+fn drag_ghost(ctx: &egui::Context, pointer: Pos2, grab: Vec2, ghost: Ghost, icon: impl FnOnce(&egui::Ui, Rect)) {
+    const PAD: f32 = 7.0;
+    const ICON: f32 = 16.0;
+    let (font, small) = (FontId::proportional(12.5), FontId::proportional(10.5));
+    let measuring = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag ghost")));
+    let more = (ghost.more > 0).then(|| measuring.layout_no_wrap(format!("+{}", ghost.more), small, pal().on_accent));
+    let pill = more.as_ref().map_or(0.0, |more| (more.size().x + 10.0).max(18.0));
+    let size = if ghost.title.is_empty() && more.is_none() {
+        ghost.size
+    } else {
+        let title = measuring.layout_no_wrap(ghost.title.to_string(), font.clone(), pal().text).size().x.min(240.0);
+        let extra = if pill > 0.0 { pill + 6.0 } else { 0.0 };
+        Vec2::new((PAD * 2.0 + ICON + 6.0 + title + extra).max(ghost.size.x), ghost.size.y)
+    };
+    let grab = grab.clamp(Vec2::splat(6.0), (size - Vec2::splat(6.0)).max(Vec2::splat(6.0)));
+    egui::Area::new(egui::Id::unique("drag ghost"))
         .order(egui::Order::Tooltip)
         .interactable(false)
-        .fixed_pos(pointer - RAIL_ICON * 0.5)
-        .show(ui.ctx(), |ui| {
-            let (rect, _) = ui.allocate_exact_size(RAIL_ICON, Sense::hover());
-            ui.painter().rect_filled(rect.shrink(2.0), 9.0, pal().raised);
-            paint_rail_icon(ui, st, ext, entry, rect, None, None, false);
+        .fixed_pos(pointer - grab)
+        .show(ctx, |ui| {
+            ui.set_opacity(0.9);
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            let painter = ui.painter();
+            painter.add(ui.visuals().popup_shadow.as_shape(rect, 7.0));
+            let edge = if ghost.blocked { c(theme::get().git_removed) } else { pal().border_strong };
+            painter.rect(rect, 7.0, pal().card, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+            let mid = rect.center().y;
+            let bare = ghost.title.is_empty() && more.is_none();
+            let at = if bare { rect.center() } else { Pos2::new(rect.left() + PAD + ICON * 0.5, mid) };
+            let icon_at = Rect::from_center_size(at, Vec2::splat(ICON));
+            icon(ui, icon_at);
+            let mut right = rect.right() - PAD;
+            if let Some(more) = more {
+                let at = Rect::from_min_size(Pos2::new(right - pill, mid - 8.0), Vec2::new(pill, 16.0));
+                painter.rect_filled(at, 8.0, pal().accent);
+                painter.galley(at.center() - more.size() * 0.5, more, pal().on_accent);
+                right = at.left() - 6.0;
+            }
+            if !ghost.title.is_empty() {
+                let left = icon_at.right() + 6.0;
+                text_fit(painter, Pos2::new(left, mid), ghost.title, font, pal().text, right - left);
+            }
+            if ghost.copy {
+                let at = rect.left_top() + Vec2::splat(1.0);
+                painter.circle(at, 7.0, pal().accent, Stroke::new(1.5, pal().card));
+                painter.text(at, Align2::CENTER_CENTER, icons::PLUS, FontId::proportional(10.0), pal().on_accent);
+            }
         });
 }
 
@@ -2974,7 +3031,11 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             }
             st.tree.rows.push((rect, path.to_string(), is_dir, open));
             let picked = st.tree.sel.contains(path);
-            let painter = ui.painter();
+            let lifted = dragging && picked;
+            let mut painter = ui.painter().clone();
+            if lifted {
+                painter.multiply_opacity(0.4);
+            }
             let row_bg = rect.shrink2(Vec2::new(6.0, 0.0));
             if picked || (has_selection && path == selected_path) {
                 painter.rect_filled(row_bg, 6.0, pal().raised);
@@ -3022,7 +3083,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
             };
             let base = name.rsplit_once('/').map_or(name, |(_, base)| base);
             let icon_at = Rect::from_center_size(Pos2::new(text_x + 7.0, mid), Vec2::splat(16.0));
-            if st.file_icons.paint(ui, base, is_dir, open, icon_at, !on) {
+            if st.file_icons.paint(ui, base, is_dir, open, icon_at, !on || lifted) {
                 text_x += 20.0;
             } else if !is_dir || ignored {
                 let glyph = if is_dir { icons::FOLDER } else { file_glyph(name) };
@@ -3070,7 +3131,7 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 rename_in_place(ui, st, field, actions);
                 continue;
             }
-            text_fit(painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
+            text_fit(&painter, Pos2::new(text_x, mid), name, FontId::proportional(13.0), color, room);
             if is_dir && !ignored && !hot {
                 let at = Pos2::new(rect.right() - 14.0, mid);
                 painter.text(at, Align2::RIGHT_CENTER, count.to_string(), FontId::proportional(11.0), pal().text_faint);
@@ -3087,7 +3148,8 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
                 actions.push(Action::HoverPath(path.to_string()));
             }
             if resp.drag_started() && !ignored {
-                st.tree.start_drag(&page.root, path, is_dir);
+                let from = ui.input(|i| i.pointer.press_origin()).unwrap_or(rect.left_center());
+                st.tree.start_drag(&page.root, path, is_dir, from - Pos2::new(x0 + 34.0, rect.top()));
             }
             let mods = ui.input(|i| i.modifiers);
             if resp.secondary_clicked() && !st.tree.sel.contains(path) {

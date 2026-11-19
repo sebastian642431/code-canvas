@@ -32,7 +32,9 @@ pub enum TreeOp {
 pub struct TreeDrag {
     pub root: PathBuf,
     pub paths: Vec<String>,
-    pub is_dir: bool,
+    lead: String,
+    lead_dir: bool,
+    grab: Vec2,
     over_row: Option<String>,
     since: Instant,
 }
@@ -126,15 +128,21 @@ impl Tree {
         }
     }
 
-    pub fn start_drag(&mut self, root: &Path, path: &str, is_dir: bool) {
+    /// `grab` is where the pointer took the row, from the top left corner of the ghost that follows it.
+    pub fn start_drag(&mut self, root: &Path, path: &str, is_dir: bool, grab: Vec2) {
         if !self.sel.contains(path) {
             self.sel.clear();
             self.sel.insert(path.to_string());
             self.anchor = Some(path.to_string());
         }
         let paths = self.acted_on(path);
-        let is_dir = is_dir || paths.len() > 1;
-        self.drag = Some(TreeDrag { root: root.to_path_buf(), paths, is_dir, over_row: None, since: Instant::now() });
+        let within = paths.iter().find(|dir| path.strip_prefix(dir.as_str()).is_some_and(|rest| rest.starts_with('/')));
+        let (lead, lead_dir) = match within {
+            Some(dir) => (dir.clone(), true),
+            None => (path.to_string(), is_dir),
+        };
+        let since = Instant::now();
+        self.drag = Some(TreeDrag { root: root.to_path_buf(), paths, lead, lead_dir, grab, over_row: None, since });
     }
 }
 
@@ -147,13 +155,6 @@ fn verdict(drag: &TreeDrag, at: &DropAt, active: &Path, copy: bool) -> Result<()
         tree_ops::check_drop(path, dir, same_root, copy).map_err(|why| why.why(tree_ops::base(path)))?;
     }
     Ok(())
-}
-
-fn label_of(drag: &TreeDrag) -> String {
-    match drag.paths.as_slice() {
-        [one] => tree_ops::base(one).to_string(),
-        many => format!("{} items", many.len()),
-    }
 }
 
 fn paint_target(painter: &egui::Painter, light: Rect, ok: bool) {
@@ -252,17 +253,22 @@ pub(super) fn drag_step(
     if let Some(t) = &target {
         paint_target(&painter, t.light, ok);
     }
-    let name = label_of(drag);
-    let glyph = if drag.is_dir { icons::FOLDER } else { icons::FILE };
-    let plus = if ctrl && ok { "+ " } else { "" };
-    let blocked = if ok { "" } else { "  not here" };
-    let text = format!("{plus}{glyph}  {name}{blocked}");
-    let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), pal().text);
-    let tag = Rect::from_min_size(p + Vec2::new(14.0, 10.0), galley.size() + Vec2::new(20.0, 12.0));
-    painter.rect_filled(tag, 8.0, pal().card);
-    let edge = if ok { pal().accent } else { c(theme::get().git_removed) };
-    painter.rect_stroke(tag, 8.0, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-    painter.galley(tag.min + Vec2::new(10.0, 6.0), galley, pal().text);
+    let copy = ctrl && ok;
+    let cursor = match (ok, copy) {
+        (false, _) => egui::CursorIcon::NoDrop,
+        (true, true) => egui::CursorIcon::Copy,
+        (true, false) => egui::CursorIcon::Grabbing,
+    };
+    ctx.set_cursor_icon(cursor);
+    let (name, lead_dir, grab, more) = (tree_ops::base(&drag.lead), drag.lead_dir, drag.grab, drag.paths.len() - 1);
+    let ghost = super::Ghost { size: Vec2::new(0.0, super::ROW_H), title: name, more, copy, blocked: !ok };
+    let file_icons = &mut st.file_icons;
+    super::drag_ghost(ctx, p, grab, ghost, |ui, at| {
+        if !file_icons.paint(ui, name, lead_dir, false, at, false) {
+            let glyph = if lead_dir { icons::FOLDER } else { super::file_glyph(name) };
+            ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), pal().text_dim);
+        }
+    });
 }
 
 pub(super) struct Quick<'a> {
@@ -369,10 +375,10 @@ mod tests {
     #[test]
     fn what_a_drag_carries_follows_the_selection() {
         let mut tree = tree();
-        tree.start_drag(Path::new("/main"), "docs/a.txt", false);
+        tree.start_drag(Path::new("/main"), "docs/a.txt", false, Vec2::ZERO);
         assert_eq!(tree.drag.as_ref().map(|d| d.paths.clone()), Some(vec!["docs/a.txt".to_string()]));
         tree.sel = ["docs", "docs/a.txt", "src"].iter().map(|p| p.to_string()).collect();
-        tree.start_drag(Path::new("/main"), "src", true);
+        tree.start_drag(Path::new("/main"), "src", true, Vec2::ZERO);
         assert_eq!(tree.drag.as_ref().map(|d| d.paths.clone()), Some(vec!["docs".to_string(), "src".to_string()]));
     }
 
@@ -381,7 +387,9 @@ mod tests {
         let drag = TreeDrag {
             root: PathBuf::from("/main"),
             paths: vec!["docs".into()],
-            is_dir: true,
+            lead: "docs".into(),
+            lead_dir: true,
+            grab: Vec2::ZERO,
             over_row: None,
             since: Instant::now(),
         };
