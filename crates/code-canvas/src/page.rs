@@ -97,6 +97,12 @@ pub struct SearchResults {
     pub current: Option<usize>,
 }
 
+/// The files and folders the find bar found by name, best first; marked on the canvas.
+pub struct FoundNames {
+    pub paths: Vec<String>,
+    pub current: Option<usize>,
+}
+
 pub struct Selection {
     pub sym: SymRef,
     pub rel: Relations,
@@ -159,7 +165,7 @@ pub struct Page {
     /// What the Search panel found in the folder's files.
     pub grep: crate::search::Grep,
     pub marked: Option<Marked>,
-    found: Option<(Vec<Site>, FoundLines)>,
+    pub found_names: Option<FoundNames>,
     pub git: Option<GitState>,
     pub history: crate::history::HistoryView,
     /// The interactive rebase being arranged in its card.
@@ -452,7 +458,7 @@ impl Page {
             search: None,
             grep: Default::default(),
             marked: None,
-            found: None,
+            found_names: None,
             git: None,
             history: Default::default(),
             rebase: None,

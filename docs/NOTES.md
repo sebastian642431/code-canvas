@@ -2283,10 +2283,17 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
   file whose text equals `HEAD` leaves the list even if the disk still differs.
 - `changed_dirs`: every folder above a changed file, for the explorer's colours.
 - `SearchResults::current`: the match the find bar is on, drawn stronger.
-  `App::find_refresh` searches the text the card shows (smart case: exact when
-  the text typed has a capital), so its columns are the canvas's; replacing goes
-  through `Editor::pos_at_display` and starts from the last match so the earlier
-  ones keep their place.
+  `App::find_refresh` searches the text the card shows (`find::Matcher`; without
+  Match Case it is smart case: exact when the text typed has a capital), so its
+  columns are the canvas's; replacing goes through `Editor::pos_at_display` and
+  starts from the last match so the earlier ones keep their place. With a regular
+  expression or Preserve Case each match gets its own text (`replace_spans`).
+- **Ctrl+F with no file selected finds by name.** The bar's "Files" mode ranks the
+  files and folders the layout shows with `find::names` when the query changes
+  (never per frame) and keeps their paths in `Page::found_names`; the overlay
+  resolves at most `MAX_NAME_MARKS` of them to boxes each frame, so a relayout
+  never leaves a mark on the wrong box. "Text in files" hands the query to the
+  Search panel and closes the bar.
 - **The diff view swaps the text of the card.** `Page::sync_diff` gives every
   changed file (`MAX_DIFFS` at most) the text `git::unified` makes of it, with
   `Repo::replace_source`, and keeps the rows in `diffs`: the layout, the symbols
@@ -2573,7 +2580,9 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it draws (or rubs out) with the pencil, selects code with the pointer over a file, and moves the canvas otherwise. |
-| `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
+| `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected (by name on the canvas when no file is), walk the matches, replace the current one or all of them (the pencil must be on). |
+| `find-files` | `find-files <text>` | The find bar looking for files and folders of the canvas by name; logs "script: find-files \"<text>\" found <n>". `find next\|previous` walk them. |
+| `find-option` | `find-option case\|word\|regex\|preserve on\|off` | The find bar's toggles: Match Case, Match Whole Word, Use Regular Expression, Preserve Case. |
 | `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
 | `term` | `term drag <text> <text>`, `term click <text> [times]`, `term right [text]`, `term copy`, `term report` | The mouse on the screen of the console the keyboard goes to, aimed at text shown there (the lowest row it is on; no spaces in it): a drag from the start of one text to the end of the other, one or more clicks on a text, a right click on a text or the middle. `copy` is Ctrl+C. `report` logs a line per console ("script: console tab <n> [(current)] \"<title>\" card … group … busy … news … broke … ended … commands … failed … cwd …"), then "script: console selection \"…\"", "script: console clipboard \"…\"" (the run's own) and "script: console line at the cursor \"…\"". |
 | `term` (consoles) | `term new [profile]`, `term split [profile]`, `term next`, `term prev`, `term front <n>`, `term kill [n]`, `term rename <name>`, `term tocard`, `term unsplit`, `term colour <0-6>`, `term icon <codicon>`, `term clear`, `term fill`, `term up`, `term down`, `term default <profile>`, `term has <n> <text>`, `term menu new\|more\|tab <n>\|close`, `term page split\|default\|folders\|colour\|icon\|dirs\|commands` | The consoles' own commands, on the current one; `<n>` counts the consoles from 1 in the order of `report`, a profile is `bash`, `pwsh`, `powershell`, `cmd` or `wsl:<distribution>`. `kill` asks like the trash button when something runs. `has` logs "script: console tab <n> shows '<text>'" or "does not show". `menu` opens the kinds menu, the "…" menu or a console's own menu, `page` one of its pages, for a picture. |

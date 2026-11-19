@@ -226,7 +226,9 @@ points: what a button, a menu or a drag of an icon gets),
 `move <panel> left|right [panel to sit before]` (an icon to the other bar),
 `preview <path>` (a Markdown file rendered), `drop <path>` (a file dropped on the window),
 `tool move|edit|draw|rub|clear` (the hand, the pointer, the pencil, its rubber, its bin), `back`, `forward`, `diff on|off|split|together|fold|unfold|around <lines>` (what changed
-inside the files), `drag <x> <y> <x> <y>` (a drag on the canvas), `find <text>|next|previous|replace <text>|replace-all <text>|close`,
+inside the files), `drag <x> <y> <x> <y>` (a drag on the canvas), `find <text>|next|previous|replace <text>|replace-all <text>|close` (the find bar: in the file selected, or
+by name on the canvas when none is), `find-files <text>` (the find bar looking for files and folders by name;
+logs "script: find-files … found <n>"), `find-option case|word|regex|preserve on|off` (its toggles),
 `touch <path> <text>` (a line appended to a file behind
 the app's back, as another program would), `page <javascript>` (a line of script run in the
 webview on screen),

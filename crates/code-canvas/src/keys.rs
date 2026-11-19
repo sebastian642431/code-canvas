@@ -7,6 +7,7 @@ pub enum Command {
     GoToFile,
     SearchInFiles,
     Find,
+    Replace,
     Back,
     Forward,
     FormatFile,
@@ -76,7 +77,15 @@ pub const COMMANDS: &[CommandInfo] = &[
     info(Command::Palette, "commandPalette", "Command palette", "Find", Scope::Anywhere, &["ctrl+shift+p"]),
     info(Command::GoToFile, "goToFile", "Go to a file or folder", "Find", Scope::Anywhere, &["ctrl+p"]),
     info(Command::SearchInFiles, "searchInFiles", "Search in files", "Find", Scope::Anywhere, &["ctrl+shift+f"]),
-    info(Command::Find, "find", "Find and replace in the file", "Find", Scope::Window, &["ctrl+f"]),
+    info(
+        Command::Find,
+        "find",
+        "Find files on the canvas (or in the selected file)",
+        "Find",
+        Scope::Window,
+        &["ctrl+f"],
+    ),
+    info(Command::Replace, "replace", "Replace in the selected file", "Find", Scope::Window, &["ctrl+h"]),
     info(Command::GoToDefinition, "goToDefinition", "Go to the definition", "Find", Scope::Canvas, &["f12"]),
     info(Command::OpenFolder, "openFolder", "Open another folder", "Folders", Scope::Window, &["ctrl+o"]),
     info(Command::CloseFolder, "closeFolder", "Close the folder", "Folders", Scope::Window, &["ctrl+w"]),
@@ -222,6 +231,7 @@ impl Command {
                 | Command::GoToFile
                 | Command::SearchInFiles
                 | Command::Find
+                | Command::Replace
                 | Command::Save
                 | Command::NextFolder
                 | Command::PreviousFolder

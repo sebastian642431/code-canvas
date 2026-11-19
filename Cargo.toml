@@ -43,6 +43,7 @@ portable-pty = "0.9"
 vt100 = "0.18"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 similar = "2"
+regex = "1"
 ring = "0.17"
 flate2 = "1"
 irosashi = { version = "0.3.1", default-features = false }

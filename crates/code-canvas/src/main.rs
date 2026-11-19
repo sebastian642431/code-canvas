@@ -16,6 +16,7 @@ mod doodle;
 mod editor;
 mod ext;
 mod files;
+mod find;
 mod git;
 mod github;
 mod grammars;

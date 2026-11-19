@@ -24,6 +24,7 @@ const MAX_WORLD_LABELS: usize = 600;
 const MAX_CHIPS: usize = 260;
 const MAX_BODIES: usize = 400;
 const MAX_MARKERS: usize = 3000;
+const MAX_NAME_MARKS: usize = 1000;
 const MAX_DECORATIONS: usize = 600;
 pub const SYMBOL_HOVER_MIN_PX: f32 = 0.6;
 
@@ -807,6 +808,40 @@ pub fn build(
             if band.intersects(&world) {
                 out.under.push(RectInstance::new(band, mark, 0, 0.0, 0.0));
                 out.over.push(RectInstance::new(Rect::new(band.x, band.y, bar, band.h), mark | 0xff, 0, 0.0, 0.0));
+            }
+        }
+    }
+
+    if let Some(found) = &page.found_names {
+        let mark = theme::get().find_match;
+        let dot = 7.0 * s / z;
+        for (i, path) in found.paths.iter().enumerate().take(MAX_NAME_MARKS) {
+            let node = match layout.dir_node.get(path) {
+                Some(&n) => Some(n),
+                None => repo.file_index(path).and_then(|fi| layout.file_node.get(fi).copied()),
+            };
+            let Some(n) = node.filter(|&n| n != NONE).and_then(|n| layout.nodes.get(n as usize)) else { continue };
+            if !n.rect.intersects(&world) {
+                continue;
+            }
+            let current = found.current == Some(i);
+            let fill = match (n.is_dir(), current) {
+                (true, false) => 0.0,
+                (true, true) => 0.1,
+                (false, false) => 0.22,
+                (false, true) => 0.5,
+            };
+            let (radius, width) = (if n.is_dir() { 6.0 } else { 3.0 }, if current { 2.5 } else { 1.5 });
+            out.over.push(RectInstance::new(
+                n.rect.expand(2.0 / z),
+                with_alpha(mark, fill),
+                mark | 0xff,
+                radius,
+                width,
+            ));
+            if z * LINE_H < 2.5 && !n.is_dir() {
+                let at = Rect::new(n.rect.center()[0] - dot * 0.5, n.rect.center()[1] - dot * 0.5, dot, dot);
+                out.over.push(RectInstance::new(at, mark | 0xff, 0, 3.5 * s, 0.0));
             }
         }
     }

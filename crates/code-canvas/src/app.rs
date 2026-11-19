@@ -29,6 +29,7 @@ mod assistants;
 mod churn_watch;
 mod consoles;
 mod folder_links;
+mod find_bar;
 mod github_sync;
 mod sharing;
 mod term_steps;
@@ -1656,148 +1657,6 @@ impl App {
         self.request_redraw();
     }
 
-    fn find(&mut self, op: ui::FindOp) {
-        use ui::FindOp;
-        match op {
-            FindOp::Open => {
-                let page = self.pages.get(self.active);
-                let editing = page.and_then(|p| p.editing.clone());
-                let pointed = self.current_file().and_then(|file| self.locate_file(&file)).map(|(_, rel)| rel);
-                let Some(file) = editing.or(pointed) else {
-                    let text = "Select a file first: click its card, or its name in the explorer.";
-                    return self.ext.notice(ext::Level::Info, "Find", text.to_string());
-                };
-                let chosen = page.and_then(|p| p.editor()).map(|e| e.selected_text()).unwrap_or_default();
-                let before = self.ui.find.take().unwrap_or_default();
-                let query = if chosen.is_empty() || chosen.contains('\n') { before.query } else { chosen };
-                self.ui.find = Some(ui::Find { query, with: before.with, focus: true, file, ..Default::default() });
-                self.find_refresh(true);
-            }
-            FindOp::Changed => {
-                if let Some(find) = self.ui.find.as_mut() {
-                    find.at = 0;
-                }
-                self.find_refresh(true);
-            }
-            FindOp::Next | FindOp::Previous => {
-                if let Some(find) = self.ui.find.as_mut().filter(|find| find.count > 0) {
-                    let step = if op == FindOp::Next { 1 } else { find.count - 1 };
-                    find.at = (find.at + step) % find.count;
-                }
-                self.find_refresh(true);
-            }
-            FindOp::Replace | FindOp::ReplaceAll => self.find_replace(op == FindOp::ReplaceAll),
-            FindOp::Close => {
-                self.ui.find = None;
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.search = None;
-                }
-                self.request_redraw();
-            }
-        }
-    }
-
-    fn found_in(page: &Page, file: &str, query: &str, most: usize) -> Vec<Site> {
-        let mut hits: Vec<Site> = Vec::new();
-        let Some(r) = page.ready() else { return hits };
-        let Some(index) = r.repo.file_index(file).filter(|_| !query.is_empty()) else { return hits };
-        let f = &r.repo.files[index];
-        let exact = query.chars().any(char::is_uppercase);
-        let same = |c: char| {
-            let mut lower = c.to_lowercase();
-            match (lower.next(), lower.next()) {
-                (Some(one), None) if !exact => one,
-                _ => c,
-            }
-        };
-        let wanted: Vec<char> = query.chars().map(same).collect();
-        let len = wanted.len().min(400) as u16;
-        'lines: for line in 0..f.line_count() {
-            let text: Vec<char> = f.line(line).chars().map(same).collect();
-            let mut from = 0;
-            while from + wanted.len() <= text.len() {
-                if text[from..from + wanted.len()] != wanted[..] {
-                    from += 1;
-                    continue;
-                }
-                let col = from.min(u16::MAX as usize) as u16;
-                hits.push(Site { file: index as u32, line: line as u32, col, len });
-                from += wanted.len();
-                if hits.len() >= most {
-                    break 'lines;
-                }
-            }
-        }
-        hits
-    }
-
-    fn find_refresh(&mut self, travel: bool) {
-        self.find_again(travel, 5000);
-    }
-
-    fn find_again(&mut self, travel: bool, most: usize) {
-        let Some(find) = self.ui.find.as_mut() else { return };
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        let hits = Self::found_in(page, &find.file, &find.query, most);
-        find.count = hits.len();
-        find.at = find.at.min(hits.len().saturating_sub(1));
-        let current = hits.get(find.at).copied();
-        page.search = (!hits.is_empty()).then(|| crate::page::SearchResults {
-            query: find.query.clone(),
-            hits,
-            truncated: false,
-            ms: 0.0,
-            current: Some(find.at),
-        });
-        if let (true, Some(site)) = (travel, current) {
-            self.moved_by_itself = true;
-            self.frame_site(site);
-            self.moved_by_itself = false;
-        }
-        self.request_redraw();
-    }
-
-    fn find_replace(&mut self, all: bool) {
-        let Some(file) = self.ui.find.as_ref().map(|find| find.file.clone()) else { return };
-        if !self.ui.prefs.edit {
-            let text = "Replacing changes the file: switch to the pencil first.";
-            return self.ext.notice(ext::Level::Info, "Find", text.to_string());
-        }
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        if !page.begin_edit(&file) {
-            return;
-        }
-        self.sync_diffs();
-        self.find_again(false, if all { usize::MAX } else { 5000 });
-        let Some((with, at)) = self.ui.find.as_ref().map(|find| (find.with.clone(), find.at)) else { return };
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        let hits: Vec<Site> = page.search.as_ref().map(|found| found.hits.clone()).unwrap_or_default();
-        let chosen: Vec<Site> = if all { hits } else { hits.get(at).copied().into_iter().collect() };
-        let Some(editor) = page.editor_mut().filter(|_| !chosen.is_empty()) else { return };
-        let place = |editor: &crate::editor::Editor, hit: &Site| {
-            let (line, col) = (hit.line as usize, hit.col as usize);
-            (editor.pos_at_display(line, col), editor.pos_at_display(line, col + hit.len as usize))
-        };
-        let mut after = None;
-        if all {
-            let places: Vec<_> = chosen.iter().map(|hit| place(editor, hit)).collect();
-            editor.replace_each(&places, &with);
-        } else if let Some(hit) = chosen.first() {
-            let (from, to) = place(editor, hit);
-            editor.move_to(from, false);
-            editor.move_to(to, true);
-            editor.insert(&with);
-            after = Some((hit.line, editor.display_col(editor.caret) as u16));
-        }
-        self.after_edit();
-        if let (Some(after), Some(find)) = (after, self.ui.find.as_mut()) {
-            let hits = self.pages.get(self.active).and_then(|page| page.search.as_ref()).map(|found| &found.hits);
-            let next = hits.and_then(|hits| hits.iter().position(|hit| (hit.line, hit.col) >= after));
-            find.at = next.unwrap_or(0);
-        }
-        self.find_refresh(!all);
-    }
-
     /// Shows the Search panel with its query field focused; with a query (or text selected in the
     /// file being edited) it is searched right away.
     fn search_in_files(&mut self, query: Option<String>) {
@@ -2096,7 +1955,9 @@ impl App {
         self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
         self.typed = Some(Instant::now());
         self.offer_checker(&rel);
-        self.find_refresh(false);
+        if self.ui.find.as_ref().is_some_and(|find| find.mode == ui::FindIn::File) {
+            self.find_refresh(false);
+        }
         self.keep_caret_visible();
         self.request_redraw();
     }
@@ -3771,6 +3632,7 @@ impl App {
             }
             Command::SearchInFiles => self.search_in_files(None),
             Command::Find => self.find(ui::FindOp::Open),
+            Command::Replace => self.find(ui::FindOp::OpenReplace),
             Command::Back => self.travel(true),
             Command::Forward => self.travel(false),
             Command::Settings => self.ui.settings.show(None),
@@ -5129,9 +4991,7 @@ impl App {
                     "next" => self.find(ui::FindOp::Next),
                     "previous" => self.find(ui::FindOp::Previous),
                     "replace" | "replace-all" => {
-                        if let Some(find) = self.ui.find.as_mut() {
-                            find.with = text.to_string();
-                        }
+                        self.ui.find_kept.with = text.to_string();
                         self.find(if verb == "replace" { ui::FindOp::Replace } else { ui::FindOp::ReplaceAll });
                     }
                     "close" => self.find(ui::FindOp::Close),
@@ -5143,6 +5003,35 @@ impl App {
                         }
                         self.find(ui::FindOp::Changed);
                     }
+                }
+            }
+            Step::FindFiles(text) => {
+                self.find(ui::FindOp::Open);
+                self.find(ui::FindOp::Mode(ui::FindIn::Files));
+                if let Some(find) = self.ui.find.as_mut() {
+                    find.query = text.clone();
+                    find.focus = false;
+                }
+                self.find(ui::FindOp::Changed);
+                let count = self.ui.find.as_ref().map_or(0, |find| find.count);
+                log::info!("script: find-files {text:?} found {count}");
+            }
+            Step::FindOption(what) => {
+                let (name, state) = what.split_once(' ').unwrap_or((what.as_str(), "on"));
+                let kept = &mut self.ui.find_kept;
+                let flag = match name {
+                    "case" => Some(&mut kept.options.case),
+                    "word" => Some(&mut kept.options.word),
+                    "regex" => Some(&mut kept.options.regex),
+                    "preserve" => Some(&mut kept.preserve),
+                    _ => None,
+                };
+                match flag {
+                    Some(flag) => {
+                        *flag = state != "off";
+                        self.find(ui::FindOp::Changed);
+                    }
+                    None => log::warn!("script: find-option case|word|regex|preserve on|off"),
                 }
             }
             Step::Drag(from, to) if self.ui.pen.on => {

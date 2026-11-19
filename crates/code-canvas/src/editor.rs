@@ -844,6 +844,11 @@ impl Editor {
         (Pos::new(p.line, a), Pos::new(p.line, b))
     }
 
+    pub fn word_at_caret(&self) -> String {
+        let (a, b) = self.word_around(self.caret);
+        self.line(a.line).chars().skip(a.col).take(b.col - a.col).collect()
+    }
+
     pub fn select_word(&mut self, p: Pos) {
         let (a, b) = self.word_around(p);
         self.single();
