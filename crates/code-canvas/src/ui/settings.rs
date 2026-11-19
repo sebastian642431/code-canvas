@@ -139,7 +139,7 @@ const EDITING: [(&str, &str); 10] = [
     ),
     (
         "Travel to what is changed from outside",
-        "When an assistant or another program changes a file, the canvas goes to the lines that changed and lights them. Moving the canvas yourself holds it for a moment; it never moves while you edit.",
+        "When another program changes a file, the canvas goes to the lines that changed and lights them. Moving the canvas yourself holds it for a moment; it never moves while you edit. Where an assistant works, it goes only while you follow that assistant.",
     ),
     ("Number the lines", "To the left of the code, when it is close enough to read."),
     (

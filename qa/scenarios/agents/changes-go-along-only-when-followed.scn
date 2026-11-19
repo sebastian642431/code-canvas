@@ -1,0 +1,24 @@
+title: A file an assistant makes or changes does not take the canvas there while nobody follows it; once it is followed, its changes do
+folders: rust-small
+limit: 45
+expect-log: an assistant \(Claude Code\) is on the canvas
+expect-log: src/made\.rs changed where an assistant that is not followed works: the canvas stays where it is
+forbid-log: src/util\.rs changed where an assistant that is not followed works
+forbid-log: script: agent needs
+
+wait 3000
+fit
+wait 1000
+agent {"source":"claude","hook":{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"{WORK}/fix/rust-small","tool_name":"Write","tool_input":{"file_path":"{WORK}/fix/rust-small/src/made.rs","content":"fn made() {}"}}}
+wait 800
+touch src/made.rs fn made() {}
+wait 3000
+mark the-whole-folder-still
+wait 500
+agent Claude Code
+wait 2500
+touch src/util.rs // written while it is followed
+wait 3000
+mark at-the-change-of-util
+wait 500
+quit
