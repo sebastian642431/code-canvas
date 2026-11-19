@@ -176,6 +176,21 @@ impl Agent {
         self.at.elapsed() < Duration::from_millis(1600) && !matches!(self.doing, Doing::Waiting | Doing::Leaving)
     }
 
+    /// At work or only just done: the watcher may tell of its last write after it said it stopped, and a
+    /// command it runs can write for minutes after it said so.
+    fn may_be_writing(&self) -> bool {
+        self.doing == Doing::Running || self.at.elapsed() < QUIET_AFTER
+    }
+
+    fn works_in(&self, root: &Path) -> bool {
+        let root = crate::ext::path_key(root.to_string_lossy().trim_end_matches(['/', '\\']));
+        let inside = |path: &PathBuf| {
+            let path = crate::ext::path_key(&path.to_string_lossy());
+            path == root || path.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/'))
+        };
+        self.cwd.iter().chain(self.path.iter()).chain(self.trail.iter().map(|step| &step.path)).any(inside)
+    }
+
     fn stepped(&mut self, again: bool) {
         let Some(path) = self.path.clone() else { return };
         if !matches!(self.doing, Doing::Reading | Doing::Editing | Doing::Searching) {
@@ -637,6 +652,13 @@ impl Agents {
 
     pub fn lively(&self) -> bool {
         self.list.iter().any(|agent| agent.at.elapsed() < Duration::from_secs(3))
+    }
+
+    /// Whether the canvas may go by itself to what changed on disk in `root`: not while an assistant that is
+    /// not followed works there, since the change is most likely its own.
+    pub fn lets_canvas_go_to_changes_in(&self, root: &Path) -> bool {
+        let mut there = self.list.iter().filter(|agent| agent.may_be_writing() && agent.works_in(root)).peekable();
+        there.peek().is_none() || there.any(|agent| self.following.as_ref() == Some(&agent.key))
     }
 
     pub fn hear(&mut self, event: &Value) {
@@ -1172,6 +1194,31 @@ mod tests {
         let agents = heard(&[json!({ "agent": "c1", "name": "Codex", "action": "think", "model": "gpt-5-codex" })]);
         assert_eq!(agents.list[0].model, "gpt-5-codex");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_canvas_goes_to_what_an_assistant_changes_only_while_it_is_followed() {
+        let (root, other) = if cfg!(windows) { ("C:/work/app", "C:/work/other") } else { ("/work/app", "/work/other") };
+        let (root, other) = (Path::new(root), Path::new(other));
+        let write = json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": "PreToolUse",
+                "cwd": root, "tool_name": "Write", "tool_input": { "file_path": root.join("src/new.rs") } } });
+        let mut agents = heard(&[write]);
+        assert!(heard(&[]).lets_canvas_go_to_changes_in(root), "no assistant: another program changed it");
+        assert!(!agents.lets_canvas_go_to_changes_in(root), "an assistant not followed works there");
+        assert!(agents.lets_canvas_go_to_changes_in(other), "it does not work in the other folder");
+        if cfg!(windows) {
+            assert!(!agents.lets_canvas_go_to_changes_in(Path::new("c:\\Work\\App\\")));
+        }
+        agents.following = Some(agents.list[0].key.clone());
+        assert!(agents.lets_canvas_go_to_changes_in(root), "the followed one takes the canvas along");
+
+        agents.following = None;
+        agents.hear(&json!({ "source": "claude", "hook": { "session_id": "s1", "hook_event_name": "Stop" } }));
+        assert!(!agents.lets_canvas_go_to_changes_in(root), "its last write may be told after it stopped");
+        agents.list[0].at = Instant::now() - QUIET_AFTER;
+        assert!(agents.lets_canvas_go_to_changes_in(root), "long after it stopped, a change is someone else's");
+        agents.list[0].doing = Doing::Running;
+        assert!(!agents.lets_canvas_go_to_changes_in(root), "a command it runs writes for as long as it runs");
     }
 
     #[test]

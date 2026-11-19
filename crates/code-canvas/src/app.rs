@@ -1424,6 +1424,11 @@ impl App {
         if !self.ui.prefs.follow_changes || !idle || editing || asking {
             return;
         }
+        let Some(page) = self.pages.get(index) else { return };
+        if !self.agents.lets_canvas_go_to_changes_in(&page.root) {
+            log::info!("{rel} changed where an assistant that is not followed works: the canvas stays where it is");
+            return;
+        }
         if index != self.active {
             if !self.shares_canvas() {
                 return;
