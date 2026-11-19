@@ -334,7 +334,7 @@ impl Side {
             let names: Vec<&str> = g.locals.iter().map(|l| l.name.as_str()).collect();
             let mut leaf = |ui: &mut Ui, full: &str, label: &str, indent: f32| {
                 let Some(branch) = g.locals.iter().find(|l| l.name == full) else { return };
-                let resp = local_row(ui, branch, label, indent);
+                let resp = local_row(ui, branch, label, indent, g.switching);
                 if resp.clicked() && !branch.current {
                     actions.push(Action::Git(GitOp::Switch(full.to_string())));
                 }

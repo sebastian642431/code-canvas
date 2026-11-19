@@ -122,6 +122,9 @@ struct Place {
 }
 
 const PLACES_KEPT: usize = 200;
+/// Up to this many files changed on disk at once are taken in one by one; more, and the folder is
+/// read again whole.
+const ONE_BY_ONE: usize = 24;
 
 enum Offered {
     Paths(Vec<crate::paths::Candidate>),
@@ -857,6 +860,7 @@ impl App {
             ui::WorkspaceRow {
                 branch,
                 branches: open.map(|git| git.branches.clone()).unwrap_or_default(),
+                switching: open.is_some_and(|git| git.switching),
                 locals: open.map(|git| git.locals.clone()).unwrap_or_default(),
                 remotes: open.map(|git| git.remote_branches.clone()).unwrap_or_default(),
                 path: known.path.clone(),
@@ -1182,8 +1186,7 @@ impl App {
         }
     }
 
-    fn on_disk_changes(&mut self, batch: crate::watch::Batch) {
-        const ONE_BY_ONE: usize = 24;
+    fn on_disk_changes(&mut self, mut batch: crate::watch::Batch) {
         log::debug!(
             "changed on disk: {} files {:?}, git of {} folders",
             batch.files.len(),
@@ -1192,6 +1195,26 @@ impl App {
         );
         let options = crate::page::scan_options();
         let (skip, lockfiles) = (options.skip_dirs, options.skip_files);
+        let skipped = |rel: &str| {
+            rel.split('/').any(|part| skip.iter().any(|s| s == part))
+                || lockfiles.iter().any(|name| rel.rsplit('/').next() == Some(name.as_str()))
+        };
+        // A folder switching branch keeps what changed, to take it in once when git is done.
+        batch.git.retain(|root| !self.pages.iter().any(|page| page.switch.is_some() && &page.root == root));
+        batch.files.retain(|path| {
+            let switching = self.pages.iter_mut().find(|page| page.switch.is_some() && path.starts_with(&page.root));
+            let Some(page) = switching else { return true };
+            let rel = path.strip_prefix(&page.root).map(|rel| rel.to_string_lossy().replace('\\', "/"));
+            if let (Ok(rel), Some(switch)) = (rel, page.switch.as_mut()) {
+                if !skipped(&rel) {
+                    switch.changed(path.clone(), ONE_BY_ONE);
+                }
+            }
+            false
+        });
+        if batch.files.is_empty() && batch.git.is_empty() {
+            return;
+        }
         for root in &batch.git {
             if let Some(page) = self.pages.iter_mut().find(|p| &p.root == root) {
                 page.refresh_git();
@@ -1202,9 +1225,7 @@ impl App {
         let mut seen: Option<(usize, String, u32)> = None;
         for path in &batch.files {
             let Some((i, rel)) = self.locate_file(path) else { continue };
-            if rel.split('/').any(|part| skip.iter().any(|s| s == part))
-                || lockfiles.iter().any(|name| rel.rsplit('/').next() == Some(name.as_str()))
-            {
+            if skipped(&rel) {
                 continue;
             }
             if self.sharing.session.is_some() {
@@ -1370,10 +1391,16 @@ impl App {
         if big {
             return true;
         }
-        if recent || page.is_loading() {
+        if recent || page.is_loading() || page.switch.is_some() {
             return false;
         }
         log::info!("{}: files were added or removed, scanning again", page.root.display());
+        self.read_again(i, reveal);
+        true
+    }
+
+    /// Reads a folder again keeping the camera where it is and the files not saved.
+    fn read_again(&mut self, i: usize, reveal: Option<String>) {
         self.auto_rescan = Some(Instant::now());
         let (s, vp) = (self.scale(), self.viewport());
         let p = &mut self.pages[i];
@@ -1385,7 +1412,6 @@ impl App {
         }
         p.reveal = reveal;
         p.start_scan();
-        true
     }
 
     fn rescan_what_waited(&mut self) {
@@ -1401,6 +1427,45 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Takes in, once git is done switching branch, the files it wrote: one by one when they are
+    /// few, else by reading the folder again. Says whether a switch is still going on.
+    fn settle_switches(&mut self) -> bool {
+        use crate::branch_switch::Stage;
+        let watching = self.watcher.busy();
+        let mut going = false;
+        for i in 0..self.pages.len() {
+            let page = &mut self.pages[i];
+            let Some((stage, too_many)) = page.switch.as_ref().map(|switch| (switch.stage, switch.too_many())) else {
+                continue;
+            };
+            match stage {
+                Stage::Git => {}
+                Stage::Settling(at) if !crate::branch_switch::settled(at.elapsed(), watching) => {}
+                Stage::Settling(_) if too_many => {
+                    if let Some(switch) = page.switch.as_mut() {
+                        switch.take_changed();
+                        switch.stage = Stage::Reloading;
+                    }
+                    log::info!("{}: switched branch, scanning again", page.root.display());
+                    self.read_again(i, None);
+                }
+                Stage::Reloading if page.is_loading() => {}
+                Stage::Settling(_) | Stage::Reloading | Stage::Over => {
+                    let (files, too_many) = page.end_switch();
+                    if too_many {
+                        self.rescan_later.insert(page.id);
+                    } else if !files.is_empty() {
+                        self.on_disk_changes(crate::watch::Batch { files, git: Vec::new() });
+                    }
+                    self.request_redraw();
+                    continue;
+                }
+            }
+            going = true;
+        }
+        going
     }
 
     fn offer_checker(&mut self, rel: &str) {
@@ -2323,6 +2388,9 @@ impl App {
 
     fn run_git(&mut self, active: usize, op: crate::git::GitOp) {
         use crate::git::GitOp;
+        if matches!(op, GitOp::Switch(_) | GitOp::Track { .. }) {
+            return self.switch_branch(active, op);
+        }
         if self.pages.get(active).is_none_or(|page| page.git_busy()) {
             let text = "Git is still at something else in this folder: try again when it is done.";
             return self.ext.notice(ext::Level::Warn, "Source Control", text);
@@ -2341,6 +2409,25 @@ impl App {
         if let Some(page) = self.pages.get_mut(active) {
             page.run_git(op);
         }
+        self.request_redraw();
+    }
+
+    /// Switches branch at once on screen; git runs behind. Files not saved are saved first, so that
+    /// git carries them to the other branch or refuses because they would be overwritten.
+    fn switch_branch(&mut self, active: usize, op: crate::git::GitOp) {
+        if self.pages.get(active).is_none_or(|page| !page.can_switch()) {
+            let text = "Git is still at something else in this folder: try again when it is done.";
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        }
+        let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
+        if !unsaved.is_empty() {
+            self.save_these(unsaved, false);
+            if self.unsaved().iter().any(|(i, _)| *i == active) {
+                let text = "Some files have changes that are not saved: save or discard them, then switch branch.";
+                return self.ext.notice(ext::Level::Warn, "Source Control", text);
+            }
+        }
+        self.pages[active].switch_branch(op);
         self.request_redraw();
     }
 
@@ -5065,6 +5152,7 @@ impl App {
             changed = true;
         }
         busy |= self.watcher.busy();
+        busy |= self.settle_switches();
         let (folders, trusted) = self.host_folders();
         self.ext.set_folders(folders, trusted);
         let (events, ext_changed) = self.ext.poll();

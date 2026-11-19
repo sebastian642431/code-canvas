@@ -6,6 +6,7 @@ mod account;
 mod agents;
 mod app;
 mod bench;
+mod branch_switch;
 mod camera;
 mod codex;
 mod codicons;

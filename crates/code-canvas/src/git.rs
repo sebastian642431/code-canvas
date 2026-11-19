@@ -405,6 +405,8 @@ pub struct GitState {
     pub in_progress: Option<InProgress>,
     /// Where HEAD has been lately, the newest first (the "undo" list).
     pub reflog: Vec<ReflogEntry>,
+    /// Set while the app switches branch: `branch` is where it is going, not yet where git is.
+    pub switching: bool,
 }
 
 impl GitState {

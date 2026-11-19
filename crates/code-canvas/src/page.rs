@@ -176,6 +176,7 @@ pub struct Page {
     pub dep_zoom: Option<i32>,
     pub commit_message: String,
     git_op: Option<Receiver<(crate::git::GitOp, Result<String, String>)>>,
+    pub switch: Option<crate::branch_switch::Switch>,
     pub git_note: Option<(bool, String)>,
     pub git_said: Option<(bool, String)>,
     message_rx: Option<Receiver<Result<String, String>>>,
@@ -428,6 +429,7 @@ impl Page {
             dep_zoom: None,
             commit_message: String::new(),
             git_op: None,
+            switch: None,
             git_note: None,
             git_said: None,
             message_rx: None,
@@ -930,10 +932,20 @@ impl Page {
         self.git_op.is_some()
     }
 
+    /// Whether a switch of branch can be asked for now: git is free, or it is switching branch.
+    pub fn can_switch(&self) -> bool {
+        self.git_op.is_none() || self.switch.as_ref().is_some_and(|switch| switch.plan.running())
+    }
+
     pub fn run_git(&mut self, op: crate::git::GitOp) {
         if self.git_op.is_some() || self.no_git {
             return;
         }
+        self.spawn_git(op);
+        self.git_note = None;
+    }
+
+    fn spawn_git(&mut self, op: crate::git::GitOp) {
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
@@ -942,7 +954,79 @@ impl Page {
             crate::ext::wake_ui();
         });
         self.git_op = Some(rx);
+    }
+
+    /// Switches branch, showing the branch asked for as the current one at once. While git is still
+    /// switching, only the last branch asked for waits for it.
+    pub fn switch_branch(&mut self, op: crate::git::GitOp) {
+        use crate::branch_switch::{Plan, Stage, Switch};
+        if self.no_git || !self.can_switch() {
+            return;
+        }
+        if let Some(switch) = &mut self.switch {
+            if let Some(run) = switch.plan.ask(op) {
+                switch.stage = Stage::Git;
+                self.spawn_git(run);
+            }
+            self.git_note = None;
+            return self.show_switch();
+        }
+        let real = self.git.as_ref().map(|git| git.branch.clone()).unwrap_or_default();
+        let Some(plan) = Plan::start(real, op.clone()) else { return };
+        self.switch = Some(Switch::new(plan));
+        self.spawn_git(op);
         self.git_note = None;
+        self.show_switch();
+    }
+
+    fn show_switch(&mut self) {
+        if let (Some(switch), Some(git)) = (&self.switch, &mut self.git) {
+            let going = switch.stage != crate::branch_switch::Stage::Over;
+            crate::branch_switch::show_on(git, switch.plan.shown(), going);
+        }
+    }
+
+    fn switch_done(&mut self, result: Result<String, String>) {
+        use crate::branch_switch::{Next, Stage};
+        let Some(switch) = &mut self.switch else { return };
+        match (switch.plan.finished(result.is_ok()), result) {
+            (Next::Run(op), _) => {
+                self.spawn_git(op);
+                return self.show_switch();
+            }
+            (Next::Arrived, _) => self.git_note = Some((true, format!("On branch {}.", switch.plan.shown()))),
+            (_, Err(why)) => {
+                let hint = match why.contains("would be overwritten") {
+                    true => "\n\nCommit or stash those changes (Stash is in the menu at the top of Source Control), then switch again.",
+                    false => "",
+                };
+                self.git_note = Some((false, format!("{why}{hint}")));
+                self.git_said = Some((false, format!("Still on {}: git did not switch branch.", switch.plan.shown())));
+            }
+            (_, Ok(_)) => {}
+        }
+        switch.stage = match switch.plan.moved() {
+            true => Stage::Settling(Instant::now()),
+            false => Stage::Over,
+        };
+        self.show_switch();
+    }
+
+    /// Ends the switch of branch and reads the state of git again. Gives the files that changed on
+    /// disk meanwhile and were not taken in yet, and whether there were too many to keep.
+    pub fn end_switch(&mut self) -> (Vec<std::path::PathBuf>, bool) {
+        let Some(mut switch) = self.switch.take() else { return (Vec::new(), false) };
+        if let Some(git) = &mut self.git {
+            git.switching = false;
+        }
+        self.refresh_git();
+        switch.take_changed()
+    }
+
+    /// What the canvas says while a switch of branch lasts.
+    pub fn switch_label(&self) -> Option<String> {
+        let switch = self.switch.as_ref().filter(|switch| switch.stage != crate::branch_switch::Stage::Over)?;
+        Some(switch.label())
     }
 
     pub fn writing_message(&self) -> bool {
@@ -982,12 +1066,20 @@ impl Page {
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {
                 self.git_op = None;
+                if self.switch.as_ref().is_some_and(|switch| switch.plan.running()) {
+                    self.switch_done(Err("git stopped before it was done".to_string()));
+                    return true;
+                }
                 self.git_note = Some((false, "git stopped before it was done".to_string()));
                 self.refresh_git();
                 return true;
             }
         };
         self.git_op = None;
+        if self.switch.is_some() && crate::branch_switch::target(&op).is_some() {
+            self.switch_done(result);
+            return true;
+        }
         match (&op, result) {
             (crate::git::GitOp::Part { .. }, result) => {
                 self.git_said = Some(match result {
@@ -1049,6 +1141,7 @@ impl Page {
                 let head = state.as_ref().map(|git| git.head.clone()).unwrap_or_default();
                 self.git = state;
                 self.git_rx = None;
+                self.show_switch();
                 if head != self.heads_at {
                     self.heads_at = head;
                     self.heads.clear();
