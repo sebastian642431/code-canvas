@@ -26,10 +26,12 @@ term rename tres
 wait 800
 term report
 mark a-three-tabs
+wait 600
 term movetab 3 1
 wait 1500
 term report
 mark b-the-last-dragged-to-the-front
+wait 600
 term movetab 2 end
 wait 1500
 term report

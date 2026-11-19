@@ -1779,6 +1779,15 @@ fn cards(
                 Rect::from_min_size(Pos2::new(next - width, canvas.top() + AWAY), Vec2::new(width, tall))
             }
         };
+        // The toolbar is drawn over the cards: one that reaches down into its corner (a card
+        // put there or a console filling the canvas) ends above it, so its last lines and its
+        // buttons are not hidden under the toolbar.
+        let toolbar_top = canvas.bottom() - UNDER;
+        let under_toolbar = st.prefs.toolbar
+            && rect.left() < canvas.left() + TOOLBAR_REACH
+            && rect.bottom() > toolbar_top
+            && toolbar_top - rect.top() >= LOWEST;
+        let rect = if under_toolbar { Rect::from_min_max(rect.min, Pos2::new(rect.max.x, toolbar_top)) } else { rect };
         let mut placed = None;
         let mut settled = false;
         let id = egui::Id::unique(("card", &key));
@@ -2902,7 +2911,9 @@ fn explorer(ui: &mut egui::Ui, st: &mut UiState, page: Option<&mut Page>, action
     let indent_room = (ui.available_width() - 200.0).max(0.0);
     let indent_step = (indent_room / deepest.max(1) as f32).clamp(6.0, 16.0);
     let indent = |depth: u16| (depth as f32 * indent_step).min(indent_room);
-    let mut list = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    // No least height: in a short window the list scrolls in the room it has instead of
+    // running under the timeline.
+    let mut list = egui::ScrollArea::vertical().auto_shrink([false, false]).min_scrolled_height(0.0);
     let row_of = reveal
         .as_ref()
         .filter(|_| matches.is_none())

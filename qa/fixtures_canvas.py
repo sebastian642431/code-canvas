@@ -1,10 +1,34 @@
 import os
 import shutil
 import struct
+import subprocess
+import tempfile
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VIDEO = os.path.join(os.path.dirname(HERE), "asd.mp4")
+# A video of your own beside the repository wins; otherwise one is made with ffmpeg once
+# and kept in the temporary folder.
+OWN_VIDEO = os.path.join(os.path.dirname(HERE), "asd.mp4")
+MADE_VIDEO = os.path.join(tempfile.gettempdir(), "code-canvas-qa-clip.mp4")
+
+
+def video():
+    """The path of a short H.264 clip for the video scenarios, made with ffmpeg the first time."""
+    if os.path.exists(OWN_VIDEO):
+        return OWN_VIDEO
+    if os.path.exists(MADE_VIDEO) and os.path.getsize(MADE_VIDEO) > 0:
+        return MADE_VIDEO
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SystemExit("the media fixture needs a video: put asd.mp4 beside the repository or install ffmpeg")
+    making = MADE_VIDEO + ".part.mp4"
+    subprocess.run(
+        [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=4:size=640x360:rate=25",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-shortest", making],
+        check=True, stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    os.replace(making, MADE_VIDEO)
+    return MADE_VIDEO
 
 
 def write(root, rel, text):
@@ -66,11 +90,11 @@ def media(root):
     write(root, "img/drawing.svg", SVG)
     write(root, ".gitignore", "ignored\n")
     write_bytes(root, "ignored/hidden.png", png(64, 64, checks))
-    if os.path.exists(VIDEO):
-        os.makedirs(os.path.join(root, "video"), exist_ok=True)
-        shutil.copyfile(VIDEO, os.path.join(root, "video", "clip.mp4"))
-        os.makedirs(os.path.join(root, "ignored"), exist_ok=True)
-        shutil.copyfile(VIDEO, os.path.join(root, "ignored", "kept out.mp4"))
+    clip = video()
+    os.makedirs(os.path.join(root, "video"), exist_ok=True)
+    shutil.copyfile(clip, os.path.join(root, "video", "clip.mp4"))
+    os.makedirs(os.path.join(root, "ignored"), exist_ok=True)
+    shutil.copyfile(clip, os.path.join(root, "ignored", "kept out.mp4"))
 
 
 def deep_tree(root):

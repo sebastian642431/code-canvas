@@ -18,7 +18,7 @@ wait 300
 mark selection-back
 wait 400
 type One
-click 942 325
+click 930 325
 type @
 wait 300
 mark clicked

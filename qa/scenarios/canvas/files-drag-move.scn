@@ -40,7 +40,7 @@ files click lib
 wait 400
 files mods none
 mark list
-wait 300
+wait 600
 files drag notes.md docs
 wait 2200
 mark moved-into-docs
@@ -76,7 +76,7 @@ wait 2200
 files key ctrl+z
 wait 1200
 mark undone
-wait 300
+wait 600
 files click docs/readme.md
 wait 300
 files key ctrl+x
@@ -103,10 +103,11 @@ files mods none
 wait 300
 wait 1500
 mark two-selected
+wait 600
 files drag d.txt docs
 wait 2200
 mark two-moved
-wait 300
+wait 600
 files drop-os {FIX}\tree-outside\from-explorer.txt docs
 wait 1500
 edit lib/keep.txt 1 1

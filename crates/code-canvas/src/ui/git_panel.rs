@@ -18,8 +18,14 @@ pub fn timeline(ui: &mut egui::Ui, page: Option<&Page>, prefs: &crate::prefs::Pr
     let Some(page) = page else { return };
     let Some(path) = &page.timeline.path else { return };
     let open = prefs.timeline;
+    // At most half of what is left under the folders, so in a short window the file list
+    // keeps its filter and some rows instead of being drawn under the timeline.
+    let most = (ui.available_height() * 0.5).clamp(ROW_H + 12.0, 520.0);
     let panel = match open {
-        true => egui::Panel::bottom("timeline").resizable(true).default_size(190.0).size_range(90.0..=520.0),
+        true => egui::Panel::bottom("timeline")
+            .resizable(true)
+            .default_size(190.0f32.min(most))
+            .size_range(90.0f32.min(most)..=most),
         false => egui::Panel::bottom("timeline closed").resizable(false).exact_size(ROW_H + 12.0),
     };
     panel.frame(Frame::NONE.inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 6 })).show(ui, |ui| {

@@ -1176,6 +1176,11 @@ impl Extensions {
     pub fn notice(&mut self, level: Level, source: &str, text: impl Into<String>) {
         let text = text.into();
         self.log_line(&format!("[{source}] {text}"));
+        // The same message again (a save that keeps failing while autosave retries it) is
+        // brought to the front with its time started again, not stacked once more.
+        self.notices.retain(|n| {
+            n.is_question() || !n.actions.is_empty() || n.level != level || n.source != source || n.text != text
+        });
         self.notices.push(Notice {
             level,
             source: source.to_string(),
@@ -2432,6 +2437,18 @@ mod tests {
         ext.answer_notice(0, Some("Yes"));
         assert_eq!(ext.notices.len(), 1);
         assert_eq!(ext.notices[0].text, "fyi");
+    }
+
+    #[test]
+    fn the_same_notice_again_is_not_stacked() {
+        let mut ext = Extensions::new(std::env::temp_dir().join("code-canvas-test-ext-none"), Waker::new(|| {}));
+        ext.notice(Level::Error, "Files", "a.txt could not be saved");
+        ext.notice(Level::Info, "Files", "b.txt saved");
+        ext.notice(Level::Error, "Files", "a.txt could not be saved");
+        let texts: Vec<&str> = ext.notices.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(texts, vec!["b.txt saved", "a.txt could not be saved"], "moved to the front, once");
+        ext.notice(Level::Warn, "Files", "a.txt could not be saved");
+        assert_eq!(ext.notices.len(), 3, "another level is another notice");
     }
 
     #[test]

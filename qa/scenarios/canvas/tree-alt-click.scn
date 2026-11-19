@@ -7,19 +7,19 @@ wait 1200
 files hover app
 wait 1500
 mark hover-folder-two-buttons
-wait 300
+wait 600
 files mods alt
 files click app
 wait 1500
 files mods none
 mark alt-click-opens-all
-wait 300
+wait 600
 files mods alt
 files click app
 wait 1500
 files mods none
 mark alt-click-closes-all
-wait 300
+wait 600
 files click app
 wait 1500
 mark plain-click-opens-one

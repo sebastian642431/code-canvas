@@ -10,25 +10,25 @@ wait 1200
 files hover lib
 wait 1500
 mark hover-folder
-wait 300
+wait 600
 files hover a.txt
 wait 2000
 mark hover-file
-wait 300
+wait 600
 files plus lib
 wait 2500
 mark plus-menu
-wait 300
+wait 600
 ui click 371 290
 wait 1500
 mark naming-inside-the-folder
-wait 300
+wait 600
 files text fresh.txt
 wait 800
 press enter
 wait 2500
 mark file-made
-wait 300
+wait 600
 files plus lib
 wait 2500
 ui click 371 290

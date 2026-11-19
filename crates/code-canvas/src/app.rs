@@ -984,6 +984,7 @@ impl App {
         if self.pages[i].shared.is_some() && self.sharing.session.is_some() {
             return self.share_stop(None);
         }
+        let was_active = i == self.active;
         let page = self.pages.remove(i);
         self.grammars.forget_page(page.id);
         if let Some(g) = &mut self.gfx {
@@ -993,6 +994,15 @@ impl App {
             self.active = self.pages.len().saturating_sub(1);
         } else if i < self.active {
             self.active -= 1;
+        }
+        // The folder in view went away: the camera was over it, so what is left is shown
+        // instead of an empty part of the canvas (once it is read, as a folder never shown
+        // before is read only now).
+        if was_active {
+            if let Some(next) = self.pages.get_mut(self.active) {
+                next.ensure_scanned();
+                self.frame_all_when_read = true;
+            }
         }
         self.update_title();
         self.save_session();
@@ -3854,7 +3864,10 @@ impl App {
                 };
                 let Some((title, files)) = lost else { return self.run_git(self.active, op) };
                 let Some(text) = crate::git::what_is_lost(&files) else {
-                    let text = "There is nothing to discard here: what is new and all of it staged stays as it is.";
+                    let text = match page.is_some_and(|page| page.git.is_none()) {
+                        true => "This folder is not in a git repository, so there is nothing to discard.",
+                        false => "There is nothing to discard here: what is new and all of it staged stays as it is.",
+                    };
                     return self.ext.notice(ext::Level::Info, "Source Control", text);
                 };
                 let files = files.into_iter().map(|(path, _)| path).collect();
