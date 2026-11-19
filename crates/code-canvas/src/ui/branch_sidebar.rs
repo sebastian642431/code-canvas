@@ -24,6 +24,11 @@ fn glyph(name: &str, fallback: &'static str) -> &'static str {
 
 /// A section head like the one of WORKSPACE: a chevron, the title in small capitals and the count.
 fn head(ui: &mut Ui, open: bool, title: &str, count: usize) -> bool {
+    head_with(ui, open, title, count, None).0
+}
+
+/// A section's title with a button of its own before the count; gives (title clicked, button clicked).
+fn head_with(ui: &mut Ui, open: bool, title: &str, count: usize, button: Option<(&str, &str)>) -> (bool, bool) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
     let mid = rect.center().y;
     let chevron = if open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
@@ -43,14 +48,26 @@ fn head(ui: &mut Ui, open: bool, title: &str, count: usize) -> bool {
         FontId::proportional(11.5),
         pal().text_faint,
     );
-    painter.text(
+    let counted = painter.text(
         Pos2::new(rect.right() - 10.0, mid),
         Align2::RIGHT_CENTER,
         count.to_string(),
         FontId::proportional(11.0),
         pal().text_faint,
     );
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    let mut pressed = false;
+    if let Some((glyph, tip)) = button {
+        let at = egui::Rect::from_center_size(Pos2::new(counted.left() - 14.0, mid), Vec2::splat(20.0));
+        let hit = ui.interact(at, ui.scope_id().with(("section button", title)), Sense::click());
+        if hit.hovered() {
+            ui.painter().rect_filled(at, 5.0, pal().hover);
+        }
+        let color = if hit.hovered() { pal().text } else { pal().text_dim };
+        ui.painter().text(at.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), color);
+        pressed = hit.on_hover_text(tip).clicked();
+    }
+    let toggled = !pressed && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    (toggled, pressed)
 }
 
 /// The remote that a branch is pushed to: the one it follows, or else the first one there is.
@@ -349,7 +366,16 @@ impl Side {
                 remote_names.push(&remote.remote);
             }
         }
-        if !remote_names.is_empty() && self.section(ui, "remotes", "Remotes", g.remote_branches.len()) {
+        let open = self.open("remotes");
+        let fetch = (glyph("repo-fetch", icons::REFRESH_CW), "Fetch from every remote (git fetch --all --prune)");
+        let (toggled, fetched) = head_with(ui, open, "Remotes", g.remote_branches.len(), Some(fetch));
+        if toggled {
+            self.sections.insert("remotes", !open);
+        }
+        if fetched {
+            actions.push(Action::Git(GitOp::Fetch));
+        }
+        if !remote_names.is_empty() && open {
             for remote_name in remote_names {
                 let names: Vec<&str> =
                     g.remote_branches.iter().filter(|r| r.remote == remote_name).map(|r| r.name.as_str()).collect();
