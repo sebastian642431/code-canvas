@@ -3,7 +3,7 @@ use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, 
 use super::{c, icon, menu_gap, menu_row, pal, panel_title, small_icon, text_fit, Action, FileIcons, FileOp, ROW_H};
 use crate::git::{After, Change, FileChange, GitOp};
 use crate::icons;
-use crate::page::Page;
+use crate::page::{DiffSide, Page};
 use canvas_render::theme;
 
 pub(super) fn change_color(change: Change) -> Color32 {
@@ -195,13 +195,14 @@ fn change_row(
     change: &FileChange,
     side: Change,
     staged: bool,
+    focused: bool,
 ) -> Option<Action> {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     if !ui.is_rect_visible(rect) {
         return None;
     }
     let hovered = ui.rect_contains_pointer(rect);
-    if hovered {
+    if hovered || focused {
         ui.painter().rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
     }
     let mid = rect.center().y;
@@ -259,11 +260,20 @@ fn change_row(
     }
     let dir_x = x + name_w + 8.0;
     text_fit(painter, Pos2::new(dir_x, mid), dir, FontId::proportional(11.5), pal().text_faint, right - dir_x);
+    let diffable = side != Change::Untracked && !(staged && side == Change::Added);
     if action.is_none() && resp.clicked() && !deleted {
-        action = Some(Action::FlyToPath(change.path.clone()));
+        let shown = if staged { DiffSide::Staged } else { DiffSide::Unstaged };
+        let path = change.path.clone();
+        action = Some(if diffable { Action::FocusDiff(path, shown) } else { Action::FlyToPath(path) });
     }
     let unsaved = if change.unsaved && !staged { " · not saved yet (staging or committing it saves it)" } else { "" };
-    resp.on_hover_text(format!("{} · {}{unsaved}", change.path, side.label()));
+    let click = match (diffable && !deleted, focused, staged) {
+        (false, ..) => "",
+        (true, true, _) => "\nClick to stop showing this diff",
+        (true, false, true) => "\nClick to see what is staged (last commit against the index)",
+        (true, false, false) => "\nClick to see what is not staged yet (index against the file)",
+    };
+    resp.on_hover_text(format!("{} · {}{unsaved}{click}", change.path, side.label()));
     action
 }
 
@@ -371,6 +381,7 @@ pub fn changes_panel(
         changed_neighbours,
         git_note,
         diff,
+        diff_focus,
         showing,
         history,
         ..
@@ -565,7 +576,8 @@ pub fn changes_panel(
                 }
                 if open {
                     for ch in &staged {
-                        actions.extend(change_row(ui, file_icons, ch, ch.staged.unwrap_or(ch.change), true));
+                        let focused = diff_focus.as_ref().is_some_and(|(p, s)| *p == ch.path && *s == DiffSide::Staged);
+                        actions.extend(change_row(ui, file_icons, ch, ch.staged.unwrap_or(ch.change), true, focused));
                     }
                 }
             }
@@ -577,7 +589,10 @@ pub fn changes_panel(
                 }
                 if open {
                     for ch in &unstaged {
-                        actions.extend(change_row(ui, file_icons, ch, ch.unstaged.unwrap_or(ch.change), false));
+                        let focused =
+                            diff_focus.as_ref().is_some_and(|(p, s)| *p == ch.path && *s == DiffSide::Unstaged);
+                        let side = ch.unstaged.unwrap_or(ch.change);
+                        actions.extend(change_row(ui, file_icons, ch, side, false, focused));
                     }
                 }
             }

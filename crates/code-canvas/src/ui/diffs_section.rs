@@ -6,7 +6,7 @@ use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Ric
 
 use super::{c, check, pal, Action, ROW_H};
 use crate::icons;
-use crate::page::DiffView;
+use crate::page::{DiffSide, DiffView};
 use canvas_render::theme;
 
 /// What the section says in its small texts.
@@ -17,6 +17,8 @@ pub struct DiffsInfo {
     pub shown: Option<usize>,
     /// Files whose unchanged lines are folded away.
     pub folded: usize,
+    /// The file of the row clicked in the list, shown as the diff of its side.
+    pub focus: Option<(String, DiffSide)>,
 }
 
 /// How many lines can be kept around a change, in the list of the chip.
@@ -151,6 +153,24 @@ fn modes(ui: &mut Ui, view: &mut DiffView) {
     }
 }
 
+/// What is compared: everything since the last commit, only what is staged, or only what is not.
+fn sides(ui: &mut Ui, view: &mut DiffView) {
+    let rects = row_of(ui, 3, 26.0);
+    let tips = [
+        "The last commit against the files as they are",
+        "The last commit against what is staged (the index)",
+        "What is staged against the files as they are: what is not staged yet",
+    ];
+    let all = [DiffSide::All, DiffSide::Staged, DiffSide::Unstaged];
+    for ((side, tip), at) in all.into_iter().zip(tips).zip(rects) {
+        let chosen = view.on && view.side == side;
+        let resp = choice(ui, at.shrink2(Vec2::new(1.0, 0.0)), side.label(), chosen, side.label(), |_, _| {});
+        if resp.on_hover_text(tip).clicked() {
+            (view.on, view.side) = (true, side);
+        }
+    }
+}
+
 fn collapse(ui: &mut Ui, view: &mut DiffView) {
     let rects = row_of(ui, 2, 28.0);
     let tips = ["Hide the lines that did not change, leaving some around each change", "Show every line of the files"];
@@ -257,6 +277,20 @@ pub fn show(
     let (mut only_now, mut folders_now, mut neighbours_now) = (only, folders, neighbours);
     ui.spacing_mut().item_spacing.y = 5.0;
     modes(ui, &mut view);
+    sides(ui, &mut view);
+    if let Some((path, side)) = &info.focus {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let said = match side {
+            DiffSide::Staged => format!("{name}: what is staged"),
+            DiffSide::Unstaged => format!("{name}: what is not staged yet"),
+            DiffSide::All => format!("{name}: all its changes"),
+        };
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(RichText::new(said).size(11.0).color(pal().text_dim))
+                .on_hover_text("Click its row in the list again to stop showing it");
+        });
+    }
 
     let green = c(theme::get().git_added);
     card(ui, green, |ui| {

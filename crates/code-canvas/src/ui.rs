@@ -682,6 +682,8 @@ pub enum Action {
     OpenFolder,
     Rescan,
     FlyToPath(String),
+    /// A row of Source Control: its file shown as the diff of that side, and flown to.
+    FocusDiff(String, crate::page::DiffSide),
     FlyToSite(Site),
     ToggleHidden(String),
     ToggleCollapsed(String),

@@ -1495,15 +1495,17 @@ impl App {
         let f = &r.repo.files[fi];
         let change = page.git.as_ref().and_then(|git| git.change(&f.rel_path));
         let readable = Lod::for_zoom(page.camera.zoom) == Lod::Text;
-        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none()).map(|(row, _)| row);
+        let index_shown = page.diff_side(&f.rel_path) == Some(crate::page::DiffSide::Staged);
+        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none() && !index_shown);
+        let row = row.map(|(row, _)| row);
         let line = row.and_then(|row| match page.rows(&f.rel_path) {
             Some(rows) => rows.get(row as usize).filter(|row| row.kind != crate::git::RowKind::Gap).map(|row| row.line),
             None => Some(row),
         });
         let changed_here = |line: &u32| {
-            let hunks =
-                change.filter(|change| !change.unsaved).map(|change| change.hunks.as_slice()).unwrap_or_default();
-            hunks.iter().any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
+            let Some(change) = change.filter(|change| !change.unsaved) else { return false };
+            let mut all = change.hunks.iter().chain(&change.staged_hunks);
+            all.any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
         };
         self.ui.card_menu = Some(ui::CardMenu {
             at: egui::Pos2::new(point[0] / scale, point[1] / scale),
@@ -3566,6 +3568,12 @@ impl App {
                 }
             }
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
+            Action::FocusDiff(path, side) => {
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    page.focus_diff(&path, side);
+                }
+                self.apply(Action::FlyToPath(path));
+            }
             Action::FlyToPath(path) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
                     self.open_media(&file);
@@ -4699,7 +4707,12 @@ impl App {
                     ("split", _) => view.split = true,
                     ("together", _) => view.split = false,
                     ("around", lines) => view.around = lines.trim().parse().unwrap_or(view.around),
-                    _ => log::warn!("script: diff needs on|off|split|together|fold|unfold|around <lines>"),
+                    ("all", _) => view.side = crate::page::DiffSide::All,
+                    ("staged", _) => view.side = crate::page::DiffSide::Staged,
+                    ("unstaged", _) => view.side = crate::page::DiffSide::Unstaged,
+                    _ => log::warn!(
+                        "script: diff needs on|off|split|together|fold|unfold|around <lines>|all|staged|unstaged"
+                    ),
                 }
                 self.apply(Action::SetDiff(view));
             }
