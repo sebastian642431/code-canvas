@@ -2611,6 +2611,10 @@ pub struct WorkspaceRow {
     pub branches: Vec<String>,
     pub locals: Vec<crate::git::LocalBranch>,
     pub remotes: Vec<crate::git::RemoteBranch>,
+    /// How far the branch is behind its upstream; None when the folder is not open or has no upstream.
+    pub behind: Option<u32>,
+    pub git_busy: bool,
+    pub git_failed: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2618,6 +2622,7 @@ pub enum WorkspaceOp {
     Put(std::path::PathBuf),
     TakeOff(std::path::PathBuf),
     Forget(std::path::PathBuf),
+    Pull(std::path::PathBuf),
     PutAll,
 }
 
@@ -2689,11 +2694,15 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
             let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
             let shade = if row.branch.is_some() && on { pal().text_dim } else { pal().text_faint };
             let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), shade);
-            let name_end = right - counted.size().x - 8.0;
+            let mut name_end = right - counted.size().x - 8.0;
             let chip = Rect::from_min_size(
                 Pos2::new(right - counted.size().x - 4.0, mid - 10.0),
                 Vec2::new(counted.size().x + 8.0, 20.0),
             );
+            if let Some(behind) = row.behind.filter(|behind| !row.loading && (*behind > 0 || hot || row.git_busy)) {
+                let end = pull_button(ui, row, behind, Pos2::new(chip.left() - 2.0, mid), actions);
+                name_end = end - 4.0;
+            }
             let switchable = row.active && !row.branches.is_empty();
             let mut chip_hot = false;
             if switchable {
@@ -2794,6 +2803,45 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
         let (line, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
         ui.painter().rect_filled(line, 0.0, pal().border);
     });
+}
+
+/// The pull button of a workspace row, its right edge at `right_mid`; gives back its left edge.
+fn pull_button(ui: &mut egui::Ui, row: &WorkspaceRow, behind: u32, right_mid: Pos2, actions: &mut Vec<Action>) -> f32 {
+    let color = match (&row.git_failed, behind) {
+        (Some(_), _) => c(theme::get().git_removed),
+        (None, 0) => pal().text_dim,
+        (None, _) => pal().accent,
+    };
+    let label = match behind {
+        0 => crate::codicons::glyph("repo-pull").unwrap_or(icons::DOWNLOAD).to_string(),
+        n => format!("↓{n}"),
+    };
+    let galley = ui.painter().layout_no_wrap(label, FontId::proportional(11.5), color);
+    let size = Vec2::new((galley.size().x + 10.0).max(22.0), 20.0);
+    let rect = Rect::from_min_size(Pos2::new(right_mid.x - size.x, right_mid.y - size.y * 0.5), size);
+    let pull = ui.interact(rect, ui.scope_id().with(("pull", &row.path)), Sense::click());
+    if pull.hovered() && !row.git_busy {
+        ui.painter().rect_filled(rect, 5.0, pal().border_strong);
+    }
+    if row.git_busy {
+        let spot = Rect::from_center_size(rect.center(), Vec2::splat(12.0));
+        egui::Spinner::new().size(12.0).color(pal().text_dim).paint_at(ui, spot);
+    } else {
+        ui.painter().galley(rect.center() - galley.size() * 0.5, galley, color);
+    }
+    let mut tip = match (row.git_busy, behind) {
+        (true, _) => "Git is working in this folder…".to_string(),
+        (false, 0) => "Pull (fast-forward only)".to_string(),
+        (false, 1) => "Pull (fast-forward only): 1 commit to bring in".to_string(),
+        (false, n) => format!("Pull (fast-forward only): {n} commits to bring in"),
+    };
+    if let Some(why) = &row.git_failed {
+        tip.push_str(&format!("\n{why}"));
+    }
+    if pull.on_hover_text(tip).clicked() && !row.git_busy {
+        actions.push(Action::Workspace(WorkspaceOp::Pull(row.path.clone())));
+    }
+    rect.left()
 }
 
 fn workspace_drop(ctx: &egui::Context, st: &mut UiState, canvas: Rect) {

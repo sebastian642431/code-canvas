@@ -2108,6 +2108,36 @@ mod tests {
     }
 
     #[test]
+    fn pulling_brings_in_what_the_remote_has_but_never_merges() {
+        let Some(origin) = repository("pull-origin") else { return };
+        let clone = origin.with_file_name(format!("code-canvas-pull-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&clone);
+        let commit = |dir: &Path, name: &str| {
+            std::fs::write(dir.join(name), format!("{name}\n")).unwrap();
+            said(dir, &["add", name]);
+            said(dir, &["commit", "-q", "-m", name]);
+        };
+        commit(&origin, "first.txt");
+        said(&origin, &["clone", "-q", &origin.to_string_lossy(), &clone.to_string_lossy()]);
+        for (key, value) in [("core.autocrlf", "false"), ("user.name", "t"), ("user.email", "t@t")] {
+            said(&clone, &["config", key, value]);
+        }
+        let head = |dir: &Path| said(dir, &["rev-parse", "HEAD"]);
+
+        commit(&origin, "second.txt");
+        super::run(&clone, &GitOp::Pull).unwrap();
+        assert_eq!(head(&clone), head(&origin), "a branch only behind is fast-forwarded");
+
+        commit(&origin, "theirs.txt");
+        commit(&clone, "mine.txt");
+        let mine = head(&clone);
+        assert!(super::run(&clone, &GitOp::Pull).is_err(), "a branch that went its own way is not merged");
+        assert_eq!(head(&clone), mine, "and is left where it was");
+        let _ = std::fs::remove_dir_all(&clone);
+        let _ = std::fs::remove_dir_all(&origin);
+    }
+
+    #[test]
     fn local_branches_with_their_remote() {
         let text = "main\u{1f}origin/main\u{1f}ahead 1, behind 2\u{1f}*\nfeature/a\u{1f}origin/feature/a\u{1f}\u{1f} \nold\u{1f}origin/old\u{1f}gone\u{1f} \nlone\u{1f}\u{1f}\u{1f} \n";
         let got = parse_locals(text);

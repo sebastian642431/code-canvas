@@ -202,7 +202,7 @@ Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <
 `left files|search|extensions|problems|changes|settings|<publisher.name>|help|none`,
 `right symbols|<extension id>|none`, `folders`, `collapse-all`, `expand-all`, `connected on|off`,
 `changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `palette <text>`, `edit <path> <line> <column>`, `type <text>`,
-`key enter|backspace|undo|redo|save|…`, `git stage|unstage [path]`, `git commit <message>`,
+`key enter|backspace|undo|redo|save|…`, `git stage|unstage [path]`, `git commit <message>`, `git pull`,
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
 `answer <choice>` (press that button of a notice that asks),
 `resize <width> <height>`, `open <path>` (media viewer), `updates`, `maximize`,
