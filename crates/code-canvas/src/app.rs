@@ -1370,7 +1370,7 @@ impl App {
             // reading git again for each of its writes kept a dozen git processes running all the time.
             let page = &self.pages[i];
             let ignored = |rel: &String| page.git.as_ref().is_some_and(|git| git.ignores(rel));
-            if !fresh.is_empty() || known[i].iter().any(|rel| !ignored(rel)) {
+            if fresh.iter().chain(&known[i]).any(|rel| !ignored(rel)) {
                 self.pages[i].refresh_git();
             }
             let rescan = self.pages[i].ready().is_none() || fresh.len() + known[i].len() > ONE_BY_ONE;
@@ -2284,7 +2284,8 @@ impl App {
     fn minimap_shown(&self) -> bool {
         let page = self.pages.get(self.active);
         let node = page.and_then(|page| page.ready()?.layout.nodes.get(page.selected?));
-        !self.ui.bare && self.ui.prefs.minimap && node.is_some_and(|node| !node.is_dir())
+        let in_tab = self.ui.tabs.front().is_some();
+        !self.ui.bare && self.ui.prefs.minimap && !in_tab && node.is_some_and(|node| !node.is_dir())
     }
 
     fn clear(&self) -> Rect {
@@ -3184,7 +3185,7 @@ impl App {
         const ABOVE: u32 = 4;
         let Some(page) = self.pages.get(self.active) else { return };
         let change = page.git.as_ref().and_then(|git| git.changes.iter().find(|change| change.path == path));
-        let hunks = change.map(|change| change.hunks.as_slice()).unwrap_or_default();
+        let hunks = change.map(crate::git::FileChange::every_hunk).unwrap_or_default();
         let node = page.ready().and_then(|r| r.layout.node_for_path(&r.repo, path));
         let card = node.filter(|&n| page.ready().is_some_and(|r| !r.layout.nodes[n].is_dir()));
         let turn = match &self.change_turn {
@@ -3194,7 +3195,7 @@ impl App {
         // A card showing a diff has its changes at its own rows; a plain one at the lines of its hunks.
         let row = match page.change_rows(path) {
             Some(rows) => turn.checked_rem(rows.len()).map(|at| rows[at]),
-            None => crate::git::nth_change(hunks, turn).map(|line| page.row_of(path, line)),
+            None => crate::git::nth_change(&hunks, turn).map(|line| page.row_of(path, line)),
         };
         let (Some(n), Some(row), None) = (card, row, canvas_core::scan::media_kind(path)) else {
             self.change_turn = None;
@@ -3218,11 +3219,13 @@ impl App {
             Some((id, last, turn)) if *id == page.id && *last == path => Some(*turn),
             _ => None,
         };
-        if let (true, Some(turn)) = (focused, walked) {
-            let count = page.change_rows(&path).map_or(0, |rows| rows.len());
-            if turn + 1 < count {
-                return self.fly_to_change(&path);
-            }
+        let count = page.change_rows(&path).map_or(0, |rows| rows.len());
+        let back = match walked {
+            Some(turn) if focused && turn + 1 < count => return self.fly_to_change(&path),
+            Some(_) => focused,
+            None => focused && count == 0,
+        };
+        if back {
             page.focus_diff(&path, side);
             self.change_turn = None;
             return self.request_redraw();
@@ -3238,6 +3241,10 @@ impl App {
     fn change_when_diffed(&mut self) {
         const WAIT: Duration = Duration::from_secs(2);
         let Some((id, path, side, since)) = self.change_when_diffed.clone() else { return };
+        if self.ui.tabs.front().is_some() {
+            self.change_when_diffed = None;
+            return;
+        }
         let Some(page) = self.pages.get(self.active).filter(|page| page.id == id) else {
             self.change_when_diffed = None;
             return;
@@ -5561,6 +5568,7 @@ impl App {
         busy |= self.watcher.busy();
         self.watch_churn();
         busy |= self.settle_switches();
+        busy |= self.change_when_diffed.is_some();
         let (folders, trusted) = self.host_folders();
         self.ext.set_folders(folders, trusted);
         let (events, ext_changed) = self.ext.poll();

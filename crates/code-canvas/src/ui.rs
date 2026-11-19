@@ -1165,7 +1165,7 @@ pub fn build(
     files_tree::drag_step(&ctx, st, pages.get(active).map(|page| page.root.as_path()), actions);
     let commit_shown = pages.get(active).is_some_and(|page| page.showing.is_some());
     following_bar(&ctx, st, canvas, commit_shown, actions);
-    if !bare && st.prefs.minimap {
+    if !bare && st.prefs.minimap && st.tabs.front().is_none() {
         minimap::minimap(&ctx, st, canvas, pages.get(active), ext, actions);
     }
     share_panel(&ctx, st, actions);

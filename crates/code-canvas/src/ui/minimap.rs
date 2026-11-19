@@ -162,10 +162,10 @@ fn line_at_world(n: &Node, y: f32, lines: usize) -> u32 {
 
 fn marks(page: &Page, ext: &Extensions, file: usize, rel: &str, lines: u32) -> Vec<(Color32, Vec<(u32, u32)>)> {
     let t = theme::get();
-    let shown = |line: u32| page.row_of(rel, line).min(lines);
+    let shown = |line: u32| line.min(lines);
     let (mut added, mut modified, mut removed) = (Vec::new(), Vec::new(), Vec::new());
     let change = page.git.as_ref().and_then(|git| git.changes.iter().find(|change| change.path == rel));
-    for hunk in change.map_or(&[][..], |change| change.hunks.as_slice()).iter().take(MOST_MARKS) {
+    for hunk in change.map(crate::git::FileChange::every_hunk).unwrap_or_default().iter().take(MOST_MARKS) {
         let covered = hunk.lines();
         let span = (shown(covered.start), shown(covered.end.saturating_sub(1)).max(shown(covered.start)) + 1);
         match hunk.kind {
@@ -272,7 +272,9 @@ pub(super) fn minimap(
         }
         if let Some(seen) = seen.filter(|seen| seen.intersects(&node.rect)) {
             let count = file.line_count();
+            let line = |row: u32| page.line_of(&node.rel_path, row).unwrap_or(row);
             let (first, last) = (line_at_world(node, seen.y, count), line_at_world(node, seen.bottom(), count));
+            let (first, last) = (line(first), line(last));
             let y = |line: u32| content.top() + line as f32 * content.height() / lines as f32;
             let (top, bottom) = (y(first), y(last.max(first + 1)).max(y(first) + LEAST_MARK));
             let slider =
@@ -283,7 +285,7 @@ pub(super) fn minimap(
         if pull.is_pointer_button_down_on() {
             if let Some(p) = pull.interact_pointer_pos() {
                 let line = line_at(p.y - content.top(), lines, content.height());
-                let cell = node.cell_rect(line, 0, 1);
+                let cell = node.cell_rect(page.row_of(&node.rel_path, line), 0, 1);
                 let across = seen.is_some_and(|seen| cell.x >= seen.x && cell.x < seen.right());
                 let left = (!across).then_some(cell.x - node.gutter - canvas_core::layout::CARD_PAD);
                 actions.push(Action::MinimapTo { y: cell.y + cell.h * 0.5, left });

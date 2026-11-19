@@ -48,6 +48,11 @@ impl App {
             }
             FindOp::Mode(FindIn::Text) => {
                 let query = self.ui.find.as_ref().map(|find| find.query.clone()).unwrap_or_default();
+                let options = self.ui.find_kept.options;
+                // The find bar is smart-case: a capital in a plain query makes it exact.
+                self.ui.search.case = options.case || (!options.regex && query.chars().any(char::is_uppercase));
+                self.ui.search.word = options.word;
+                self.ui.search.regex = options.regex;
                 self.find(FindOp::Close);
                 self.ui.show(Panel::Search);
                 if !query.trim().is_empty() {
@@ -189,8 +194,10 @@ impl App {
         let f = &r.repo.files[index];
         for line in 0..f.line_count() {
             matcher.each(f.line(line), |col, len| {
-                let (col, len) = (col.min(u16::MAX as usize) as u16, len.min(u16::MAX as usize) as u16);
-                hits.push(Site { file: index as u32, line: line as u32, col, len });
+                if col + len > u16::MAX as usize {
+                    return true;
+                }
+                hits.push(Site { file: index as u32, line: line as u32, col: col as u16, len: len as u16 });
                 hits.len() < most
             });
             if hits.len() >= most {

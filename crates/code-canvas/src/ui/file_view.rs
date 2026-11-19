@@ -304,7 +304,7 @@ fn code(
         }
         None if page.commit_shown().is_none() => {
             let change = page.git.as_ref().and_then(|git| git.change(rel));
-            for h in change.map(|change| change.hunks.as_slice()).unwrap_or_default() {
+            for h in &change.map(crate::git::FileChange::every_hunk).unwrap_or_default() {
                 let (from, to) = (h.line as usize, (h.line + h.count) as usize);
                 let color = match h.kind {
                     HunkKind::Added => t.git_added,

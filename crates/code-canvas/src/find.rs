@@ -41,7 +41,7 @@ impl Matcher {
     pub fn new(query: &str, options: Options) -> Result<Matcher, String> {
         let how = if options.regex {
             let built = regex::RegexBuilder::new(query).case_insensitive(!options.case).build();
-            How::Regex(built.map_err(|e| e.to_string())?)
+            How::Regex(built.map_err(|e| canvas_core::grep::short_error(&e.to_string()))?)
         } else {
             let fold = !options.case && !query.chars().any(char::is_uppercase);
             let wanted = query.chars().map(|c| if fold { folded(c) } else { c }).collect();
@@ -106,7 +106,7 @@ impl Matcher {
         match &self.how {
             How::Regex(re) => {
                 match re.captures_at(line, start).filter(|caps| caps.get(0).is_some_and(|m| m.start() == start)) {
-                    Some(caps) => caps.expand(with, &mut out),
+                    Some(caps) => caps.expand(&canvas_core::grep::expansion(with), &mut out),
                     None => out.push_str(with),
                 }
             }
@@ -235,6 +235,7 @@ mod tests {
     fn regex_replacements_take_groups() {
         let matcher = Matcher::new(r"(\w+)@(\w+)", Options { regex: true, ..PLAIN }).unwrap();
         assert_eq!(matcher.replacement("ñ me@home", 2, 7, "$2 of $1", false), "home of me");
+        assert_eq!(matcher.replacement("me@home", 0, 7, "$1x\\t$2", false), "mex\thome", "as the Search panel does");
         let plain = Matcher::new("x", PLAIN).unwrap();
         assert_eq!(plain.replacement("x", 0, 1, "$1", false), "$1");
     }

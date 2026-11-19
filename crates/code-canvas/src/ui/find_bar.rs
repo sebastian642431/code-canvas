@@ -146,7 +146,10 @@ pub(super) fn find_bar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, acti
     let typing = ctx.memory(|m| m.has_focus(query_id) || m.has_focus(with_id));
     let in_file = find.mode == FindIn::File;
 
-    let key = |mods: Modifiers, pressed: Key| ctx.input_mut(|i| i.consume_key(mods, pressed));
+    // egui lets an extra Shift through; Ctrl+Shift+F is another command.
+    let key = |mods: Modifiers, pressed: Key| {
+        ctx.input_mut(|i| i.modifiers.shift == mods.shift && i.consume_key(mods, pressed))
+    };
     if key(Modifiers::SHIFT, Key::F3) {
         actions.push(Action::Find(FindOp::Previous));
     } else if key(Modifiers::NONE, Key::F3) {

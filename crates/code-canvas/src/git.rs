@@ -129,6 +129,15 @@ pub struct FileChange {
     pub from: Option<String>,
 }
 
+impl FileChange {
+    /// What is staged and what is not, in the order of the file.
+    pub fn every_hunk(&self) -> Vec<Hunk> {
+        let mut all: Vec<Hunk> = self.hunks.iter().chain(&self.staged_hunks).copied().collect();
+        all.sort_by_key(|hunk| hunk.line);
+        all
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Back {
     Commit,

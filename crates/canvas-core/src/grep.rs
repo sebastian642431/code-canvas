@@ -91,7 +91,9 @@ fn whole_word(line: &str, start: usize, end: usize) -> bool {
 }
 
 /// A replacement as typed (JavaScript style, like VS Code) in the syntax of the regex crate.
-fn expansion(with: &str) -> String {
+/// A replacement as the regex crate expands it: `$1x` is group 1 then "x", `\n` and `\t` are
+/// a new line and a tab.
+pub fn expansion(with: &str) -> String {
     let mut out = String::with_capacity(with.len() + 8);
     let mut chars = with.chars().peekable();
     while let Some(c) = chars.next() {
