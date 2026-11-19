@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -157,6 +158,8 @@ pub struct Page {
     pub search: Option<SearchResults>,
     /// What the Search panel found in the folder's files.
     pub grep: crate::search::Grep,
+    pub marked: Option<Marked>,
+    found: Option<(Vec<Site>, FoundLines)>,
     pub git: Option<GitState>,
     pub history: crate::history::HistoryView,
     /// The interactive rebase being arranged in its card.
@@ -384,6 +387,30 @@ impl SearchResults {
     }
 }
 
+/// Lines an extension asked to show (a link in a chat), marked until a click lands off their card.
+pub struct Marked {
+    pub rel: String,
+    first: u32,
+    last: u32,
+}
+
+impl Marked {
+    pub fn new(rel: String, line: u32, last: u32) -> Marked {
+        Marked { rel, first: line.min(last), last: line.max(last) }
+    }
+
+    /// The rows the lines take in a card of `rows` rows, `row_of` telling the row of a line.
+    pub fn rows(&self, rows: u32, row_of: impl Fn(u32) -> u32) -> Option<Range<u32>> {
+        let (a, b) = (row_of(self.first), row_of(self.last));
+        let (a, b) = (a.min(b), a.max(b).saturating_add(1).min(rows));
+        (a < b).then_some(a..b)
+    }
+
+    pub fn kept_by_click(card: Option<canvas_core::Rect>, at: [f32; 2]) -> bool {
+        card.is_some_and(|card| card.contains(at))
+    }
+}
+
 #[derive(Default)]
 pub struct Timeline {
     pub path: Option<String>,
@@ -424,6 +451,8 @@ impl Page {
             curves_dirty: true,
             search: None,
             grep: Default::default(),
+            marked: None,
+            found: None,
             git: None,
             history: Default::default(),
             rebase: None,
@@ -1383,6 +1412,30 @@ impl Page {
         }
     }
 
+    fn marked_card(&self) -> Option<(usize, &canvas_core::layout::Node)> {
+        let r = self.ready()?;
+        let file = r.repo.file_index(&self.marked.as_ref()?.rel)?;
+        let node = r.layout.file_node.get(file).copied().filter(|&n| n != canvas_core::layout::NONE)?;
+        Some((file, &r.layout.nodes[node as usize]))
+    }
+
+    /// The card of the marked lines and the rows they take in it.
+    pub fn marked_rows(&self) -> Option<(&canvas_core::layout::Node, Range<u32>)> {
+        let (marked, r) = (self.marked.as_ref()?, self.ready()?);
+        let (file, node) = self.marked_card()?;
+        let rows = marked.rows(r.repo.files[file].line_count() as u32, |line| self.row_of(&marked.rel, line))?;
+        Some((node, rows))
+    }
+
+    /// A click at `world` off the card of the marked lines takes the mark away. Whether it did.
+    pub fn unmark_unless_on(&mut self, world: [f32; 2]) -> bool {
+        if self.marked.is_none() || Marked::kept_by_click(self.marked_card().map(|(_, n)| n.rect), world) {
+            return false;
+        }
+        self.marked = None;
+        true
+    }
+
     pub fn ready_mut(&mut self) -> Option<&mut Ready> {
         match &mut self.state {
             PageState::Ready(r) => Some(r),
@@ -1874,6 +1927,25 @@ mod tests {
         assert_eq!(done.left(at + GitNote::DONE_SHOWN), None);
         assert_eq!(error.left(at + Duration::from_secs(10)), Some(Duration::from_secs(10)));
         assert_eq!(error.left(at + GitNote::ERROR_SHOWN + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn marked_lines_take_their_rows_within_the_card() {
+        let marked = Marked::new("package.json".into(), 29, 21);
+        assert_eq!(marked.rows(100, |line| line), Some(21..30), "a range given backwards is put in order");
+        assert_eq!(marked.rows(25, |line| line), Some(21..25), "a file that got shorter keeps what is left");
+        assert_eq!(marked.rows(20, |line| line), None);
+        assert_eq!(marked.rows(100, |line| line + 3), Some(24..33), "lines of a diff are found at their rows");
+        assert_eq!(Marked::new("a".into(), 0, 0).rows(1, |line| line), Some(0..1));
+    }
+
+    #[test]
+    fn only_a_click_on_the_marked_card_keeps_the_mark() {
+        let card = canvas_core::Rect::new(10.0, 10.0, 100.0, 50.0);
+        assert!(Marked::kept_by_click(Some(card), [50.0, 30.0]));
+        assert!(!Marked::kept_by_click(Some(card), [5.0, 30.0]));
+        assert!(!Marked::kept_by_click(Some(card), [50.0, 70.0]));
+        assert!(!Marked::kept_by_click(None, [50.0, 30.0]), "a card no longer shown keeps nothing");
     }
 
     #[test]
