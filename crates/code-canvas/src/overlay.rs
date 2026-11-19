@@ -1089,19 +1089,6 @@ pub fn build(
                     let tint = theme::get().select;
                     out.over.push(RectInstance::new(rect, with_alpha(tint, 0.05), with_alpha(tint, 0.75), 2.0, 1.0));
                 }
-                let site = repo.sym_site(sym);
-                if !seen_chips.contains(&(site.file, site.line)) {
-                    if let Some((at, _)) = layout.anchor(&repo.sym_line_start(sym)) {
-                        chips.push(Chip {
-                            at,
-                            text: format!("{} {}", repo.sym(sym).kind.badge(), repo.sym_name(sym)),
-                            border: theme::get().select,
-                            text_color: theme::get().chip_text,
-                            bold: false,
-                            sym: None,
-                        });
-                    }
-                }
             }
         }
     }
