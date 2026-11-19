@@ -27,6 +27,7 @@ mod tree_files;
 
 mod assistants;
 mod consoles;
+mod folder_links;
 mod github_sync;
 mod sharing;
 mod term_steps;
@@ -1066,7 +1067,10 @@ impl App {
     }
 
     fn show_path(&mut self, path: &Path, at: Option<(u32, u32, u32)>) {
-        let path = canvas_core::scan::clean_path(path.to_path_buf());
+        let Some(path) = self.resolve_link(path) else { return };
+        if path.is_dir() {
+            return self.show_dir(path);
+        }
         let found = self.locate_file(&path);
         let shown = found.as_ref().is_some_and(|(i, rel)| {
             self.pages[*i].ready().is_some_and(|r| r.layout.node_for_path(&r.repo, rel).is_some())
@@ -1090,9 +1094,6 @@ impl App {
         if !path.exists() {
             let text = format!("{} is not there any more.", path.display());
             return self.ext.notice(ext::Level::Warn, "Files", text);
-        }
-        if path.is_dir() {
-            return self.open_folder(path, None);
         }
         let waiting = found.as_ref().is_some_and(|(i, _)| self.pages[*i].ready().is_none());
         match found {
