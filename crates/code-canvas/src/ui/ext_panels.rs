@@ -312,7 +312,7 @@ pub fn extensions_panel(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extension
                                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                     let name_color = if e.enabled { pal().text } else { pal().text_dim };
                                     let name = RichText::new(&e.display_name).size(13.5).strong().color(name_color);
-                                    open |= ui.add(egui::Label::new(name).truncate().sense(Sense::click())).clicked();
+                                    open |= ui.add(egui::Label::new(name).truncate().sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
                                 });
                             });
                             let second = if e.status == Status::Failed && !e.error.is_empty() { &e.error } else { &e.description };

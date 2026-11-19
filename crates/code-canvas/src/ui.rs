@@ -1445,13 +1445,13 @@ fn status_bar(
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             let version = RichText::new(format!("v{}", crate::update::current())).size(11.5).color(pal().text_faint);
-            let version = ui.add(egui::Label::new(version).sense(Sense::click()));
+            let version = ui.add(egui::Label::new(version).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
             if version.on_hover_text("The version of Code Canvas: click for Settings and updates").clicked() {
                 st.settings.show(Some(settings::Tab::General));
             }
             if st.new_build {
                 let offer = RichText::new(format!("{}  Restart into the new build", icons::REFRESH_CW)).size(12.0).color(pal().accent);
-                let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
+                let label = ui.add(egui::Label::new(offer).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 let tip = "A new build of Code Canvas was put in place of this one. Click to restart into it when it suits you (an assistant's chat open here restarts too). Open folders and files come back as they are.";
                 if label.on_hover_text(tip).clicked() {
                     actions.push(Action::RestartIntoNewBuild);
@@ -1460,7 +1460,7 @@ fn status_bar(
             if let crate::update::State::Available(new) = &st.update {
                 let glyph = crate::codicons::glyph("cloud-download").unwrap_or(icons::DOWNLOAD);
                 let offer = RichText::new(format!("{glyph} Update to {new}")).size(12.0).color(pal().accent);
-                let label = ui.add(egui::Label::new(offer).sense(Sense::click()));
+                let label = ui.add(egui::Label::new(offer).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if label.on_hover_text("Download the new version and restart into it").clicked() {
                     update_now = true;
                 }
@@ -1477,7 +1477,7 @@ fn status_bar(
                     text.push_str(&format!(" ↓{}", git.behind));
                 }
                 let label =
-                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if label.on_hover_text("Source control").clicked() {
                     panel_to_show = Some(Panel::Changes);
                 }
@@ -1486,7 +1486,7 @@ fn status_bar(
             if unsaved > 0 {
                 let text = format!("●  {unsaved} not saved");
                 let label =
-                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()));
+                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 let tip = st.keys.hint("Typed but not written to disk yet: click to save", Command::Save);
                 save = label.on_hover_text(tip).clicked();
             }
@@ -1499,7 +1499,7 @@ fn status_bar(
                     (0, _) => c(theme::get().problem_warning),
                     _ => c(theme::get().problem_error),
                 };
-                let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
+                let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if label.on_hover_text("Problems reported by extensions: click to list them").clicked() {
                     panel_to_show = Some(Panel::Problems);
                 }
@@ -1510,7 +1510,7 @@ fn status_bar(
             if st.restricted {
                 let shield = crate::codicons::glyph("shield").unwrap_or(icons::CIRCLE_ALERT);
                 let text = RichText::new(format!("{shield} Restricted mode")).size(12.0).color(pal().text_dim);
-                let label = ui.add(egui::Label::new(text).sense(Sense::click()));
+                let label = ui.add(egui::Label::new(text).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 let tip = "A folder open here is not trusted: extensions that could run what it brings are off or limited. Click to trust it.";
                 if label.on_hover_text(tip).clicked() {
                     actions.push(Action::TrustFolders);
