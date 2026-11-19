@@ -1004,6 +1004,9 @@ impl Page {
                 self.git_note = Some((true, "Pushed.".into()))
             }
             (crate::git::GitOp::Pull, Ok(_)) => self.git_note = Some((true, "Pulled.".into())),
+            (crate::git::GitOp::PullBranch { name, .. }, Ok(_)) => {
+                self.git_note = Some((true, format!("{name} is up to date with its remote.")))
+            }
             (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some((true, "Fetched.".into())),
             (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some((true, "Changes stashed.".into())),
             (crate::git::GitOp::Switch(branch), Ok(_)) => self.git_note = Some((true, format!("On branch {branch}."))),

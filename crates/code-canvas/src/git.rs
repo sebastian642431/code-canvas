@@ -845,6 +845,12 @@ pub enum GitOp {
         remote: String,
         name: String,
     },
+    /// Bring a branch that is not checked out up to its upstream, fast-forward only, without switching to it.
+    PullBranch {
+        remote: String,
+        from: String,
+        name: String,
+    },
     NewTag {
         name: String,
         at: Option<String>,
@@ -961,6 +967,7 @@ fn steps(op: &GitOp) -> Vec<Vec<String>> {
         GitOp::DeleteBranch(name) => vec![s(&["branch", "-d", name])],
         GitOp::DeleteRemoteBranch { remote, name } => vec![s(&["push", remote, "--delete", name])],
         GitOp::PushBranch { remote, name } => vec![s(&["push", "-u", remote, name])],
+        GitOp::PullBranch { remote, from, name } => vec![s(&["fetch", remote, &format!("{from}:{name}")])],
         GitOp::NewTag { name, at } => {
             let mut args = s(&["tag", name]);
             args.extend(at.iter().cloned());
@@ -2189,6 +2196,10 @@ mod tests {
             v(&["push", "origin", "--delete", "a"])
         );
         assert_eq!(one(GitOp::PushBranch { remote: "up".into(), name: "a".into() }), v(&["push", "-u", "up", "a"]));
+        assert_eq!(
+            one(GitOp::PullBranch { remote: "origin".into(), from: "feature/x".into(), name: "x".into() }),
+            v(&["fetch", "origin", "feature/x:x"])
+        );
         assert_eq!(one(GitOp::NewTag { name: "t".into(), at: None }), v(&["tag", "t"]));
         assert_eq!(one(GitOp::NewTag { name: "t".into(), at: Some("dev".into()) }), v(&["tag", "t", "dev"]));
         assert_eq!(one(GitOp::DeleteTag("t".into())), v(&["tag", "-d", "t"]));
