@@ -303,17 +303,21 @@ Resolution rules per language:
   `col_stride` and before `code_origin`, so everything that goes from a cell to a
   place or back keeps working; what measures a column's width takes it off.
   `set_line_numbers` is for the whole app: the layout reads it when it is built.
-- `Node::fold` is how many lines a column of the card holds before the text goes
-  on in the next column: `FOLD_LINES` for every file, unless `SourceFile::fold`
-  says less (`rows_per_column`). The shader gets it per file in the fourth value
-  of its origin. It is what puts the two sides of a diff next to each other. On a
-  wrapped card (`Node::wrap`, below) it counts *rows*: those of its tallest
-  column.
-- `FOLD_LINES` (2048) must stay a multiple of `CHUNK_LINES` and `BLOCK_LINES`, so
-  chunks and blocks never straddle two columns of a folded file. The shader has
-  its own copy, see [shaders](#cratescanvas-rendersrcshaders).
-- Files longer than `FOLD_LINES` are folded into side-by-side columns, like a
-  newspaper, so one huge data file cannot stretch the whole canvas.
+- `Node::fold` is how many rows a column of the card holds before the text goes
+  on in the next column: `ONE_COLUMN` (`u32::MAX`) for every file, so a long file
+  is one column as tall as all its lines, unless `SourceFile::fold` says less
+  (`rows_per_column`). Only the side-by-side diff does: its two halves are two
+  columns of `fold` rows each (`git::side_by_side`). The shader gets it per file
+  in the fourth value of its origin. A wrapped card (`Node::wrap`, below) is
+  always one column. `Node::columns` is how many a card has; whatever loops over
+  them loops at most twice.
+- Columns were once a fold every 2048 lines, side by side like a newspaper: a
+  long file is no longer cut that way. `pack` copes with its very tall card
+  instead: when one item is taller than the box its area asks for, the box is
+  only as wide as all its area at that height plus one more item (`area /
+  tallest + widest + GAP`), so the rest stands in a strip beside the long card, near
+  its top, instead of in one row as wide as the area wants with most of the
+  height under it empty.
 - `MAX_COLS` (160): a card grows with its longest line up to that; longer lines
   are clipped, and the rest of one is shown beside its card under the pointer
   or the caret (`rest_of_line`, below), unless they are wrapped.
@@ -326,11 +330,8 @@ Resolution rules per language:
   whatever is drawn at a line and column (carets, selections, finds, washes,
   problems, decorations, relation ends, assistant marks) lands on its row
   without knowing. What spans columns must ask `cell_rects`: one rectangle per
-  row it crosses. Rows are *virtual*: column `k` of a long file starts at row
-  `k × fold`, so the shader's arithmetic and `FOLD_LINES` columns of lines stay
-  as they were; a shorter column just leaves rows empty at its foot.
-  `Page::show_edit` makes the edited file's `Wrap` again on each edit
-  (`Layout::resize_file`, below).
+  row it crosses. `Page::show_edit` makes the edited file's `Wrap` again on each
+  edit (`Layout::resize_file`, below).
 - `rest_of_line` is the geometry of that rest, in pixels of the screen: rows that
   start where the card cuts the line (`Node::shown_cols`) and go on to the right
   edge of the canvas, wrapping under the first row when the rest is wider. With
@@ -732,10 +733,9 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 
 ### crates/canvas-render/src/shaders
 
-- `code.wgsl`: the constant `FOLD_LINES` **must match**
-  `canvas_core::layout::FOLD_LINES`. `BAR` = 0.72 is the fraction of the line
+- `code.wgsl`: `BAR` = 0.72 is the fraction of the line
   height a bar covers. `origins[file]`: `x, y` the first character of the file,
-  `z` the x distance between folded columns.
+  `z` the x distance between columns, `w` the rows of a column (`Node::fold`).
 - `rect.wgsl`: rectangles thinner than a pixel stay one pixel wide but fade out by
   their real coverage. Geometry is grown by 1 px for anti-aliasing (`curve.wgsl`
   too).

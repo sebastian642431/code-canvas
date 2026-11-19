@@ -352,15 +352,9 @@ pub fn side_by_side(old: &str, new: &str, around: Option<u32>) -> Option<DiffTex
             }
         }
     }
-    let per = left.len().clamp(1, canvas_core::layout::FOLD_LINES);
-    let mut shown: Vec<(RowKind, u32, &str)> = Vec::new();
-    for (was, is) in left.chunks(per).zip(right.chunks(per)) {
-        shown.extend_from_slice(was);
-        let line = was.last().map_or(0, |row| row.1);
-        shown.extend(std::iter::repeat_n((RowKind::Blank, line, ""), per - was.len()));
-        shown.extend_from_slice(is);
-    }
-    Some(DiffText::new(shown, after.len(), per))
+    let per = left.len().max(1);
+    left.extend(right);
+    Some(DiffText::new(left, after.len(), per))
 }
 
 pub fn line_of(rows: Option<&[Row]>, row: u32) -> Option<u32> {
