@@ -2397,11 +2397,36 @@ fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, glyph: &str) -
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(icon(glyph, 14.0, pal().text_dim));
-                ui.add(egui::TextEdit::singleline(text).hint_text(hint).frame(Frame::NONE).desired_width(f32::INFINITY))
+                let clearable = !text.is_empty();
+                let width = if clearable {
+                    ui.available_width() - CLEAR_SIZE - ui.spacing().item_spacing.x
+                } else {
+                    f32::INFINITY
+                };
+                let mut resp =
+                    ui.add(egui::TextEdit::singleline(text).hint_text(hint).frame(Frame::NONE).desired_width(width));
+                if clearable && clear_button(ui) {
+                    text.clear();
+                    resp.mark_changed();
+                    resp.request_focus();
+                }
+                resp
             })
             .inner
         })
         .inner
+}
+
+const CLEAR_SIZE: f32 = 18.0;
+
+fn clear_button(ui: &mut egui::Ui) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(CLEAR_SIZE), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, pal().hover);
+    }
+    let color = if resp.hovered() { pal().text } else { pal().text_faint };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icons::X, FontId::proportional(12.0), color);
+    resp.on_hover_text("Clear").clicked()
 }
 
 fn file_glyph(name: &str) -> &'static str {
