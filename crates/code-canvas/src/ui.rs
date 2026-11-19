@@ -2424,8 +2424,17 @@ fn folder_switcher(
         None => "No folder".into(),
     };
     let count = if pages.len() > 1 { format!("  {}/{}", active + 1, pages.len()) } else { String::new() };
-    let label = format!("{}  {title}{count}  {}", icons::FOLDER, icons::CHEVRON_DOWN);
-    let button = ui.menu_button(RichText::new(label).size(13.5).color(pal().text), |ui| {
+    let mut label = egui::text::LayoutJob::default();
+    let font = FontId::proportional(13.5);
+    for (part, color) in [
+        (format!("{}  ", icons::FOLDER_OPEN), pal().accent),
+        (title, pal().text),
+        (count, pal().text_dim),
+        (format!("  {}", icons::CHEVRON_DOWN), pal().text_faint),
+    ] {
+        label.append(&part, 0.0, egui::TextFormat::simple(font.clone(), color));
+    }
+    let button = ui.menu_button(label, |ui| {
         let font = FontId::proportional(13.0);
         let longest = pages
             .iter()
@@ -2445,14 +2454,9 @@ fn folder_switcher(
                 ui.painter().rect_filled(rect, 6.0, pal().hover);
             }
             let mid = rect.center().y;
-            let color = if i == active { pal().text } else { pal().text_dim };
-            ui.painter().text(
-                Pos2::new(rect.left() + 10.0, mid),
-                Align2::LEFT_CENTER,
-                icons::FOLDER,
-                font.clone(),
-                color,
-            );
+            let (glyph, color) =
+                if i == active { (icons::FOLDER_OPEN, pal().accent) } else { (icons::FOLDER, pal().text_dim) };
+            ui.painter().text(Pos2::new(rect.left() + 10.0, mid), Align2::LEFT_CENTER, glyph, font.clone(), color);
             let clip = Rect::from_min_max(
                 Pos2::new(rect.left() + 32.0, rect.top()),
                 Pos2::new(close_at.left() - 4.0, rect.bottom()),
@@ -2660,19 +2664,33 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
             st.tree.folders.push((rect, row.path.clone()));
             let on = row.page.is_some();
             let hot = ui.rect_contains_pointer(rect);
+            let mid = rect.center().y;
             if row.active {
-                ui.painter().rect_filled(rect, 6.0, pal().raised);
+                ui.painter().rect_filled(rect, 6.0, pal().accent.gamma_multiply(if hot { 0.24 } else { 0.16 }));
+                let bar = Rect::from_center_size(Pos2::new(rect.left() + 1.5, mid), Vec2::new(3.0, 16.0));
+                ui.painter().rect_filled(bar, 1.5, pal().accent);
             } else if hot {
                 ui.painter().rect_filled(rect, 6.0, pal().hover);
             }
-            let mid = rect.center().y;
             let font = FontId::proportional(13.0);
-            let tint = if on { pal().text } else { pal().text_faint };
-            if on {
-                ui.painter().circle_filled(Pos2::new(rect.left() + 6.0, mid), 2.5, pal().accent);
+            let tint = match (row.active, on) {
+                (true, _) => pal().text,
+                (false, true) => pal().text_dim,
+                (false, false) => pal().text_faint,
+            };
+            // The accent belongs to the folder in view; the dot only says "on the canvas".
+            if on && !row.active {
+                ui.painter().circle_filled(Pos2::new(rect.left() + 6.0, mid), 2.5, pal().text_faint);
             }
-            let folder = if on { icons::FOLDER_OPEN } else { icons::FOLDER };
-            ui.painter().text(Pos2::new(rect.left() + 22.0, mid), Align2::CENTER_CENTER, folder, font.clone(), tint);
+            let (folder, icon_tint) =
+                if row.active { (icons::FOLDER_OPEN, pal().accent) } else { (icons::FOLDER, tint) };
+            ui.painter().text(
+                Pos2::new(rect.left() + 22.0, mid),
+                Align2::CENTER_CENTER,
+                folder,
+                font.clone(),
+                icon_tint,
+            );
             let button = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(22.0));
             let pressed = ui.interact(button, ui.scope_id().with(("workspace", &row.path)), Sense::click());
             let count = match (row.loading, &row.branch, row.files) {
@@ -2682,7 +2700,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 (false, None, None) => String::new(),
             };
             let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
-            let shade = if row.branch.is_some() && on { pal().text_dim } else { pal().text_faint };
+            let shade = if row.branch.is_some() && row.active { pal().text_dim } else { pal().text_faint };
             let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), shade);
             let name_end = right - counted.size().x - 8.0;
             let chip = Rect::from_min_size(
@@ -2715,14 +2733,18 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
             }
             let shade = if chip_hot { pal().text } else { shade };
             ui.painter().galley(Pos2::new(right - counted.size().x, mid - counted.size().y * 0.5), counted, shade);
-            text_fit(
-                ui.painter(),
-                Pos2::new(rect.left() + 36.0, mid),
-                &row.title,
-                font,
-                tint,
-                name_end - rect.left() - 36.0,
-            );
+            // No bold face is loaded, so the folder in view gets its name drawn twice, half a pixel apart.
+            let strokes: &[f32] = if row.active { &[0.0, 0.6] } else { &[0.0] };
+            for nudge in strokes {
+                text_fit(
+                    ui.painter(),
+                    Pos2::new(rect.left() + 36.0 + nudge, mid),
+                    &row.title,
+                    font.clone(),
+                    tint,
+                    name_end - rect.left() - 36.0,
+                );
+            }
             if hot {
                 if pressed.hovered() {
                     ui.painter().rect_filled(button, 5.0, pal().border_strong);
@@ -2744,6 +2766,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 about.push_str(&format!(" · {files} files"));
             }
             let tip = match on {
+                true if row.active => format!("{about}\nThe folder in view; the cross takes it off the canvas."),
                 true => format!("{about}\nOn the canvas. Click to go to it; the cross takes it off."),
                 false => format!("{about}\nNot on the canvas. Click, or drag it onto the canvas, to put it there."),
             };
