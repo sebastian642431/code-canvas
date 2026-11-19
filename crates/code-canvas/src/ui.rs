@@ -2777,6 +2777,8 @@ pub enum WorkspaceOp {
     Forget(std::path::PathBuf),
     Pull(std::path::PathBuf),
     PutAll,
+    /// A git operation for that folder, which need not be the one in view.
+    Git(std::path::PathBuf, crate::git::GitOp),
 }
 
 fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
@@ -2868,7 +2870,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 let end = pull_button(ui, row, behind, Pos2::new(chip.left() - 2.0, mid), actions);
                 name_end = end - 4.0;
             }
-            let switchable = row.active && !row.branches.is_empty();
+            let switchable = row.page.is_some() && !row.branches.is_empty();
             let mut chip_hot = false;
             if switchable {
                 let place = ui.interact(chip, ui.scope_id().with(("branch", &row.path)), Sense::click());
@@ -2880,6 +2882,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 if opening {
                     st.branch_filter.clear();
                 }
+                let mut picked = Vec::new();
                 egui::Popup::menu(&place).show(|ui| {
                     branch_picker::Picker {
                         filter: &mut st.branch_filter,
@@ -2888,9 +2891,13 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                         locals: &row.locals,
                         remotes: &row.remotes,
                     }
-                    .show(ui, actions);
+                    .show(ui, &mut picked);
                 });
-                place.on_hover_text("Branch: click to switch to another");
+                actions.extend(picked.into_iter().map(|action| match action {
+                    Action::Git(op) if !row.active => Action::Workspace(WorkspaceOp::Git(row.path.clone(), op)),
+                    other => other,
+                }));
+                place.on_hover_text("Branch: click to switch this folder to another, without leaving the one in view");
             }
             let shade = if chip_hot { pal().text } else { shade };
             ui.painter().galley(Pos2::new(right - counted.size().x, mid - counted.size().y * 0.5), counted, shade);
