@@ -3470,7 +3470,9 @@ impl App {
         if page.only_connected {
             self.relayout();
         }
-        self.ui.show(Panel::Symbols);
+        if self.ui.prefs.symbols_panel {
+            self.ui.show(Panel::Symbols);
+        }
         self.request_redraw();
     }
 

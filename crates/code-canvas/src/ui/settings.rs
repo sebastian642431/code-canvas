@@ -164,6 +164,11 @@ const EDITING: [(&str, &str); 10] = [
     ),
 ];
 
+const SYMBOLS_PANEL: (&str, &str) = (
+    "Open Selected symbols when a name is clicked",
+    "The panel with the filters and the uses of the names you click. Off, a click still draws the curves on the canvas, and the panel opens from its icon.",
+);
+
 const TRAILS: (&str, &str) = (
     "Show where each assistant has been",
     "Its last places, faint in its colour and joined by a dotted line: a ring where it read, a dot where it edited. They fade out in ten minutes. Point at one to see what it did there.",
@@ -374,7 +379,8 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, "", &mut next.check_updates, UPDATES);
         });
     }
-    let editing = EDITING.iter().any(|(label, about)| hit(f, &[label, about, "Help while editing"]));
+    let editing =
+        EDITING.iter().chain([&SYMBOLS_PANEL]).any(|(label, about)| hit(f, &[label, about, "Help while editing"]));
     if editing {
         let f = if hit(f, &["Help while editing"]) { "" } else { f };
         section(ui, icons::PACKAGE, "Help while editing");
@@ -391,6 +397,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.wrap, EDITING[8]);
             option(ui, f, &mut next.autosave, EDITING[6]);
             option(ui, f, &mut next.code_lenses, EDITING[7]);
+            option(ui, f, &mut next.symbols_panel, SYMBOLS_PANEL);
         });
     }
     let assistants =
