@@ -35,6 +35,7 @@ mod prefs;
 mod rails;
 mod rebase;
 mod script;
+mod search;
 mod session;
 mod share;
 mod sync;

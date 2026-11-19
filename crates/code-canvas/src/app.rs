@@ -1132,6 +1132,11 @@ impl App {
     }
 
     fn write_file(&mut self, path: &Path, text: &str) {
+        self.write_into(path, text, true);
+    }
+
+    /// Writes a file and shows it again on its card; `git` also reads git's state again.
+    fn write_into(&mut self, path: &Path, text: &str, git: bool) {
         if let Err(e) = self.watcher.write(path, text) {
             log::error!("cannot write {}: {e}", path.display());
             return;
@@ -1155,7 +1160,9 @@ impl App {
             if let (Some(g), Some(page)) = (self.gfx.as_mut(), self.pages.get_mut(i)) {
                 g.renderer.text.drop_page(page.id);
                 page.reload_file(&rel, "written", &g.gpu(), &self.ui.filters);
-                page.refresh_git();
+                if git {
+                    page.refresh_git();
+                }
             }
         }
         self.request_redraw();
@@ -1696,6 +1703,226 @@ impl App {
         self.find_refresh(!all);
     }
 
+    /// Shows the Search panel with its query field focused; with a query (or text selected in the
+    /// file being edited) it is searched right away.
+    fn search_in_files(&mut self, query: Option<String>) {
+        let chosen = self.pages.get(self.active).and_then(|page| page.editor()).map(|editor| editor.selected_text());
+        let chosen = chosen.filter(|text| !text.trim().is_empty() && !text.contains('\n'));
+        if let Some(query) = query.or(chosen) {
+            self.ui.search_query = query.clone();
+            self.run_search(query);
+        }
+        self.ui.show(Panel::Search);
+        self.ui.search.focus = true;
+        self.request_redraw();
+    }
+
+    fn run_search(&mut self, query: String) {
+        self.ui.search.ran();
+        let asked = self.ui.search.request(&query);
+        if let Some(page) = self.pages.get_mut(self.active) {
+            match query.trim().is_empty() {
+                true => page.grep.clear(),
+                false => page.start_search(asked, None),
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn search_option(&mut self, arg: &str) {
+        let (what, value) = arg.split_once(' ').map_or((arg, ""), |(what, value)| (what, value.trim()));
+        let view = &mut self.ui.search;
+        let on = value == "on";
+        match what {
+            "case" => view.case = on,
+            "word" => view.word = on,
+            "regex" => view.regex = on,
+            "include" => (view.details, view.include) = (true, value.to_string()),
+            "exclude" => (view.details, view.exclude) = (true, value.to_string()),
+            "list" => {
+                view.list = on;
+                return;
+            }
+            "replace" => {
+                (view.replacing, view.replace) = (true, value.to_string());
+                return;
+            }
+            "replace-all" => return self.search_op(ui::SearchOp::Replace { file: None, hit: None }),
+            "next" | "previous" => return self.search_op(ui::SearchOp::Step(what == "next")),
+            _ => {
+                log::warn!("script: no search option '{what}'");
+                return;
+            }
+        }
+        let query = self.ui.search_query.clone();
+        self.run_search(query);
+    }
+
+    fn search_op(&mut self, op: ui::SearchOp) {
+        let index = self.active;
+        let Some(page) = self.pages.get_mut(index) else { return };
+        match op {
+            ui::SearchOp::Clear => page.grep.clear(),
+            ui::SearchOp::Dismiss { file, hit } => page.grep.dismiss(file, hit),
+            ui::SearchOp::Show { file, hit } => {
+                page.grep.at = Some((file, hit));
+                self.show_search_hit();
+            }
+            ui::SearchOp::Step(forward) => {
+                if page.grep.step(forward).is_some() {
+                    self.show_search_hit();
+                }
+            }
+            ui::SearchOp::Replace { file: None, .. } => self.ask_replace_all(),
+            ui::SearchOp::Replace { file, hit } => self.replace_in_files(index, file, hit),
+        }
+        self.request_redraw();
+    }
+
+    /// Goes on the canvas to the result of the Search panel chosen last, marked brighter than the others.
+    fn show_search_hit(&mut self) {
+        let marks = self.ui.find.is_none();
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let Some((file, hit)) = page.grep.at else { return };
+        let found = page.grep.results.as_ref().and_then(|results| results.files.get(file));
+        let found = found.and_then(|f| Some((f.rel.clone(), page.grep_site(&f.rel, f.hits.get(hit)?))));
+        let Some((rel, site)) = found else { return };
+        page.grep.marks_due = true;
+        if marks {
+            page.mark_search();
+        }
+        let shown = site.filter(|site| page.ready().is_some_and(|r| r.layout.anchor(site).is_some()));
+        match shown {
+            Some(site) => self.frame_site(site),
+            None => self.apply(Action::FlyToPath(rel)),
+        }
+    }
+
+    fn ask_replace_all(&mut self) {
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(results) = page.grep.results.as_ref().filter(|results| results.count() > 0) else { return };
+        let count = |n: usize, word: &str| if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") };
+        let title =
+            format!("Replace {} across {}?", count(results.count(), "occurrence"), count(results.files.len(), "file"));
+        let text = format!(
+            "“{}” becomes “{}” in every result listed. Files with changes not saved get it in their text; the others are written to disk.",
+            results.asked.query.text, self.ui.search.replace
+        );
+        let about = ui::Asked::ReplaceInFiles { folder: page.root.clone() };
+        let mut ask = ui::Ask::new(about, &title, text)
+            .choice("Replace", ui::ChoiceLook::Danger, ui::Answer::Yes)
+            .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+        ask.items = results.files.iter().map(|file| format!("{}  ({})", file.rel, file.hits.len())).collect();
+        self.ui.ask = Some(ask);
+        self.request_redraw();
+    }
+
+    /// Replaces results of the Search panel: all of them, a file's, or one. The files are rewritten
+    /// in the background and come back through `apply_replaced`.
+    fn replace_in_files(&mut self, index: usize, file: Option<usize>, hit: Option<usize>) {
+        let with = self.ui.search.replace.clone();
+        let Some(page) = self.pages.get_mut(index) else { return };
+        let refused = match (page.read_only, page.showing.is_some()) {
+            (true, _) => Some("This folder is shared read-only: nothing in it can be replaced."),
+            (_, true) => Some("A commit is shown on the canvas: close it to replace in the files."),
+            _ => None,
+        };
+        if let Some(why) = refused {
+            return self.ext.notice(ext::Level::Info, "Search", why);
+        }
+        if page.grep.replacing() {
+            return;
+        }
+        let taken = page.grep.take(file, hit);
+        let files: Vec<(String, Option<String>, Vec<canvas_core::grep::Hit>)> = taken
+            .into_iter()
+            .map(|(rel, hits)| {
+                let unsaved =
+                    page.editors.get(&rel).filter(|editor| editor.dirty).map(|editor| editor.display_source());
+                (rel, unsaved, hits)
+            })
+            .collect();
+        if !files.is_empty() {
+            let root = page.root.clone();
+            page.grep.replace(root, files, with);
+        }
+        self.request_redraw();
+    }
+
+    fn apply_replaced(&mut self, index: usize, done: Vec<crate::search::Rewritten>, mut missed: Vec<String>) {
+        let Some(root) = self.pages.get(index).map(|page| page.root.clone()) else { return };
+        let (mut count, mut files, mut written) = (0, 0, false);
+        for file in done {
+            let path = root.join(&file.rel);
+            if !file.unsaved {
+                self.write_into(&path, &file.text, false);
+                (count, files, written) = (count + file.count, files + 1, true);
+                continue;
+            }
+            let page = &mut self.pages[index];
+            let Some(editor) = page.editors.get_mut(&file.rel) else {
+                missed.push(file.rel);
+                continue;
+            };
+            editor.become_text(&file.text);
+            (count, files) = (count + file.count, files + 1);
+            if let Some(g) = self.gfx.as_mut() {
+                g.renderer.text.drop_page(page.id);
+                page.show_edit(&file.rel, "replaced", &g.gpu(), &self.ui.filters);
+            }
+            page.want_head(&file.rel);
+            page.preview_unsaved();
+            let now = Instant::now();
+            (self.symbols_stale, self.unsent_edit, self.typed) = (Some(now), Some((path, now)), Some(now));
+        }
+        if written {
+            self.pages[index].refresh_git();
+        }
+        log::info!("replaced {count} matches in {files} files ({} could not be read)", missed.len());
+        if !missed.is_empty() {
+            let text = format!("Nothing was replaced in {}: it could not be read as text.", missed.join(", "));
+            self.ext.notice(ext::Level::Warn, "Search", text);
+        } else if files > 1 {
+            self.ext.notice(ext::Level::Info, "Search", format!("Replaced {count} occurrences in {files} files."));
+        }
+        self.request_redraw();
+    }
+
+    /// Runs what the Search panel waits for: the query typed a moment ago, files changed since
+    /// the last search, results and replacements done in the background. Whether it still waits.
+    fn poll_search(&mut self) -> bool {
+        if self.ui.search.due() {
+            let query = self.ui.search_query.clone();
+            self.run_search(query);
+        }
+        let marks = self.ui.find.is_none();
+        let (mut busy, mut redraw) = (self.ui.search.waiting(), false);
+        let mut replaced = Vec::new();
+        for (index, page) in self.pages.iter_mut().enumerate() {
+            redraw |= page.grep.poll();
+            match page.grep.due(page.ready().is_some()) {
+                Some(crate::search::Due::All(asked)) => page.start_search(asked, None),
+                Some(crate::search::Due::Files(asked, files)) => page.start_search(asked, Some(files)),
+                None => {}
+            }
+            if marks && page.grep.marks_due {
+                page.mark_search();
+                redraw = true;
+            }
+            if let Some((done, missed)) = page.grep.poll_replace() {
+                replaced.push((index, done, missed));
+            }
+            busy |= page.grep.busy();
+        }
+        for (index, done, missed) in replaced {
+            self.apply_replaced(index, done, missed);
+        }
+        if redraw {
+            self.request_redraw();
+        }
+        busy
+    }
+
     fn follow_now(&mut self) -> bool {
         let Some((index, rel, line, since)) = self.following.take() else { return false };
         let Some(page) = self.pages.get(index) else { return false };
@@ -2230,6 +2457,11 @@ impl App {
                 }
             }
             (ui::Asked::DeleteMany { folder, paths }, ui::Answer::Yes) => self.delete_many(folder, paths),
+            (ui::Asked::ReplaceInFiles { folder }, ui::Answer::Yes) => {
+                if let Some(index) = self.pages.iter().position(|page| page.root == folder) {
+                    self.replace_in_files(index, None, None);
+                }
+            }
             (ui::Asked::Across, ui::Answer::Yes) => {
                 if let Some(job) = self.pending_job.take() {
                     self.transfer_checked(job);
@@ -3430,7 +3662,7 @@ impl App {
                 self.ui.settings.open = false;
                 self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true })
             }
-            Command::SearchInFiles => self.ui.show(Panel::Search),
+            Command::SearchInFiles => self.search_in_files(None),
             Command::Find => self.find(ui::FindOp::Open),
             Command::Back => self.travel(true),
             Command::Forward => self.travel(false),
@@ -3685,12 +3917,8 @@ impl App {
                     }
                 }
             }
-            Action::Search(query) => {
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.run_search(query);
-                }
-                self.request_redraw();
-            }
+            Action::Search(query) => self.run_search(query),
+            Action::SearchPanel(op) => self.search_op(op),
             Action::DragWindow => {
                 if let Some(g) = &self.gfx {
                     let _ = g.window.drag_window();
@@ -4146,10 +4374,10 @@ impl App {
             Step::Locate => self.apply(Action::FrameSelection),
             Step::Goto(path) => self.apply(Action::FlyToPath(path)),
             Step::Search(text) => {
-                self.ui.search_query = text.clone();
-                self.ui.show(Panel::Search);
-                self.apply(Action::Search(text));
+                self.search_in_files(Some(text));
+                self.ui.search.focus = false;
             }
+            Step::SearchOption(arg) => self.search_option(&arg),
             Step::Select(name) => {
                 let sym = self
                     .pages
@@ -5023,6 +5251,7 @@ impl App {
         if git_relayout {
             self.relayout();
         }
+        busy |= self.poll_search();
         if let Some(page) = self.pages.get_mut(self.active) {
             let selected = page.ready().and_then(|r| {
                 let n = r.layout.nodes.get(page.selected?)?;

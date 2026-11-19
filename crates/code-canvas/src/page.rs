@@ -85,6 +85,9 @@ pub enum PageState {
     Failed(String),
 }
 
+/// The marks on the canvas of the Search panel, the find bar or a place gone to.
+// The query, the cut and the time are not shown anywhere since the Search panel keeps its own results.
+#[allow(dead_code)]
 pub struct SearchResults {
     pub query: String,
     pub hits: Vec<Site>,
@@ -92,8 +95,6 @@ pub struct SearchResults {
     pub ms: f32,
     pub current: Option<usize>,
 }
-
-type FoundLines = HashMap<usize, (u32, String)>;
 
 pub struct Selection {
     pub sym: SymRef,
@@ -154,7 +155,8 @@ pub struct Page {
     pub only_connected: bool,
     pub curves_dirty: bool,
     pub search: Option<SearchResults>,
-    found: Option<(Vec<Site>, FoundLines)>,
+    /// What the Search panel found in the folder's files.
+    pub grep: crate::search::Grep,
     pub git: Option<GitState>,
     pub history: crate::history::HistoryView,
     /// The interactive rebase being arranged in its card.
@@ -268,18 +270,6 @@ fn row_seen(rows: &[Row], lines: &[u32], line: u32) -> (u32, bool) {
     let seen = |at: &Row| matches!(at.kind, RowKind::Same | RowKind::Added) && at.line == line;
     (row, rows.get(row as usize).is_some_and(seen))
 }
-
-fn found_in(line: &str, query: &str) -> Vec<u16> {
-    let exact = query.chars().any(|c| c.is_uppercase());
-    let (hay, needle) = match exact {
-        true => (line.to_string(), query.to_string()),
-        false => (line.to_ascii_lowercase(), query.to_ascii_lowercase()),
-    };
-    let col = |at: usize| line.get(..at).map_or(0, |before| before.chars().count()).min(u16::MAX as usize);
-    hay.match_indices(needle.as_str()).map(|(at, _)| col(at) as u16).collect()
-}
-
-const MAX_HITS: usize = 5000;
 
 const MAX_DIFFS: usize = 400;
 
@@ -410,7 +400,7 @@ impl Page {
             only_connected: false,
             curves_dirty: true,
             search: None,
-            found: None,
+            grep: Default::default(),
             git: None,
             history: Default::default(),
             rebase: None,
@@ -780,6 +770,7 @@ impl Page {
             self.selections.clear();
             self.want_exact.clear();
             self.search = None;
+            self.grep.marks_due = true;
         }
         drop(committed);
         if changed && self.showing.is_none() {
@@ -911,6 +902,7 @@ impl Page {
             self.curves_dirty = true;
         }
         self.search = None;
+        self.grep.touched(rel_path);
         self.card_changed(index, rel_path, why, started, gpu, filters, "");
     }
 
@@ -1220,52 +1212,84 @@ impl Page {
         self.only_connected = false;
         self.curves_dirty = true;
         self.search = None;
+        self.grep.everything();
     }
 
-    pub fn run_search(&mut self, query: String) {
-        self.search = None;
-        self.found = None;
-        let Some(r) = self.ready() else { return };
-        if query.trim().is_empty() {
+    /// The files the Search panel looks in (only some of them when `only` names them), with
+    /// the text of those whose card does not show what is on disk.
+    pub fn search_sources(&self, only: Option<&[String]>) -> Vec<canvas_core::grep::Source> {
+        let Some(r) = self.ready() else { return Vec::new() };
+        let source = |f: &canvas_core::SourceFile| {
+            if f.note.as_ref().is_some_and(|note| !note.starts_with("truncated")) {
+                return None;
+            }
+            let rel = f.rel_path.clone();
+            let lines = self.line_count(&rel).unwrap_or(f.line_count()) as u32;
+            let unsaved = self.editors.get(&rel).filter(|editor| editor.dirty).map(|editor| editor.display_source());
+            let committed = self.diffs.get(&rel).and_then(|shown| shown.committed.clone());
+            Some(canvas_core::grep::Source { text: unsaved.or(committed), rel, lines })
+        };
+        match only {
+            Some(rels) => {
+                let files = rels.iter().filter_map(|rel| r.repo.file_index(rel));
+                files.filter_map(|index| source(&r.repo.files[index])).collect()
+            }
+            None => r.repo.files.iter().filter_map(source).collect(),
+        }
+    }
+
+    pub fn start_search(&mut self, asked: crate::search::Request, only: Option<Vec<String>>) {
+        let sources = self.search_sources(only.as_deref());
+        self.grep.start(self.root.clone(), sources, asked, only);
+    }
+
+    /// Where a match of the Search panel is on the canvas.
+    pub fn grep_site(&self, rel: &str, hit: &canvas_core::grep::Hit) -> Option<Site> {
+        let r = self.ready()?;
+        let file = r.repo.file_index(rel)?;
+        self.site_in(r, file, rel, hit)
+    }
+
+    fn site_in(&self, r: &Ready, file: usize, rel: &str, hit: &canvas_core::grep::Hit) -> Option<Site> {
+        let f = &r.repo.files[file];
+        let (row, seen) = self.diffs.get(rel).map_or((hit.line, true), |shown| shown.place(hit.line));
+        if row as usize >= f.line_count() {
+            return None;
+        }
+        let clip = |n: u32| n.min(u16::MAX as u32) as u16;
+        Some(match seen {
+            true => Site { file: file as u32, line: row, col: clip(hit.col), len: clip(hit.len.max(1)) },
+            false => {
+                Site { file: file as u32, line: row, col: 0, len: clip(f.line(row as usize).chars().count() as u32) }
+            }
+        })
+    }
+
+    /// Marks every match of the Search panel on the canvas, the one shown last brighter.
+    pub fn mark_search(&mut self) {
+        if !self.grep.marks_due || self.ready().is_none() {
             return;
         }
-        let t = Instant::now();
-        let (mut hits, mut truncated) = r.repo.search_text(&query, MAX_HITS);
-        let diffed = self.diffs.iter().filter_map(|(rel, shown)| Some((r.repo.file_index(rel)? as u32, shown)));
-        let diffed: HashMap<u32, &Diffed> = diffed.collect();
-        let mut lines = FoundLines::new();
-        if !diffed.is_empty() {
-            let len = query.chars().count().min(u16::MAX as usize) as u16;
-            let mut found: Vec<(Site, Option<(u32, String)>)> =
-                hits.into_iter().filter(|hit| !diffed.contains_key(&hit.file)).map(|hit| (hit, None)).collect();
-            for (&file, shown) in &diffed {
-                for (line, text) in shown.text().lines().enumerate() {
-                    let (row, seen) = shown.place(line as u32);
-                    let folded = r.repo.files[file as usize].line(row as usize).chars().count().min(u16::MAX as usize);
-                    for col in found_in(text, &query) {
-                        let site = match seen {
-                            true => Site { file, line: row, col, len },
-                            false => Site { file, line: row, col: 0, len: folded as u16 },
-                        };
-                        found.push((site, Some((line as u32, text.trim_start().chars().take(160).collect()))));
-                    }
+        self.grep.marks_due = false;
+        let Some(r) = self.ready() else { return };
+        let Some(results) = &self.grep.results else {
+            self.search = None;
+            return;
+        };
+        let (mut hits, mut current) = (Vec::new(), None);
+        for (fi, found) in results.files.iter().enumerate() {
+            let Some(file) = r.repo.file_index(&found.rel) else { continue };
+            for (hi, hit) in found.hits.iter().enumerate() {
+                let Some(site) = self.site_in(r, file, &found.rel, hit) else { continue };
+                if self.grep.at == Some((fi, hi)) {
+                    current = Some(hits.len());
                 }
+                hits.push(site);
             }
-            found.sort_by_key(|(site, _)| site.file);
-            truncated |= found.len() > MAX_HITS;
-            found.truncate(MAX_HITS);
-            lines = found.iter().enumerate().filter_map(|(i, (_, line))| Some((i, line.clone()?))).collect();
-            hits = found.into_iter().map(|(site, _)| site).collect();
         }
-        let ms = t.elapsed().as_secs_f32() * 1000.0;
-        log::info!("search '{query}': {} hits in {ms:.1} ms", hits.len());
-        self.found = (!lines.is_empty()).then(|| (hits.clone(), lines));
-        self.search = Some(SearchResults { query, hits, truncated, ms, current: None });
-    }
-
-    pub fn found_lines(&self) -> Option<&FoundLines> {
-        let (search, (hits, lines)) = (self.search.as_ref()?, self.found.as_ref()?);
-        (search.hits == *hits).then_some(lines)
+        let query = results.asked.query.text.clone();
+        let (truncated, ms) = (results.truncated, results.ms);
+        self.search = (!hits.is_empty()).then_some(SearchResults { query, hits, truncated, ms, current });
     }
 
     pub fn line_count(&self, rel_path: &str) -> Option<usize> {
@@ -1487,6 +1511,7 @@ impl Page {
         };
         let imports = format!(", read and indexed {read:.2} ms, imports {ms:.2} ms{edges}{reordered}");
         self.search = None;
+        self.grep.touched(rel_path);
         self.select_again(selected);
         self.card_changed(index, rel_path, why, started, gpu, filters, &imports);
         true
@@ -1557,7 +1582,7 @@ impl Page {
         self.hover = None;
         self.hover_cell = None;
         self.search = None;
-        self.found = None;
+        self.grep.touched(rel_path);
         self.curves_dirty = true;
         self.diffs.remove(rel_path);
         self.diff_stale = true;

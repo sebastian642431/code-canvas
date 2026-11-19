@@ -9,6 +9,9 @@ pub enum Step {
     Goto(String),
     Select(String),
     Search(String),
+    /// `case|word|regex|list on|off`, `include|exclude|replace <text>`, `replace-all`, `next`, `previous`:
+    /// the options of the Search panel.
+    SearchOption(String),
     Left(String),
     Install(String),
     ExtSearch(String),
@@ -108,6 +111,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "goto" => Step::Goto(arg.into()),
         "select" => Step::Select(arg.into()),
         "search" => Step::Search(arg.into()),
+        "search-option" => Step::SearchOption(arg.into()),
         "left" => Step::Left(arg.into()),
         "install" => Step::Install(arg.into()),
         "ext-search" => Step::ExtSearch(arg.into()),

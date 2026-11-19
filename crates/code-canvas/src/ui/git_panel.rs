@@ -171,7 +171,7 @@ fn group_header(
     (open, clicked)
 }
 
-fn row_button(
+pub(super) fn row_button(
     ui: &mut egui::Ui,
     right: &mut f32,
     mid: f32,

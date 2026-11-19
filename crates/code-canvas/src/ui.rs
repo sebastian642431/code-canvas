@@ -24,6 +24,7 @@ mod git_panel;
 mod history_panel;
 mod progress_banner;
 mod rebase_panel;
+mod search_panel;
 mod settings;
 mod versions_menu;
 
@@ -32,6 +33,7 @@ use crate::keys::{Command, Keymap};
 pub use crate::rails::Side;
 pub use console::ConsoleOp;
 pub use files_tree::{Clip as TreeClip, DropAt, TreeOp};
+pub use search_panel::{SearchOp, SearchView};
 pub use settings::{ask_reset as settings_ask_reset, SettingsView, Tab as SettingsTab};
 pub use versions_menu::VersionMenu;
 
@@ -319,6 +321,8 @@ pub struct UiState {
     card_widths: std::collections::HashMap<String, f32>,
     pub explorer_filter: String,
     pub search_query: String,
+    /// The options, fields and view of the Search panel.
+    pub search: SearchView,
     pub quick: Option<QuickOpen>,
     pub filters: RelFilters,
     pub floating: Vec<Rect>,
@@ -410,6 +414,7 @@ impl Default for UiState {
             card_widths: Default::default(),
             explorer_filter: String::new(),
             search_query: String::new(),
+            search: SearchView::default(),
             quick: None,
             filters: RelFilters::default(),
             floating: Vec::new(),
@@ -705,6 +710,7 @@ pub enum Action {
     ExpandAll,
     ShowAll,
     Search(String),
+    SearchPanel(SearchOp),
     FormatFile(Option<String>),
     Show(Panel),
     RailsChanged,
@@ -1662,7 +1668,7 @@ fn panel_content(
         }
         Panel::Search => {
             folder_row(ui, st, pages, active, actions, false);
-            search_panel(ui, st, pages.get(active), actions);
+            search_panel::search_panel(ui, st, pages.get(active), actions);
         }
         Panel::Extensions => ext_panels::extensions_panel(ui, st, ext, actions),
         Panel::Files => files_panel(ui, st, pages, active, actions),
@@ -3518,67 +3524,6 @@ fn naming_box(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
     }
 }
 
-fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Page>, actions: &mut Vec<Action>) {
-    Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 10, bottom: 6 }).show(ui, |ui| {
-        panel_title(ui, "Search", |_| {});
-        ui.add_space(6.0);
-        let resp = search_field(ui, &mut st.search_query, "Text to find in every file", icons::TEXT_SEARCH);
-        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            actions.push(Action::Search(st.search_query.clone()));
-        }
-        ui.label(RichText::new("Enter to search · lowercase ignores case").size(11.0).color(pal().text_faint));
-    });
-    let Some(page) = page else { return };
-    let Some(r) = page.ready() else { return };
-    let Some(search) = &page.search else { return };
-    ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        let more = if search.truncated { "+" } else { "" };
-        ui.label(
-            RichText::new(format!("{}{more} results for “{}” · {:.0} ms", search.hits.len(), search.query, search.ms))
-                .size(11.0)
-                .color(pal().text_dim),
-        );
-    });
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let found_lines = page.found_lines();
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, ROW_H, search.hits.len(), |ui, range| {
-        for i in range {
-            let hit = search.hits[i];
-            let f = &r.repo.files[hit.file as usize];
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
-            if !ui.is_rect_visible(rect) {
-                continue;
-            }
-            let painter = ui.painter();
-            if resp.hovered() {
-                painter.rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
-            }
-            let mid = rect.center().y;
-            let real = found_lines.and_then(|lines| lines.get(&i));
-            let place = format!("{}:{}", f.name, real.map_or(hit.line, |(line, _)| *line) + 1);
-            let galley = painter.layout_no_wrap(place, FontId::proportional(12.0), pal().text_dim);
-            let pw = galley.size().x;
-            painter.galley(Pos2::new(rect.left() + 14.0, mid - galley.size().y * 0.5), galley, pal().text_dim);
-            let x = rect.left() + 22.0 + pw;
-            let clip = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(rect.right() - 8.0, rect.bottom()));
-            let line = real.map_or_else(|| f.line(hit.line as usize).trim_start(), |(_, text)| text.as_str());
-            let preview: String = line.chars().take(160).collect();
-            painter.with_clip_rect(clip).text(
-                Pos2::new(x, mid),
-                Align2::LEFT_CENTER,
-                preview,
-                FontId::monospace(12.0),
-                pal().text,
-            );
-            if resp.clicked() {
-                actions.push(Action::FlyToSite(hit));
-            }
-            resp.on_hover_text(&f.rel_path);
-        }
-    });
-}
-
 fn help_panel(ui: &mut egui::Ui, keys: &Keymap) {
     let key = |command: Command| -> String {
         let all: Vec<String> = keys.chords(command).map(|c| c.label()).collect();
@@ -5017,6 +4962,9 @@ pub enum Asked {
     },
     EndConsole {
         tab: u64,
+    },
+    ReplaceInFiles {
+        folder: std::path::PathBuf,
     },
 }
 
