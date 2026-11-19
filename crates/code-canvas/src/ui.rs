@@ -1100,6 +1100,7 @@ pub fn build(
         on_canvas.circle_stroke(at, reach, Stroke::new(1.0, pal().text));
     }
     center_message(ui, canvas, pages.get(active), &st.keys);
+    switch_pill(ui, canvas, pages, active);
     agent_marks(&ctx, &on_canvas, st, canvas);
     peer_marks(&on_canvas, st, canvas);
     if !bare {
@@ -1480,8 +1481,12 @@ fn status_bar(
                 }
                 let label =
                     ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text)).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
-                if label.on_hover_text("Source control").clicked() {
+                let tip = if git.switching { "Switching branch…" } else { "Source control" };
+                if label.on_hover_text(tip).clicked() {
                     panel_to_show = Some(Panel::Changes);
+                }
+                if git.switching {
+                    ui.add(egui::Spinner::new().size(11.0).color(pal().text_dim));
                 }
             }
             let unsaved = page.map_or(0, |p| p.unsaved().count());
@@ -2744,6 +2749,7 @@ pub struct WorkspaceRow {
     pub active: bool,
     pub loading: bool,
     pub branch: Option<String>,
+    pub switching: bool,
     pub branches: Vec<String>,
     pub locals: Vec<crate::git::LocalBranch>,
     pub remotes: Vec<crate::git::RemoteBranch>,
@@ -2871,6 +2877,7 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                         filter: &mut st.branch_filter,
                         shut: &mut st.branch_shut,
                         opening,
+                        switching: row.switching,
                         locals: &row.locals,
                         remotes: &row.remotes,
                     }
@@ -2883,6 +2890,14 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 place.on_hover_text("Branch: click to switch this folder to another, without leaving the one in view");
             }
             let shade = if chip_hot { pal().text } else { shade };
+            let name_end = match row.switching && on {
+                true => {
+                    let at = Rect::from_center_size(Pos2::new(name_end - 5.0, mid), Vec2::splat(12.0));
+                    egui::Spinner::new().size(12.0).color(pal().text_dim).paint_at(ui, at);
+                    name_end - 18.0
+                }
+                false => name_end,
+            };
             ui.painter().galley(Pos2::new(right - counted.size().x, mid - counted.size().y * 0.5), counted, shade);
             // No bold face is loaded, so the folder in view gets its name drawn twice, half a pixel apart.
             let strokes: &[f32] = if row.active { &[0.0, 0.6] } else { &[0.0] };
@@ -4064,6 +4079,7 @@ fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>, keys: &K
             };
             Some((format!("Open a folder with {key}the + button, or drop it here"), pal().text))
         }
+        Some(p) if p.switch_label().is_some() => None,
         Some(p) => match &p.state {
             PageState::Loading { progress, started, .. } => Some((
                 format!(
@@ -4083,6 +4099,29 @@ fn center_message(ui: &mut egui::Ui, canvas: Rect, page: Option<&Page>, keys: &K
     if let Some((text, color)) = message {
         ui.painter().text(canvas.center(), Align2::CENTER_CENTER, text, FontId::proportional(16.0), color);
     }
+}
+
+/// A pill in the middle of the canvas while a folder switches branch and is read again.
+fn switch_pill(ui: &mut egui::Ui, canvas: Rect, pages: &[Page], active: usize) {
+    let switching = |page: &&Page| page.switch_label().is_some();
+    let Some(page) = pages.get(active).filter(switching).or_else(|| pages.iter().find(switching)) else { return };
+    let Some(mut text) = page.switch_label() else { return };
+    if pages.len() > 1 {
+        text = format!("{}: {text}", page.title);
+    }
+    if let PageState::Loading { progress, .. } = &page.state {
+        let (read, found) = (progress.loaded.load(Ordering::Relaxed), progress.discovered.load(Ordering::Relaxed));
+        text.push_str(&format!("  ·  {read} / {found} files"));
+    }
+    let painter = ui.painter().clone();
+    let galley = painter.layout_no_wrap(text, FontId::proportional(14.0), pal().text);
+    let size = Vec2::new(galley.size().x + 52.0, 38.0);
+    let pill = Rect::from_center_size(canvas.center(), size);
+    painter.rect(pill, CornerRadius::same(19), pal().card, Stroke::new(1.0, pal().border), egui::StrokeKind::Inside);
+    let spinner = Rect::from_center_size(Pos2::new(pill.left() + 21.0, pill.center().y), Vec2::splat(16.0));
+    egui::Spinner::new().size(16.0).color(pal().accent).paint_at(ui, spinner);
+    let at = Pos2::new(pill.left() + 36.0, pill.center().y - galley.size().y * 0.5);
+    painter.galley(at, galley, pal().text);
 }
 
 fn toolbar(ctx: &egui::Context, st: &mut UiState, canvas: Rect, info: &FrameInfo, actions: &mut Vec<Action>) {
