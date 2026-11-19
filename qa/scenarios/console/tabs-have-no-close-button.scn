@@ -1,0 +1,37 @@
+title: Console tabs carry no x: three consoles are listed by name, the tab's own menu offers Kill, and a console is ended from the menu or its trash button only
+folders: rust-small
+limit: 80
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: console: .* did not start
+expect-log: console: .*bash.* in .*rust-small
+expect-log: script: console tab 3 (\(current\) )?"[^"]*" card
+
+wait 3000
+console echo first console
+wait 2000
+term new bash
+wait 2500
+term new bash
+wait 2500
+mark a-three-tabs
+wait 450
+term report
+term menu tab 2
+wait 800
+mark b-tab-menu-with-kill
+wait 450
+press escape
+wait 500
+term front 1
+wait 800
+mark c-first-in-front
+wait 450
+term kill 3
+wait 1200
+mark d-after-kill
+wait 450
+term report
+console exit
+wait 2000
+quit

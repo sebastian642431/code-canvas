@@ -1,0 +1,27 @@
+title: Replace All in the Search panel asks how many occurrences in how many files, then writes step_1 as first_step in steps.rs and main.rs and leaves step_10 alone (Whole Word on)
+folders: plain
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: search 'step_1': 2 hits
+expect-log: replaced 2 matches in 2 files \(0 could not be read\)
+expect-file: plain/src/steps.rs :: (?s)fn first_step\(\) -> u32 \{\n    1\n\}.*fn step_10\(\)
+expect-file: plain/src/main.rs :: steps::first_step\(\)
+
+wait 3000
+search-option word on
+search step_1
+wait 1500
+search-option replace first_step
+wait 400
+mark replace-typed
+wait 450
+search-option replace-all
+wait 800
+mark asked-how-many
+wait 450
+answer Replace
+wait 2500
+mark replaced
+wait 450
+quit

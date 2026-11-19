@@ -1,0 +1,40 @@
+title: Next and previous tab walk through the tabs and the canvas, which counts as one more place of the cycle
+folders: rust-small
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: tabs: \[.*main\.rs, .*util\.rs\], in front: Some\(1\)
+expect-log: tabs: \[.*main\.rs, .*util\.rs\], in front: None
+expect-log: tabs: \[.*main\.rs, .*util\.rs\], in front: Some\(0\)
+
+wait 3000
+tab open src/main.rs
+wait 600
+tab open src/util.rs
+wait 800
+tab report
+tab canvas
+wait 800
+mark canvas-in-front
+wait 450
+tab report
+tab next
+wait 800
+mark next-is-first-tab
+wait 450
+tab report
+tab next
+wait 600
+tab next
+wait 800
+mark next-three-times
+wait 450
+tab report
+tab previous
+wait 600
+tab previous
+wait 800
+mark previous-twice
+wait 450
+tab report
+quit

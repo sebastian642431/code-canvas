@@ -1,0 +1,29 @@
+title: A file with text typed and not saved gets the Search replacement in its text, so saving writes the typed line and the replaced name together
+folders: plain
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: nothing offers
+expect-file: plain/src/util.rs :: (?s)\A// typed first\npub fn double.*pub fn tripled\(
+
+wait 3000
+goto src/util.rs
+wait 800
+tool edit
+edit src/util.rs 1 1
+type // typed first
+key enter
+wait 500
+search triple
+wait 1500
+search-option replace tripled
+wait 400
+search-option replace-all
+wait 800
+answer Replace
+wait 2500
+mark replaced-in-the-editor
+wait 450
+key save
+wait 1200
+quit

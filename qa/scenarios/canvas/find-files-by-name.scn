@@ -1,0 +1,52 @@
+title: With no file selected the find bar looks for files by name: a name found is counted, one that is not gives none, a capital makes it exact (smart case) as Match Case does, a regular expression changes what matches, and Enter walks the matches
+folders: rust-small
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: script: find-files "steps" found 1\b
+expect-log: script: find-files "zzzz" found 0\b
+expect-log: (?-i)script: find-files "Steps" found 0\b
+expect-log: (?-i)script: find-files "STEPS" found 0\b
+expect-log: script: find-files "\\\\\.rs\$" found 3\b
+
+wait 3000
+fit
+wait 800
+find-files steps
+wait 600
+mark steps-found
+wait 450
+find next
+wait 1500
+mark steps-flown-to
+wait 450
+find-files zzzz
+wait 600
+mark none
+wait 450
+find-option case on
+find-files Steps
+wait 600
+mark case-on-no-match
+wait 450
+find-option case off
+find-files STEPS
+wait 600
+mark case-off-match
+wait 450
+find-option regex on
+find-files \.rs$
+wait 600
+mark regex-three-files
+wait 450
+find next
+wait 800
+find next
+wait 800
+find previous
+wait 1200
+mark walked
+wait 450
+find close
+wait 500
+quit

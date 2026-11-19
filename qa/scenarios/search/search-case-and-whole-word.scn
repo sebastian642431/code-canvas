@@ -1,0 +1,34 @@
+title: The Search panel counts the same query one way with no options, another with Match Case, and another with Match Whole Word
+folders: git-history
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: search 'step_1': 7 hits
+expect-log: search 'Step_1': 0 hits
+expect-log: search 'Step_1': 7 hits
+expect-log: search 'step_1': 2 hits
+
+wait 3000
+search step_1
+wait 1500
+mark all-matches
+wait 450
+search Step_1
+wait 1200
+search-option case on
+wait 1500
+mark case-on-nothing
+wait 450
+search-option case off
+wait 1500
+mark case-off-again
+wait 450
+search step_1
+wait 1200
+search-option word on
+wait 1500
+mark whole-word
+wait 450
+search-option word off
+wait 1200
+quit

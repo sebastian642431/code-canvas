@@ -1,0 +1,30 @@
+title: Tabs of files of two folders: the file in front decides the folder in view, and bringing the other tab forward shows the other folder
+folders: rust-small, git-changes
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: opened .*rust-small.*util\.rs in a tab
+expect-log: opened .*git-changes.*steps\.rs in a tab
+expect-log: tabs: \[.*rust-small.*util\.rs, .*git-changes.*steps\.rs\], in front: Some\(1\)
+
+wait 3500
+tab open {FIX}\rust-small\src\util.rs
+wait 1000
+tab open {FIX}\git-changes\src\steps.rs
+wait 1500
+mark second-folder-in-front
+wait 450
+tab report
+tab front 1
+wait 1500
+mark first-folder-in-front
+wait 450
+tab front 2
+wait 1500
+mark second-again
+wait 450
+tab canvas
+wait 1200
+mark canvas-on-the-second-folder
+wait 450
+quit

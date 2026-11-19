@@ -1,0 +1,18 @@
+title: With the minimap switched off in the preferences, the canvas starts with none beside the selected file
+folders: git-changes
+prefs: {"minimap": false}
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+
+wait 3500
+left changes
+goto src/steps.rs
+wait 1500
+mark no-minimap
+wait 450
+left settings:minimap
+wait 1200
+mark setting-is-off
+wait 450
+quit

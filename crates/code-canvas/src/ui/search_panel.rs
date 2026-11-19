@@ -502,7 +502,9 @@ pub(super) fn search_panel(ui: &mut egui::Ui, st: &mut UiState, page: Option<&Pa
         if resp.on_hover_text("Toggle Replace").clicked() {
             view.replacing = !view.replacing;
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // One row: a layout of its own would take all the height left and push the results out of sight.
+        let row = Vec2::new(ui.available_width(), 20.0);
+        ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             if small_icon(ui, glyph("ellipsis", icons::ELLIPSIS_VERTICAL), "Toggle Search Details") {
                 view.details = !view.details;

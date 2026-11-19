@@ -1,0 +1,20 @@
+title: The Problems panel opens beside the canvas with nothing to list in a folder no extension reports on, and closes again
+folders: typescript
+limit: 40
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+
+wait 3000
+left problems
+wait 1000
+mark problems-empty
+wait 450
+left files
+wait 600
+left problems
+wait 800
+left none
+wait 600
+mark closed
+wait 450
+quit

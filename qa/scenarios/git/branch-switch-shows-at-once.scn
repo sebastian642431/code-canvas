@@ -1,0 +1,21 @@
+title: Bringing a remote branch to local from the picker shows the branch as the current one at once, and git is on it when the switch is done (same clicks as branch-picker-remotes, with a picture right after)
+folders: git-remote-branches, rust-small
+limit: 60
+expect-file: git-remote-branches/.git/HEAD :: ref: refs/heads/fix/c
+forbid-log: WARN.*script
+
+wait 3500
+left files
+wait 1000
+ui click 303 120
+wait 2000
+mark a-picker
+wait 800
+ui click 400 429
+wait 200
+mark b-right-after-the-click
+wait 400
+wait 2500
+mark c-done
+wait 450
+quit

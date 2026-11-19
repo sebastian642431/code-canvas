@@ -1,0 +1,28 @@
+title: Staging one change of a file leaves the others unstaged, and the card tells the two apart (the staged one dashed, the other solid)
+folders: git-changes
+limit: 60
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: script: Part\(
+
+wait 3500
+left changes
+goto src/steps.rs
+wait 1500
+zoom 0.6
+wait 800
+mark a-three-unstaged
+wait 450
+part stage src/steps.rs 39
+wait 1500
+mark b-one-staged
+wait 450
+part stage src/steps.rs 6
+wait 1500
+mark c-two-staged
+wait 450
+git unstage src/steps.rs
+wait 1500
+mark d-none-staged
+wait 450
+quit
