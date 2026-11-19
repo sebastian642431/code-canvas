@@ -1,8 +1,8 @@
 use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use super::{
-    ask_button, ext_panels, menu_gap, menu_row, menu_row_key, paint_look, pal, text_fit, Action, ChoiceLook, Panel,
-    RailLook, Side, UiState,
+    ask_button, drag_ghost, ext_panels, menu_gap, menu_row, menu_row_key, paint_look, pal, text_fit, Action,
+    ChoiceLook, Ghost, Panel, RailLook, Side, UiState,
 };
 use crate::consoles::{Menu, MenuKind, MenuPage, MAIN};
 use crate::ext::Extensions;
@@ -699,19 +699,29 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
     let (f2, delete) = ui.input(|input| (input.key_pressed(egui::Key::F2), input.key_pressed(egui::Key::Delete)));
     let mut x = strip.left();
     let mut rects: Vec<Rect> = Vec::new();
-    let (mut dragging, mut dropped) = (None, None);
     for (i, (tab, want)) in all.iter().zip(&wants).enumerate() {
         let width = (want * scale).max(NARROWEST);
         if x + width > strip.right() - buttons {
             break;
         }
-        let rect = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(width, HIGH));
-        rects.push(rect);
-        st.console.tab_rects.insert(tab.id, rect);
+        rects.push(Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(width, HIGH)));
         let mate = all.get(i + 1).is_some_and(|next| next.group == tab.group);
         x += width + if mate { 1.0 } else { GAP };
+    }
+    let tab_id = |id: u64| egui::Id::unique(("console tab", id));
+    let pointer = ui.input(|input| input.pointer.latest_pos());
+    let before = |rects: &[Rect], at: Pos2| rects.iter().filter(|rect| rect.center().x < at.x).count();
+    let lifted = all.iter().zip(&rects).position(|(tab, _)| ui.ctx().is_being_dragged(tab_id(tab.id)));
+    let carried = match (lifted, pointer) {
+        (Some(i), Some(at)) => st.console.carried(all[i].id, st.console.snap(all[i].id, before(&rects, at))),
+        _ => Vec::new(),
+    };
+    let (mut dragging, mut dropped) = (None, None);
+    for (tab, &rect) in all.iter().zip(&rects) {
+        let width = rect.width();
+        st.console.tab_rects.insert(tab.id, rect);
         let sense = if renaming == Some(tab.id) { Sense::click() } else { Sense::click_and_drag() };
-        let resp = ui.interact(rect, egui::Id::unique(("console tab", tab.id)), sense);
+        let resp = ui.interact(rect, tab_id(tab.id), sense);
         if resp.dragged() {
             dragging = Some(tab.id);
         }
@@ -730,8 +740,12 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
             Color32::TRANSPARENT
         };
         let edge = if front { pal().border_strong } else { Color32::TRANSPARENT };
-        ui.painter().rect(rect, 7.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-        let painter = ui.painter().with_clip_rect(rect.shrink(1.0));
+        let mut base = ui.painter().clone();
+        if carried.contains(&tab.id) {
+            base.multiply_opacity(0.4);
+        }
+        base.rect(rect, 7.0, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        let painter = base.with_clip_rect(rect.shrink(1.0));
         let mid = rect.center().y;
         let glyph_color = if tab.ended { pal().text_faint } else { tint(tab.color) };
         let icon_at = Pos2::new(rect.left() + 15.0, mid);
@@ -789,9 +803,21 @@ fn tabs(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>, card: u6
             actions.push(Action::Console(ConsoleOp::Kill(Some(tab.id))));
         }
     }
-    // A tab dragged along the row goes where the pointer is let go, shown meanwhile by a line between the tabs.
-    if let (Some(id), Some(at)) = (dragging.or(dropped), ui.input(|input| input.pointer.latest_pos())) {
-        let slot = st.console.snap(id, rects.iter().filter(|rect| rect.center().x < at.x).count());
+    // A tab dragged along the row goes where the pointer is let go, shown meanwhile by a line between the tabs and
+    // a ghost of it (and of the tabs it takes along) under the pointer.
+    if let (Some(id), Some(at)) = (dragging.or(dropped), pointer) {
+        let slot = st.console.snap(id, before(&rects, at));
+        if let Some(i) = lifted.filter(|_| dragging.is_some()) {
+            let tab = &all[i];
+            let grab = ui.input(|input| input.pointer.press_origin()).map_or(Vec2::ZERO, |from| from - rects[i].min);
+            let color = if tab.ended { pal().text_faint } else { tint(tab.color) };
+            let more = carried.len().saturating_sub(1);
+            let ghost = Ghost { size: rects[i].size(), title: &tab.title, more, copy: false, blocked: false };
+            drag_ghost(ui.ctx(), at, grab, ghost, |ui, icon| {
+                let font = FontId::proportional(13.5);
+                ui.painter().text(icon.center(), Align2::CENTER_CENTER, tab.icon, font, color);
+            });
+        }
         if dragging.is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             let line = match slot.checked_sub(1).and_then(|before| rects.get(before)) {
