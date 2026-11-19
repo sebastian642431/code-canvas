@@ -237,7 +237,13 @@ fn change_row(
                 action = Some(Action::Git(GitOp::Discard(path.clone())));
             }
         }
-        if !deleted {
+        if deleted {
+            let glyph = crate::codicons::glyph("eye").unwrap_or(icons::FILE);
+            let tip = "Show the file as it was before it was deleted";
+            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, tip) {
+                action = Some(Action::ShowDeleted { path: path.clone(), staged });
+            }
+        } else {
             let glyph = crate::codicons::glyph("go-to-file").unwrap_or(icons::FILE);
             if row_button(ui, &mut right, mid, ("open", staged, path), glyph, "Go to the file") {
                 action = Some(Action::FlyToPath(path.clone()));
@@ -259,11 +265,15 @@ fn change_row(
     }
     let dir_x = x + name_w + 8.0;
     text_fit(painter, Pos2::new(dir_x, mid), dir, FontId::proportional(11.5), pal().text_faint, right - dir_x);
-    if action.is_none() && resp.clicked() && !deleted {
-        action = Some(Action::FlyToPath(change.path.clone()));
+    if action.is_none() && resp.clicked() {
+        action = Some(match deleted {
+            true => Action::ShowDeleted { path: change.path.clone(), staged },
+            false => Action::FlyToPath(change.path.clone()),
+        });
     }
     let unsaved = if change.unsaved && !staged { " · not saved yet (staging or committing it saves it)" } else { "" };
-    resp.on_hover_text(format!("{} · {}{unsaved}", change.path, side.label()));
+    let before = if deleted { " · click to see it as it was before" } else { "" };
+    resp.on_hover_text(format!("{} · {}{unsaved}{before}", change.path, side.label()));
     action
 }
 

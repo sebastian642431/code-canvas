@@ -150,11 +150,23 @@ pub fn commit_files(root: &Path, prefix: &str, hash: &str, max: usize) -> (Vec<C
 }
 
 pub fn texts(root: &Path, named: &[String]) -> Vec<Option<String>> {
+    blobs(root, named).into_iter().map(|blob| blob.and_then(|bytes| String::from_utf8(bytes).ok())).collect()
+}
+
+/// What a deleted file held before: a staged deletion is gone from the index too, so it comes
+/// from HEAD; one not staged yet is still in the index, which may already differ from HEAD.
+pub fn before_deleted(root: &Path, prefix: &str, path: &str, staged: bool) -> Option<Vec<u8>> {
+    let head = format!("HEAD:{prefix}{path}");
+    let named = if staged { vec![head] } else { vec![format!(":{prefix}{path}"), head] };
+    blobs(root, &named).into_iter().flatten().next()
+}
+
+fn blobs(root: &Path, named: &[String]) -> Vec<Option<Vec<u8>>> {
     use std::io::{Read, Write};
-    let mut texts = vec![None; named.len()];
+    let mut blobs = vec![None; named.len()];
     let mut c = command(root);
     c.args(["cat-file", "--batch"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let Ok(mut child) = c.spawn() else { return texts };
+    let Ok(mut child) = c.spawn() else { return blobs };
     let asked: String = named.iter().map(|name| format!("{name}\n")).collect();
     let stdin = child.stdin.take();
     let writer = std::thread::spawn(move || {
@@ -169,7 +181,7 @@ pub fn texts(root: &Path, named: &[String]) -> Vec<Option<String>> {
     let _ = writer.join();
     let _ = child.wait();
     let mut at = 0;
-    for text in texts.iter_mut() {
+    for blob in blobs.iter_mut() {
         let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else { break };
         let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
         at += end + 1;
@@ -178,11 +190,11 @@ pub fn texts(root: &Path, named: &[String]) -> Vec<Option<String>> {
             break;
         }
         if header.contains(" blob ") {
-            *text = String::from_utf8(bytes[at..at + size].to_vec()).ok();
+            *blob = Some(bytes[at..at + size].to_vec());
         }
         at += size + 1;
     }
-    texts
+    blobs
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1965,6 +1977,32 @@ mod tests {
         );
         assert_eq!((on_disk("added.txt"), on_disk("sub/new.txt")), ("added\n".into(), "one\ntwo\nthree\n".into()));
         assert_eq!(on_disk("new.txt"), "nobody knows me\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deleted_file_is_read_from_the_index_or_the_last_commit() {
+        let Some(dir) = repository("deleted") else { return };
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let write = |name: &str, bytes: &[u8]| std::fs::write(dir.join(name), bytes).unwrap();
+        let picture = [0x89, b'P', b'N', b'G', 0, 0xff];
+        write("sub/staged.txt", b"committed\n");
+        write("sub/unstaged.txt", b"committed\n");
+        write("sub/picture.png", &picture);
+        said(&dir, &["add", "."]);
+        said(&dir, &["commit", "-q", "-m", "first"]);
+        write("sub/unstaged.txt", b"staged\n");
+        said(&dir, &["add", "sub/unstaged.txt"]);
+        said(&dir, &["rm", "-q", "sub/staged.txt"]);
+        std::fs::remove_file(dir.join("sub/unstaged.txt")).unwrap();
+        std::fs::remove_file(dir.join("sub/picture.png")).unwrap();
+
+        let sub = dir.join("sub");
+        let before = |path: &str, staged: bool| before_deleted(&sub, "sub/", path, staged);
+        assert_eq!(before("staged.txt", true).as_deref(), Some(&b"committed\n"[..]));
+        assert_eq!(before("unstaged.txt", false).as_deref(), Some(&b"staged\n"[..]), "what is staged");
+        assert_eq!(before("picture.png", false).as_deref(), Some(&picture[..]), "not only text");
+        assert_eq!(before("never.txt", false), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
