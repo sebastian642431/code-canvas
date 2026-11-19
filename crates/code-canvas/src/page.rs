@@ -1058,6 +1058,9 @@ impl Page {
             (crate::git::GitOp::Switch(branch), Ok(_)) => {
                 self.git_note = Some(GitNote::new(true, format!("On branch {branch}.")))
             }
+            (crate::git::GitOp::PullBranch { name, .. }, Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, format!("{name} is up to date with its remote.")))
+            }
             (crate::git::GitOp::Track { name, .. }, Ok(_)) => {
                 self.git_note = Some(GitNote::new(true, format!("On branch {name}.")))
             }

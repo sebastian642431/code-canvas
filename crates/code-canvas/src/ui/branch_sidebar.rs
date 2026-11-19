@@ -79,6 +79,19 @@ fn remote_of(g: &GitState, branch: &LocalBranch) -> String {
     follows.or(first).map(|r| r.remote.clone()).unwrap_or_else(|| "origin".to_string())
 }
 
+/// `origin/feature/x` as the remote and the branch on it; remote names may not be split at the first slash.
+fn split_upstream(g: &GitState, upstream: &str) -> (String, String) {
+    let known = g
+        .remote_branches
+        .iter()
+        .map(|r| r.remote.as_str())
+        .find(|remote| upstream.strip_prefix(remote).is_some_and(|rest| rest.starts_with('/')));
+    match known.or_else(|| upstream.split_once('/').map(|(remote, _)| remote)) {
+        Some(remote) => (remote.to_string(), upstream[remote.len() + 1..].to_string()),
+        None => ("origin".to_string(), upstream.to_string()),
+    }
+}
+
 /// The buttons that come up on a branch row, for the All Commits card: show only the commits of
 /// this branch, or leave it out. A hidden branch is drawn faint with the eye to bring it back.
 fn history_buttons(ui: &mut Ui, row: egui::Rect, key: &str, query: &HistoryQuery, actions: &mut Vec<Action>) {
@@ -154,6 +167,18 @@ fn local_menu(ui: &mut Ui, g: &GitState, branch: &LocalBranch, actions: &mut Vec
     }
     if menu_row(ui, icons::PENCIL, "Rename…") {
         chosen = Some(Action::GitName(NameFor::RenameBranch { from: name.clone() }));
+    }
+    if let Some(upstream) = &branch.upstream {
+        let pull = if branch.behind > 0 { format!("Pull  ↓{}", branch.behind) } else { "Pull".to_string() };
+        if menu_row(ui, icons::ARROW_DOWN, &pull) {
+            chosen = Some(Action::Git(match branch.current {
+                true => GitOp::Pull,
+                false => {
+                    let (remote, from) = split_upstream(g, upstream);
+                    GitOp::PullBranch { remote, from, name: name.clone() }
+                }
+            }));
+        }
     }
     if menu_row(ui, icons::ARROW_UP, "Push") {
         chosen = Some(Action::Git(GitOp::PushBranch { remote: remote_of(g, branch), name: name.clone() }));
