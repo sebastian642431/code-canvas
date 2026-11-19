@@ -302,7 +302,9 @@ fn details(ui: &mut Ui, history: &HistoryView, jump: &mut Option<String>) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Hash").size(11.5).color(pal().text_faint));
                 let text = RichText::new(&commit.hash).monospace().size(11.5).color(pal().accent);
-                let hash = ui.add(egui::Label::new(text).sense(Sense::click()));
+                let hash = ui
+                    .add(egui::Label::new(text).sense(Sense::click()).selectable(false))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
                 if hash.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Click to copy").clicked() {
                     ui.ctx().copy_text(commit.hash.clone());
                 }
@@ -314,7 +316,9 @@ fn details(ui: &mut Ui, history: &HistoryView, jump: &mut Option<String>) {
                     let text = RichText::new(&parent[..parent.len().min(10)]).monospace().size(11.5);
                     let text = text.color(if loaded { pal().accent } else { pal().text_dim });
                     let tip = if loaded { "Click to select it" } else { "Not read yet: scroll the list down" };
-                    let label = ui.add(egui::Label::new(text).sense(Sense::click()));
+                    let label = ui
+                        .add(egui::Label::new(text).sense(Sense::click()).selectable(false))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if label.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() && loaded {
                         *jump = Some(parent.clone());
                     }
