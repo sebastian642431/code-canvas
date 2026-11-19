@@ -239,8 +239,8 @@ fn change_row(
         }
         if !deleted {
             let glyph = crate::codicons::glyph("go-to-file").unwrap_or(icons::FILE);
-            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, "Go to the file") {
-                action = Some(Action::FlyToPath(path.clone()));
+            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, "Open the file in a tab") {
+                action = Some(Action::Tabs(crate::file_tabs::TabOp::Open(path.into())));
             }
         }
         right -= 2.0;

@@ -162,7 +162,14 @@ for huge repositories); cameras and selections survive by path.
   is rebuilt from that text; the layout only when its size changes.
 - `watch.rs` reports files that change on disk; a few are reloaded one by one, new or
   removed files mean a rescan (left to the user for huge folders).
-- `session.rs` persists folders, cameras, collapsed/hidden paths and panel state.
+- `file_tabs.rs` keeps the tabs above the canvas: "Canvas" first, then files opened to be read as in an
+  editor (`ui/file_tabs.rs` draws the row, `ui/file_view.rs` the file in front, `app/tabs.rs` does what they
+  ask). A file in a tab is the same file as its card: the text, colours and line numbers come from the page's
+  repository and token cache (only the rows in sight are read and coloured), and typing goes through the file's
+  `Editor`, so a change shows on both. While a file tab is in front, going to a file or to a place in the code
+  (the files list, Ctrl+P, search results, problems) opens it in a tab; links from extensions still fly the
+  canvas unless they point into the file in front. Ctrl+W and Ctrl+Tab act on the tabs while there are any.
+- `session.rs` persists folders, cameras, collapsed/hidden paths, panel state and the open tabs.
 - `script.rs` drives the app from `CODE_CANVAS_SCRIPT` (see below).
 
 ## Windows, resizing and the graphics API
@@ -201,7 +208,8 @@ CODE_CANVAS_DATA_DIR=/tmp/cc-test CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800
 Steps: `wait <ms>`, `fit`, `locate`, `goto <path>`, `select <symbol>`, `search <text>`,
 `left files|search|extensions|problems|changes|settings|<publisher.name>|help|none`,
 `right symbols|<extension id>|none`, `folders`, `collapse-all`, `expand-all`, `connected on|off`,
-`changed on|off`, `tab <n>`, `zoom <f>`, `quick <text>`, `palette <text>`, `edit <path> <line> <column>`, `type <text>`,
+`changed on|off`, `tab <n>` (a folder), `tab open <path>|canvas|close [n]|front <n>|next|previous|reveal|line <n>|click <line> <column>|report`
+(the tabs above the canvas; `click` puts the caret in the file in front, lines and columns from 1), `zoom <f>`, `quick <text>`, `palette <text>`, `edit <path> <line> <column>`, `type <text>`,
 `key enter|backspace|undo|redo|save|…`, `git stage|unstage [path]`, `git commit <message>`,
 `install <publisher.name>`, `ext-search <text>`, `format <path>`, `command <id>`,
 `answer <choice>` (press that button of a notice that asks),

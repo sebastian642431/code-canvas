@@ -14,6 +14,7 @@ mod consoles;
 mod doodle;
 mod editor;
 mod ext;
+mod file_tabs;
 mod files;
 mod git;
 mod github;
