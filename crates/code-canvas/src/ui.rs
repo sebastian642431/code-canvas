@@ -1510,6 +1510,7 @@ fn status_bar(
                 }
             }
             for (_, text) in ext.status_items.iter().rev() {
+                let text = drawable(ui.ctx(), text, &FontId::proportional(12.0));
                 ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
             }
             if st.restricted {
@@ -2443,6 +2444,28 @@ fn small_icon(ui: &mut egui::Ui, glyph: &str, tip: &str) -> bool {
     let color = if resp.hovered() { pal().text } else { pal().text_dim };
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0), color);
     resp.on_hover_text(tip).clicked()
+}
+
+/// Text an extension wrote, with what the fonts cannot draw (an empty box otherwise) left out. The
+/// stars and asterisks extensions use as logos (Claude Code's "✻") become the sparkle codicon.
+fn drawable(ctx: &egui::Context, text: &str, font: &FontId) -> String {
+    let sparkle = crate::codicons::glyph("sparkle").unwrap_or("*");
+    let kept = ctx.fonts_mut(|fonts| {
+        let mut kept = String::with_capacity(text.len());
+        for c in text.chars() {
+            if fonts.has_glyph(font, c) {
+                kept.push(c);
+            } else if is_star(c) {
+                kept.push_str(sparkle);
+            }
+        }
+        kept
+    });
+    kept.trim().to_string()
+}
+
+fn is_star(c: char) -> bool {
+    matches!(c, '\u{2722}'..='\u{274B}' | '\u{2217}' | '\u{204E}')
 }
 
 fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, glyph: &str) -> egui::Response {
