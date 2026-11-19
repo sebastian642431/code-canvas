@@ -887,7 +887,7 @@ impl App {
                 behind: open.filter(|git| git.upstream).map(|git| git.behind),
                 git_busy: page.is_some_and(|page| self.pages[page].git_busy()),
                 git_failed: page.and_then(|page| match &self.pages[page].git_note {
-                    Some((false, why)) => Some(why.clone()),
+                    Some(crate::page::GitNote { ok: false, text, .. }) => Some(text.clone()),
                     _ => None,
                 }),
                 path: known.path.clone(),
@@ -904,12 +904,6 @@ impl App {
     fn workspace_op(&mut self, op: ui::WorkspaceOp) {
         use ui::WorkspaceOp;
         let on = |me: &App, path: &Path| me.pages.iter().position(|page| page.root == path);
-        if let WorkspaceOp::Pull(path) = &op {
-            if let Some(page) = on(self, path) {
-                self.run_git(page, crate::git::GitOp::Pull);
-            }
-            return;
-        }
         match op {
             WorkspaceOp::Put(path) => match on(self, &path) {
                 Some(page) => {
@@ -938,7 +932,9 @@ impl App {
                 if let Some(page) = on(self, &path) {
                     self.run_git(page, op);
                 }
+                return;
             }
+            WorkspaceOp::Pull(path) => return self.workspace_op(WorkspaceOp::Git(path, crate::git::GitOp::Pull)),
             WorkspaceOp::Forget(path) => match on(self, &path) {
                 Some(page) => self.close_folder(page, true),
                 None => self.workspace.retain(|known| known.path != path),
