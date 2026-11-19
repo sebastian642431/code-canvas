@@ -2673,15 +2673,13 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
             }
             let folder = if on { icons::FOLDER_OPEN } else { icons::FOLDER };
             ui.painter().text(Pos2::new(rect.left() + 22.0, mid), Align2::CENTER_CENTER, folder, font.clone(), tint);
-            let button = Rect::from_center_size(Pos2::new(rect.right() - 13.0, mid), Vec2::splat(22.0));
-            let pressed = ui.interact(button, ui.scope_id().with(("workspace", &row.path)), Sense::click());
             let count = match (row.loading, &row.branch, row.files) {
                 (true, ..) => "reading…".to_string(),
                 (false, Some(branch), _) => format!("{} {}", icons::GIT_BRANCH, short_branch(branch)),
                 (false, None, Some(files)) => files.to_string(),
                 (false, None, None) => String::new(),
             };
-            let right = if hot { button.left() - 4.0 } else { rect.right() - 8.0 };
+            let right = rect.right() - 8.0;
             let shade = if row.branch.is_some() && on { pal().text_dim } else { pal().text_faint };
             let counted = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), shade);
             let name_end = right - counted.size().x - 8.0;
@@ -2723,19 +2721,6 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 tint,
                 name_end - rect.left() - 36.0,
             );
-            if hot {
-                if pressed.hovered() {
-                    ui.painter().rect_filled(button, 5.0, pal().border_strong);
-                }
-                let glyph = if on { icons::X } else { icons::PLUS };
-                ui.painter().text(
-                    button.center(),
-                    Align2::CENTER_CENTER,
-                    glyph,
-                    FontId::proportional(13.0),
-                    pal().text_dim,
-                );
-            }
             let mut about = row.path.display().to_string();
             if let Some(branch) = &row.branch {
                 about.push_str(&format!("\nBranch {branch}"));
@@ -2744,13 +2729,10 @@ fn workspace_list(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>
                 about.push_str(&format!(" · {files} files"));
             }
             let tip = match on {
-                true => format!("{about}\nOn the canvas. Click to go to it; the cross takes it off."),
+                true => format!("{about}\nOn the canvas. Click to go to it; right click to take it off."),
                 false => format!("{about}\nNot on the canvas. Click, or drag it onto the canvas, to put it there."),
             };
-            if pressed.on_hover_text(if on { "Take it off the canvas" } else { "Put it on the canvas" }).clicked() {
-                let op = if on { WorkspaceOp::TakeOff(row.path.clone()) } else { WorkspaceOp::Put(row.path.clone()) };
-                actions.push(Action::Workspace(op));
-            } else if resp.clicked() {
+            if resp.clicked() {
                 actions.push(match row.page {
                     Some(page) => Action::SwitchTab(page),
                     None => Action::Workspace(WorkspaceOp::Put(row.path.clone())),
