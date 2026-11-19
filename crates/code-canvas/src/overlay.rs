@@ -60,6 +60,8 @@ pub struct CanvasOverlay {
     pub chip_labels: Vec<OwnedLabel>,
     pub chip_hits: Vec<(Rect, SymRef)>,
     pub toggle_hits: Vec<(Rect, String)>,
+    /// The names drawn above or in the corner of boxes and cards, in screen pixels.
+    pub title_hits: Vec<(Rect, String)>,
     pub preview_hits: Vec<(Rect, String)>,
     /// The code lenses drawn that run something, in screen pixels.
     pub lens_hits: Vec<(Rect, crate::ext::views::Lens)>,
@@ -578,6 +580,15 @@ fn code_lenses(
     }
 }
 
+fn title_rect(left: f32, top: f32, width: f32, size: f32) -> Rect {
+    Rect::new(left - 2.0, top, width + 4.0, size * 1.3)
+}
+
+/// The path of the name drawn at `p`; the last one placed is the innermost.
+pub fn title_at(hits: &[(Rect, String)], p: [f32; 2]) -> Option<&str> {
+    hits.iter().rev().find(|(rect, _)| rect.contains(p)).map(|(_, path)| path.as_str())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     page: &Page,
@@ -672,6 +683,7 @@ pub fn build(
                     let tw = text.measure(&label, size, true).min(max_w);
                     let marker = Rect::new(left + tw + 6.0 * s, top - 1.0, size * 1.3 + 2.0, size * 1.3 + 2.0);
                     if free(Rect::new(left - 2.0, top, tw + marker.w + 12.0 * s, size * 1.3), &mut placed) {
+                        out.title_hits.push((title_rect(left, top, tw, size), n.rel_path.clone()));
                         out.labels.push(OwnedLabel {
                             text: label,
                             left,
@@ -724,10 +736,12 @@ pub fn build(
                     let left = tl[0] + 2.0;
                     let top = tl[1] - lab_px + (lab_px - size * 1.3) * 0.5;
                     let tw = (n.name.chars().count() as f32 * size * 0.58).min(w_px);
-                    if free(Rect::new(left - 2.0, top, tw + 4.0, size * 1.3), &mut placed) {
+                    if free(title_rect(left, top, tw, size), &mut placed) {
                         let unsaved = page.editors.get(&n.rel_path).is_some_and(|e| e.dirty);
                         let shown = if unsaved { format!("● {}", n.name) } else { n.name.clone() };
                         let shown = fitted(text, &shown, "", size, false, w_px);
+                        let shown_w = text.measure(&shown, size, false).max(tw).min(w_px);
+                        out.title_hits.push((title_rect(left, top, shown_w, size), n.rel_path.clone()));
                         if crate::markdown::is_markdown(std::path::Path::new(&n.name)) {
                             let word = "Preview";
                             let word_w = text.measure(word, size, false);
@@ -1175,5 +1189,27 @@ mod tests {
         assert_eq!(lens_place(Some("}"), "    fn helper() {", 10, 80), LensAt::Above(4));
         assert_eq!(lens_place(Some("/// Doubles it."), "fn double() {", 10, 80), LensAt::Above(17));
         assert_eq!(lens_place(Some(&"x".repeat(75)), "fn double() {", 10, 80), LensAt::After(16));
+    }
+
+    #[test]
+    fn a_title_covers_the_whole_line_it_is_drawn_on() {
+        let (left, top, width, size) = (100.0, 40.0, 80.0, 12.0);
+        let rect = title_rect(left, top, width, size);
+        assert!(rect.contains([left, top + 1.0]));
+        assert!(rect.contains([left + width, top + size * 1.25]));
+        assert!(!rect.contains([left + width + 3.0, top + 1.0]));
+        assert!(!rect.contains([left, top + size * 1.35]));
+    }
+
+    #[test]
+    fn a_click_on_a_name_finds_the_innermost_title_under_it() {
+        let hits = vec![
+            (Rect::new(0.0, 0.0, 200.0, 20.0), "src".to_string()),
+            (Rect::new(10.0, 10.0, 60.0, 16.0), "src/main.rs".to_string()),
+        ];
+        assert_eq!(title_at(&hits, [5.0, 5.0]), Some("src"));
+        assert_eq!(title_at(&hits, [20.0, 15.0]), Some("src/main.rs"));
+        assert_eq!(title_at(&hits, [20.0, 40.0]), None);
+        assert_eq!(title_at(&[], [20.0, 15.0]), None);
     }
 }
