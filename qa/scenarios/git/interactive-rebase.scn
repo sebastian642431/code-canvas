@@ -15,25 +15,25 @@ palette Open All Commits
 wait 500
 press enter
 wait 2500
-ui right 1100 218
+ui right 1100 252
 wait 1000
 mark a-menu
 wait 500
-ui click 1220 390
+ui click 1220 424
 wait 1500
 mark b-card
 wait 500
 wait 500
-ui drag 1158 216 1158 187
+ui drag 1158 250 1158 221
 wait 1000
 mark c-reordered
 wait 500
-ui click 1213 155
+ui click 1213 189
 wait 800
 mark d-picker
 wait 500
 wait 500
-ui click 1232 241
+ui click 1232 275
 wait 800
 rebase action 4 drop
 wait 300

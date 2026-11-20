@@ -20,7 +20,7 @@ ui click 301 317
 wait 2000
 mark c-only-feature
 wait 500
-ui click 987 143
+ui click 987 177
 wait 1500
 mark d-all-again
 wait 500
@@ -28,15 +28,15 @@ history search Merge
 wait 1200
 mark e-search
 wait 500
-ui click 1100 146
+ui click 1100 180
 wait 1500
 mark f-selected
 wait 500
-ui right 1100 146
+ui right 1100 180
 wait 1000
 mark g-menu
 wait 500
-ui click 1190 229
+ui click 1190 263
 wait 1000
 type rel-1
 wait 600
