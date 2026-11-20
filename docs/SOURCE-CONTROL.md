@@ -1,6 +1,6 @@
 # Source Control: towards a native Fork
 
-Goal: the Source Control side of Code Canvas becomes a complete git client, native and written in Rust,
+Goal: the Source Control side of Hawk Canvas becomes a complete git client, native and written in Rust,
 so nobody needs a second app. The model is [Fork](https://git-fork.com): its sidebar, its commit graph,
 and its menus. Every git experiment runs on the free test repo
 <https://github.com/sebastian642431/TEST> (cloned at `c:\rysted\TEST`).

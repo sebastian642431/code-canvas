@@ -110,7 +110,7 @@ impl App {
         self.ui.account.code = None;
         self.ui.account.said.clear();
         if github::client_id().is_empty() {
-            self.ui.account.said = "This version of Code Canvas has no GitHub app to sign in with yet.".into();
+            self.ui.account.said = "This version of Hawk Canvas has no GitHub app to sign in with yet.".into();
             return;
         }
         let stop = Arc::new(AtomicBool::new(false));

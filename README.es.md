@@ -1,6 +1,8 @@
-# Code Canvas
+<p align="center"><img src="crates/code-canvas/assets/icon.png" width="128" alt="Hawk Canvas logo"></p>
 
-**Mirá un código entero de una sola vez.** Code Canvas dibuja todas las carpetas y
+# Hawk Canvas
+
+**Mirá un código entero de una sola vez.** Hawk Canvas dibuja todas las carpetas y
 archivos de un repositorio en un lienzo infinito renderizado por GPU. Alejate para ver
 la forma del proyecto completo; acercate hasta leer el código real, con colores, en el
 mismo lugar. Tocá una función y aparecen curvas hacia donde se define, se referencia y
@@ -146,7 +148,7 @@ muy grandes. Código abierto: cualquiera puede aportar.
   archivos. Arrastrás una al lienzo (o le hacés clic) y aparece junto a las demás;
   la cruz, o el clic derecho en el lienzo, la saca sin olvidarla.
 - **Compartir la sesión** (el ícono de arriba a la derecha): la app te da una
-  invitación para copiar; quien la pega en su Code Canvas ve tus carpetas abiertas
+  invitación para copiar; quien la pega en su Hawk Canvas ve tus carpetas abiertas
   en su propio lienzo, y lo que cualquiera escribe aparece para todos mientras se
   escribe. Cada invitado entra como lector o como escritor (lo cambiás cuando
   quieras), se ve el puntero, el cursor y la vista de cada persona con su nombre y
@@ -193,7 +195,7 @@ muy grandes. Código abierto: cualquiera puede aportar.
 ## Instalar y abrir
 
 **Descargar**: en la [página de versiones](https://github.com/sebastian642431/code-canvas/releases)
-está `code-canvas.exe` para Windows. Es un solo archivo: se ejecuta, sin instalador.
+está `hawk-canvas.exe` para Windows. Es un solo archivo: se ejecuta, sin instalador.
 Windows puede avisar que es de un editor desconocido (todavía no está firmado): "Más
 información" → "Ejecutar de todas formas". Las extensiones necesitan además
 [Node.js](https://nodejs.org).
@@ -204,7 +206,7 @@ Desde el código, en Windows, para tu usuario (sin permisos de administrador):
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-Compila, copia el ejecutable a `%LOCALAPPDATA%\Programs\Code Canvas` y crea accesos
+Compila, copia el ejecutable a `%LOCALAPPDATA%\Programs\Hawk Canvas` y crea accesos
 directos en el Menú Inicio y el Escritorio. Con `-ContextMenu` agrega "Open with Code
 Canvas" al clic derecho de las carpetas. `scripts\uninstall.ps1` lo quita todo.
 
@@ -221,7 +223,7 @@ Sin argumentos restaura la sesión anterior. Todos los atajos están en el
 
 Cuando los demás están en otra red y no hay VPN ni puerto abierto, un relay los
 junta: las dos apps se conectan *hacia afuera*, a él, así que ninguna necesita una
-dirección a la que la otra llegue. Code Canvas no trae relay ni cuenta: lo corrés
+dirección a la que la otra llegue. Hawk Canvas no trae relay ni cuenta: lo corrés
 vos en cualquier servidor con dirección pública (alcanza con el VPS más chico), o
 usás uno de alguien en quien confiás.
 
@@ -233,7 +235,7 @@ cargo build --release -p canvas-relay
 ./target/release/canvas-relay --listen 0.0.0.0:7878
 ```
 
-Abrí el puerto TCP 7878 en el firewall de ese servidor. Después, en Code Canvas,
+Abrí el puerto TCP 7878 en el firewall de ese servidor. Después, en Hawk Canvas,
 *Settings → Sharing*: marcá **Share through a relay** y escribí su dirección
 (`relay.ejemplo.org:7878`; si no ponés puerto, es 7878), o hacé lo mismo en el panel
 de compartir antes de *Start sharing*. La invitación pasa a ser
@@ -253,7 +255,7 @@ o devuelve un mensaje, se rechaza; alguien en el relay sin el secreto no entra. 
 conexiones, 64 conexiones y 8 salas por dirección, 32 invitados por sala, mensajes
 de hasta 16 MiB, un invitado y su anfitrión se separan tras 5 minutos sin que pase
 nada (las apps avisan que siguen ahí cada 25 segundos), y una sala termina a las 24
-horas de abierta. Solo deja pasar lo que empieza como una sesión de Code Canvas: no
+horas de abierta. Solo deja pasar lo que empieza como una sesión de Hawk Canvas: no
 sirve de túnel para otra cosa.
 
 Para que siga andando con nada más que una shell (sin systemd ni Docker), un archivo

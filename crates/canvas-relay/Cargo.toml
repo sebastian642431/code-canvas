@@ -3,7 +3,7 @@ name = "canvas-relay"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pairs the two ends of a shared Code Canvas session across networks and passes their sealed bytes along"
+description = "Pairs the two ends of a shared Hawk Canvas session across networks and passes their sealed bytes along"
 
 [dependencies]
 ring.workspace = true

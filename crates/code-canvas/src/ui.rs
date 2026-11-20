@@ -1507,13 +1507,13 @@ fn status_bar(
             ui.spacing_mut().item_spacing.x = 12.0;
             let version = RichText::new(format!("v{}", crate::update::current())).size(11.5).color(pal().text_faint);
             let version = ui.add(egui::Label::new(version).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
-            if version.on_hover_text("The version of Code Canvas: click for Settings and updates").clicked() {
+            if version.on_hover_text("The version of Hawk Canvas: click for Settings and updates").clicked() {
                 st.settings.show(Some(settings::Tab::General));
             }
             if st.new_build {
                 let offer = RichText::new(format!("{}  Restart into the new build", icons::REFRESH_CW)).size(12.0).color(pal().accent);
                 let label = ui.add(egui::Label::new(offer).sense(Sense::click()).selectable(false)).on_hover_cursor(egui::CursorIcon::PointingHand);
-                let tip = "A new build of Code Canvas was put in place of this one. Click to restart into it when it suits you (an assistant's chat open here restarts too). Open folders and files come back as they are.";
+                let tip = "A new build of Hawk Canvas was put in place of this one. Click to restart into it when it suits you (an assistant's chat open here restarts too). Open folders and files come back as they are.";
                 if label.on_hover_text(tip).clicked() {
                     actions.push(Action::RestartIntoNewBuild);
                 }
@@ -1574,7 +1574,7 @@ fn status_bar(
                 let label =
                     ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text_dim)).sense(Sense::click()));
                 let tip = format!(
-                    "Changes to these files are not followed until Code Canvas restarts:
+                    "Changes to these files are not followed until Hawk Canvas restarts:
 {}
 Click to follow them again.",
                     st.unfollowed.join("
@@ -1589,7 +1589,7 @@ Click to follow them again.",
                 let color = c(theme::get().problem_warning);
                 let label = ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).sense(Sense::click()));
                 let tip = format!(
-                    "What kept Code Canvas busy in the last minute:
+                    "What kept Hawk Canvas busy in the last minute:
 {}
 Click for what you can do about it.",
                     st.busy.join("
@@ -5123,7 +5123,7 @@ fn share_panel(ctx: &egui::Context, st: &mut UiState, actions: &mut Vec<Action>)
                     changed |= check(ui, &mut view.through_relay, "Share through a relay", true, false).clicked();
                     if view.through_relay {
                         changed |= field(ui, &mut view.relay, "The relay's address: relay.example.org:7878", true).lost_focus();
-                        dim(ui, "For others on another network, with no VPN and no port forwarded. Code Canvas has no relay of its own: run canvas-relay on a server with a public address, or use one you trust. It passes the session along sealed and cannot read it.");
+                        dim(ui, "For others on another network, with no VPN and no port forwarded. Hawk Canvas has no relay of its own: run canvas-relay on a server with a public address, or use one you trust. It passes the session along sealed and cannot read it.");
                     }
                     if ask_button(ui, "Start sharing", ChoiceLook::Main) {
                         actions.push(Action::Share(ShareOp::Changed));
@@ -5845,15 +5845,15 @@ fn palette_commands(ext: &Extensions, diff: crate::page::DiffView) -> Vec<(Strin
         ("Preferences: Keyboard Shortcuts".into(), Action::Settings(SettingsTab::Keyboard)),
         ("Preferences: Colours".into(), Action::Settings(SettingsTab::Colours)),
         ("Preferences: Commit Messages".into(), Action::Settings(SettingsTab::Commits)),
-        ("Code Canvas: Check for Updates".into(), Action::CheckUpdates),
-        (format!("Code Canvas: About (version {})", crate::update::current()), Action::Settings(SettingsTab::General)),
+        ("Hawk Canvas: Check for Updates".into(), Action::CheckUpdates),
+        (format!("Hawk Canvas: About (version {})", crate::update::current()), Action::Settings(SettingsTab::General)),
         ("Preferences: Colour Theme".into(), Action::Settings(SettingsTab::Appearance)),
         ("View: Every Folder on the Canvas, or One at a Time".into(), Action::ToggleSideBySide),
         ("View: Show the Whole Canvas".into(), Action::Fit),
         ("View: Go to the Selection".into(), Action::FrameSelection),
         ("View: Reload the Folder from Disk".into(), Action::Rescan),
         (
-            "Developer: Reload Window (restart Code Canvas with its folders and files as they are)".into(),
+            "Developer: Reload Window (restart Hawk Canvas with its folders and files as they are)".into(),
             Action::ReloadWindow,
         ),
         ("Canvas: Collapse All Folders".into(), Action::CollapseAll),

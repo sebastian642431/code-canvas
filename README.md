@@ -1,6 +1,8 @@
-# Code Canvas
+<p align="center"><img src="crates/code-canvas/assets/icon.png" width="128" alt="Hawk Canvas logo"></p>
 
-**See an entire codebase at once.** Code Canvas lays out every folder and file of a
+# Hawk Canvas
+
+**See an entire codebase at once.** Hawk Canvas lays out every folder and file of a
 repository on an infinite, GPU-rendered canvas. Zoom out to see the shape of the whole
 project, zoom in until you are reading real, syntax-coloured code — in the same place.
 Click a function and curves show where it is defined, referenced and called.
@@ -204,7 +206,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 
 **Working together**
 - **Share the session** (the icon at the top right): the app gives an invitation to
-  copy; whoever pastes it in their Code Canvas gets your open folders on their own
+  copy; whoever pastes it in their Hawk Canvas gets your open folders on their own
   canvas. Nothing is installed or signed into: the two apps talk to each other
   directly, sealed with the key that is in the invitation.
 - What anyone types shows for everyone as it is typed, two people in the same
@@ -287,7 +289,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 ## Install and run
 
 **Download**: the [releases page](https://github.com/sebastian642431/code-canvas/releases)
-has `code-canvas.exe` for Windows. It is a single file: run it, no installer. Windows
+has `hawk-canvas.exe` for Windows. It is a single file: run it, no installer. Windows
 may warn that it comes from an unknown publisher (the file is not signed yet): "More
 info" → "Run anyway". Extensions also need [Node.js](https://nodejs.org) installed.
 
@@ -297,7 +299,7 @@ From the source, on Windows (per user, no admin rights):
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-This builds the release binary, copies it to `%LOCALAPPDATA%\Programs\Code Canvas` and
+This builds the release binary, copies it to `%LOCALAPPDATA%\Programs\Hawk Canvas` and
 adds Start Menu and Desktop shortcuts (`-ContextMenu` also adds "Open with Code
 Canvas" for folders; `scripts\uninstall.ps1` removes everything).
 
@@ -331,7 +333,7 @@ Without arguments the previous session is restored. Folders can also be opened w
 
 When the others are on another network and there is no VPN and no forwarded port,
 a relay joins you: both apps connect *out* to it, so neither needs an address the
-other can reach. Code Canvas ships no relay and no account. You run one on any
+other can reach. Hawk Canvas ships no relay and no account. You run one on any
 server with a public address (the smallest VPS is plenty), or use one run by
 someone you trust.
 
@@ -343,7 +345,7 @@ cargo build --release -p canvas-relay
 ./target/release/canvas-relay --listen 0.0.0.0:7878
 ```
 
-Let TCP port 7878 in on that server's firewall. Then in Code Canvas, *Settings →
+Let TCP port 7878 in on that server's firewall. Then in Hawk Canvas, *Settings →
 Sharing*: tick **Share through a relay** and write its address
 (`relay.example.org:7878`; 7878 when no port is written), or do the same in the
 share panel before *Start sharing*. The invitation becomes
@@ -367,7 +369,7 @@ relay.
 64 connections and 8 rooms from one address, 32 guests in a room, frames up to
 16 MiB (what a session sends), a guest and host parted after 5 minutes with nothing
 crossing (the apps say they are still there every 25 seconds), and a room ends
-24 hours after it opened. It passes along only what starts as a Code Canvas session
+24 hours after it opened. It passes along only what starts as a Hawk Canvas session
 does, so it is no use as a general tunnel.
 
 To keep it running with nothing but a shell (no systemd, no Docker), one file next

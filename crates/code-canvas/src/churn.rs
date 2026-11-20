@@ -1,6 +1,6 @@
 //! A watchdog for work that repeats without end: a file some program keeps writing (a
 //! server's log), git read again and again, a folder scanned over and over. Plain counts
-//! over the last minute, so the person can be told what keeps Code Canvas busy.
+//! over the last minute, so the person can be told what keeps Hawk Canvas busy.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

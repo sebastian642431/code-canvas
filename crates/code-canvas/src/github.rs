@@ -5,10 +5,10 @@ use serde_json::{json, Value};
 
 const CLIENT_ID: &str = "Ov23liqzdSkACc9mnzin";
 const SCOPE: &str = "gist";
-const USER_AGENT: &str = concat!("code-canvas/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("hawk-canvas/", env!("CARGO_PKG_VERSION"));
 const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub const MARK: &str = "code-canvas.json";
-const ABOUT: &str = "Code Canvas settings";
+const ABOUT: &str = "Hawk Canvas settings";
 
 fn or_env(name: &str, otherwise: &str) -> String {
     std::env::var(name).ok().filter(|given| !given.trim().is_empty()).unwrap_or_else(|| otherwise.to_string())

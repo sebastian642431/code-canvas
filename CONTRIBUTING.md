@@ -1,4 +1,4 @@
-# Contributing to Code Canvas
+# Contributing to Hawk Canvas
 
 Thanks for helping! Issues, ideas and pull requests are all welcome — in English or Spanish.
 
@@ -35,7 +35,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first. In short:
 
 ## Performance rules
 
-Code Canvas must stay fast on huge repositories. When you touch a hot path:
+Hawk Canvas must stay fast on huge repositories. When you touch a hot path:
 
 1. **Measure before and after.** Use the status bar (frame time, instances, draw calls)
    and `cargo run --release -p canvas-core --example scan_bench -- <big folder>`.

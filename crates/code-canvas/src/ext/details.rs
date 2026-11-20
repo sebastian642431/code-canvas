@@ -292,7 +292,7 @@ fn list(v: Option<&Value>) -> &[Value] {
     v.and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
 }
 
-/// What a manifest contributes, kind by kind, and whether each works in Code Canvas.
+/// What a manifest contributes, kind by kind, and whether each works in Hawk Canvas.
 pub fn features(manifest: &Value) -> Vec<Feature> {
     let c = manifest.get("contributes").cloned().unwrap_or(Value::Null);
     let mut out = Vec::new();
@@ -436,7 +436,7 @@ pub fn features(manifest: &Value) -> Vec<Feature> {
     push(
         "Menu entries",
         Works::No,
-        "Code Canvas shows the buttons of its views' titles and rows; these places are not there yet.",
+        "Hawk Canvas shows the buttons of its views' titles and rows; these places are not there yet.",
         vec!["Place", "Entries"],
         rows,
     );
@@ -460,7 +460,7 @@ fn badge(works: Works) -> &'static str {
     match works {
         Works::Yes => "<span class=\"badge works\">Works</span>",
         Works::Partly => "<span class=\"badge partly\">Partly</span>",
-        Works::No => "<span class=\"badge not\">Not in Code Canvas yet</span>",
+        Works::No => "<span class=\"badge not\">Not in Hawk Canvas yet</span>",
     }
 }
 

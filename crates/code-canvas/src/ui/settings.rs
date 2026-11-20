@@ -181,16 +181,16 @@ const TRAILS: (&str, &str) = (
 
 const GRAMMARS: (&str, &str) = (
     "Colour every language with its extension's grammar",
-    "A language Code Canvas does not know is always coloured by the grammar its extension brings. On, so are the ones it knows (Rust, TypeScript, Python…), when an extension brings a grammar for them.",
+    "A language Hawk Canvas does not know is always coloured by the grammar its extension brings. On, so are the ones it knows (Rust, TypeScript, Python…), when an extension brings a grammar for them.",
 );
 
 const RELAY: (&str, &str) = (
     "Share through a relay",
-    "For sharing with someone on another network, with no VPN and no port forwarded: both apps connect out to the relay, and its invitation starts with cc2:. Code Canvas has no relay of its own and no account: run canvas-relay on a server with a public address, or use one you trust. The session crosses it sealed with the key in the invitation, which the relay never has.",
+    "For sharing with someone on another network, with no VPN and no port forwarded: both apps connect out to the relay, and its invitation starts with cc2:. Hawk Canvas has no relay of its own and no account: run canvas-relay on a server with a public address, or use one you trust. The session crosses it sealed with the key in the invitation, which the relay never has.",
 );
 
 const UPDATES: (&str, &str) =
-    ("Look for new versions of Code Canvas", "Asks GitHub for the latest release when the app starts.");
+    ("Look for new versions of Hawk Canvas", "Asks GitHub for the latest release when the app starts.");
 
 const PROVIDERS: [(&str, &str); 4] = [
     ("auto", "Claude Code, or Codex without it"),
@@ -350,9 +350,9 @@ pub(super) fn settings_modal(
 
 fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Action>) -> bool {
     let mut next = st.prefs.clone();
-    let about = hit(f, &["Code Canvas", "version", "update", UPDATES.0, UPDATES.1]);
+    let about = hit(f, &["Hawk Canvas", "version", "update", UPDATES.0, UPDATES.1]);
     if about {
-        section(ui, icons::INFO, "Code Canvas");
+        section(ui, icons::INFO, "Hawk Canvas");
         well(ui, |ui| {
             use crate::update::State;
             ui.label(RichText::new(format!("Version {}", crate::update::current())).size(13.0).color(pal().text));
@@ -633,7 +633,7 @@ fn theme_picker(
         note(ui, "Every colour of a theme can be changed under Colours, and saved there as a theme of yours.");
     });
     if let Some((key, name)) = delete {
-        let text = format!("{name} is deleted from this computer. Themes that come with Code Canvas stay.");
+        let text = format!("{name} is deleted from this computer. Themes that come with Hawk Canvas stay.");
         let ask = super::Ask::new(super::Asked::DeleteTheme { key }, &format!("Delete the theme {name}?"), text)
             .choice("Delete", super::ChoiceLook::Danger, super::Answer::Yes)
             .choice("Cancel", super::ChoiceLook::Plain, super::Answer::Cancel);

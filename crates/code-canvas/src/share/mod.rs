@@ -751,7 +751,7 @@ impl Session {
         match msg {
             Msg::Hello { name, version } if self.host && !greeted => {
                 if version != wire::VERSION {
-                    let why = "this session is of another version of Code Canvas".to_string();
+                    let why = "this session is of another version of Hawk Canvas".to_string();
                     self.to(from, Msg::Bye { why });
                     return self.send_away(from);
                 }

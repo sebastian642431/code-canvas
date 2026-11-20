@@ -5,9 +5,9 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
-$source = Join-Path $repo "target\release\code-canvas.exe"
-$dir = Join-Path $env:LOCALAPPDATA "Programs\Code Canvas"
-$exe = Join-Path $dir "code-canvas.exe"
+$source = Join-Path $repo "target\release\hawk-canvas.exe"
+$dir = Join-Path $env:LOCALAPPDATA "Programs\Hawk Canvas"
+$exe = Join-Path $dir "hawk-canvas.exe"
 
 if (-not $NoBuild) {
     Write-Host "Building the release binary..."
@@ -16,8 +16,8 @@ if (-not $NoBuild) {
 }
 if (-not (Test-Path $source)) { throw "Not found: $source (run without -NoBuild)" }
 
-$running = Get-Process code-canvas -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
-if ($running) { throw "Code Canvas is running from $exe. Close it and run this script again." }
+$running = Get-Process hawk-canvas -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
+if ($running) { throw "Hawk Canvas is running from $exe. Close it and run this script again." }
 
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Copy-Item $source $exe -Force
@@ -33,8 +33,8 @@ function New-Shortcut([string]$path) {
     $link.Save()
     Write-Host "Shortcut:  $path"
 }
-New-Shortcut (Join-Path ([Environment]::GetFolderPath("Programs")) "Code Canvas.lnk")
-if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "Code Canvas.lnk") }
+New-Shortcut (Join-Path ([Environment]::GetFolderPath("Programs")) "Hawk Canvas.lnk")
+if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "Hawk Canvas.lnk") }
 $pinned = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
 if (Test-Path $pinned) {
     foreach ($file in Get-ChildItem -Path $pinned -Filter *.lnk) {
@@ -49,13 +49,13 @@ if (Test-Path $pinned) {
 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
 
 if ($ContextMenu) {
-    foreach ($entry in @(@("Directory\shell\CodeCanvas", "%1"), @("Directory\Background\shell\CodeCanvas", "%V"))) {
+    foreach ($entry in @(@("Directory\shell\HawkCanvas", "%1"), @("Directory\Background\shell\HawkCanvas", "%V"))) {
         $key = "HKCU:\Software\Classes\$($entry[0])"
         New-Item -Path "$key\command" -Force | Out-Null
-        Set-ItemProperty -Path $key -Name "(Default)" -Value "Open with Code Canvas"
+        Set-ItemProperty -Path $key -Name "(Default)" -Value "Open with Hawk Canvas"
         Set-ItemProperty -Path $key -Name "Icon" -Value "`"$exe`""
         Set-ItemProperty -Path "$key\command" -Name "(Default)" -Value "`"$exe`" `"$($entry[1])`""
     }
-    Write-Host "Context menu: 'Open with Code Canvas' added for folders"
+    Write-Host "Context menu: 'Open with Hawk Canvas' added for folders"
 }
-Write-Host "Done. Open 'Code Canvas' from the Start Menu."
+Write-Host "Done. Open 'Hawk Canvas' from the Start Menu."

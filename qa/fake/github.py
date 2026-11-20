@@ -1,4 +1,4 @@
-"""A GitHub that answers only what Code Canvas asks of it, on this computer.
+"""A GitHub that answers only what Hawk Canvas asks of it, on this computer.
 
 python qa/fake/github.py <port> [<files of a gist to start with, as JSON>]
 A scenario gets one with a header line `github: empty` or `github: <file in qa/fake>`.

@@ -37,7 +37,7 @@ fn face_of(user: &str) -> Option<egui::ColorImage> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
     let url = format!("https://github.com/{user}.png?size={SIDE}");
     let mut answer =
-        agent.get(&url).header("User-Agent", concat!("code-canvas/", env!("CARGO_PKG_VERSION"))).call().ok()?;
+        agent.get(&url).header("User-Agent", concat!("hawk-canvas/", env!("CARGO_PKG_VERSION"))).call().ok()?;
     let bytes = answer.body_mut().read_to_vec().ok()?;
     let face = picture(&bytes)?;
     let _ = std::fs::write(kept, &bytes);

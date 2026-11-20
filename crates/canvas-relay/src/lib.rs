@@ -1,4 +1,4 @@
-//! A relay for shared sessions of Code Canvas.
+//! A relay for shared sessions of Hawk Canvas.
 //!
 //! Who shares and who joins both connect *out* to the relay, so neither needs an
 //! address the other can reach. The one who shares opens a room and keeps that
@@ -178,7 +178,7 @@ impl Frames {
                 for (i, byte) in bytes[..take].iter().enumerate() {
                     let at = self.greeting + i;
                     if at < SESSION_MAGIC.len() && *byte != SESSION_MAGIC[at] {
-                        return Err("that is not a Code Canvas session");
+                        return Err("that is not a Hawk Canvas session");
                     }
                 }
                 self.greeting += take;

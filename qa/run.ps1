@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $Exe) { $Exe = Join-Path $repo 'target\release\code-canvas.exe' }
+if (-not $Exe) { $Exe = Join-Path $repo 'target\release\hawk-canvas.exe' }
 if (-not (Test-Path $Exe)) { Write-Output "FAIL: no program at $Exe (cargo build --release)"; exit 2 }
 $Scenario = (Resolve-Path $Scenario).Path
 $name = [IO.Path]::GetFileNameWithoutExtension($Scenario)
@@ -134,8 +134,11 @@ $guestScript = (@($steps.guest) | ForEach-Object { Fill $_ }) -join '; '
 $againScript = (@($steps.again) | ForEach-Object { Fill $_ }) -join '; '
 
 function Read-Log($dir) {
-    $file = Join-Path $dir 'code-canvas.log'
-    if (Test-Path $file) { return @(Get-Content -LiteralPath $file -Encoding UTF8) }
+    # Builds from before the name Hawk Canvas write code-canvas.log.
+    foreach ($name in 'hawk-canvas.log', 'code-canvas.log') {
+        $file = Join-Path $dir $name
+        if (Test-Path $file) { return @(Get-Content -LiteralPath $file -Encoding UTF8) }
+    }
     return @()
 }
 
@@ -313,7 +316,7 @@ if ($relay) {
     }
 }
 
-$ours = @('code-canvas.exe', 'node.exe', 'rust-analyzer.exe', 'rust-analyzer-proc-macro-srv.exe')
+$ours = @('hawk-canvas.exe', 'code-canvas.exe', 'node.exe', 'rust-analyzer.exe', 'rust-analyzer-proc-macro-srv.exe')
 $leftover = @(Get-CimInstance Win32_Process | Where-Object { $ours -contains $_.Name -and $_.CommandLine -and $_.CommandLine.Contains($Work) })
 foreach ($want in $many['absent-process']) {
     $left = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -match $want })

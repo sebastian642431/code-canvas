@@ -214,7 +214,7 @@ pub struct Installed {
     pub activation_ms: u32,
     /// What it asked the host for while running that is not there yet (`vscode.…`).
     pub unsupported: Vec<String>,
-    /// Its package.json, and what of it does not work in Code Canvas (`compat::gaps`).
+    /// Its package.json, and what of it does not work in Hawk Canvas (`compat::gaps`).
     pub manifest: Arc<gallery::Manifest>,
     pub untrusted: Untrusted,
     pub icon: Option<PathBuf>,
@@ -229,7 +229,7 @@ pub struct Installed {
 }
 
 impl Installed {
-    /// What of it does not work in Code Canvas, one line each: what its manifest brings,
+    /// What of it does not work in Hawk Canvas, one line each: what its manifest brings,
     /// then what it asked for while running.
     pub fn not_available(&self) -> Vec<String> {
         let mut out = compat::lines(&self.manifest.gaps);

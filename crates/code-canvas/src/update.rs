@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 pub const REPOSITORY: &str = "sebastian642431/code-canvas";
-const ASSET: &str = "code-canvas.exe";
+/// The program in a release; releases from before the name Hawk Canvas carry only the second.
+const ASSETS: [&str; 2] = ["hawk-canvas.exe", "code-canvas.exe"];
 const EVERY: Duration = Duration::from_secs(6 * 3600);
 
 pub fn current() -> &'static str {
@@ -40,10 +41,11 @@ pub fn parse_release(json: &Value) -> Option<Release> {
     }
     let version = text("tag_name")?.trim_start_matches('v').to_string();
     let wanted = format!("https://github.com/{REPOSITORY}/releases/download/");
-    let download = json.get("assets").and_then(Value::as_array).and_then(|assets| {
+    let assets = json.get("assets").and_then(Value::as_array).map_or(&[][..], |assets| assets.as_slice());
+    let download = ASSETS.iter().find_map(|name| {
         assets
             .iter()
-            .filter(|a| a.get("name").and_then(Value::as_str) == Some(ASSET))
+            .filter(|a| a.get("name").and_then(Value::as_str) == Some(*name))
             .filter_map(|a| a.get("browser_download_url").and_then(Value::as_str))
             .find(|url| url.starts_with(&wanted))
             .map(str::to_string)
@@ -57,7 +59,7 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(600))).build().into()
 }
 
-const USER_AGENT: &str = concat!("code-canvas/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("hawk-canvas/", env!("CARGO_PKG_VERSION"));
 
 fn latest() -> Result<Release, String> {
     let url = format!("https://api.github.com/repos/{REPOSITORY}/releases/latest");
@@ -317,20 +319,35 @@ mod tests {
             "draft": false,
             "assets": [
                 { "name": "code-canvas-windows-x64.zip", "browser_download_url": "https://github.com/sebastian642431/code-canvas/releases/download/v0.2.0/code-canvas-windows-x64.zip" },
-                { "name": "code-canvas.exe", "browser_download_url": "https://github.com/sebastian642431/code-canvas/releases/download/v0.2.0/code-canvas.exe" }
+                { "name": "hawk-canvas.exe", "browser_download_url": "https://github.com/sebastian642431/code-canvas/releases/download/v0.2.0/hawk-canvas.exe" }
             ]
         });
         let release = parse_release(&answer).unwrap();
         assert_eq!(release.version, "0.2.0");
         assert!(release.page.ends_with("/tag/v0.2.0"));
         if cfg!(windows) {
-            assert!(release.download.unwrap().ends_with("/v0.2.0/code-canvas.exe"));
+            assert!(release.download.unwrap().ends_with("/v0.2.0/hawk-canvas.exe"));
         }
 
         let elsewhere = json!({ "tag_name": "v9.0.0", "assets": [
-            { "name": "code-canvas.exe", "browser_download_url": "https://example.com/code-canvas.exe" }
+            { "name": "hawk-canvas.exe", "browser_download_url": "https://example.com/hawk-canvas.exe" }
         ]});
         assert_eq!(parse_release(&elsewhere).unwrap().download, None);
+
+        let both = |names: &[&str]| {
+            let base = "https://github.com/sebastian642431/code-canvas/releases/download/v1.0.0/";
+            let assets: Vec<Value> = names
+                .iter()
+                .map(|name| json!({ "name": name, "browser_download_url": format!("{base}{name}") }))
+                .collect();
+            parse_release(&json!({ "tag_name": "v1.0.0", "assets": assets })).unwrap().download
+        };
+        if cfg!(windows) {
+            let new_first = both(&["code-canvas.exe", "hawk-canvas.exe"]).unwrap();
+            assert!(new_first.ends_with("/hawk-canvas.exe"), "the program of its new name is taken first");
+            let old_only = both(&["code-canvas.exe"]).unwrap();
+            assert!(old_only.ends_with("/code-canvas.exe"), "a release from before the new name still updates");
+        }
         assert_eq!(parse_release(&json!({ "tag_name": "v1.0.0", "draft": true })), None);
         assert_eq!(parse_release(&json!({ "message": "Not Found" })), None);
     }

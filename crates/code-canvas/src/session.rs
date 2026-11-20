@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,10 +44,29 @@ pub struct PageSession {
 pub fn data_dir() -> PathBuf {
     let dir = match std::env::var_os("CODE_CANVAS_DATA_DIR") {
         Some(d) => PathBuf::from(d),
-        None => dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("code-canvas"),
+        None => named_data_dir(&dirs::config_dir().unwrap_or_else(std::env::temp_dir)),
     };
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// The folder of the app's data under `base`: `hawk-canvas`. The first time, the folder of the
+/// name before it (`code-canvas`) is renamed to it, so nothing is lost; while that cannot be done
+/// (a file in it still open), the old folder keeps being used.
+pub fn named_data_dir(base: &Path) -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| take_over_data_dir(base)).clone()
+}
+
+fn take_over_data_dir(base: &Path) -> PathBuf {
+    let (new, old) = (base.join("hawk-canvas"), base.join("code-canvas"));
+    if new.exists() || !old.is_dir() {
+        return new;
+    }
+    match std::fs::rename(&old, &new) {
+        Ok(()) => new,
+        Err(_) => old,
+    }
 }
 
 fn session_path() -> PathBuf {
@@ -80,6 +99,24 @@ pub fn save(session: &Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_data_of_code_canvas_becomes_the_data_of_hawk_canvas() {
+        let base = std::env::temp_dir().join(format!("hawk-canvas-test-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("code-canvas")).unwrap();
+        std::fs::write(base.join("code-canvas").join("session.json"), "{}").unwrap();
+        let dir = take_over_data_dir(&base);
+        assert_eq!(dir, base.join("hawk-canvas"));
+        assert_eq!(std::fs::read_to_string(dir.join("session.json")).unwrap(), "{}", "nothing is lost");
+        assert!(!base.join("code-canvas").exists());
+
+        std::fs::create_dir_all(base.join("code-canvas")).unwrap();
+        assert_eq!(take_over_data_dir(&base), base.join("hawk-canvas"), "once there, the new folder stays");
+        assert!(base.join("code-canvas").exists(), "an old folder made later is left alone");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(take_over_data_dir(&base), base.join("hawk-canvas"), "a first start of all");
+    }
 
     #[test]
     fn file_tabs_survive_a_round_trip_and_old_sessions_have_none() {
