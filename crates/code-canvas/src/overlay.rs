@@ -581,6 +581,51 @@ fn code_lenses(
     }
 }
 
+const BLAME_CHARS: usize = 70;
+
+/// Faint at the end of the line with the caret: who last changed it, when and why.
+#[allow(clippy::too_many_arguments)]
+fn blame_of_caret_line(
+    page: &Page,
+    editor: &crate::editor::Editor,
+    n: &canvas_core::layout::Node,
+    view: View,
+    world: &Rect,
+    s: f32,
+    text: &mut TextLayer,
+    out: &mut CanvasOverlay,
+) {
+    let size = (view.zoom * LINE_H * 0.72).round().min(14.0 * s);
+    let caret = editor.carets()[0];
+    let spans_lines = caret.selection().is_some_and(|(a, b)| a.line != b.line);
+    if size < 8.0 * s || spans_lines {
+        return;
+    }
+    let line = caret.at.line;
+    let Some(said) = page.blame_of(&editor.rel_path, line, editor.line(line)) else { return };
+    let said = match said.chars().count() > BLAME_CHARS {
+        true => said.chars().take(BLAME_CHARS - 1).chain(std::iter::once('\u{2026}')).collect(),
+        false => said,
+    };
+    let len = editor.display_col(crate::editor::Pos::new(line, usize::MAX)) as u32;
+    let cell = n.cell_rect(line as u32, (len + 3).min(canvas_core::layout::MAX_COLS), 1);
+    if !cell.intersects(&world.expand(LINE_H * 2.0)) {
+        return;
+    }
+    let at = view.to_screen([cell.x, cell.y]);
+    let t = theme::get();
+    let width = text.measure(&said, size, false);
+    out.labels.push(OwnedLabel {
+        text: said,
+        left: at[0],
+        top: at[1] + (view.zoom * LINE_H - size * 1.25) * 0.5,
+        size,
+        color: theme::mix(t.ui_text_dim, t.background, 0.25),
+        max_w: width + 2.0,
+        bold: false,
+    });
+}
+
 fn title_rect(left: f32, top: f32, width: f32, size: f32) -> Rect {
     Rect::new(left - 2.0, top, width + 4.0, size * 1.3)
 }
@@ -776,6 +821,24 @@ pub fn build(
                                     max_w: word_w + 2.0,
                                     bold: false,
                                 });
+                                after += word_w + 10.0 * s;
+                            }
+                        }
+                        if let Some(note) = page.last_change_note(&n.rel_path) {
+                            let note_size = (size * 0.9).round();
+                            let note_w = text.measure(&note, note_size, false);
+                            let place = Rect::new(after, top, note_w + 2.0, size * 1.3);
+                            if place.right() <= tl[0] + w_px && free(place, &mut placed) {
+                                let t = theme::get();
+                                out.labels.push(OwnedLabel {
+                                    text: note,
+                                    left: after,
+                                    top: top + (size - note_size) * 0.5,
+                                    size: note_size,
+                                    color: theme::mix(t.ui_text_dim, t.background, 0.3),
+                                    max_w: note_w + 2.0,
+                                    bold: false,
+                                });
                             }
                         }
                         out.labels.push(OwnedLabel {
@@ -902,6 +965,9 @@ pub fn build(
                     let bar = Rect::new(cell.x - w * 0.5, cell.y, w, cell.h);
                     out.over.push(RectInstance::new(bar, theme::get().caret, 0, 0.0, 0.0));
                 }
+            }
+            if page.show_blame && n.wrap.is_none() {
+                blame_of_caret_line(page, editor, n, view, &world, s, text, &mut out);
             }
         }
     }

@@ -5349,6 +5349,7 @@ impl App {
                 }
             }
             Step::Colours(arg) => self.script_colours(&arg),
+            Step::Blame(arg) => self.script_blame(&arg),
             Step::Colour(arg) => match arg.split_once(' ') {
                 _ if arg == "reset" => ui::settings_ask_reset(&mut self.ui, &self.ext),
                 Some((key, hex)) => {
@@ -5533,6 +5534,15 @@ impl App {
                 page.want_timeline(selected);
             }
             changed |= page.poll_timeline();
+        }
+        let (blame_on, last_on) = (self.ui.prefs.blame_line, self.ui.prefs.last_change);
+        for page in &mut self.pages {
+            (page.show_blame, page.show_last_change) = (blame_on, last_on);
+            changed |= page.poll_last_change();
+            changed |= page.poll_blame();
+        }
+        if let Some(page) = self.pages.get_mut(self.active) {
+            busy |= page.want_blame();
         }
         let cell = self
             .pages
@@ -5936,6 +5946,18 @@ impl App {
         };
         let kinds: Vec<String> = blocks.iter().take(8).map(|b| format!("{:?}", b.kind).to_lowercase()).collect();
         log::info!("script: bars of {rel} from {from}: {} blocks, {}", blocks.len(), kinds.join(" · "));
+    }
+
+    fn script_blame(&mut self, arg: &str) {
+        let (rel, line) = match arg.rsplit_once(' ').map(|(rel, line)| (rel, line.parse::<usize>())) {
+            Some((rel, Ok(line))) if line > 0 => (rel, line - 1),
+            _ => return log::warn!("script: blame wants a path and a line"),
+        };
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        match page.blame_now(rel, line) {
+            Some(said) => log::info!("script: blame of {rel} line {}: {said}", line + 1),
+            None => log::warn!("script: no blame of {rel} line {}", line + 1),
+        }
     }
 
     fn script_colours(&mut self, arg: &str) {

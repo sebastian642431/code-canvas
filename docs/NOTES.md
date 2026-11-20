@@ -2592,6 +2592,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `press` | `press <keys>` | The command bound to those keys, or the key itself sent to the interface (`press escape` closes a menu). |
 | `where` | `where` | Logs "script: the middle of the canvas shows (x, y) at zoom z": what a resize or a panel must not move. |
 | `colours` | `colours <path> <line>` | Logs "script: colours of <path> line N: keyword let · ident x · …": the kind of each token of that line (1-based) as the canvas draws it, from a grammar or the app's own. |
+| `blame` | `blame <path> <line>` | Logs "script: blame of <path> line N: You, 3 days ago • subject": what the end of that line shows while it is edited (1-based), asked of git at once with the text typed so far; a line changed and not committed says "Not committed yet". |
 | `bars` | `bars <path>` | Logs "script: bars of <path> from its grammar\|the app: N blocks, kind · kind · …": where the far-away bars of the file come from and the kinds of the first eight. |
 | `touch` | `touch <path> <text>` | Append a line to a file behind the app's back (`\n` in the text is a line break): what another program changing it looks like. |
 | `remove` | `remove <path>` | Delete a file behind the app's back. |

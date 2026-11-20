@@ -1603,6 +1603,10 @@ Click for what you can do about it.",
                 let text = drawable(ui.ctx(), text, &FontId::proportional(12.0));
                 ui.label(RichText::new(text).size(12.0).color(pal().text_faint));
             }
+            if let Some((text, tip)) = page.and_then(|p| p.last_change_status()) {
+                let text = drawable(ui.ctx(), &text, &FontId::proportional(12.0));
+                ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal().text_faint)).selectable(false)).on_hover_text(tip);
+            }
             if st.restricted {
                 let shield = crate::codicons::glyph("shield").unwrap_or(icons::CIRCLE_ALERT);
                 let text = RichText::new(format!("{shield} Restricted mode")).size(12.0).color(pal().text_dim);
