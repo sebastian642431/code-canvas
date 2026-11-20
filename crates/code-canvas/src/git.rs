@@ -1642,6 +1642,126 @@ fn parse_log(text: &str) -> Vec<Commit> {
         .collect()
 }
 
+/// Who wrote each line of a file, from `git blame --porcelain`. `lines` holds an index into
+/// `commits` per line, or `None` for a line that is not committed; `texts` is what each line
+/// said when asked, to tell a line typed since from one that is still the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Blame {
+    pub ok: bool,
+    pub commits: Vec<Commit>,
+    pub lines: Vec<Option<u32>>,
+    pub texts: Vec<String>,
+    pub me: String,
+}
+
+pub fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+fn is_hash(word: &str) -> bool {
+    word.len() >= 40 && word.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub fn parse_blame(text: &str) -> Blame {
+    let mut out = Blame { ok: true, ..Blame::default() };
+    let mut seen: std::collections::HashMap<&str, Option<u32>> = std::collections::HashMap::new();
+    let mut current: Option<u32> = None;
+    for line in text.lines() {
+        if let Some(content) = line.strip_prefix('\t') {
+            out.lines.push(current);
+            out.texts.push(content.to_string());
+            continue;
+        }
+        let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
+        if is_hash(key) && rest.split(' ').next().is_some_and(|n| n.parse::<u32>().is_ok()) {
+            current = *seen.entry(key).or_insert_with(|| {
+                if key.bytes().all(|b| b == b'0') {
+                    return None;
+                }
+                out.commits.push(Commit {
+                    hash: key.to_string(),
+                    author: String::new(),
+                    time: 0,
+                    subject: String::new(),
+                });
+                Some(out.commits.len() as u32 - 1)
+            });
+            continue;
+        }
+        let Some(commit) = current.and_then(|i| out.commits.get_mut(i as usize)) else { continue };
+        match key {
+            "author" => commit.author = rest.to_string(),
+            "author-time" => commit.time = rest.parse().unwrap_or(0),
+            "summary" => commit.subject = rest.to_string(),
+            _ => {}
+        }
+    }
+    out
+}
+
+impl Blame {
+    /// What goes at the end of a line: who last changed it, when, and why. A line that is not what
+    /// was asked about (typed since) or was never committed says so.
+    pub fn say(&self, line: usize, current: &str, now: i64) -> Option<String> {
+        if !self.ok {
+            return None;
+        }
+        let same = self.texts.get(line).is_some_and(|text| text.trim_end_matches('\r') == current);
+        let commit = self.lines.get(line).copied().flatten().filter(|_| same);
+        let Some(commit) = commit.and_then(|i| self.commits.get(i as usize)) else {
+            return Some("You \u{2022} Not committed yet".to_string());
+        };
+        let author = if !self.me.is_empty() && commit.author == self.me { "You" } else { commit.author.as_str() };
+        Some(format!("{author}, {} \u{2022} {}", ago((now - commit.time).max(0)), commit.subject))
+    }
+}
+
+/// `git blame` of a file of the folder, with `contents` as the text of the file when it is not
+/// what is on disk (typed, not saved).
+pub fn blame(root: &Path, rel_path: &str, contents: Option<&str>) -> Option<Blame> {
+    static NAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let temp = contents.map(|text| {
+        let n = NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("hawk-canvas-blame-{}-{n}.txt", std::process::id()));
+        (path, text)
+    });
+    if let Some((path, text)) = &temp {
+        std::fs::write(path, text).ok()?;
+    }
+    let named = temp.as_ref().map(|(path, _)| path.to_string_lossy().into_owned());
+    let mut args: Vec<&str> = vec!["blame", "--porcelain"];
+    if let Some(named) = &named {
+        args.extend(["--contents", named]);
+    }
+    args.extend(["--", rel_path]);
+    let out = git(root, &args);
+    if let Some((path, _)) = &temp {
+        let _ = std::fs::remove_file(path);
+    }
+    let mut blame = parse_blame(&String::from_utf8_lossy(&out?));
+    let me = git(root, &["config", "user.name"]).map(|out| String::from_utf8_lossy(&out).trim().to_string());
+    blame.me = me.unwrap_or_default();
+    Some(blame)
+}
+
+/// The newest commit that touched each file, from `git log --name-only` newest first.
+pub fn parse_last_changes(text: &str) -> std::collections::HashMap<String, Commit> {
+    let mut out = std::collections::HashMap::new();
+    for record in text.split('\u{1e}').filter(|r| !r.trim().is_empty()) {
+        let mut lines = record.lines();
+        let Some(commit) = lines.next().and_then(|head| parse_log(head).pop()) else { continue };
+        for path in lines.map(str::trim).filter(|line| !line.is_empty()) {
+            out.entry(path.to_string()).or_insert_with(|| commit.clone());
+        }
+    }
+    out
+}
+
+pub fn last_changes(root: &Path) -> std::collections::HashMap<String, Commit> {
+    let args = ["log", "-n", "3000", "--name-only", "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--relative", "--", "."];
+    git(root, &args).map(|out| parse_last_changes(&String::from_utf8_lossy(&out))).unwrap_or_default()
+}
+
 fn parse_graph(text: &str) -> Vec<GraphCommit> {
     text.lines()
         .filter_map(|line| {
@@ -2902,5 +3022,55 @@ mod change_tests {
         assert_eq!(nth_change(&hunks, 1), Some(90));
         assert_eq!(nth_change(&hunks, 2), Some(40), "after the last one it starts again");
         assert_eq!(nth_change(&[], 0), None);
+    }
+
+    const H1: &str = "1111111111111111111111111111111111111111";
+    const H2: &str = "2222222222222222222222222222222222222222";
+    const ZERO: &str = "0000000000000000000000000000000000000000";
+
+    fn porcelain() -> String {
+        [
+            format!("{H1} 1 1 2\nauthor Ana\nauthor-mail <a@x>\nauthor-time 1000\nsummary First\nfilename a.rs\n\tone"),
+            format!("{H1} 2 2\n\ttwo"),
+            format!("{ZERO} 3 3 1\nauthor Not Committed Yet\nauthor-time 5\nsummary Version of a.rs\nfilename a.rs\n\tthree"),
+            format!("{H2} 1 4 1\nauthor Bo\nauthor-time 2000\nsummary Second\nprevious {H1} a.rs\nfilename a.rs\n\tfour"),
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    #[test]
+    fn blame_porcelain_gives_a_commit_per_line() {
+        let blame = parse_blame(&porcelain());
+        assert_eq!(blame.commits.len(), 2);
+        assert_eq!(blame.lines, vec![Some(0), Some(0), None, Some(1)]);
+        assert_eq!(blame.texts, vec!["one", "two", "three", "four"]);
+        assert_eq!(blame.commits[0].author, "Ana");
+        assert_eq!(blame.commits[1].subject, "Second");
+        assert_eq!(blame.commits[1].time, 2000);
+    }
+
+    #[test]
+    fn a_line_says_who_changed_it_or_that_it_is_not_committed() {
+        let mut blame = parse_blame(&porcelain());
+        blame.me = "Bo".into();
+        let now = 2000 + 4 * 86400;
+        assert_eq!(blame.say(0, "one", now).unwrap(), "Ana, 4 days ago \u{2022} First");
+        assert_eq!(blame.say(3, "four", now).unwrap(), "You, 4 days ago \u{2022} Second");
+        assert_eq!(blame.say(2, "three", now).unwrap(), "You \u{2022} Not committed yet");
+        assert_eq!(blame.say(0, "one typed", now).unwrap(), "You \u{2022} Not committed yet");
+        assert_eq!(Blame::default().say(0, "x", now), None);
+    }
+
+    #[test]
+    fn the_last_change_of_a_file_is_the_newest_commit_that_names_it() {
+        let log = format!(
+            "\u{1e}{H2}\u{1f}Bo\u{1f}2000\u{1f}Second\n\nsrc/a.rs\nsrc/b.rs\n\u{1e}{H1}\u{1f}Ana\u{1f}1000\u{1f}First\n\nsrc/a.rs\nREADME.md\n"
+        );
+        let map = parse_last_changes(&log);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map["src/a.rs"].author, "Bo");
+        assert_eq!(map["README.md"].subject, "First");
+        assert!(parse_last_changes("").is_empty());
     }
 }

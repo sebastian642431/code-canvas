@@ -12,7 +12,7 @@ use canvas_render::{Renderer, SceneData, SceneGpu};
 use crate::camera::Camera;
 use crate::editor::Editor;
 use crate::ext::Found;
-use crate::git::{Change, Commit, CommitFile, FileChange, GitState, Row};
+use crate::git::{Blame, Change, Commit, CommitFile, FileChange, GitState, Row};
 use crate::session::PageSession;
 
 pub struct Gpu<'a> {
@@ -196,6 +196,15 @@ pub struct Page {
     message_rx: Option<Receiver<Result<String, String>>>,
     pub timeline: Timeline,
     timeline_rx: Option<Receiver<(String, Vec<Commit>)>>,
+    pub blame: HashMap<String, Blame>,
+    blame_rx: Option<Receiver<(String, Option<Blame>)>>,
+    blame_asked: Option<(String, u64, u64)>,
+    blame_typed: Option<(String, u64, Instant)>,
+    blame_round: u64,
+    pub show_blame: bool,
+    pub last_change: HashMap<String, Commit>,
+    last_change_rx: Option<Receiver<HashMap<String, Commit>>>,
+    pub show_last_change: bool,
     timeline_stale: bool,
     heads: HashMap<String, Option<String>>,
     heads_asked: HashSet<String>,
@@ -527,6 +536,15 @@ impl Page {
             message_rx: None,
             timeline: Timeline::default(),
             timeline_rx: None,
+            blame: HashMap::new(),
+            blame_rx: None,
+            blame_asked: None,
+            blame_typed: None,
+            blame_round: 0,
+            show_blame: true,
+            last_change: HashMap::new(),
+            last_change_rx: None,
+            show_last_change: true,
             timeline_stale: false,
             heads: HashMap::new(),
             heads_asked: HashSet::new(),
@@ -651,6 +669,13 @@ impl Page {
             crate::ext::wake_ui();
         });
         self.git_rx = Some(rx);
+        let (tx, rx) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::git::last_changes(&root));
+            crate::ext::wake_ui();
+        });
+        self.last_change_rx = Some(rx);
     }
 
     pub fn want_head(&mut self, rel_path: &str) {
@@ -1345,6 +1370,7 @@ impl Page {
                 let head = state.as_ref().map(|git| git.head.clone()).unwrap_or_default();
                 self.git = state;
                 self.git_rx = None;
+                self.blame_round += 1;
                 self.show_switch();
                 if head != self.heads_at {
                     self.heads_at = head;
@@ -1412,6 +1438,135 @@ impl Page {
             self.timeline.loading = false;
         }
         true
+    }
+
+    pub fn poll_last_change(&mut self) -> bool {
+        let Some(rx) = &self.last_change_rx else { return false };
+        let Ok(found) = rx.try_recv() else { return false };
+        self.last_change_rx = None;
+        log::info!("last changes of '{}': {} files", self.title, found.len());
+        self.last_change = found;
+        true
+    }
+
+    /// Who last changed each line of the file being edited, asked of git in a thread: at once the
+    /// first time and after git reloads, a moment after the typing stops otherwise. True while
+    /// an answer is waiting for that moment or for git.
+    pub fn want_blame(&mut self) -> bool {
+        if self.blame_rx.is_some() {
+            return true;
+        }
+        if self.no_git || !self.show_blame || self.git.is_none() {
+            return false;
+        }
+        let Some(editor) = self.editor() else { return false };
+        let (path, rev, text) = (editor.rel_path.clone(), editor.rev, editor.text());
+        let key = (path.clone(), rev, self.blame_round);
+        if self.blame_asked.as_ref() == Some(&key) {
+            return false;
+        }
+        let typing = self.blame_asked.as_ref().is_some_and(|(p, r, round)| *p == path && *round == key.2 && *r != rev);
+        if typing {
+            let since = match &self.blame_typed {
+                Some((p, r, at)) if *p == path && *r == rev => *at,
+                _ => {
+                    self.blame_typed = Some((path.clone(), rev, Instant::now()));
+                    Instant::now()
+                }
+            };
+            if since.elapsed() < Duration::from_millis(400) {
+                return true;
+            }
+        }
+        self.blame_asked = Some(key);
+        let (tx, rx) = mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let found = crate::git::blame(&root, &path, Some(&text));
+            let _ = tx.send((path, found));
+            crate::ext::wake_ui();
+        });
+        self.blame_rx = Some(rx);
+        true
+    }
+
+    pub fn poll_blame(&mut self) -> bool {
+        let Some(rx) = &self.blame_rx else { return false };
+        let Ok((path, found)) = rx.try_recv() else { return false };
+        self.blame_rx = None;
+        self.keep_blame(path, found);
+        true
+    }
+
+    fn keep_blame(&mut self, path: String, found: Option<Blame>) {
+        let new_file = self
+            .git
+            .as_ref()
+            .and_then(|git| git.change(&path))
+            .is_some_and(|c| matches!(c.change, Change::Added | Change::Untracked));
+        let blame = match found {
+            Some(blame) => {
+                log::info!("blame of {path}: {} lines from {} commits", blame.lines.len(), blame.commits.len());
+                blame
+            }
+            None => Blame { ok: new_file, ..Blame::default() },
+        };
+        self.blame.insert(path, blame);
+    }
+
+    pub fn blame_of(&self, rel_path: &str, line: usize, current: &str) -> Option<String> {
+        self.blame.get(rel_path)?.say(line, current, crate::git::now())
+    }
+
+    /// The step `blame <path> <line>`: asks git now, on this thread, and says what the line shows.
+    pub fn blame_now(&mut self, rel_path: &str, line: usize) -> Option<String> {
+        let (contents, current) = match self.editors.get(rel_path) {
+            Some(editor) => (Some(editor.text()), editor.line(line).to_string()),
+            None => {
+                let disk = std::fs::read_to_string(self.root.join(rel_path)).ok()?;
+                (None, disk.lines().nth(line)?.to_string())
+            }
+        };
+        let found = crate::git::blame(&self.root, rel_path, contents.as_deref());
+        self.keep_blame(rel_path.to_string(), found);
+        self.blame_of(rel_path, line, &current)
+    }
+
+    /// What a card says of the last change of its file, faint after its name.
+    pub fn last_change_note(&self, rel_path: &str) -> Option<String> {
+        if !self.show_last_change || self.no_git || self.git.is_none() {
+            return None;
+        }
+        let unsaved = self.editors.get(rel_path).is_some_and(|e| e.dirty);
+        if unsaved || self.git.as_ref().and_then(|git| git.change(rel_path)).is_some() {
+            return Some("changed, not committed".to_string());
+        }
+        let commit = self.last_change.get(rel_path)?;
+        Some(format!("{} \u{b7} {}", commit.author, crate::git::ago((crate::git::now() - commit.time).max(0))))
+    }
+
+    /// The status bar's `Last change: ...` of the file being edited or selected, and its hover text.
+    pub fn last_change_status(&self) -> Option<(String, String)> {
+        if !self.show_last_change || self.no_git || self.git.is_none() {
+            return None;
+        }
+        let path = match self.editing.clone() {
+            Some(path) => path,
+            None => {
+                let node = self.ready()?.layout.nodes.get(self.selected?)?;
+                matches!(node.kind, canvas_core::layout::NodeKind::File(_)).then(|| node.rel_path.clone())?
+            }
+        };
+        let Some(commit) = self.last_change.get(&path) else {
+            let new = self.git.as_ref().and_then(|git| git.change(&path)).is_some();
+            return new.then(|| ("Last change: not committed yet".to_string(), path));
+        };
+        let subject: String = commit.subject.chars().take(60).collect();
+        let ago = crate::git::ago((crate::git::now() - commit.time).max(0));
+        let text = format!("Last change: {}, {ago} \u{2014} {subject}", commit.author);
+        let when = crate::git::date_of(commit.time);
+        let tip = format!("{}\n{}, {when}\n{}", commit.hash, commit.author, commit.subject);
+        Some((text, tip))
     }
 
     pub fn changed_files(&self) -> HashSet<u32> {

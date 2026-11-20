@@ -174,6 +174,16 @@ const MINIMAP: (&str, &str) = (
     "A narrow strip on the right of the canvas with the whole file in small, its changes and problems, and the part on screen. Click or drag on it to move along the file.",
 );
 
+const BLAME_LINE: (&str, &str) = (
+    "Show who last changed the line being edited",
+    "Faint, at the end of the line with the caret: who changed it, when, and the commit's subject. A line changed and not committed says so.",
+);
+
+const LAST_CHANGE: (&str, &str) = (
+    "Show when each file was last changed",
+    "Next to the name of each card, and in the status bar for the selected file: who made the last commit that touched it and when, or that it changed and is not committed.",
+);
+
 const TRAILS: (&str, &str) = (
     "Show where each assistant has been",
     "Its last places, faint in its colour and joined by a dotted line: a ring where it read, a dot where it edited. They fade out in ten minutes. Point at one to see what it did there.",
@@ -386,7 +396,7 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
     }
     let editing = EDITING
         .iter()
-        .chain([&SYMBOLS_PANEL, &MINIMAP])
+        .chain([&SYMBOLS_PANEL, &MINIMAP, &BLAME_LINE, &LAST_CHANGE])
         .any(|(label, about)| hit(f, &[label, about, "Help while editing"]));
     if editing {
         let f = if hit(f, &["Help while editing"]) { "" } else { f };
@@ -406,6 +416,8 @@ fn general(ui: &mut egui::Ui, st: &mut UiState, f: &str, actions: &mut Vec<Actio
             option(ui, f, &mut next.autosave, EDITING[6]);
             option(ui, f, &mut next.code_lenses, EDITING[7]);
             option(ui, f, &mut next.symbols_panel, SYMBOLS_PANEL);
+            option(ui, f, &mut next.blame_line, BLAME_LINE);
+            option(ui, f, &mut next.last_change, LAST_CHANGE);
         });
     }
     let assistants =

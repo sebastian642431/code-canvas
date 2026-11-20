@@ -1,0 +1,29 @@
+title: The line being edited says who last changed it and when (and Not committed yet once it is typed on), each card says when its file was last changed, and the status bar says it for the selected file
+folders: git-history
+expect-log: last changes of 'git-history': \d+ files
+expect-log: script: blame of src/steps\.rs line 1: You, just now . first
+expect-log: script: blame of src/steps\.rs line 10: You, just now . notes and a step
+expect-log: blame of src/steps\.rs: \d+ lines from 2 commits
+expect-log: script: blame of src/steps\.rs line 2: You . Not committed yet
+
+wait 3000
+goto src/steps.rs
+wait 1500
+mark cards-and-status
+wait 600
+blame src/steps.rs 1
+blame src/steps.rs 10
+edit src/steps.rs 2 6
+wait 800
+mark caret-line-committed
+wait 600
+type X
+wait 1500
+blame src/steps.rs 2
+mark caret-line-typed
+wait 600
+key save
+wait 1500
+mark saved-titles
+wait 600
+quit
