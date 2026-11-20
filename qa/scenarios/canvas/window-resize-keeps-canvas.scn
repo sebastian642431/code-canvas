@@ -1,7 +1,7 @@
 title: Making the window smaller and larger, and opening panels, keeps in the middle of the canvas what was in the middle
 folders: rust-small
 forbid-log: WARN.*script
-expect-file: {WORK}\data\code-canvas.log :: (?s)canvas shows (\(\S+ \S+\) at zoom \S+)(.*canvas shows \1){5}
+expect-file: {WORK}\data\hawk-canvas.log :: (?s)canvas shows (\(\S+ \S+\) at zoom \S+)(.*canvas shows \1){5}
 
 wait 3000
 left none

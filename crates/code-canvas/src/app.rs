@@ -350,8 +350,8 @@ impl App {
         if !defaults.is_empty() {
             let ask = ui::Ask::new(
                 ui::Asked::Defaults,
-                "Install the extensions Code Canvas comes with?",
-                "They come from Open VSX, at the version and with the checksum this version of Code Canvas names. Each runs code with your permissions. They can also be installed later from the Extensions panel.".to_string(),
+                "Install the extensions Hawk Canvas comes with?",
+                "They come from Open VSX, at the version and with the checksum this version of Hawk Canvas names. Each runs code with your permissions. They can also be installed later from the Extensions panel.".to_string(),
             )
             .choice("Install them", ui::ChoiceLook::Main, ui::Answer::Yes)
             .choice("Not now", ui::ChoiceLook::Plain, ui::Answer::Other);
@@ -522,8 +522,8 @@ impl App {
     fn update_title(&self) {
         if let Some(g) = &self.gfx {
             let title = match self.pages.get(self.active) {
-                Some(p) => format!("{} — Code Canvas", p.title),
-                None => "Code Canvas".into(),
+                Some(p) => format!("{} — Hawk Canvas", p.title),
+                None => "Hawk Canvas".into(),
             };
             g.window.set_title(&title);
         }
@@ -2990,7 +2990,7 @@ impl App {
         if self.extension_page != stamp || !self.webviews.has_html(ext::details::PAGE) {
             self.webviews.set_html(ext::details::PAGE, ext::details::page_html(&view, tab));
             let verdict = match &view.manifest {
-                ext::gallery::Got::Ready(m) if m.gaps.is_empty() => "works in Code Canvas".to_string(),
+                ext::gallery::Got::Ready(m) if m.gaps.is_empty() => "works in Hawk Canvas".to_string(),
                 ext::gallery::Got::Ready(m) => {
                     format!("not available yet: {}", ext::compat::lines(&m.gaps).join(" · "))
                 }
@@ -4376,7 +4376,7 @@ impl App {
             }
             Action::InstallUpdate => {
                 if self.updater.install() {
-                    self.ext.notice(ext::Level::Info, "Code Canvas", "downloading the new version…");
+                    self.ext.notice(ext::Level::Info, "Hawk Canvas", "downloading the new version…");
                 } else if let Some(release) = &self.updater.offer {
                     crate::update::open_page(&release.page);
                 }
@@ -5751,7 +5751,7 @@ impl App {
             Some(News::Available(release)) => {
                 let text = format!("Version {} is available. This is {}.", release.version, crate::update::current());
                 let first = if release.download.is_some() { UPDATE } else { PAGE };
-                self.ext.ask("Code Canvas", text, &[first, "Later"], "update");
+                self.ext.ask("Hawk Canvas", text, &[first, "Later"], "update");
                 self.request_redraw();
             }
             Some(News::Installed(program)) => {
@@ -5759,16 +5759,16 @@ impl App {
                 self.exit_requested = true;
             }
             Some(News::Failed(why)) => {
-                self.ext.notice(ext::Level::Error, "Code Canvas", format!("the update was not installed: {why}"));
+                self.ext.notice(ext::Level::Error, "Hawk Canvas", format!("the update was not installed: {why}"));
                 self.request_redraw();
             }
             Some(News::UpToDate) => {
                 let text = format!("version {} is the latest", crate::update::current());
-                self.ext.notice(ext::Level::Info, "Code Canvas", text);
+                self.ext.notice(ext::Level::Info, "Hawk Canvas", text);
                 self.request_redraw();
             }
             Some(News::CheckFailed(why)) => {
-                self.ext.notice(ext::Level::Warn, "Code Canvas", format!("could not look for a new version: {why}"));
+                self.ext.notice(ext::Level::Warn, "Hawk Canvas", format!("could not look for a new version: {why}"));
                 self.request_redraw();
             }
             None => {}
@@ -5808,7 +5808,7 @@ impl App {
             }
             match choice.as_str() {
                 UPDATE if self.updater.install() => {
-                    self.ext.notice(ext::Level::Info, "Code Canvas", "downloading the new version…");
+                    self.ext.notice(ext::Level::Info, "Hawk Canvas", "downloading the new version…");
                 }
                 PAGE => {
                     if let Some(release) = &self.updater.offer {
@@ -6511,7 +6511,7 @@ impl ApplicationHandler for App {
         let place = crate::window_place::place(&screens, first, self.window_size, self.window_pos);
         let size = place.size;
         let attrs = Window::default_attributes()
-            .with_title("Code Canvas")
+            .with_title("Hawk Canvas")
             .with_inner_size(LogicalSize::new(size[0] as f64, size[1] as f64))
             .with_position(winit::dpi::PhysicalPosition::new(place.position[0], place.position[1]))
             .with_maximized(self.start_maximized)
@@ -6843,7 +6843,7 @@ impl ApplicationHandler for App {
                         "The new version was installed but did not start ({e}). This one keeps running; the one before it is kept as {}.",
                         old.display()
                     );
-                    self.ext.notice(ext::Level::Error, "Code Canvas", text);
+                    self.ext.notice(ext::Level::Error, "Hawk Canvas", text);
                     return;
                 }
             }
@@ -6905,7 +6905,7 @@ impl App {
             if now.len() == len && now.modified().ok() == modified {
                 return;
             }
-            log::info!("a new build of Code Canvas is in place of this one");
+            log::info!("a new build of Hawk Canvas is in place of this one");
             self.ui.new_build = true;
             self.request_redraw();
         }

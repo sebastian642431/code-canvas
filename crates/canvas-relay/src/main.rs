@@ -4,7 +4,7 @@ use std::time::Duration;
 use canvas_relay::{Limits, Relay};
 
 const USAGE: &str = "\
-canvas-relay: pairs the two ends of a shared Code Canvas session and passes
+canvas-relay: pairs the two ends of a shared Hawk Canvas session and passes
 their sealed bytes along. It never has the secret of an invitation.
 
 Usage: canvas-relay --listen <address:port> [options]

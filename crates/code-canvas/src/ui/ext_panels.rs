@@ -192,7 +192,7 @@ fn result_row(ui: &mut egui::Ui, st: &mut UiState, ext: &mut Extensions, item: &
                 let tip_rect = Rect::from_min_max(Pos2::new(start, y3 - 8.0), Pos2::new(start + 15.0 + used, y3 + 8.0));
                 let tip = crate::ext::compat::lines(&m.gaps).join("\n");
                 ui.interact(tip_rect, ui.scope_id().with(("gaps", &id)), Sense::hover())
-                    .on_hover_text(format!("Not in Code Canvas yet:\n{tip}"));
+                    .on_hover_text(format!("Not in Hawk Canvas yet:\n{tip}"));
             }
         }
     }
@@ -856,7 +856,7 @@ fn format_count(n: u64) -> String {
     out
 }
 
-/// "Works in Code Canvas", or what of the extension does not yet: from its manifest (the
+/// "Works in Hawk Canvas", or what of the extension does not yet: from its manifest (the
 /// registry's copy before it is installed) and, once it runs, from what it asked for.
 fn works_here(
     ui: &mut egui::Ui,
@@ -894,7 +894,7 @@ fn works_here(
             if missing.is_empty() {
                 ui.horizontal(|ui| {
                     ui.label(icon(glyph("pass-filled", icons::CIRCLE_CHECK), 14.0, pal().accent));
-                    ui.label(RichText::new("Works in Code Canvas").size(12.5).color(pal().text));
+                    ui.label(RichText::new("Works in Hawk Canvas").size(12.5).color(pal().text));
                     ui.label(RichText::new("everything it brings is supported").size(12.0).color(pal().text_dim));
                 });
             } else {
@@ -902,7 +902,7 @@ fn works_here(
                     ui.label(icon(icons::TRIANGLE_ALERT, 14.0, warn));
                     let n = missing.len();
                     let title =
-                        format!("{n} feature{} not available in Code Canvas yet", if n == 1 { "" } else { "s" });
+                        format!("{n} feature{} not available in Hawk Canvas yet", if n == 1 { "" } else { "s" });
                     ui.label(RichText::new(title).size(12.5).color(pal().text));
                 });
                 for line in &missing {

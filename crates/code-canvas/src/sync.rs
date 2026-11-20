@@ -167,7 +167,7 @@ pub fn token() -> Option<String> {
     let (open, old) = unseal(&sealed)?;
     let token = String::from_utf8(open).ok().filter(|token| !token.is_empty())?;
     if old {
-        log::info!("the GitHub sign-in is sealed again, tied to Code Canvas");
+        log::info!("the GitHub sign-in is sealed again, tied to Hawk Canvas");
         keep_token(&token);
     }
     Some(token)

@@ -1,6 +1,6 @@
 # Notes
 
-The source code of Code Canvas carries **no comments, by design**. What a reader
+The source code of Hawk Canvas carries **no comments, by design**. What a reader
 cannot get from the code and its names lives here: why something is done in a
 non-obvious way, invariants, traps, platform quirks, budgets, file formats and how
 to run things. These notes were rescued from the comments the code used to have.
@@ -86,7 +86,7 @@ to run things. These notes were rescued from the comments the code used to have.
 | Variable | Read in | Effect |
 |---|---|---|
 | `CODE_CANVAS_SCRIPT` | `script.rs`, `app.rs` | Steps to run inside the app, see [script.rs](#cratescode-canvassrcscriptrs). Also makes the run *quiet* (below). |
-| `CODE_CANVAS_BENCH` | `bench.rs`, `app.rs` | `CODE_CANVAS_BENCH=1 code-canvas <folder>` runs the frame-time benchmark. Also makes the run quiet. |
+| `CODE_CANVAS_BENCH` | `bench.rs`, `app.rs` | `CODE_CANVAS_BENCH=1 hawk-canvas <folder>` runs the frame-time benchmark. Also makes the run quiet. |
 | `CODE_CANVAS_DATA_DIR` | `session::data_dir` | Replaces the data directory, so a test leaves the real session alone. |
 | `CODE_CANVAS_NO_CACHE` | `page::scan_cache` | Set to anything: scans neither read nor write what a scan found. |
 | `CODE_CANVAS_TEXT_MB` | `page::text_budget` | How many megabytes of file text are kept in memory before the least recently used is let go and read again on demand (768 by default). |
@@ -104,9 +104,12 @@ does not look for updates: such runs must not reach for the network.
 
 ### Files in the data directory
 
-`session::data_dir` is `%APPDATA%\code-canvas` on Windows, `~/.config/code-canvas`
-on Linux and `~/Library/Application Support/code-canvas` on macOS, unless
-`CODE_CANVAS_DATA_DIR` says otherwise.
+`session::data_dir` is `%APPDATA%\hawk-canvas` on Windows, `~/.config/hawk-canvas`
+on Linux and `~/Library/Application Support/hawk-canvas` on macOS, unless
+`CODE_CANVAS_DATA_DIR` says otherwise. The app was called Code Canvas before: the first
+start of Hawk Canvas renames the folder `code-canvas` beside it to `hawk-canvas`
+(`session::named_data_dir`), and keeps using the old one while a file in it is still open.
+The environment variables keep their `CODE_CANVAS_` names.
 
 | File | Owner | What |
 |---|---|---|
@@ -120,7 +123,7 @@ on Linux and `~/Library/Application Support/code-canvas` on macOS, unless
 | `settings.json` | extension host | VS Code-style settings, see [EXTENSIONS.md](EXTENSIONS.md). |
 | `extensions/` | `ext/market.rs` | Installed extensions, unpacked. |
 | `scans/<hash of the folder's path>.bin` | `canvas-core/store.rs`, `page.rs` | What the last scan of that folder found. Safe to delete: the folder is read whole the next time. One not used for 30 days is removed at start. |
-| `code-canvas.log` | `main.rs` | The log, see [ARCHITECTURE.md](ARCHITECTURE.md). |
+| `hawk-canvas.log` | `main.rs` | The log, see [ARCHITECTURE.md](ARCHITECTURE.md). |
 
 The extension host script is embedded in the executable and written here at start.
 
@@ -141,8 +144,8 @@ network; the last rows are not tests but belong to the same toolbox.
 | Draw what a real icon theme gives a few names, side by side, to look at | `ICON_THEME_TEST=<theme.json> ICON_THEME_SHEET=<out.png> cargo test -p code-canvas real_icon_theme -- --ignored --nocapture` |
 | Latest release, from GitHub | `cargo test -p code-canvas real_latest -- --ignored --nocapture` |
 | Latest versions, from npm, crates.io, PyPI, NuGet, the Go proxy, Packagist and pub.dev | `cargo test -p code-canvas real_registries -- --ignored --nocapture` |
-| Frame-time benchmark | `CODE_CANVAS_BENCH=1 code-canvas <folder>` |
-| Drive the real app | `CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800; select main; locate" code-canvas <folder>` |
+| Frame-time benchmark | `CODE_CANVAS_BENCH=1 hawk-canvas <folder>` |
+| Drive the real app | `CODE_CANVAS_SCRIPT="goto src/main.rs; wait 800; select main; locate" hawk-canvas <folder>` |
 
 ---
 
@@ -988,9 +991,9 @@ Behaviour
 
 ### crates/code-canvas/src/main.rs
 
-- Usage: `code-canvas [FOLDER ...]`. Without arguments the previous session is
+- Usage: `hawk-canvas [FOLDER ...]`. Without arguments the previous session is
   restored.
-- `code-canvas --install-extension <publisher.name | file.vsix> ...` installs
+- `hawk-canvas --install-extension <publisher.name | file.vsix> ...` installs
   without opening a window. The outcome goes to the log; the exit code is the
   number of failures.
 - Release builds on Windows have no console (`windows_subsystem = "windows"`), so
@@ -1362,7 +1365,7 @@ Graphics and the frame
   `note_covers` leaves the cards out of `UiState::covers`, and
   `ui::covers_of` gives each page the covers plus every card but its own. A
   card still covers what plays on the canvas under it.
-- **Some settings of extensions start the way Code Canvas wants**, not the
+- **Some settings of extensions start the way Hawk Canvas wants**, not the
   extension's (`OURS` in host.js; a person's `settings.json` still wins): the
   Claude Code panel does not attach the open file to every message
   (`claudeCode.attachOpenFile: false`). `qa/host/settings.test.js` checks it.
@@ -1757,7 +1760,7 @@ CPU busy with nothing on screen saying why. No AI, plain counts.
 
 ### crates/code-canvas/src/ext/compat.rs, gallery.rs, details.rs
 
-- `compat::gaps` reads a manifest for what Code Canvas cannot do yet: custom editors,
+- `compat::gaps` reads a manifest for what Hawk Canvas cannot do yet: custom editors,
   keyboard shortcuts, snippets, debugging, tasks, notebooks, terminal profiles,
   sign-in providers, VS Code's chat, product icon themes, TypeScript server plugins,
   menu entries outside a view's title and rows, code only for the browser, extension
@@ -2598,7 +2601,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `git` | `git stage [path]`, `git unstage [path]`, `git discard [path]`, `git commit <message>` | Source control. Discarding asks first. |
 | `install` | `install <publisher.name>` | Install an extension from Open VSX. |
 | `ext-search` | `ext-search <text>` | Search the extension registry. |
-| `ext` | `ext <publisher.name> [details\|features\|changelog\|runtime]`, `ext <tab>` | Open the page of an extension (of the registry or installed) on its tab, or change the tab of the one open. The log says "the page of <id> shows its <tab> (works in Code Canvas \| not available yet: …; registry ready)". |
+| `ext` | `ext <publisher.name> [details\|features\|changelog\|runtime]`, `ext <tab>` | Open the page of an extension (of the registry or installed) on its tab, or change the tab of the one open. The log says "the page of <id> shows its <tab> (works in Hawk Canvas \| not available yet: …; registry ready)". |
 | `format` | `format <path>` | Format a file with the installed formatter. |
 | `command` | `command <id>` | Run an extension's command. |
 | `lens` | `lens <path> <line> [n]`, `lens report <path>` | What a click on the n-th code lens (1-based) of a line (1-based) does; log every line's lenses as "script: lenses of <path> line N: a \| b". |
@@ -2643,7 +2646,7 @@ Assistants seen on the canvas while they work (`app/assistants.rs` draws them).
   Only `agent` is needed; `line` counts from 1. Two more are optional: `find`, a
   line of text to look for in the file when the line number is not known (an
   edit), and `session`, the assistant a helper belongs to.
-- **Claude Code** is heard through its hooks. `code-canvas --agent-hook claude`
+- **Claude Code** is heard through its hooks. `hawk-canvas --agent-hook claude`
   is the command of the hook: it reads the hook's JSON from its input, cuts the
   long texts out of it (`shortened`: a datagram holds 64 KB and an edit can be
   larger), sends it wrapped as `{"source", "hook"}` and ends, before anything of
@@ -3546,19 +3549,19 @@ shells in the folder that is open, as many as wanted (`consoles.rs`).
   offered once per version, in a notice. `check_now` works with the automatic look
   switched off too.
 - **Replacing a running program on Windows:** its file cannot be overwritten, but
-  it can be renamed. `swap` renames the running one to `code-canvas.old.exe`,
+  it can be renamed. `swap` renames the running one to `hawk-canvas.old.exe`,
   gives the new one its name, and `clean_up` removes the old file the next time
   the app starts. If the second rename fails the first is undone: better the old
   version than none.
-- `code-canvas.old.exe` can be taken: it is a program still running when the app
+- `hawk-canvas.old.exe` can be taken: it is a program still running when the app
   was updated before and not closed since, or when two of them are open. Then
   nothing can be renamed onto it ("access denied") and the update failed for
-  good. `swap` goes on to `code-canvas.old-1.exe` and the next ones (`ASIDES`),
+  good. `swap` goes on to `hawk-canvas.old-1.exe` and the next ones (`ASIDES`),
   and `clean_up` removes all of them that nobody runs.
 - What is trusted:
   - `parse_release` takes the download only from the releases of this repository,
     whatever GitHub's answer says. A program from somewhere else is not taken,
-    whatever it is called. The asset must be `ASSET` = `code-canvas.exe`.
+    whatever it is called. The asset must be one of `ASSETS`: `hawk-canvas.exe`, or `code-canvas.exe` in releases from before the name Hawk Canvas (the release workflow still publishes both, so installed copies of the old name update themselves).
   - `install` rejects a download smaller than 1 MiB or not starting with `MZ`: it
     has to be a program, whole, not an error page or half a download.
 - `newer`: pre-releases are never newer.
@@ -3813,8 +3816,8 @@ Configuration carries no comments either; what they said:
 ## scripts
 
 - `scripts/install.ps1` installs for the current user, with no admin rights: it
-  copies the release build to `%LOCALAPPDATA%\Programs\Code Canvas`, adds Start
-  Menu and Desktop shortcuts and, with `-ContextMenu`, "Open with Code Canvas" on
+  copies the release build to `%LOCALAPPDATA%\Programs\Hawk Canvas`, adds Start
+  Menu and Desktop shortcuts and, with `-ContextMenu`, "Open with Hawk Canvas" on
   folders. From the repository root:
 
   ```powershell
@@ -3832,13 +3835,13 @@ Configuration carries no comments either; what they said:
     `Directory\shell\CodeCanvas` with `%1` (right-click a folder) and
     `Directory\Background\shell\CodeCanvas` with `%V` (right-click inside one).
 - `scripts/uninstall.ps1` removes what `install.ps1` added. Settings and the
-  session in `%APPDATA%\code-canvas` are kept unless `-Purge` is given.
+  session in `%APPDATA%\hawk-canvas` are kept unless `-Purge` is given.
 - `scripts/screenshot.ps1` starts a test instance with a data folder of its own,
   runs a script in it and saves a picture of **its window only**, not of the
   screen:
 
   ```powershell
-  scripts\screenshot.ps1 -Exe target\debug\code-canvas.exe -Data $env:TEMP\cc-test `
+  scripts\screenshot.ps1 -Exe target\debug\hawk-canvas.exe -Data $env:TEMP\cc-test `
       -Script "left settings; wait 4000; quit" -Out shot.png -After 4500 -Folders "C:\some\folder"
   ```
 

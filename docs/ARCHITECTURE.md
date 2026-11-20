@@ -1,6 +1,6 @@
 # Architecture
 
-Code Canvas is three crates with a one-way dependency chain:
+Hawk Canvas is three crates with a one-way dependency chain:
 
 ```
 canvas-core  ──►  canvas-render  ──►  code-canvas (app)
@@ -242,7 +242,7 @@ the app's back, as another program would), `page <javascript>` (a line of script
 webview on screen),
 `mark <name>` (leaves an empty file `marks/<name>` in the data directory: a sign for whoever watches the
 instance, see below), `quit`. `CODE_CANVAS_DATA_DIR` keeps the test's session and log away from
-the real ones. Logs go to `code-canvas.log` in the data directory.
+the real ones. Logs go to `hawk-canvas.log` in the data directory.
 
 To see the result, `scripts/screenshot.ps1` (Windows) starts such an instance and
 saves a picture of its window: enough to check a panel or a theme without clicking.

@@ -63,16 +63,16 @@ impl App {
         let then = then.join(" and ");
         let Some((rel, n)) = path else {
             let text = format!(
-                "In the last minute Code Canvas {then} for {title}. Something keeps changing that folder (a build, a server?)."
+                "In the last minute Hawk Canvas {then} for {title}. Something keeps changing that folder (a build, a server?)."
             );
             log::warn!("{text}");
-            self.ext.notice(ext::Level::Warn, "Code Canvas", text);
+            self.ext.notice(ext::Level::Warn, "Hawk Canvas", text);
             self.request_redraw();
             return;
         };
         let mut text = format!("{rel} in {title} was written {n} times in the last minute");
         if !then.is_empty() {
-            text.push_str(&format!(", and Code Canvas {then}"));
+            text.push_str(&format!(", and Hawk Canvas {then}"));
         }
         text.push_str(
             ". Something keeps writing to it (a server's log?). Stop following it and its changes cost nothing here.",
@@ -83,7 +83,7 @@ impl App {
         });
         let choices: &[&str] = if hideable { &[STOP, HIDE, "Dismiss"] } else { &[STOP, "Dismiss"] };
         let about = format!("{ASKED}{}\n{rel}", folder.display());
-        self.ext.ask_at(ext::Level::Warn, "Code Canvas", text, choices, &about);
+        self.ext.ask_at(ext::Level::Warn, "Hawk Canvas", text, choices, &about);
         self.request_redraw();
     }
 
@@ -100,7 +100,7 @@ impl App {
                 let text = format!(
                     "Changes to {rel} are not followed any more. \"Not followed\" in the status bar follows it again."
                 );
-                self.ext.notice(ext::Level::Info, "Code Canvas", text);
+                self.ext.notice(ext::Level::Info, "Hawk Canvas", text);
             }
             HIDE => {
                 if let Some(i) = self.pages.iter().position(|page| page.root == folder) {
@@ -129,7 +129,7 @@ impl App {
             return;
         }
         log::info!("{} files are followed again", files.len());
-        self.ext.notice(ext::Level::Info, "Code Canvas", "Changes to the files not followed are followed again.");
+        self.ext.notice(ext::Level::Info, "Hawk Canvas", "Changes to the files not followed are followed again.");
         self.on_disk_changes(crate::watch::Batch { files, git: Vec::new() });
     }
 

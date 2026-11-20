@@ -40,7 +40,7 @@ impl<T> Got<T> {
     }
 }
 
-/// A manifest and what of it does not work in Code Canvas.
+/// A manifest and what of it does not work in Hawk Canvas.
 #[derive(Debug, PartialEq)]
 pub struct Manifest {
     pub json: Value,

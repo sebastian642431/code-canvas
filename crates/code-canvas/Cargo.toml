@@ -3,7 +3,11 @@ name = "code-canvas"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "See a whole codebase on an infinite, GPU-rendered canvas"
+description = "Hawk Canvas: see a whole codebase on an infinite, GPU-rendered canvas"
+
+[[bin]]
+name = "hawk-canvas"
+path = "src/main.rs"
 
 [dependencies]
 canvas-core.workspace = true

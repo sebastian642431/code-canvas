@@ -978,7 +978,7 @@ function layerTree(flat, languageId) {
   return tree;
 }
 
-// What Code Canvas wants that differs from an extension's own default; a person's settings.json still wins.
+// What Hawk Canvas wants that differs from an extension's own default; a person's settings.json still wins.
 const OURS = {
   'claudeCode.attachOpenFile': false,
 };
@@ -2044,7 +2044,7 @@ const commands = permissive('commands', {
 });
 
 const env = permissive('env', {
-  appName: 'Code Canvas',
+  appName: 'Hawk Canvas',
   appRoot: __dirname,
   appHost: 'desktop',
   uriScheme: 'code-canvas',

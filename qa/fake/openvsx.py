@@ -1,11 +1,11 @@
-"""An Open VSX that answers only what Code Canvas asks of it, on this computer.
+"""An Open VSX that answers only what Hawk Canvas asks of it, on this computer.
 
 python qa/fake/openvsx.py <port>
 A scenario gets one with a header line `openvsx: on`; the app is pointed at it with
 CODE_CANVAS_OPEN_VSX=http://127.0.0.1:<port>/api. It knows three extensions:
 
 - qa-tools.bru-lite: verified, rated, with an icon, a README with a picture beside it, a
-  changelog, and things Code Canvas cannot do yet (a custom editor, keyboard shortcuts,
+  changelog, and things Hawk Canvas cannot do yet (a custom editor, keyboard shortcuts,
   editor menu entries).
 - qa-tools.lint-plus: everything it brings works (commands, settings, a language).
 - qa-tools.web-only: code only for VS Code in a browser, deprecated, no icon.

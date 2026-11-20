@@ -24,22 +24,27 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $name = "code-canvas-windows-x64"
+          $name = "hawk-canvas-windows-x64"
           New-Item -ItemType Directory -Force $name | Out-Null
-          Copy-Item target/release/code-canvas.exe, README.md, README.es.md, LICENSE-MIT, LICENSE-APACHE $name
+          Copy-Item target/release/hawk-canvas.exe, README.md, README.es.md, LICENSE-MIT, LICENSE-APACHE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip" -Force
-          Copy-Item target/release/code-canvas.exe code-canvas.exe
+          Copy-Item target/release/hawk-canvas.exe hawk-canvas.exe
+          # Installed copies from before the name Hawk Canvas look for code-canvas.exe: the same program
+          # under that name lets them update themselves.
+          Copy-Item target/release/hawk-canvas.exe code-canvas.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: code-canvas-windows-x64
+          name: hawk-canvas-windows-x64
           path: |
-            code-canvas-windows-x64.zip
+            hawk-canvas-windows-x64.zip
+            hawk-canvas.exe
             code-canvas.exe
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            code-canvas-windows-x64.zip
+            hawk-canvas-windows-x64.zip
+            hawk-canvas.exe
             code-canvas.exe
           generate_release_notes: true

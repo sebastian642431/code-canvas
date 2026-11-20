@@ -1,11 +1,11 @@
-//! What of an extension Code Canvas cannot do yet, read from its manifest (package.json)
+//! What of an extension Hawk Canvas cannot do yet, read from its manifest (package.json)
 //! alone: the same answer before it is installed (from the registry's copy of the manifest)
 //! and after (from the one in its folder). What it asks for while running and is missing
 //! comes on top, from the host (`Installed::unsupported`).
 
 use serde_json::Value;
 
-/// One thing an extension brings that does not work in Code Canvas yet.
+/// One thing an extension brings that does not work in Hawk Canvas yet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gap {
     /// What it is, in a few words: "Custom editors".
@@ -14,11 +14,11 @@ pub struct Gap {
     pub detail: String,
 }
 
-/// The menus of VS Code whose entries Code Canvas shows: the buttons of a view's title and
+/// The menus of VS Code whose entries Hawk Canvas shows: the buttons of a view's title and
 /// of its rows. The command palette's entries are what the extension's page lists.
 const SHOWN_MENUS: [&str; 3] = ["view/title", "view/item/context", "commandPalette"];
 
-/// Contribution points that do nothing in Code Canvas yet, and what to call them.
+/// Contribution points that do nothing in Hawk Canvas yet, and what to call them.
 const NOT_YET: [(&str, &str); 17] = [
     ("customEditors", "Custom editors"),
     ("keybindings", "Keyboard shortcuts"),
@@ -62,7 +62,7 @@ fn count(list: &Value) -> usize {
     }
 }
 
-/// Everything of the manifest that does not work in Code Canvas yet; empty when all of it does.
+/// Everything of the manifest that does not work in Hawk Canvas yet; empty when all of it does.
 pub fn gaps(manifest: &Value) -> Vec<Gap> {
     let mut out: Vec<Gap> = Vec::new();
     let mut add = |what: &str, detail: String| match out.iter_mut().find(|g| g.what == what) {

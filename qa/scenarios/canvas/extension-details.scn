@@ -4,7 +4,7 @@ openvsx: on
 expect-log: the page of qa-tools\.bru-lite shows its Details \(not available yet: Custom editors: Bru Request Editor · Keyboard shortcuts \(2\) · Menu entries: in editor/title
 expect-log: the page of qa-tools\.bru-lite shows its Features
 expect-log: the page of qa-tools\.bru-lite shows its Changelog
-expect-log: the page of qa-tools\.lint-plus shows its Details \(works in Code Canvas; registry ready\)
+expect-log: the page of qa-tools\.lint-plus shows its Details \(works in Hawk Canvas; registry ready\)
 expect-log: the page of qa-tools\.web-only shows its Details \(not available yet: Its code: it is written only for VS Code in a browser
 expect-log: the page of qa-tools\.nobody shows its Details \(manifest failed; registry failed\)
 expect-file: {WORK}\data\extensions\qa-tools.bru-lite-1.2.0\package.json :: "name": "bru-lite"

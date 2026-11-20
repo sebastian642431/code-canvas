@@ -78,7 +78,7 @@ impl Write for Tee {
 }
 
 fn log_path() -> PathBuf {
-    session::data_dir().join("code-canvas.log")
+    session::data_dir().join("hawk-canvas.log")
 }
 
 fn init_logging() {
@@ -101,7 +101,7 @@ fn init_logging() {
         }
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
-            .set_title("Code Canvas crashed")
+            .set_title("Hawk Canvas crashed")
             .set_description(format!("{info}\n\nDetails were written to:\n{}", log_path().display()))
             .show();
     }));
@@ -150,7 +150,7 @@ fn main() -> anyhow::Result<()> {
         });
     }
     init_logging();
-    log::info!("Code Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
+    log::info!("Hawk Canvas {} — log: {}", env!("CARGO_PKG_VERSION"), log_path().display());
     update::clean_up();
 
     let args: Vec<String> = std::env::args().skip(1).collect();

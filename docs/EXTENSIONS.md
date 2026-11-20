@@ -1,6 +1,6 @@
 # Extensions
 
-Code Canvas runs **real VS Code extensions**: the same `.vsix` packages, unmodified,
+Hawk Canvas runs **real VS Code extensions**: the same `.vsix` packages, unmodified,
 installed from [Open VSX](https://open-vsx.org) or from a file. This document says how
 it works, what works today, and what does not yet.
 
@@ -9,7 +9,7 @@ it works, what works today, and what does not yet.
 - **Extensions panel** (puzzle icon in the left rail): search Open VSX, press *Install*.
   The archive icon installs a `.vsix` file from disk.
 - From a terminal, like `code` does:
-  `code-canvas --install-extension dbaeumer.vscode-eslint esbenp.prettier-vscode`
+  `hawk-canvas --install-extension dbaeumer.vscode-eslint esbenp.prettier-vscode`
 - Each extension that offers something gets **its own icon in the left rail**. It opens
   the extension's panel: what it is, and its commands, which run with a click.
 - **Webviews**: an extension's own interface (the official Claude Code panel, for
@@ -92,7 +92,7 @@ Themes made of SVG files are read; font icons are not.
 ## How it works
 
 ```
-code-canvas (Rust)  ── JSON lines over stdio ──►  node exthost/host.js
+hawk-canvas (Rust)  ── JSON lines over stdio ──►  node exthost/host.js
    ext/mod.rs                                        │  provides the `vscode` module
    ext/host.rs                                       ▼
    ext/market.rs (Open VSX, .vsix)              the extensions, unmodified
@@ -110,10 +110,10 @@ code-canvas (Rust)  ── JSON lines over stdio ──►  node exthost/host.js
 
 ### What the canvas means to an extension
 
-VS Code extensions assume an editor made of tabs. Code Canvas maps its own ideas onto
+VS Code extensions assume an editor made of tabs. Hawk Canvas maps its own ideas onto
 theirs:
 
-| VS Code | Code Canvas |
+| VS Code | Hawk Canvas |
 |---|---|
 | workspace folders | the folders open as canvases |
 | open text documents, tabs | files whose code is readable on screen right now |
@@ -194,7 +194,7 @@ Not yet — these are the next pieces, in order:
 | ESLint (`dbaeumer.vscode-eslint`) | works: problems on the canvas, "Fix all auto-fixable problems" |
 | Prettier (`esbenp.prettier-vscode`) | works: formats with the project's `.prettierrc` |
 | Error Lens (`usernamehw.errorlens`) | works: the message of each problem after its line |
-| Version Lens (`pflannery.vscode-versionlens`) | not needed: Code Canvas shows the versions of dependencies itself, clickable, with bulk updates, prereleases, private npm scopes and the project's install (see `versions` in [NOTES.md](NOTES.md)) |
+| Version Lens (`pflannery.vscode-versionlens`) | not needed: Hawk Canvas shows the versions of dependencies itself, clickable, with bulk updates, prereleases, private npm scopes and the project's install (see `versions` in [NOTES.md](NOTES.md)) |
 | Pretty TypeScript Errors (`yoavbls.pretty-ts-errors`) | starts; needs hovers and a TypeScript language server |
 | Claude Code (`Anthropic.claude-code`) | its panel and its list of sessions open and render, signed in; a session opened from the list, or a new one, is a tab that can be closed; sending a message has not been tested yet |
 | Git Graph (`mhutchie.git-graph`) | starts; its graph is a webview panel — not tried since webviews landed |

@@ -1,4 +1,4 @@
-"""Package registries that answer only what Code Canvas asks of them, on this computer.
+"""Package registries that answer only what Hawk Canvas asks of them, on this computer.
 
 python qa/fake/registry.py <port> <folder of the run>
 A scenario gets them with a header line `registry: on` (the token of the private

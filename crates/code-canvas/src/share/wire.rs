@@ -264,7 +264,7 @@ fn salt_from(stream: &mut impl Read) -> io::Result<[u8; 16]> {
     let mut greeting = [0u8; 21];
     stream.read_exact(&mut greeting)?;
     if &greeting[..5] != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "that is not a Code Canvas session"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "that is not a Hawk Canvas session"));
     }
     let mut salt = [0u8; 16];
     salt.copy_from_slice(&greeting[5..]);

@@ -139,7 +139,7 @@ const fn preset(key: &'static str, name: &'static str, kind: Kind, about: &'stat
 }
 
 pub const PRESETS: &[Preset] = &[
-    preset("dark", "Dark", Kind::Dark, "Neutral graphite, the look Code Canvas started with.", DARK),
+    preset("dark", "Dark", Kind::Dark, "Neutral graphite, the look Hawk Canvas started with.", DARK),
     preset("midnight", "Midnight", Kind::Dark, "Deep night blue with soft pastel code.", MIDNIGHT),
     preset("ember", "Ember", Kind::Dark, "Warm charcoal and amber, easy on the eyes at night.", EMBER),
     preset("harbor", "Harbor", Kind::Dark, "Cool slate and sea teal.", HARBOR),

@@ -1,6 +1,6 @@
 # Scenarios
 
-Tests that run the real program. Each one starts Code Canvas on a folder made
+Tests that run the real program. Each one starts Hawk Canvas on a folder made
 for it, plays a script inside the app (no mouse or keyboard of yours is used),
 takes pictures of the window where the script says so, and then checks how it
 ended: the exit code, the log, files on disk.
@@ -52,7 +52,7 @@ quit
 | `guest-extensions` | As `extensions`, for the second instance. |
 | `prefs` | The preferences the app starts with, as JSON (also the guest's): `{"autosave": false}` for a scenario about what is typed and not saved. |
 | `github` | `empty`, or a file of `qa/fake` with the files of a gist: the run gets a GitHub of its own on this computer (`qa/fake/github.py`) to sign in to. |
-| `openvsx` | `on`: an Open VSX of its own for the run (`qa/fake/openvsx.py`, three made-up extensions with icons, READMEs, changelogs and manifests, one of each kind: things that do not work in Code Canvas, all that works, code only for the browser); the app is pointed at it with `CODE_CANVAS_OPEN_VSX`. What it was asked is in `openvsx.log` of the run. |
+| `openvsx` | `on`: an Open VSX of its own for the run (`qa/fake/openvsx.py`, three made-up extensions with icons, READMEs, changelogs and manifests, one of each kind: things that do not work in Hawk Canvas, all that works, code only for the browser); the app is pointed at it with `CODE_CANVAS_OPEN_VSX`. What it was asked is in `openvsx.log` of the run. |
 | `defaults` | `offered`: the first start asks about the default extensions, as an unscripted one does (`CODE_CANVAS_OFFER_DEFAULTS`). |
 | `codex` | A fixture that is Codex's folder (`CODEX_HOME`) for the run, such as `codex-home`; without it, an empty folder of the run. |
 | `registry` | `on`: package registries of its own for the run (`qa/fake/registry.py`, `CODE_CANVAS_REGISTRY` points the app at them) and `QA_NPM_TOKEN` set for the fixture's `.npmrc`; `no-token`: the same without the token. Each request is written to `registry.log` of the run; a private package asked where it must not be writes `leak.txt` there. |
