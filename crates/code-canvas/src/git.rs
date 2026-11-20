@@ -1739,9 +1739,13 @@ pub fn blame(root: &Path, rel_path: &str, contents: Option<&str>) -> Option<Blam
         let _ = std::fs::remove_file(path);
     }
     let mut blame = parse_blame(&String::from_utf8_lossy(&out?));
-    let me = git(root, &["config", "user.name"]).map(|out| String::from_utf8_lossy(&out).trim().to_string());
-    blame.me = me.unwrap_or_default();
+    blame.me = user_name(root);
     Some(blame)
+}
+
+/// The name git signs commits with in that folder: whose changes read "You".
+pub fn user_name(root: &Path) -> String {
+    git(root, &["config", "user.name"]).map(|out| String::from_utf8_lossy(&out).trim().to_string()).unwrap_or_default()
 }
 
 /// The newest commit that touched each file, from `git log --name-only` newest first.

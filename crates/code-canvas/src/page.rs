@@ -203,7 +203,9 @@ pub struct Page {
     blame_round: u64,
     pub show_blame: bool,
     pub last_change: HashMap<String, Commit>,
-    last_change_rx: Option<Receiver<HashMap<String, Commit>>>,
+    last_change_rx: Option<Receiver<(HashMap<String, Commit>, String)>>,
+    /// Who git signs commits as in this folder: their changes read "You".
+    me: String,
     pub show_last_change: bool,
     timeline_stale: bool,
     heads: HashMap<String, Option<String>>,
@@ -544,6 +546,7 @@ impl Page {
             show_blame: true,
             last_change: HashMap::new(),
             last_change_rx: None,
+            me: String::new(),
             show_last_change: true,
             timeline_stale: false,
             heads: HashMap::new(),
@@ -672,7 +675,7 @@ impl Page {
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::git::last_changes(&root));
+            let _ = tx.send((crate::git::last_changes(&root), crate::git::user_name(&root)));
             crate::ext::wake_ui();
         });
         self.last_change_rx = Some(rx);
@@ -1442,10 +1445,11 @@ impl Page {
 
     pub fn poll_last_change(&mut self) -> bool {
         let Some(rx) = &self.last_change_rx else { return false };
-        let Ok(found) = rx.try_recv() else { return false };
+        let Ok((found, me)) = rx.try_recv() else { return false };
         self.last_change_rx = None;
         log::info!("last changes of '{}': {} files", self.title, found.len());
         self.last_change = found;
+        self.me = me;
         true
     }
 
@@ -1460,7 +1464,7 @@ impl Page {
             return false;
         }
         let Some(editor) = self.editor() else { return false };
-        let (path, rev, text) = (editor.rel_path.clone(), editor.rev, editor.text());
+        let (path, rev) = (editor.rel_path.clone(), editor.rev);
         let key = (path.clone(), rev, self.blame_round);
         if self.blame_asked.as_ref() == Some(&key) {
             return false;
@@ -1479,6 +1483,7 @@ impl Page {
             }
         }
         self.blame_asked = Some(key);
+        let Some(text) = self.editor().map(|editor| editor.text()) else { return false };
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
@@ -1532,6 +1537,14 @@ impl Page {
         self.blame_of(rel_path, line, &current)
     }
 
+    fn who<'a>(&self, author: &'a str) -> &'a str {
+        if !self.me.is_empty() && author == self.me {
+            "You"
+        } else {
+            author
+        }
+    }
+
     /// What a card says of the last change of its file, faint after its name.
     pub fn last_change_note(&self, rel_path: &str) -> Option<String> {
         if !self.show_last_change || self.no_git || self.git.is_none() {
@@ -1542,7 +1555,8 @@ impl Page {
             return Some("changed, not committed".to_string());
         }
         let commit = self.last_change.get(rel_path)?;
-        Some(format!("{} \u{b7} {}", commit.author, crate::git::ago((crate::git::now() - commit.time).max(0))))
+        let ago = crate::git::ago((crate::git::now() - commit.time).max(0));
+        Some(format!("{} \u{b7} {ago}", self.who(&commit.author)))
     }
 
     /// The status bar's `Last change: ...` of the file being edited or selected, and its hover text.
@@ -1563,7 +1577,7 @@ impl Page {
         };
         let subject: String = commit.subject.chars().take(60).collect();
         let ago = crate::git::ago((crate::git::now() - commit.time).max(0));
-        let text = format!("Last change: {}, {ago} \u{2014} {subject}", commit.author);
+        let text = format!("Last change: {}, {ago} \u{2014} {subject}", self.who(&commit.author));
         let when = crate::git::date_of(commit.time);
         let tip = format!("{}\n{}, {when}\n{}", commit.hash, commit.author, commit.subject);
         Some((text, tip))
