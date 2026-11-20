@@ -9,7 +9,7 @@ fit
 wait 1000
 menu 640 400
 wait 500
-ui click 740 421
+ui click 740 448
 wait 1200
 mark file-hidden
 wait 500
