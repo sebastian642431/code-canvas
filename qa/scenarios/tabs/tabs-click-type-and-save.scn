@@ -1,0 +1,25 @@
+title: A click in a file tab puts the caret of the file's editor there: what is typed lands at that place and a save writes it
+folders: rust-small
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: nothing offers
+expect-log: tabs: .*in front: Some\(0\), .*editing: Some
+expect-file: rust-small/src/util.rs :: (?s)\Apub fn double\(n: u32\) -> u32 \{\n    Xn \* 2\n\}
+
+wait 3000
+tool edit
+tab open src/util.rs
+wait 1000
+tab click 2 5
+wait 600
+type X
+wait 600
+mark typed-in-the-tab
+wait 450
+tab report
+key save
+wait 1200
+mark saved
+wait 450
+quit

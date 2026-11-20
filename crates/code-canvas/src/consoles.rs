@@ -564,16 +564,28 @@ impl Consoles {
         slot
     }
 
-    /// Moves a console dragged to `slot` among the consoles of its card, as [`Consoles::snap`] says.
-    pub fn reorder(&mut self, id: u64, slot: usize) {
-        let Some(tab) = self.tab(id) else { return };
+    /// The consoles that go along with one dragged to `slot` (already through [`Consoles::snap`]): itself alone
+    /// inside its own group, else its whole group.
+    pub fn carried(&self, id: u64, slot: usize) -> Vec<u64> {
+        let Some(tab) = self.tab(id) else { return Vec::new() };
         let (card, group) = (tab.card, tab.group);
-        let slot = self.snap(id, slot);
         let ids: Vec<u64> = self.of_card(card).map(|tab| tab.id).collect();
         let mates: Vec<u64> = self.of_card(card).filter(|tab| tab.group == group).map(|tab| tab.id).collect();
         let first = ids.iter().position(|other| mates.contains(other)).unwrap_or(0);
         let alone = mates.len() > 1 && (first..=first + mates.len()).contains(&slot);
-        let moving = if alone { vec![id] } else { mates };
+        if alone {
+            vec![id]
+        } else {
+            mates
+        }
+    }
+
+    /// Moves a console dragged to `slot` among the consoles of its card, as [`Consoles::snap`] says.
+    pub fn reorder(&mut self, id: u64, slot: usize) {
+        let Some(card) = self.tab(id).map(|tab| tab.card) else { return };
+        let slot = self.snap(id, slot);
+        let ids: Vec<u64> = self.of_card(card).map(|tab| tab.id).collect();
+        let moving = self.carried(id, slot);
         let stays = |other: &&u64| !moving.contains(other);
         let order: Vec<u64> =
             ids[..slot].iter().filter(stays).chain(&moving).chain(ids[slot..].iter().filter(stays)).copied().collect();

@@ -1,0 +1,23 @@
+title: The note under the Commit button floats over the panel with a close button, and a good one goes away by itself after about six seconds
+folders: git-changes
+limit: 60
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-file: git-changes/.git/logs/HEAD :: commit: note then gone
+
+wait 3000
+left changes
+wait 800
+git stage src/steps.rs
+wait 1200
+git commit note then gone
+wait 1500
+mark note-showing
+wait 450
+wait 2000
+mark note-still-there
+wait 450
+wait 6000
+mark note-gone
+wait 450
+quit

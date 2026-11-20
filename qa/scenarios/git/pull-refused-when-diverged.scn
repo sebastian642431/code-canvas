@@ -1,0 +1,20 @@
+title: A pull of a branch that went its own way is refused (fast-forward only): the files are as they were, the local commit stays, and the note says why
+folders: git-diverged
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: script: Git\("pull"\)
+expect-file: git-diverged/a.txt :: \Aa1\na2\n\z
+expect-file: git-diverged/local-only.txt :: ^only here\n
+absent-file: git-diverged/from-remote.txt
+
+wait 3500
+left changes
+wait 1200
+mark diverged
+wait 450
+git pull
+wait 3500
+mark refused
+wait 450
+quit

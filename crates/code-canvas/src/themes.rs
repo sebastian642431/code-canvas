@@ -309,6 +309,7 @@ fn theme_of(written: &Written, light: bool) -> Option<Theme> {
     let comment = token(tokens, &["comment"]).unwrap_or(theme::mix(fg, bg, 0.5));
     let base = if light { theme::DAYLIGHT } else { theme::DARK };
     let status = |keys: &[&str], or: u32| asked(keys).map_or(or, |c| c | 0xff);
+    let find_match = status(&["editor.findMatchBorder", "editor.findMatchHighlightBorder"], base.find_match);
     Some(Theme {
         chrome: bar,
         card: side,
@@ -368,8 +369,8 @@ fn theme_of(written: &Written, light: bool) -> Option<Theme> {
         caret: asked(&["editorCursor.foreground"]).map_or(fg, |c| c | 0xff),
         code_selection: asked(&["editor.selectionBackground"]).unwrap_or(with_alpha(accent, 0x40)),
         current_line: asked(&["editor.lineHighlightBackground"]).unwrap_or(with_alpha(fg, 0x0a)),
-        find_match: asked(&["editor.findMatchBorder", "editor.findMatchHighlightBorder"])
-            .map_or(base.find_match, |c| c | 0xff),
+        find_match,
+        line_mark: with_alpha(find_match, if light { 0x40 } else { 0x33 }),
         problem_error: status(
             &["editorError.foreground", "errorForeground", "list.errorForeground"],
             base.problem_error,

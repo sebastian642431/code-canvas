@@ -533,7 +533,8 @@ class TextEditor {
     const col = displayColumn(text, start.character, state.tabWidth);
     const same = range.end && range.end.line === start.line;
     const len = same ? Math.max(1, displayColumn(text, range.end.character, state.tabWidth) - col) : 1;
-    send({ type: 'reveal', path: appPath(doc.uri), line: start.line, col, len });
+    const endLine = range.end ? Math.max(start.line, range.end.line) : start.line;
+    send({ type: 'reveal', path: appPath(doc.uri), line: start.line, col, len, endLine });
   }
   show() {}
   hide() {}

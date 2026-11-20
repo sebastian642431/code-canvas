@@ -28,11 +28,11 @@ answer create
 wait 2500
 mark e-tag-made
 wait 500
-ui right 100 712
+ui right 100 692
 wait 1000
 mark f-stash-menu
 wait 500
-ui click 150 795
+ui click 150 775
 wait 1000
 mark g-drop-asked
 wait 500

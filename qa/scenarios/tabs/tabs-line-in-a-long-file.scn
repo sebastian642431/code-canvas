@@ -1,0 +1,27 @@
+title: A file tab of a file of 12000 lines goes to line 9000 and a click there puts the caret on that line, so typing lands on it and nowhere else
+folders: odd-files
+limit: 60
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: nothing offers
+expect-file: odd-files/big.rs :: (?s)\npub fn f8998\(\) -> usize \{ 8998 \}\nXpub fn f8999\(\) -> usize \{ 8999 \}\npub fn f9000\(\)
+
+wait 3500
+tool edit
+tab open big.rs
+wait 1500
+mark top
+wait 450
+tab line 9000
+wait 1200
+mark line-9000
+wait 450
+tab click 9000 1
+wait 600
+type X
+wait 600
+key save
+wait 1500
+mark saved
+wait 450
+quit

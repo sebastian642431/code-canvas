@@ -17,6 +17,7 @@ pub(super) struct Picker<'a> {
     pub filter: &'a mut String,
     pub shut: &'a mut HashSet<String>,
     pub opening: bool,
+    pub switching: bool,
     pub locals: &'a [LocalBranch],
     pub remotes: &'a [RemoteBranch],
 }
@@ -102,8 +103,9 @@ pub(super) fn tree(
 }
 
 /// A row of a local branch: its name, how far ahead or behind its remote it is, and a check on the
-/// branch that is switched to. The tip says what a click does.
-pub(super) fn local_row(ui: &mut Ui, branch: &LocalBranch, label: &str, indent: f32) -> Response {
+/// branch that is switched to (a spinner while git is still getting there). The tip says what a
+/// click does.
+pub(super) fn local_row(ui: &mut Ui, branch: &LocalBranch, label: &str, indent: f32, switching: bool) -> Response {
     let full = &branch.name;
     let (rect, resp) = row(ui);
     let mid = rect.center().y;
@@ -123,7 +125,11 @@ pub(super) fn local_row(ui: &mut Ui, branch: &LocalBranch, label: &str, indent: 
         ui.painter().galley(Pos2::new(right, mid - galley.size().y * 0.5), galley, pal().text_faint);
         right -= 6.0;
     }
-    if branch.current {
+    if branch.current && switching {
+        let at = Rect::from_center_size(Pos2::new(right - 6.0, mid), Vec2::splat(14.0));
+        egui::Spinner::new().size(14.0).color(pal().accent).paint_at(ui, at);
+        right -= 18.0;
+    } else if branch.current {
         let font = FontId::proportional(12.0);
         ui.painter().text(Pos2::new(right, mid), Align2::RIGHT_CENTER, icons::CHECK, font, pal().accent);
         right -= 18.0;
@@ -137,7 +143,11 @@ pub(super) fn local_row(ui: &mut Ui, branch: &LocalBranch, label: &str, indent: 
         tint,
         right - rect.left() - 44.0 - indent,
     );
-    let tip = if branch.current { format!("{full}: the branch you are on") } else { format!("Switch to {full}") };
+    let tip = match (branch.current, switching) {
+        (true, true) => format!("Switching to {full}…"),
+        (true, false) => format!("{full}: the branch you are on"),
+        (false, _) => format!("Switch to {full}"),
+    };
     resp.on_hover_text(tip)
 }
 
@@ -217,7 +227,7 @@ pub(super) fn section_head(ui: &mut Ui, glyph: &str, title: &str, count: usize) 
 
 impl Picker<'_> {
     pub(super) fn show(self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let Picker { filter, shut, opening, locals, remotes } = self;
+        let Picker { filter, shut, opening, switching, locals, remotes } = self;
         ui.set_width(260.0);
         ui.spacing_mut().item_spacing.y = 1.0;
         ui.horizontal(|ui| {
@@ -255,7 +265,7 @@ impl Picker<'_> {
                 section_head(ui, icons::GIT_BRANCH, "Local", names.len());
                 let mut leaf = |ui: &mut Ui, full: &str, label: &str, indent: f32| {
                     let Some(branch) = locals.iter().find(|l| l.name == full) else { return };
-                    if local_row(ui, branch, label, indent).clicked() && !branch.current {
+                    if local_row(ui, branch, label, indent, switching).clicked() && !branch.current {
                         actions.push(Action::Git(GitOp::Switch(full.to_string())));
                         ui.close();
                     }

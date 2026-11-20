@@ -13,11 +13,11 @@ press enter
 wait 2500
 mark a-commits
 wait 500
-ui right 1100 170
+ui right 1100 204
 wait 1000
 mark b-menu
 wait 500
-ui click 1200 288
+ui click 1200 322
 wait 2500
 mark c-banner
 wait 500

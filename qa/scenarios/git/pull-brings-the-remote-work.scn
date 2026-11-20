@@ -1,0 +1,24 @@
+title: A repository one commit behind its remote (already fetched) pulls fast-forward: the new file appears, the changed file takes the remote line, and Source Control shows it
+folders: git-behind
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: script: Git\("pull"\)
+expect-file: git-behind/from-remote.txt :: ^pulled from the remote\n
+expect-file: git-behind/a.txt :: ^a1\na2\na3 from the remote\n
+expect-file: git-behind/.git/logs/HEAD :: (?s)\n[0-9a-f]{40} [0-9a-f]{40} .*pull
+
+wait 3500
+left changes
+wait 1200
+mark behind-by-one
+wait 450
+git pull
+wait 3500
+mark pulled
+wait 450
+left files
+wait 1000
+mark new-file-in-the-files
+wait 450
+quit

@@ -31,6 +31,7 @@ image.workspace = true
 zip.workspace = true
 pulldown-cmark.workspace = true
 similar.workspace = true
+regex.workspace = true
 ring.workspace = true
 flate2.workspace = true
 irosashi.workspace = true

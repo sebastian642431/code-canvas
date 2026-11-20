@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use canvas_core::scan::{self, Dir, ScanProgress};
 use canvas_core::{Layout, LayoutFilter, RelKind, Relations, Repo, ScanOptions, Site, SymRef, TokenCache};
@@ -85,6 +86,9 @@ pub enum PageState {
     Failed(String),
 }
 
+/// The marks on the canvas of the Search panel, the find bar or a place gone to.
+// The query, the cut and the time are not shown anywhere since the Search panel keeps its own results.
+#[allow(dead_code)]
 pub struct SearchResults {
     pub query: String,
     pub hits: Vec<Site>,
@@ -93,7 +97,11 @@ pub struct SearchResults {
     pub current: Option<usize>,
 }
 
-type FoundLines = HashMap<usize, (u32, String)>;
+/// The files and folders the find bar found by name, best first; marked on the canvas.
+pub struct FoundNames {
+    pub paths: Vec<String>,
+    pub current: Option<usize>,
+}
 
 pub struct Selection {
     pub sym: SymRef,
@@ -154,12 +162,18 @@ pub struct Page {
     pub only_connected: bool,
     pub curves_dirty: bool,
     pub search: Option<SearchResults>,
-    found: Option<(Vec<Site>, FoundLines)>,
+    /// What the Search panel found in the folder's files.
+    pub grep: crate::search::Grep,
+    pub marked: Option<Marked>,
+    pub found_names: Option<FoundNames>,
     pub git: Option<GitState>,
     pub history: crate::history::HistoryView,
     /// The interactive rebase being arranged in its card.
     pub rebase: Option<crate::rebase::Plan>,
     git_rx: Option<Receiver<Option<GitState>>>,
+    /// Git reads and scans started since `App::watch_churn` last took them.
+    pub git_loads: u32,
+    pub scans: u32,
     pub only_changed: bool,
     /// With only the changed files shown: also every file of a folder that has a changed file.
     pub changed_folders: bool,
@@ -176,7 +190,8 @@ pub struct Page {
     pub dep_zoom: Option<i32>,
     pub commit_message: String,
     git_op: Option<Receiver<(crate::git::GitOp, Result<String, String>)>>,
-    pub git_note: Option<(bool, String)>,
+    pub switch: Option<crate::branch_switch::Switch>,
+    pub git_note: Option<GitNote>,
     pub git_said: Option<(bool, String)>,
     message_rx: Option<Receiver<Result<String, String>>>,
     pub timeline: Timeline,
@@ -185,8 +200,13 @@ pub struct Page {
     heads: HashMap<String, Option<String>>,
     heads_asked: HashSet<String>,
     heads_round: u32,
-    heads_tx: mpsc::Sender<(u32, String, Option<String>)>,
-    heads_rx: Receiver<(u32, String, Option<String>)>,
+    heads_tx: mpsc::Sender<(bool, u32, String, Option<String>)>,
+    heads_rx: Receiver<(bool, u32, String, Option<String>)>,
+    indexes: HashMap<String, Option<String>>,
+    indexes_asked: HashSet<String>,
+    indexes_round: u32,
+    /// The file of the row clicked in Source Control, shown as a diff of that side.
+    pub diff_focus: Option<(String, DiffSide)>,
     previewed: Vec<(String, Option<FileChange>)>,
     pub changed_dirs: HashSet<String>,
     pub touched: Vec<Touch>,
@@ -217,11 +237,47 @@ pub struct DiffView {
     pub split: bool,
     pub fold: bool,
     pub around: u32,
+    pub side: DiffSide,
 }
 
 impl Default for DiffView {
     fn default() -> Self {
-        DiffView { on: false, split: false, fold: true, around: 3 }
+        DiffView { on: false, split: false, fold: true, around: 3, side: DiffSide::All }
+    }
+}
+
+/// What a diff compares: the last commit against the files (All), against the index (Staged),
+/// or the index against the files (Unstaged).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum DiffSide {
+    All,
+    Staged,
+    Unstaged,
+}
+
+impl DiffSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffSide::All => "All changes",
+            DiffSide::Staged => "Staged",
+            DiffSide::Unstaged => "Not staged",
+        }
+    }
+
+    pub fn of(self, change: &FileChange) -> bool {
+        match self {
+            DiffSide::All => true,
+            DiffSide::Staged => change.staged.is_some(),
+            DiffSide::Unstaged => change.unstaged.is_some(),
+        }
+    }
+
+    fn uses_head(self) -> bool {
+        self != DiffSide::Unstaged
+    }
+
+    fn uses_index(self) -> bool {
+        self != DiffSide::All
     }
 }
 
@@ -242,6 +298,7 @@ pub struct Diffed {
     symbols: Vec<(u32, u32)>,
     /// Some unchanged lines of the file are folded away.
     folded: bool,
+    pub side: DiffSide,
 }
 
 impl Diffed {
@@ -268,18 +325,6 @@ fn row_seen(rows: &[Row], lines: &[u32], line: u32) -> (u32, bool) {
     let seen = |at: &Row| matches!(at.kind, RowKind::Same | RowKind::Added) && at.line == line;
     (row, rows.get(row as usize).is_some_and(seen))
 }
-
-fn found_in(line: &str, query: &str) -> Vec<u16> {
-    let exact = query.chars().any(|c| c.is_uppercase());
-    let (hay, needle) = match exact {
-        true => (line.to_string(), query.to_string()),
-        false => (line.to_ascii_lowercase(), query.to_ascii_lowercase()),
-    };
-    let col = |at: usize| line.get(..at).map_or(0, |before| before.chars().count()).min(u16::MAX as usize);
-    hay.match_indices(needle.as_str()).map(|(at, _)| col(at) as u16).collect()
-}
-
-const MAX_HITS: usize = 5000;
 
 const MAX_DIFFS: usize = 400;
 
@@ -365,9 +410,53 @@ impl Touch {
     }
 }
 
+pub struct GitNote {
+    pub ok: bool,
+    pub text: String,
+    pub since: Instant,
+}
+
+impl GitNote {
+    pub const DONE_SHOWN: Duration = Duration::from_secs(6);
+    pub const ERROR_SHOWN: Duration = Duration::from_secs(20);
+
+    pub fn new(ok: bool, text: String) -> Self {
+        GitNote { ok, text, since: Instant::now() }
+    }
+
+    pub fn left(&self, now: Instant) -> Option<Duration> {
+        let shown = if self.ok { Self::DONE_SHOWN } else { Self::ERROR_SHOWN };
+        shown.checked_sub(now.saturating_duration_since(self.since)).filter(|left| !left.is_zero())
+    }
+}
+
 impl SearchResults {
     pub fn single(site: Site) -> Self {
         SearchResults { query: String::new(), hits: vec![site], truncated: false, ms: 0.0, current: None }
+    }
+}
+
+/// Lines an extension asked to show (a link in a chat), marked until a click lands off their card.
+pub struct Marked {
+    pub rel: String,
+    first: u32,
+    last: u32,
+}
+
+impl Marked {
+    pub fn new(rel: String, line: u32, last: u32) -> Marked {
+        Marked { rel, first: line.min(last), last: line.max(last) }
+    }
+
+    /// The rows the lines take in a card of `rows` rows, `row_of` telling the row of a line.
+    pub fn rows(&self, rows: u32, row_of: impl Fn(u32) -> u32) -> Option<Range<u32>> {
+        let (a, b) = (row_of(self.first), row_of(self.last));
+        let (a, b) = (a.min(b), a.max(b).saturating_add(1).min(rows));
+        (a < b).then_some(a..b)
+    }
+
+    pub fn kept_by_click(card: Option<canvas_core::Rect>, at: [f32; 2]) -> bool {
+        card.is_some_and(|card| card.contains(at))
     }
 }
 
@@ -410,11 +499,15 @@ impl Page {
             only_connected: false,
             curves_dirty: true,
             search: None,
-            found: None,
+            grep: Default::default(),
+            marked: None,
+            found_names: None,
             git: None,
             history: Default::default(),
             rebase: None,
             git_rx: None,
+            git_loads: 0,
+            scans: 0,
             only_changed: false,
             changed_folders: false,
             changed_neighbours: false,
@@ -428,6 +521,7 @@ impl Page {
             dep_zoom: None,
             commit_message: String::new(),
             git_op: None,
+            switch: None,
             git_note: None,
             git_said: None,
             message_rx: None,
@@ -439,6 +533,10 @@ impl Page {
             heads_round: 0,
             heads_tx,
             heads_rx,
+            indexes: HashMap::new(),
+            indexes_asked: HashSet::new(),
+            indexes_round: 0,
+            diff_focus: None,
             previewed: Vec::new(),
             changed_dirs: HashSet::new(),
             touched: Vec::new(),
@@ -540,6 +638,7 @@ impl Page {
         if self.no_git {
             return;
         }
+        self.git_loads += 1;
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
@@ -559,19 +658,31 @@ impl Page {
     }
 
     fn want_heads(&mut self, paths: Vec<String>) {
+        self.want_texts(paths, false);
+    }
+
+    /// Reads, away from the UI thread, the texts of the files in the last commit or in the index.
+    fn want_texts(&mut self, paths: Vec<String>, index: bool) {
         let Some(git) = &self.git else { return };
-        let paths: Vec<String> = paths.into_iter().filter(|path| self.heads_asked.insert(path.clone())).collect();
+        let asked = if index { &mut self.indexes_asked } else { &mut self.heads_asked };
+        let paths: Vec<String> = paths.into_iter().filter(|path| asked.insert(path.clone())).collect();
         if paths.is_empty() {
             return;
         }
         let committed_as = |path: &String| git.change(path).and_then(|change| change.from.clone());
-        let named: Vec<String> = paths.iter().map(|path| committed_as(path).unwrap_or_else(|| path.clone())).collect();
-        let (root, prefix, round, tx) =
-            (self.root.clone(), git.prefix.clone(), self.heads_round, self.heads_tx.clone());
+        let named: Vec<String> = match index {
+            true => paths.clone(),
+            false => paths.iter().map(|path| committed_as(path).unwrap_or_else(|| path.clone())).collect(),
+        };
+        let round = if index { self.indexes_round } else { self.heads_round };
+        let (root, prefix, tx) = (self.root.clone(), git.prefix.clone(), self.heads_tx.clone());
         std::thread::spawn(move || {
-            let texts = crate::git::head_texts(&root, &prefix, &named);
+            let texts = match index {
+                true => crate::git::index_texts(&root, &prefix, &named),
+                false => crate::git::head_texts(&root, &prefix, &named),
+            };
             for (rel, text) in paths.into_iter().zip(texts) {
-                let _ = tx.send((round, rel, text));
+                let _ = tx.send((index, round, rel, text));
             }
             crate::ext::wake_ui();
         });
@@ -579,11 +690,13 @@ impl Page {
 
     pub fn poll_heads(&mut self) -> bool {
         let mut arrived = false;
-        while let Ok((round, rel, text)) = self.heads_rx.try_recv() {
-            if round == self.heads_round {
-                self.heads.insert(rel, text);
-                arrived = true;
-            }
+        while let Ok((index, round, rel, text)) = self.heads_rx.try_recv() {
+            match index {
+                false if round == self.heads_round => self.heads.insert(rel, text),
+                true if round == self.indexes_round => self.indexes.insert(rel, text),
+                _ => continue,
+            };
+            arrived = true;
         }
         self.diff_stale |= arrived;
         arrived
@@ -591,6 +704,22 @@ impl Page {
 
     pub fn rows(&self, rel_path: &str) -> Option<&[Row]> {
         self.diffs.get(rel_path).map(|shown| shown.rows.as_slice())
+    }
+
+    /// The rows where the changes of a card showing a diff start; None when it shows the file.
+    pub fn change_rows(&self, rel_path: &str) -> Option<Vec<u32>> {
+        use crate::git::RowKind;
+        let shown = self.diffs.get(rel_path)?;
+        let mut starts = Vec::new();
+        let mut was = false;
+        for (at, row) in shown.rows.iter().enumerate() {
+            let changed = matches!(row.kind, RowKind::Added | RowKind::Removed);
+            if changed && !was {
+                starts.push(at as u32);
+            }
+            was = changed;
+        }
+        Some(starts)
     }
 
     pub fn row_of(&self, rel_path: &str, line: u32) -> u32 {
@@ -608,6 +737,28 @@ impl Page {
         log::info!("what changed inside the files: {shown}, {sides} sides, {folded}");
         self.diff = view;
         self.diff_stale = true;
+    }
+
+    /// Shows the file of a clicked row of Source Control as the diff of its side; the same row
+    /// again stops it.
+    pub fn focus_diff(&mut self, rel_path: &str, side: DiffSide) {
+        let again = self.diff_focus.as_ref().is_some_and(|(path, was)| path == rel_path && *was == side);
+        self.diff_focus = (!again).then(|| (rel_path.to_string(), side));
+        let what = if again { "no longer shown" } else { side.label() };
+        log::info!("the diff of {rel_path}: {what}");
+        self.diff_stale = true;
+    }
+
+    /// The side of the diff the card of the file shows, if it shows one.
+    pub fn diff_side(&self, rel_path: &str) -> Option<DiffSide> {
+        self.diffs.get(rel_path).map(|shown| shown.side).filter(|_| self.showing.is_none())
+    }
+
+    fn side_for(&self, rel_path: &str) -> DiffSide {
+        match &self.diff_focus {
+            Some((path, side)) if path == rel_path => *side,
+            _ => self.diff.side,
+        }
     }
 
     pub fn show_commit(&mut self, commit: Option<Commit>) {
@@ -657,7 +808,8 @@ impl Page {
         if self.showing.as_ref().is_some_and(|showing| showing.loading) {
             return false;
         }
-        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed && self.showing.is_none() {
+        let quiet = self.diff_focus.is_none() && self.showing.is_none();
+        if !self.diff.on && self.diffs.is_empty() && !self.showing_changed && quiet {
             self.diff_stale = false;
         }
         self.diff_stale && self.ready().is_some()
@@ -666,25 +818,43 @@ impl Page {
     pub fn diff_settled(&self, rel_path: &str) -> bool {
         let waiting = self.git_rx.is_some()
             || self.diff_stale
-            || (self.heads_asked.contains(rel_path) && !self.heads.contains_key(rel_path));
-        !self.diff.on || self.diffs.contains_key(rel_path) || !waiting
+            || (self.heads_asked.contains(rel_path) && !self.heads.contains_key(rel_path))
+            || (self.indexes_asked.contains(rel_path) && !self.indexes.contains_key(rel_path));
+        let focused = self.diff_focus.as_ref().is_some_and(|(path, _)| path == rel_path);
+        !(self.diff.on || focused) || self.diffs.contains_key(rel_path) || !waiting
     }
 
     pub fn sync_diff(&mut self, renderer: &Renderer, device: &wgpu::Device, filters: &RelFilters) -> bool {
         use std::hash::{Hash, Hasher};
         self.diff_stale = false;
         let split = self.diff.split;
-        let wanted: Vec<String> = match (self.commit_shown(), &self.git, self.diff.on) {
-            (Some(showing), ..) => showing
+        let gone = match (&self.diff_focus, &self.git) {
+            (Some((path, side)), Some(git)) => !git.change(path).is_some_and(|change| side.of(change)),
+            _ => false,
+        };
+        if gone {
+            self.diff_focus = None;
+        }
+        let focused = |c: &&FileChange| self.diff_focus.as_ref().is_some_and(|(path, _)| *path == c.path);
+        let wanted: Vec<String> = match (self.commit_shown(), &self.git) {
+            (Some(showing), _) => showing
                 .files
                 .iter()
                 .filter(|file| self.editing.as_deref() != Some(file.path.as_str()))
                 .map(|file| file.path.clone())
                 .collect(),
-            (None, Some(git), true) => git
+            (None, Some(git)) => git
                 .changes
                 .iter()
-                .filter(|c| !matches!(c.change, Change::Untracked | Change::Added | Change::Deleted))
+                .filter(|c| self.diff.on || focused(c))
+                .filter(|c| {
+                    let side = self.side_for(&c.path);
+                    match c.change {
+                        Change::Untracked | Change::Deleted => false,
+                        Change::Added => !side.uses_head() && side.of(c),
+                        _ => side.of(c),
+                    }
+                })
                 .filter(|c| self.editing.as_deref() != Some(c.path.as_str()))
                 .map(|c| c.path.clone())
                 .take(MAX_DIFFS)
@@ -692,9 +862,16 @@ impl Page {
             _ => Vec::new(),
         };
         if self.commit_shown().is_none() {
-            let unknown: Vec<String> = wanted.iter().filter(|path| !self.heads.contains_key(*path)).cloned().collect();
-            self.want_heads(unknown);
+            let unknown = |texts: &HashMap<String, Option<String>>, index: bool| -> Vec<String> {
+                let needs = |side: DiffSide| if index { side.uses_index() } else { side.uses_head() };
+                let wanted = wanted.iter().filter(|path| needs(self.side_for(path)) && !texts.contains_key(*path));
+                wanted.cloned().collect()
+            };
+            let (heads, indexes) = (unknown(&self.heads, false), unknown(&self.indexes, true));
+            self.want_texts(heads, false);
+            self.want_texts(indexes, true);
         }
+        let sides: HashMap<&str, DiffSide> = wanted.iter().map(|path| (path.as_str(), self.side_for(path))).collect();
         let around = self.diff.fold.then_some(self.diff.around);
         let laid = std::mem::take(&mut self.showing_changed);
         let committed: Option<HashMap<&str, &CommitFile>> = self
@@ -727,18 +904,29 @@ impl Page {
                 continue;
             }
             let Some(text) = current(&self.editors, rel) else { continue };
+            let side = match committed {
+                Some(_) => DiffSide::All,
+                None => sides.get(rel.as_str()).copied().unwrap_or(DiffSide::All),
+            };
             let (old, new): (&str, &str) = match &committed {
                 Some(files) => {
                     let Some(file) = files.get(rel.as_str()) else { continue };
                     (file.before.as_deref().unwrap_or(""), file.after.as_deref().unwrap_or(""))
                 }
                 None => {
-                    let Some(Some(head)) = self.heads.get(rel) else { continue };
-                    (head, &text)
+                    let head = self.heads.get(rel).and_then(|head| head.as_deref());
+                    let index = self.indexes.get(rel).and_then(|index| index.as_deref());
+                    let pair = match side {
+                        DiffSide::All => head.zip(Some(text.as_str())),
+                        DiffSide::Staged => head.zip(index),
+                        DiffSide::Unstaged => index.zip(Some(text.as_str())),
+                    };
+                    let Some(pair) = pair else { continue };
+                    pair
                 }
             };
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            (old, new, &text, around, split).hash(&mut hasher);
+            (old, new, &text, around, split, side).hash(&mut hasher);
             let stamp = hasher.finish();
             if self.diffs.get(rel).is_some_and(|shown| shown.stamp == stamp) {
                 continue;
@@ -759,9 +947,11 @@ impl Page {
                     };
                     r.repo.files[index].numbers = Some(rows.iter().map(numbered).collect());
                     let plain = canvas_core::scan::normalise(&text).0;
-                    let committed = committed.is_some().then(|| canvas_core::scan::normalise(new).0);
+                    let other = committed.is_some() || side == DiffSide::Staged;
+                    let committed = other.then(|| canvas_core::scan::normalise(new).0);
                     let folded = rows.iter().any(|row| row.kind == crate::git::RowKind::Gap);
-                    self.diffs.insert(rel.clone(), Diffed { stamp, rows, lines, plain, committed, symbols, folded });
+                    let shown = Diffed { stamp, rows, lines, plain, committed, symbols, folded, side };
+                    self.diffs.insert(rel.clone(), shown);
                 }
                 None => {
                     if self.diffs.remove(rel).is_none() {
@@ -780,6 +970,7 @@ impl Page {
             self.selections.clear();
             self.want_exact.clear();
             self.search = None;
+            self.grep.marks_due = true;
         }
         drop(committed);
         if changed && self.showing.is_none() {
@@ -836,6 +1027,7 @@ impl Page {
                         unstaged: differs
                             .then(|| original.as_ref().and_then(|o| o.unstaged).unwrap_or(Change::Modified)),
                         hunks,
+                        staged_hunks: Vec::new(),
                         insertions,
                         deletions,
                         unsaved: true,
@@ -911,6 +1103,7 @@ impl Page {
             self.curves_dirty = true;
         }
         self.search = None;
+        self.grep.touched(rel_path);
         self.card_changed(index, rel_path, why, started, gpu, filters, "");
     }
 
@@ -930,10 +1123,20 @@ impl Page {
         self.git_op.is_some()
     }
 
+    /// Whether a switch of branch can be asked for now: git is free, or it is switching branch.
+    pub fn can_switch(&self) -> bool {
+        self.git_op.is_none() || self.switch.as_ref().is_some_and(|switch| switch.plan.running())
+    }
+
     pub fn run_git(&mut self, op: crate::git::GitOp) {
         if self.git_op.is_some() || self.no_git {
             return;
         }
+        self.spawn_git(op);
+        self.git_note = None;
+    }
+
+    fn spawn_git(&mut self, op: crate::git::GitOp) {
         let (tx, rx) = mpsc::channel();
         let root = self.root.clone();
         std::thread::spawn(move || {
@@ -942,7 +1145,81 @@ impl Page {
             crate::ext::wake_ui();
         });
         self.git_op = Some(rx);
+    }
+
+    /// Switches branch, showing the branch asked for as the current one at once. While git is still
+    /// switching, only the last branch asked for waits for it.
+    pub fn switch_branch(&mut self, op: crate::git::GitOp) {
+        use crate::branch_switch::{Plan, Stage, Switch};
+        if self.no_git || !self.can_switch() {
+            return;
+        }
+        if let Some(switch) = &mut self.switch {
+            if let Some(run) = switch.plan.ask(op) {
+                switch.stage = Stage::Git;
+                self.spawn_git(run);
+            }
+            self.git_note = None;
+            return self.show_switch();
+        }
+        let real = self.git.as_ref().map(|git| git.branch.clone()).unwrap_or_default();
+        let Some(plan) = Plan::start(real, op.clone()) else { return };
+        self.switch = Some(Switch::new(plan));
+        self.spawn_git(op);
         self.git_note = None;
+        self.show_switch();
+    }
+
+    fn show_switch(&mut self) {
+        if let (Some(switch), Some(git)) = (&self.switch, &mut self.git) {
+            let going = switch.stage != crate::branch_switch::Stage::Over;
+            crate::branch_switch::show_on(git, switch.plan.shown(), going);
+        }
+    }
+
+    fn switch_done(&mut self, result: Result<String, String>) {
+        use crate::branch_switch::{Next, Stage};
+        let Some(switch) = &mut self.switch else { return };
+        match (switch.plan.finished(result.is_ok()), result) {
+            (Next::Run(op), _) => {
+                self.spawn_git(op);
+                return self.show_switch();
+            }
+            (Next::Arrived, _) => {
+                self.git_note = Some(GitNote::new(true, format!("On branch {}.", switch.plan.shown())))
+            }
+            (_, Err(why)) => {
+                let hint = match why.contains("would be overwritten") {
+                    true => "\n\nCommit or stash those changes (Stash is in the menu at the top of Source Control), then switch again.",
+                    false => "",
+                };
+                self.git_note = Some(GitNote::new(false, format!("{why}{hint}")));
+                self.git_said = Some((false, format!("Still on {}: git did not switch branch.", switch.plan.shown())));
+            }
+            (_, Ok(_)) => {}
+        }
+        switch.stage = match switch.plan.moved() {
+            true => Stage::Settling(Instant::now()),
+            false => Stage::Over,
+        };
+        self.show_switch();
+    }
+
+    /// Ends the switch of branch and reads the state of git again. Gives the files that changed on
+    /// disk meanwhile and were not taken in yet, and whether there were too many to keep.
+    pub fn end_switch(&mut self) -> (Vec<std::path::PathBuf>, bool) {
+        let Some(mut switch) = self.switch.take() else { return (Vec::new(), false) };
+        if let Some(git) = &mut self.git {
+            git.switching = false;
+        }
+        self.refresh_git();
+        switch.take_changed()
+    }
+
+    /// What the canvas says while a switch of branch lasts.
+    pub fn switch_label(&self) -> Option<String> {
+        let switch = self.switch.as_ref().filter(|switch| switch.stage != crate::branch_switch::Stage::Over)?;
+        Some(switch.label())
     }
 
     pub fn writing_message(&self) -> bool {
@@ -967,7 +1244,7 @@ impl Page {
         let Some(rx) = &self.message_rx else { return false };
         match rx.try_recv() {
             Ok(Ok(message)) => self.commit_message = message,
-            Ok(Err(why)) => self.git_note = Some((false, why)),
+            Ok(Err(why)) => self.git_note = Some(GitNote::new(false, why)),
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {}
         }
@@ -982,12 +1259,20 @@ impl Page {
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {
                 self.git_op = None;
-                self.git_note = Some((false, "git stopped before it was done".to_string()));
+                if self.switch.as_ref().is_some_and(|switch| switch.plan.running()) {
+                    self.switch_done(Err("git stopped before it was done".to_string()));
+                    return true;
+                }
+                self.git_note = Some(GitNote::new(false, "git stopped before it was done".to_string()));
                 self.refresh_git();
                 return true;
             }
         };
         self.git_op = None;
+        if self.switch.is_some() && crate::branch_switch::target(&op).is_some() {
+            self.switch_done(result);
+            return true;
+        }
         match (&op, result) {
             (crate::git::GitOp::Part { .. }, result) => {
                 self.git_said = Some(match result {
@@ -997,33 +1282,42 @@ impl Page {
             }
             (crate::git::GitOp::Commit { .. }, Ok(line)) => {
                 self.commit_message.clear();
-                self.git_note = Some((true, line));
+                self.git_note = Some(GitNote::new(true, line));
             }
-            (crate::git::GitOp::Sync, Ok(_)) => self.git_note = Some((true, "Synced with the remote.".into())),
+            (crate::git::GitOp::Sync, Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, "Synced with the remote.".into()))
+            }
             (crate::git::GitOp::Push | crate::git::GitOp::Publish(_), Ok(_)) => {
-                self.git_note = Some((true, "Pushed.".into()))
+                self.git_note = Some(GitNote::new(true, "Pushed.".into()))
             }
-            (crate::git::GitOp::Pull, Ok(_)) => self.git_note = Some((true, "Pulled.".into())),
-            (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some((true, "Fetched.".into())),
-            (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some((true, "Changes stashed.".into())),
-            (crate::git::GitOp::Switch(branch), Ok(_)) => self.git_note = Some((true, format!("On branch {branch}."))),
+            (crate::git::GitOp::Pull, Ok(_)) => self.git_note = Some(GitNote::new(true, "Pulled.".into())),
+            (crate::git::GitOp::Fetch, Ok(_)) => self.git_note = Some(GitNote::new(true, "Fetched.".into())),
+            (crate::git::GitOp::Stash, Ok(_)) => self.git_note = Some(GitNote::new(true, "Changes stashed.".into())),
+            (crate::git::GitOp::Switch(branch), Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, format!("On branch {branch}.")))
+            }
+            (crate::git::GitOp::PullBranch { name, .. }, Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, format!("{name} is up to date with its remote.")))
+            }
             (crate::git::GitOp::Track { name, .. }, Ok(_)) => {
-                self.git_note = Some((true, format!("On branch {name}.")))
+                self.git_note = Some(GitNote::new(true, format!("On branch {name}.")))
             }
             (crate::git::GitOp::NewBranch { name, .. }, Ok(_)) => {
-                self.git_note = Some((true, format!("On the new branch {name}.")))
+                self.git_note = Some(GitNote::new(true, format!("On the new branch {name}.")))
             }
             (crate::git::GitOp::NewTag { name, .. }, Ok(_)) => {
-                self.git_note = Some((true, format!("Tag {name} made.")))
+                self.git_note = Some(GitNote::new(true, format!("Tag {name} made.")))
             }
-            (crate::git::GitOp::Merge(branch), Ok(_)) => self.git_note = Some((true, format!("Merged {branch}."))),
+            (crate::git::GitOp::Merge(branch), Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, format!("Merged {branch}.")))
+            }
             (crate::git::GitOp::Rebase(branch), Ok(_)) => {
-                self.git_note = Some((true, format!("Rebased onto {branch}.")))
+                self.git_note = Some(GitNote::new(true, format!("Rebased onto {branch}.")))
             }
             (crate::git::GitOp::InteractiveRebase { stash, .. }, Ok(_)) => {
                 self.rebase = None;
                 let kept = if *stash { " Your changes are in Stashes: pop them to bring them back." } else { "" };
-                self.git_note = Some((true, format!("Rebased.{kept}")));
+                self.git_note = Some(GitNote::new(true, format!("Rebased.{kept}")));
             }
             (crate::git::GitOp::Carry { operation, how }, Ok(_)) => {
                 let done = match how {
@@ -1031,12 +1325,14 @@ impl Page {
                     crate::git::Carry::Skip => "went on without that step",
                     crate::git::Carry::Abort => "given up: everything is as it was",
                 };
-                self.git_note = Some((true, format!("{} {done}.", operation.noun())));
+                self.git_note = Some(GitNote::new(true, format!("{} {done}.", operation.noun())));
             }
-            (crate::git::GitOp::CherryPick(_), Ok(_)) => self.git_note = Some((true, "Cherry-picked.".into())),
-            (crate::git::GitOp::Revert(_), Ok(_)) => self.git_note = Some((true, "Reverted.".into())),
+            (crate::git::GitOp::CherryPick(_), Ok(_)) => {
+                self.git_note = Some(GitNote::new(true, "Cherry-picked.".into()))
+            }
+            (crate::git::GitOp::Revert(_), Ok(_)) => self.git_note = Some(GitNote::new(true, "Reverted.".into())),
             (_, Ok(_)) => {}
-            (_, Err(e)) => self.git_note = Some((false, e)),
+            (_, Err(e)) => self.git_note = Some(GitNote::new(false, e)),
         }
         self.refresh_git();
         true
@@ -1049,6 +1345,7 @@ impl Page {
                 let head = state.as_ref().map(|git| git.head.clone()).unwrap_or_default();
                 self.git = state;
                 self.git_rx = None;
+                self.show_switch();
                 if head != self.heads_at {
                     self.heads_at = head;
                     self.heads.clear();
@@ -1062,6 +1359,9 @@ impl Page {
                     self.heads_asked.remove(path);
                 }
                 self.heads.retain(|path, text| text.is_some() || !moved.contains(path));
+                self.indexes.clear();
+                self.indexes_asked.clear();
+                self.indexes_round += 1;
                 let unsaved: Vec<String> = self.unsaved().map(|e| e.rel_path.clone()).collect();
                 self.want_heads(unsaved);
                 self.previewed.clear();
@@ -1150,10 +1450,12 @@ impl Page {
             changed: self.changed_files().len(),
             shown: self.narrowed_to.filter(|_| clean),
             folded: self.diffs.values().filter(|shown| shown.folded).count(),
+            focus: self.diff_focus.clone().filter(|(path, _)| self.diffs.contains_key(path)),
         }
     }
 
     pub fn start_scan(&mut self) {
+        self.scans += 1;
         self.diffs.clear();
         self.diff_stale = true;
         self.showing_changed = self.showing.is_some();
@@ -1220,52 +1522,84 @@ impl Page {
         self.only_connected = false;
         self.curves_dirty = true;
         self.search = None;
+        self.grep.everything();
     }
 
-    pub fn run_search(&mut self, query: String) {
-        self.search = None;
-        self.found = None;
-        let Some(r) = self.ready() else { return };
-        if query.trim().is_empty() {
+    /// The files the Search panel looks in (only some of them when `only` names them), with
+    /// the text of those whose card does not show what is on disk.
+    pub fn search_sources(&self, only: Option<&[String]>) -> Vec<canvas_core::grep::Source> {
+        let Some(r) = self.ready() else { return Vec::new() };
+        let source = |f: &canvas_core::SourceFile| {
+            if f.note.as_ref().is_some_and(|note| !note.starts_with("truncated")) {
+                return None;
+            }
+            let rel = f.rel_path.clone();
+            let lines = self.line_count(&rel).unwrap_or(f.line_count()) as u32;
+            let unsaved = self.editors.get(&rel).filter(|editor| editor.dirty).map(|editor| editor.display_source());
+            let committed = self.diffs.get(&rel).and_then(|shown| shown.committed.clone());
+            Some(canvas_core::grep::Source { text: unsaved.or(committed), rel, lines })
+        };
+        match only {
+            Some(rels) => {
+                let files = rels.iter().filter_map(|rel| r.repo.file_index(rel));
+                files.filter_map(|index| source(&r.repo.files[index])).collect()
+            }
+            None => r.repo.files.iter().filter_map(source).collect(),
+        }
+    }
+
+    pub fn start_search(&mut self, asked: crate::search::Request, only: Option<Vec<String>>) {
+        let sources = self.search_sources(only.as_deref());
+        self.grep.start(self.root.clone(), sources, asked, only);
+    }
+
+    /// Where a match of the Search panel is on the canvas.
+    pub fn grep_site(&self, rel: &str, hit: &canvas_core::grep::Hit) -> Option<Site> {
+        let r = self.ready()?;
+        let file = r.repo.file_index(rel)?;
+        self.site_in(r, file, rel, hit)
+    }
+
+    fn site_in(&self, r: &Ready, file: usize, rel: &str, hit: &canvas_core::grep::Hit) -> Option<Site> {
+        let f = &r.repo.files[file];
+        let (row, seen) = self.diffs.get(rel).map_or((hit.line, true), |shown| shown.place(hit.line));
+        if row as usize >= f.line_count() {
+            return None;
+        }
+        let clip = |n: u32| n.min(u16::MAX as u32) as u16;
+        Some(match seen {
+            true => Site { file: file as u32, line: row, col: clip(hit.col), len: clip(hit.len.max(1)) },
+            false => {
+                Site { file: file as u32, line: row, col: 0, len: clip(f.line(row as usize).chars().count() as u32) }
+            }
+        })
+    }
+
+    /// Marks every match of the Search panel on the canvas, the one shown last brighter.
+    pub fn mark_search(&mut self) {
+        if !self.grep.marks_due || self.ready().is_none() {
             return;
         }
-        let t = Instant::now();
-        let (mut hits, mut truncated) = r.repo.search_text(&query, MAX_HITS);
-        let diffed = self.diffs.iter().filter_map(|(rel, shown)| Some((r.repo.file_index(rel)? as u32, shown)));
-        let diffed: HashMap<u32, &Diffed> = diffed.collect();
-        let mut lines = FoundLines::new();
-        if !diffed.is_empty() {
-            let len = query.chars().count().min(u16::MAX as usize) as u16;
-            let mut found: Vec<(Site, Option<(u32, String)>)> =
-                hits.into_iter().filter(|hit| !diffed.contains_key(&hit.file)).map(|hit| (hit, None)).collect();
-            for (&file, shown) in &diffed {
-                for (line, text) in shown.text().lines().enumerate() {
-                    let (row, seen) = shown.place(line as u32);
-                    let folded = r.repo.files[file as usize].line(row as usize).chars().count().min(u16::MAX as usize);
-                    for col in found_in(text, &query) {
-                        let site = match seen {
-                            true => Site { file, line: row, col, len },
-                            false => Site { file, line: row, col: 0, len: folded as u16 },
-                        };
-                        found.push((site, Some((line as u32, text.trim_start().chars().take(160).collect()))));
-                    }
+        self.grep.marks_due = false;
+        let Some(r) = self.ready() else { return };
+        let Some(results) = &self.grep.results else {
+            self.search = None;
+            return;
+        };
+        let (mut hits, mut current) = (Vec::new(), None);
+        for (fi, found) in results.files.iter().enumerate() {
+            let Some(file) = r.repo.file_index(&found.rel) else { continue };
+            for (hi, hit) in found.hits.iter().enumerate() {
+                let Some(site) = self.site_in(r, file, &found.rel, hit) else { continue };
+                if self.grep.at == Some((fi, hi)) {
+                    current = Some(hits.len());
                 }
+                hits.push(site);
             }
-            found.sort_by_key(|(site, _)| site.file);
-            truncated |= found.len() > MAX_HITS;
-            found.truncate(MAX_HITS);
-            lines = found.iter().enumerate().filter_map(|(i, (_, line))| Some((i, line.clone()?))).collect();
-            hits = found.into_iter().map(|(site, _)| site).collect();
         }
-        let ms = t.elapsed().as_secs_f32() * 1000.0;
-        log::info!("search '{query}': {} hits in {ms:.1} ms", hits.len());
-        self.found = (!lines.is_empty()).then(|| (hits.clone(), lines));
-        self.search = Some(SearchResults { query, hits, truncated, ms, current: None });
-    }
-
-    pub fn found_lines(&self) -> Option<&FoundLines> {
-        let (search, (hits, lines)) = (self.search.as_ref()?, self.found.as_ref()?);
-        (search.hits == *hits).then_some(lines)
+        let query = results.asked.query.text.clone();
+        let (truncated, ms) = (results.truncated, results.ms);
+        self.search = (!hits.is_empty()).then_some(SearchResults { query, hits, truncated, ms, current });
     }
 
     pub fn line_count(&self, rel_path: &str) -> Option<usize> {
@@ -1322,6 +1656,30 @@ impl Page {
             PageState::Ready(r) => Some(r),
             _ => None,
         }
+    }
+
+    fn marked_card(&self) -> Option<(usize, &canvas_core::layout::Node)> {
+        let r = self.ready()?;
+        let file = r.repo.file_index(&self.marked.as_ref()?.rel)?;
+        let node = r.layout.file_node.get(file).copied().filter(|&n| n != canvas_core::layout::NONE)?;
+        Some((file, &r.layout.nodes[node as usize]))
+    }
+
+    /// The card of the marked lines and the rows they take in it.
+    pub fn marked_rows(&self) -> Option<(&canvas_core::layout::Node, Range<u32>)> {
+        let (marked, r) = (self.marked.as_ref()?, self.ready()?);
+        let (file, node) = self.marked_card()?;
+        let rows = marked.rows(r.repo.files[file].line_count() as u32, |line| self.row_of(&marked.rel, line))?;
+        Some((node, rows))
+    }
+
+    /// A click at `world` off the card of the marked lines takes the mark away. Whether it did.
+    pub fn unmark_unless_on(&mut self, world: [f32; 2]) -> bool {
+        if self.marked.is_none() || Marked::kept_by_click(self.marked_card().map(|(_, n)| n.rect), world) {
+            return false;
+        }
+        self.marked = None;
+        true
     }
 
     pub fn ready_mut(&mut self) -> Option<&mut Ready> {
@@ -1487,6 +1845,7 @@ impl Page {
         };
         let imports = format!(", read and indexed {read:.2} ms, imports {ms:.2} ms{edges}{reordered}");
         self.search = None;
+        self.grep.touched(rel_path);
         self.select_again(selected);
         self.card_changed(index, rel_path, why, started, gpu, filters, &imports);
         true
@@ -1557,7 +1916,7 @@ impl Page {
         self.hover = None;
         self.hover_cell = None;
         self.search = None;
-        self.found = None;
+        self.grep.touched(rel_path);
         self.curves_dirty = true;
         self.diffs.remove(rel_path);
         self.diff_stale = true;
@@ -1802,6 +2161,37 @@ mod tests {
     fn folder(rel_path: &str, dirs: Vec<Dir>) -> Dir {
         let name = rel_path.rsplit('/').next().unwrap_or_default().to_string();
         Dir { name, rel_path: rel_path.to_string(), dirs, files: Vec::new() }
+    }
+
+    #[test]
+    fn a_git_note_goes_away_sooner_when_it_is_good_news() {
+        let done = GitNote::new(true, "Pushed.".into());
+        let at = done.since;
+        let error = GitNote { since: at, ..GitNote::new(false, "error: nope".into()) };
+        assert_eq!(done.left(at), Some(GitNote::DONE_SHOWN));
+        assert_eq!(done.left(at + Duration::from_secs(5)), Some(Duration::from_secs(1)));
+        assert_eq!(done.left(at + GitNote::DONE_SHOWN), None);
+        assert_eq!(error.left(at + Duration::from_secs(10)), Some(Duration::from_secs(10)));
+        assert_eq!(error.left(at + GitNote::ERROR_SHOWN + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn marked_lines_take_their_rows_within_the_card() {
+        let marked = Marked::new("package.json".into(), 29, 21);
+        assert_eq!(marked.rows(100, |line| line), Some(21..30), "a range given backwards is put in order");
+        assert_eq!(marked.rows(25, |line| line), Some(21..25), "a file that got shorter keeps what is left");
+        assert_eq!(marked.rows(20, |line| line), None);
+        assert_eq!(marked.rows(100, |line| line + 3), Some(24..33), "lines of a diff are found at their rows");
+        assert_eq!(Marked::new("a".into(), 0, 0).rows(1, |line| line), Some(0..1));
+    }
+
+    #[test]
+    fn only_a_click_on_the_marked_card_keeps_the_mark() {
+        let card = canvas_core::Rect::new(10.0, 10.0, 100.0, 50.0);
+        assert!(Marked::kept_by_click(Some(card), [50.0, 30.0]));
+        assert!(!Marked::kept_by_click(Some(card), [5.0, 30.0]));
+        assert!(!Marked::kept_by_click(Some(card), [50.0, 70.0]));
+        assert!(!Marked::kept_by_click(None, [50.0, 30.0]), "a card no longer shown keeps nothing");
     }
 
     #[test]

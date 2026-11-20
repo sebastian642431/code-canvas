@@ -1,0 +1,22 @@
+title: Answering Cancel to the Replace All question leaves every file as it was
+folders: plain
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: replaced \d+ matches
+expect-file: plain/src/steps.rs :: ^fn step_1\(\) -> u32 \{\n    1\n\}
+
+wait 3000
+search step_1
+wait 1500
+search-option replace first_step
+wait 400
+search-option replace-all
+wait 800
+mark asked
+wait 450
+answer Cancel
+wait 1500
+mark nothing-replaced
+wait 450
+quit

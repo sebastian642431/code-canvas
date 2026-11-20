@@ -26,9 +26,13 @@ use crate::ui::{self, Action, FileOp, FrameInfo, Panel, QuickOpen, Side, UiState
 mod tree_files;
 
 mod assistants;
+mod churn_watch;
 mod consoles;
+mod find_bar;
+mod folder_links;
 mod github_sync;
 mod sharing;
+mod tabs;
 mod term_steps;
 mod trust;
 mod version_hints;
@@ -122,6 +126,9 @@ struct Place {
 }
 
 const PLACES_KEPT: usize = 200;
+/// Up to this many files changed on disk at once are taken in one by one; more, and the folder is
+/// read again whole.
+const ONE_BY_ONE: usize = 24;
 
 enum Offered {
     Paths(Vec<crate::paths::Candidate>),
@@ -155,7 +162,22 @@ fn outside_theme(ext: &Extensions, key: &str) -> Option<canvas_render::theme::Th
     made
 }
 
-type Awaited = (PathBuf, Option<(u32, u32, u32)>);
+/// A place in a file to go to, and the last of the lines to mark from there.
+#[derive(Clone, Copy, Debug)]
+struct Spot {
+    line: u32,
+    col: u32,
+    len: u32,
+    mark: Option<u32>,
+}
+
+impl Spot {
+    fn at(line: u32, col: u32, len: u32) -> Spot {
+        Spot { line, col, len, mark: None }
+    }
+}
+
+type Awaited = (PathBuf, Option<Spot>);
 
 const WHEEL_NOTCH: f32 = 110.0;
 const LONG_LINE_STILL: Duration = Duration::from_millis(150);
@@ -203,6 +225,7 @@ pub struct App {
     was_shared: bool,
     chip_hits: Vec<(Rect, SymRef)>,
     toggle_hits: Vec<(Rect, String)>,
+    title_hits: Vec<(Rect, String)>,
     preview_hits: Vec<(Rect, String)>,
     lens_hits: Vec<(Rect, ext::views::Lens)>,
     version_hits: Vec<(Rect, String, u32)>,
@@ -215,6 +238,9 @@ pub struct App {
     stats: FrameStats,
     bench: Option<Bench>,
     next_repaint: Option<Instant>,
+    churn: crate::churn::Churn,
+    /// Files whose changes are skipped for the session (`ext::path_key` of the whole path).
+    unfollowed: HashMap<String, (PathBuf, String)>,
     script: Option<Script>,
     exit_requested: bool,
     exit_confirmed: bool,
@@ -260,6 +286,12 @@ pub struct App {
     last_input: Instant,
     checkers_offered: HashSet<&'static str>,
     following: Option<(usize, String, u32, Instant)>,
+    /// The changed file last gone to from Source Control and which of its changes, so a click
+    /// on it again goes to the next one.
+    change_turn: Option<(u32, String, usize)>,
+    /// A row of Source Control clicked to show a side of its diff: the canvas goes to the first
+    /// change once the card shows that side (or after a while, if it never does).
+    change_when_diffed: Option<(u32, String, crate::page::DiffSide, Instant)>,
     text_checked: Instant,
     show_when_read: Option<Awaited>,
     back: Vec<Place>,
@@ -342,6 +374,9 @@ impl App {
         ui.console.scripts = session::data_dir().join("console");
         ui.console.restore(&saved.consoles);
         ui.single = saved.single;
+        let roots: Vec<PathBuf> = initial.iter().map(|(root, _)| root.clone()).collect();
+        let open = |path: &Path| path.is_file() && roots.iter().any(|root| path.starts_with(root));
+        ui.tabs = crate::file_tabs::Tabs::restore(saved.tabs.clone(), saved.tab, open);
         let trust = crate::trust::Trust::load(&session::data_dir(), || {
             let open = saved.pages.iter().map(|p| p.path.clone());
             open.chain(saved.workspace.iter().map(|k| k.path.clone())).collect()
@@ -366,6 +401,7 @@ impl App {
             was_shared: false,
             chip_hits: Vec::new(),
             toggle_hits: Vec::new(),
+            title_hits: Vec::new(),
             preview_hits: Vec::new(),
             lens_hits: Vec::new(),
             version_hits: Vec::new(),
@@ -377,6 +413,8 @@ impl App {
             stats: FrameStats::default(),
             bench: Bench::from_env(),
             next_repaint: None,
+            churn: Default::default(),
+            unfollowed: HashMap::new(),
             script: Script::from_env(),
             exit_requested: false,
             exit_confirmed: false,
@@ -427,6 +465,8 @@ impl App {
             last_input: Instant::now(),
             checkers_offered: HashSet::new(),
             following: None,
+            change_turn: None,
+            change_when_diffed: None,
             text_checked: Instant::now(),
             show_when_read: None,
             back: Vec::new(),
@@ -552,12 +592,13 @@ impl App {
     }
 
     fn over_ui(&self, p: [f32; 2]) -> bool {
-        if !self.canvas.contains(p) {
+        if !self.canvas.contains(p) || self.ui.tabs.front().is_some() {
             return true;
         }
         let s = self.scale();
         let pt = egui::Pos2::new(p[0] / s, p[1] / s);
-        self.ui.floating.iter().any(|r| r.contains(pt))
+        let on_button = self.ui.tabs.card_button.as_ref().is_some_and(|(at, _)| at.contains(pt));
+        on_button || self.ui.floating.iter().any(|r| r.contains(pt))
     }
 
     fn theme_changed(&mut self) {
@@ -599,6 +640,7 @@ impl App {
             }
         }
         let (window, window_pos, maximized) = (self.window_size, self.window_pos, self.start_maximized);
+        let (tabs, tab) = self.ui.tabs.saved();
         session::save(&Session {
             pages: self
                 .pages
@@ -618,6 +660,8 @@ impl App {
             maximized,
             single: self.ui.single,
             consoles: self.ui.console.saved(),
+            tabs,
+            tab,
         });
     }
 
@@ -857,8 +901,15 @@ impl App {
             ui::WorkspaceRow {
                 branch,
                 branches: open.map(|git| git.branches.clone()).unwrap_or_default(),
+                switching: open.is_some_and(|git| git.switching),
                 locals: open.map(|git| git.locals.clone()).unwrap_or_default(),
                 remotes: open.map(|git| git.remote_branches.clone()).unwrap_or_default(),
+                behind: open.filter(|git| git.upstream).map(|git| git.behind),
+                git_busy: page.is_some_and(|page| self.pages[page].git_busy()),
+                git_failed: page.and_then(|page| match &self.pages[page].git_note {
+                    Some(crate::page::GitNote { ok: false, text, .. }) => Some(text.clone()),
+                    _ => None,
+                }),
                 path: known.path.clone(),
                 title: name.unwrap_or_else(|| known.path.display().to_string()),
                 files: known.files,
@@ -897,6 +948,13 @@ impl App {
                     self.close_folder(page, false);
                 }
             }
+            WorkspaceOp::Git(path, op) => {
+                if let Some(page) = on(self, &path) {
+                    self.run_git(page, op);
+                }
+                return;
+            }
+            WorkspaceOp::Pull(path) => return self.workspace_op(WorkspaceOp::Git(path, crate::git::GitOp::Pull)),
             WorkspaceOp::Forget(path) => match on(self, &path) {
                 Some(page) => self.close_folder(page, true),
                 None => self.workspace.retain(|known| known.path != path),
@@ -986,6 +1044,7 @@ impl App {
         }
         let was_active = i == self.active;
         let page = self.pages.remove(i);
+        self.ui.tabs.retain(|path| !path.starts_with(&page.root));
         self.grammars.forget_page(page.id);
         if let Some(g) = &mut self.gfx {
             g.renderer.text.drop_page(page.id);
@@ -1051,8 +1110,14 @@ impl App {
         inside.clone().find(on_canvas).or_else(|| inside.clone().next())
     }
 
-    fn show_path(&mut self, path: &Path, at: Option<(u32, u32, u32)>) {
-        let path = canvas_core::scan::clean_path(path.to_path_buf());
+    fn show_path(&mut self, path: &Path, at: Option<Spot>) {
+        let Some(path) = self.resolve_link(path) else { return };
+        if self.link_in_tab(&path, at.map(|spot| (spot.line, spot.col, spot.len))) {
+            return;
+        }
+        if path.is_dir() {
+            return self.show_dir(path);
+        }
         let found = self.locate_file(&path);
         let shown = found.as_ref().is_some_and(|(i, rel)| {
             self.pages[*i].ready().is_some_and(|r| r.layout.node_for_path(&r.repo, rel).is_some())
@@ -1062,12 +1127,18 @@ impl App {
             self.show_when_read = None;
             let file = self.pages[*i].ready().and_then(|r| r.repo.file_index(rel));
             match (at, file) {
-                (Some((line, col, len)), Some(file)) => {
-                    let line = self.pages[*i].row_of(rel, line);
-                    let (col, len) = (col.min(u16::MAX as u32) as u16, len.clamp(1, 400) as u16);
+                (Some(spot), Some(file)) => {
+                    let line = self.pages[*i].row_of(rel, spot.line);
+                    let (col, len) = (spot.col.min(u16::MAX as u32) as u16, spot.len.clamp(1, 400) as u16);
                     let site = Site { file: file as u32, line, col, len };
                     self.frame_site(site);
-                    self.pages[*i].search = Some(crate::page::SearchResults::single(site));
+                    if let Some(last) = spot.mark {
+                        self.pages.iter_mut().for_each(|page| page.marked = None);
+                        self.pages[*i].marked = Some(crate::page::Marked::new(rel.clone(), spot.line, last));
+                    }
+                    if spot.mark.is_none() || col > 0 || len > 1 {
+                        self.pages[*i].search = Some(crate::page::SearchResults::single(site));
+                    }
                 }
                 _ => self.apply(Action::FlyToPath(rel.clone())),
             }
@@ -1076,9 +1147,6 @@ impl App {
         if !path.exists() {
             let text = format!("{} is not there any more.", path.display());
             return self.ext.notice(ext::Level::Warn, "Files", text);
-        }
-        if path.is_dir() {
-            return self.open_folder(path, None);
         }
         let waiting = found.as_ref().is_some_and(|(i, _)| self.pages[*i].ready().is_none());
         match found {
@@ -1131,7 +1199,33 @@ impl App {
         self.request_redraw();
     }
 
+    /// The file is gone from the folder, so a copy of what it held goes to the data folder
+    /// and opens there like any file from outside the open folders.
+    fn show_deleted(&mut self, path: &str, staged: bool) {
+        let Some(page) = self.pages.get(self.active) else { return };
+        let prefix = page.git.as_ref().map(|git| git.prefix.clone()).unwrap_or_default();
+        let folder = page.root.file_name().map_or("folder".into(), |name| name.to_string_lossy().into_owned());
+        let Some(bytes) = crate::git::before_deleted(&page.root, &prefix, path, staged) else {
+            let text = format!("What {path} held before it was deleted could not be read from git.");
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        };
+        let copy = session::data_dir().join("deleted").join(folder).join(path);
+        let written = copy.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&copy, bytes));
+        if let Err(why) = written {
+            let text = format!("A copy of {path} could not be written: {why}.");
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        }
+        self.show_path(&copy, None);
+        let text = format!("{path} is deleted: this is a copy of it as it was before, outside the folder.");
+        self.ext.notice(ext::Level::Info, "Source Control", text);
+    }
+
     fn write_file(&mut self, path: &Path, text: &str) {
+        self.write_into(path, text, true);
+    }
+
+    /// Writes a file and shows it again on its card; `git` also reads git's state again.
+    fn write_into(&mut self, path: &Path, text: &str, git: bool) {
         if let Err(e) = self.watcher.write(path, text) {
             log::error!("cannot write {}: {e}", path.display());
             return;
@@ -1155,7 +1249,9 @@ impl App {
             if let (Some(g), Some(page)) = (self.gfx.as_mut(), self.pages.get_mut(i)) {
                 g.renderer.text.drop_page(page.id);
                 page.reload_file(&rel, "written", &g.gpu(), &self.ui.filters);
-                page.refresh_git();
+                if git {
+                    page.refresh_git();
+                }
             }
         }
         self.request_redraw();
@@ -1176,14 +1272,13 @@ impl App {
         let by_index = r.repo.resolve_at(file, line, col).map(|(sym, _)| r.repo.sym_site(sym));
         let asked = page.line_of(rel, line).is_some_and(|line| self.ext.request_definition(&path, line, col));
         if !asked {
-            if let Some(site) = by_index {
+            if let Some(site) = by_index.filter(|site| !self.site_in_tab(*site)) {
                 self.frame_site(site);
             }
         }
     }
 
-    fn on_disk_changes(&mut self, batch: crate::watch::Batch) {
-        const ONE_BY_ONE: usize = 24;
+    fn on_disk_changes(&mut self, mut batch: crate::watch::Batch) {
         log::debug!(
             "changed on disk: {} files {:?}, git of {} folders",
             batch.files.len(),
@@ -1192,6 +1287,26 @@ impl App {
         );
         let options = crate::page::scan_options();
         let (skip, lockfiles) = (options.skip_dirs, options.skip_files);
+        let skipped = |rel: &str| {
+            rel.split('/').any(|part| skip.iter().any(|s| s == part))
+                || lockfiles.iter().any(|name| rel.rsplit('/').next() == Some(name.as_str()))
+        };
+        // A folder switching branch keeps what changed, to take it in once when git is done.
+        batch.git.retain(|root| !self.pages.iter().any(|page| page.switch.is_some() && &page.root == root));
+        batch.files.retain(|path| {
+            let switching = self.pages.iter_mut().find(|page| page.switch.is_some() && path.starts_with(&page.root));
+            let Some(page) = switching else { return true };
+            let rel = path.strip_prefix(&page.root).map(|rel| rel.to_string_lossy().replace('\\', "/"));
+            if let (Ok(rel), Some(switch)) = (rel, page.switch.as_mut()) {
+                if !skipped(&rel) {
+                    switch.changed(path.clone(), ONE_BY_ONE);
+                }
+            }
+            false
+        });
+        if batch.files.is_empty() && batch.git.is_empty() {
+            return;
+        }
         for root in &batch.git {
             if let Some(page) = self.pages.iter_mut().find(|p| &p.root == root) {
                 page.refresh_git();
@@ -1200,11 +1315,14 @@ impl App {
         let mut known: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         let mut other: Vec<Vec<String>> = vec![Vec::new(); self.pages.len()];
         let mut seen: Option<(usize, String, u32)> = None;
+        let now = Instant::now();
         for path in &batch.files {
+            if self.is_unfollowed(path) {
+                continue;
+            }
             let Some((i, rel)) = self.locate_file(path) else { continue };
-            if rel.split('/').any(|part| skip.iter().any(|s| s == part))
-                || lockfiles.iter().any(|name| rel.rsplit('/').next() == Some(name.as_str()))
-            {
+            self.churn.wrote(now, &self.pages[i].root, &rel);
+            if skipped(&rel) {
                 continue;
             }
             if self.sharing.session.is_some() {
@@ -1248,7 +1366,13 @@ impl App {
             if known[i].is_empty() && fresh.is_empty() {
                 continue;
             }
-            self.pages[i].refresh_git();
+            // A file git ignores (a log a running server keeps writing) changes nothing git says, and
+            // reading git again for each of its writes kept a dozen git processes running all the time.
+            let page = &self.pages[i];
+            let ignored = |rel: &String| page.git.as_ref().is_some_and(|git| git.ignores(rel));
+            if fresh.iter().chain(&known[i]).any(|rel| !ignored(rel)) {
+                self.pages[i].refresh_git();
+            }
             let rescan = self.pages[i].ready().is_none() || fresh.len() + known[i].len() > ONE_BY_ONE;
             for rel in fresh.iter().filter(|_| !rescan) {
                 let made = root.join(rel).is_file();
@@ -1370,10 +1494,16 @@ impl App {
         if big {
             return true;
         }
-        if recent || page.is_loading() {
+        if recent || page.is_loading() || page.switch.is_some() {
             return false;
         }
         log::info!("{}: files were added or removed, scanning again", page.root.display());
+        self.read_again(i, reveal);
+        true
+    }
+
+    /// Reads a folder again keeping the camera where it is and the files not saved.
+    fn read_again(&mut self, i: usize, reveal: Option<String>) {
         self.auto_rescan = Some(Instant::now());
         let (s, vp) = (self.scale(), self.viewport());
         let p = &mut self.pages[i];
@@ -1385,7 +1515,6 @@ impl App {
         }
         p.reveal = reveal;
         p.start_scan();
-        true
     }
 
     fn rescan_what_waited(&mut self) {
@@ -1401,6 +1530,45 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Takes in, once git is done switching branch, the files it wrote: one by one when they are
+    /// few, else by reading the folder again. Says whether a switch is still going on.
+    fn settle_switches(&mut self) -> bool {
+        use crate::branch_switch::Stage;
+        let watching = self.watcher.busy();
+        let mut going = false;
+        for i in 0..self.pages.len() {
+            let page = &mut self.pages[i];
+            let Some((stage, too_many)) = page.switch.as_ref().map(|switch| (switch.stage, switch.too_many())) else {
+                continue;
+            };
+            match stage {
+                Stage::Git => {}
+                Stage::Settling(at) if !crate::branch_switch::settled(at.elapsed(), watching) => {}
+                Stage::Settling(_) if too_many => {
+                    if let Some(switch) = page.switch.as_mut() {
+                        switch.take_changed();
+                        switch.stage = Stage::Reloading;
+                    }
+                    log::info!("{}: switched branch, scanning again", page.root.display());
+                    self.read_again(i, None);
+                }
+                Stage::Reloading if page.is_loading() => {}
+                Stage::Settling(_) | Stage::Reloading | Stage::Over => {
+                    let (files, too_many) = page.end_switch();
+                    if too_many {
+                        self.rescan_later.insert(page.id);
+                    } else if !files.is_empty() {
+                        self.on_disk_changes(crate::watch::Batch { files, git: Vec::new() });
+                    }
+                    self.request_redraw();
+                    continue;
+                }
+            }
+            going = true;
+        }
+        going
     }
 
     fn offer_checker(&mut self, rel: &str) {
@@ -1424,6 +1592,11 @@ impl App {
         if !self.ui.prefs.follow_changes || !idle || editing || asking {
             return;
         }
+        let Some(page) = self.pages.get(index) else { return };
+        if !self.agents.lets_canvas_go_to_changes_in(&page.root) {
+            log::info!("{rel} changed where an assistant that is not followed works: the canvas stays where it is");
+            return;
+        }
         if index != self.active {
             if !self.shares_canvas() {
                 return;
@@ -1433,10 +1606,21 @@ impl App {
         self.following = Some((index, rel.to_string(), line, Instant::now()));
     }
 
+    /// The box or card whose name is drawn at `point`: names can stick out of their node
+    /// (the root's sits above its box, a folder's can run past its header).
+    fn title_under(&self, point: [f32; 2]) -> Option<usize> {
+        let path = overlay::title_at(&self.title_hits, point)?;
+        let r = self.pages.get(self.active)?.ready()?;
+        r.layout.node_for_path(&r.repo, path)
+    }
+
     fn code_under(&self, point: [f32; 2]) -> Option<String> {
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
         if Lod::for_zoom(page.camera.zoom) != Lod::Text || self.long_line.is_some_and(|(.., f)| f.contains(point)) {
+            return None;
+        }
+        if self.title_under(point).is_some() {
             return None;
         }
         let world = page.camera.view(self.viewport()).to_world(point);
@@ -1469,7 +1653,7 @@ impl App {
         let world = page.camera.view(self.viewport()).to_world(point);
         let scale = self.scale();
         let folder = (!page.only && page.shared.is_none()).then(|| (page.root.clone(), page.title.clone()));
-        let hit = r.layout.hit(world).map(|n| &r.layout.nodes[n]);
+        let hit = self.title_under(point).or_else(|| r.layout.hit(world)).map(|n| &r.layout.nodes[n]);
         let file = hit.and_then(|n| match n.kind {
             NodeKind::File(fi) => Some((n, fi)),
             NodeKind::Dir => None,
@@ -1495,15 +1679,17 @@ impl App {
         let f = &r.repo.files[fi];
         let change = page.git.as_ref().and_then(|git| git.change(&f.rel_path));
         let readable = Lod::for_zoom(page.camera.zoom) == Lod::Text;
-        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none()).map(|(row, _)| row);
+        let index_shown = page.diff_side(&f.rel_path) == Some(crate::page::DiffSide::Staged);
+        let row = n.cell_at(world, f.line_count()).filter(|_| readable && page.showing.is_none() && !index_shown);
+        let row = row.map(|(row, _)| row);
         let line = row.and_then(|row| match page.rows(&f.rel_path) {
             Some(rows) => rows.get(row as usize).filter(|row| row.kind != crate::git::RowKind::Gap).map(|row| row.line),
             None => Some(row),
         });
         let changed_here = |line: &u32| {
-            let hunks =
-                change.filter(|change| !change.unsaved).map(|change| change.hunks.as_slice()).unwrap_or_default();
-            hunks.iter().any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
+            let Some(change) = change.filter(|change| !change.unsaved) else { return false };
+            let mut all = change.hunks.iter().chain(&change.staged_hunks);
+            all.any(|hunk| crate::git::holds(hunk.line, hunk.count, *line))
         };
         self.ui.card_menu = Some(ui::CardMenu {
             at: egui::Pos2::new(point[0] / scale, point[1] / scale),
@@ -1554,146 +1740,224 @@ impl App {
         self.request_redraw();
     }
 
-    fn find(&mut self, op: ui::FindOp) {
-        use ui::FindOp;
-        match op {
-            FindOp::Open => {
-                let page = self.pages.get(self.active);
-                let editing = page.and_then(|p| p.editing.clone());
-                let pointed = self.current_file().and_then(|file| self.locate_file(&file)).map(|(_, rel)| rel);
-                let Some(file) = editing.or(pointed) else {
-                    let text = "Select a file first: click its card, or its name in the explorer.";
-                    return self.ext.notice(ext::Level::Info, "Find", text.to_string());
-                };
-                let chosen = page.and_then(|p| p.editor()).map(|e| e.selected_text()).unwrap_or_default();
-                let before = self.ui.find.take().unwrap_or_default();
-                let query = if chosen.is_empty() || chosen.contains('\n') { before.query } else { chosen };
-                self.ui.find = Some(ui::Find { query, with: before.with, focus: true, file, ..Default::default() });
-                self.find_refresh(true);
-            }
-            FindOp::Changed => {
-                if let Some(find) = self.ui.find.as_mut() {
-                    find.at = 0;
-                }
-                self.find_refresh(true);
-            }
-            FindOp::Next | FindOp::Previous => {
-                if let Some(find) = self.ui.find.as_mut().filter(|find| find.count > 0) {
-                    let step = if op == FindOp::Next { 1 } else { find.count - 1 };
-                    find.at = (find.at + step) % find.count;
-                }
-                self.find_refresh(true);
-            }
-            FindOp::Replace | FindOp::ReplaceAll => self.find_replace(op == FindOp::ReplaceAll),
-            FindOp::Close => {
-                self.ui.find = None;
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.search = None;
-                }
-                self.request_redraw();
-            }
+    /// Shows the Search panel with its query field focused; with a query (or text selected in the
+    /// file being edited) it is searched right away.
+    fn search_in_files(&mut self, query: Option<String>) {
+        let chosen = self.pages.get(self.active).and_then(|page| page.editor()).map(|editor| editor.selected_text());
+        let chosen = chosen.filter(|text| !text.trim().is_empty() && !text.contains('\n'));
+        if let Some(query) = query.or(chosen) {
+            self.ui.search_query = query.clone();
+            self.run_search(query);
         }
+        self.ui.show(Panel::Search);
+        self.ui.search.focus = true;
+        self.request_redraw();
     }
 
-    fn found_in(page: &Page, file: &str, query: &str, most: usize) -> Vec<Site> {
-        let mut hits: Vec<Site> = Vec::new();
-        let Some(r) = page.ready() else { return hits };
-        let Some(index) = r.repo.file_index(file).filter(|_| !query.is_empty()) else { return hits };
-        let f = &r.repo.files[index];
-        let exact = query.chars().any(char::is_uppercase);
-        let same = |c: char| {
-            let mut lower = c.to_lowercase();
-            match (lower.next(), lower.next()) {
-                (Some(one), None) if !exact => one,
-                _ => c,
+    fn run_search(&mut self, query: String) {
+        self.ui.search.ran();
+        let asked = self.ui.search.request(&query);
+        if let Some(page) = self.pages.get_mut(self.active) {
+            match query.trim().is_empty() {
+                true => page.grep.clear(),
+                false => page.start_search(asked, None),
             }
-        };
-        let wanted: Vec<char> = query.chars().map(same).collect();
-        let len = wanted.len().min(400) as u16;
-        'lines: for line in 0..f.line_count() {
-            let text: Vec<char> = f.line(line).chars().map(same).collect();
-            let mut from = 0;
-            while from + wanted.len() <= text.len() {
-                if text[from..from + wanted.len()] != wanted[..] {
-                    from += 1;
-                    continue;
-                }
-                let col = from.min(u16::MAX as usize) as u16;
-                hits.push(Site { file: index as u32, line: line as u32, col, len });
-                from += wanted.len();
-                if hits.len() >= most {
-                    break 'lines;
-                }
-            }
-        }
-        hits
-    }
-
-    fn find_refresh(&mut self, travel: bool) {
-        self.find_again(travel, 5000);
-    }
-
-    fn find_again(&mut self, travel: bool, most: usize) {
-        let Some(find) = self.ui.find.as_mut() else { return };
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        let hits = Self::found_in(page, &find.file, &find.query, most);
-        find.count = hits.len();
-        find.at = find.at.min(hits.len().saturating_sub(1));
-        let current = hits.get(find.at).copied();
-        page.search = (!hits.is_empty()).then(|| crate::page::SearchResults {
-            query: find.query.clone(),
-            hits,
-            truncated: false,
-            ms: 0.0,
-            current: Some(find.at),
-        });
-        if let (true, Some(site)) = (travel, current) {
-            self.moved_by_itself = true;
-            self.frame_site(site);
-            self.moved_by_itself = false;
         }
         self.request_redraw();
     }
 
-    fn find_replace(&mut self, all: bool) {
-        let Some(file) = self.ui.find.as_ref().map(|find| find.file.clone()) else { return };
-        if !self.ui.prefs.edit {
-            let text = "Replacing changes the file: switch to the pencil first.";
-            return self.ext.notice(ext::Level::Info, "Find", text.to_string());
+    fn search_option(&mut self, arg: &str) {
+        let (what, value) = arg.split_once(' ').map_or((arg, ""), |(what, value)| (what, value.trim()));
+        let view = &mut self.ui.search;
+        let on = value == "on";
+        match what {
+            "case" => view.case = on,
+            "word" => view.word = on,
+            "regex" => view.regex = on,
+            "include" => (view.details, view.include) = (true, value.to_string()),
+            "exclude" => (view.details, view.exclude) = (true, value.to_string()),
+            "list" => {
+                view.list = on;
+                return;
+            }
+            "replace" => {
+                (view.replacing, view.replace) = (true, value.to_string());
+                return;
+            }
+            "replace-all" => return self.search_op(ui::SearchOp::Replace { file: None, hit: None }),
+            "next" | "previous" => return self.search_op(ui::SearchOp::Step(what == "next")),
+            _ => {
+                log::warn!("script: no search option '{what}'");
+                return;
+            }
         }
+        let query = self.ui.search_query.clone();
+        self.run_search(query);
+    }
+
+    fn search_op(&mut self, op: ui::SearchOp) {
+        let index = self.active;
+        let Some(page) = self.pages.get_mut(index) else { return };
+        match op {
+            ui::SearchOp::Clear => page.grep.clear(),
+            ui::SearchOp::Dismiss { file, hit } => page.grep.dismiss(file, hit),
+            ui::SearchOp::Show { file, hit } => {
+                page.grep.at = Some((file, hit));
+                self.show_search_hit();
+            }
+            ui::SearchOp::Step(forward) => {
+                if page.grep.step(forward).is_some() {
+                    self.show_search_hit();
+                }
+            }
+            ui::SearchOp::Replace { file: None, .. } => self.ask_replace_all(),
+            ui::SearchOp::Replace { file, hit } => self.replace_in_files(index, file, hit),
+        }
+        self.request_redraw();
+    }
+
+    /// Goes on the canvas to the result of the Search panel chosen last, marked brighter than the others.
+    fn show_search_hit(&mut self) {
+        let marks = self.ui.find.is_none();
         let Some(page) = self.pages.get_mut(self.active) else { return };
-        if !page.begin_edit(&file) {
+        let Some((file, hit)) = page.grep.at else { return };
+        let found = page.grep.results.as_ref().and_then(|results| results.files.get(file));
+        let found = found.and_then(|f| Some((f.rel.clone(), page.grep_site(&f.rel, f.hits.get(hit)?))));
+        let Some((rel, site)) = found else { return };
+        page.grep.marks_due = true;
+        if marks {
+            page.mark_search();
+        }
+        let shown = site.filter(|site| page.ready().is_some_and(|r| r.layout.anchor(site).is_some()));
+        match shown {
+            Some(site) => self.frame_site(site),
+            None => self.apply(Action::FlyToPath(rel)),
+        }
+    }
+
+    fn ask_replace_all(&mut self) {
+        let Some(page) = self.pages.get(self.active) else { return };
+        let Some(results) = page.grep.results.as_ref().filter(|results| results.count() > 0) else { return };
+        let count = |n: usize, word: &str| if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") };
+        let title =
+            format!("Replace {} across {}?", count(results.count(), "occurrence"), count(results.files.len(), "file"));
+        let text = format!(
+            "“{}” becomes “{}” in every result listed. Files with changes not saved get it in their text; the others are written to disk.",
+            results.asked.query.text, self.ui.search.replace
+        );
+        let about = ui::Asked::ReplaceInFiles { folder: page.root.clone() };
+        let mut ask = ui::Ask::new(about, &title, text)
+            .choice("Replace", ui::ChoiceLook::Danger, ui::Answer::Yes)
+            .choice("Cancel", ui::ChoiceLook::Plain, ui::Answer::Cancel);
+        ask.items = results.files.iter().map(|file| format!("{}  ({})", file.rel, file.hits.len())).collect();
+        self.ui.ask = Some(ask);
+        self.request_redraw();
+    }
+
+    /// Replaces results of the Search panel: all of them, a file's, or one. The files are rewritten
+    /// in the background and come back through `apply_replaced`.
+    fn replace_in_files(&mut self, index: usize, file: Option<usize>, hit: Option<usize>) {
+        let with = self.ui.search.replace.clone();
+        let Some(page) = self.pages.get_mut(index) else { return };
+        let refused = match (page.read_only, page.showing.is_some()) {
+            (true, _) => Some("This folder is shared read-only: nothing in it can be replaced."),
+            (_, true) => Some("A commit is shown on the canvas: close it to replace in the files."),
+            _ => None,
+        };
+        if let Some(why) = refused {
+            return self.ext.notice(ext::Level::Info, "Search", why);
+        }
+        if page.grep.replacing() {
             return;
         }
-        self.sync_diffs();
-        self.find_again(false, if all { usize::MAX } else { 5000 });
-        let Some((with, at)) = self.ui.find.as_ref().map(|find| (find.with.clone(), find.at)) else { return };
-        let Some(page) = self.pages.get_mut(self.active) else { return };
-        let hits: Vec<Site> = page.search.as_ref().map(|found| found.hits.clone()).unwrap_or_default();
-        let chosen: Vec<Site> = if all { hits } else { hits.get(at).copied().into_iter().collect() };
-        let Some(editor) = page.editor_mut().filter(|_| !chosen.is_empty()) else { return };
-        let place = |editor: &crate::editor::Editor, hit: &Site| {
-            let (line, col) = (hit.line as usize, hit.col as usize);
-            (editor.pos_at_display(line, col), editor.pos_at_display(line, col + hit.len as usize))
-        };
-        let mut after = None;
-        if all {
-            let places: Vec<_> = chosen.iter().map(|hit| place(editor, hit)).collect();
-            editor.replace_each(&places, &with);
-        } else if let Some(hit) = chosen.first() {
-            let (from, to) = place(editor, hit);
-            editor.move_to(from, false);
-            editor.move_to(to, true);
-            editor.insert(&with);
-            after = Some((hit.line, editor.display_col(editor.caret) as u16));
+        let taken = page.grep.take(file, hit);
+        let files: Vec<(String, Option<String>, Vec<canvas_core::grep::Hit>)> = taken
+            .into_iter()
+            .map(|(rel, hits)| {
+                let unsaved =
+                    page.editors.get(&rel).filter(|editor| editor.dirty).map(|editor| editor.display_source());
+                (rel, unsaved, hits)
+            })
+            .collect();
+        if !files.is_empty() {
+            let root = page.root.clone();
+            page.grep.replace(root, files, with);
         }
-        self.after_edit();
-        if let (Some(after), Some(find)) = (after, self.ui.find.as_mut()) {
-            let hits = self.pages.get(self.active).and_then(|page| page.search.as_ref()).map(|found| &found.hits);
-            let next = hits.and_then(|hits| hits.iter().position(|hit| (hit.line, hit.col) >= after));
-            find.at = next.unwrap_or(0);
+        self.request_redraw();
+    }
+
+    fn apply_replaced(&mut self, index: usize, done: Vec<crate::search::Rewritten>, mut missed: Vec<String>) {
+        let Some(root) = self.pages.get(index).map(|page| page.root.clone()) else { return };
+        let (mut count, mut files, mut written) = (0, 0, false);
+        for file in done {
+            let path = root.join(&file.rel);
+            if !file.unsaved {
+                self.write_into(&path, &file.text, false);
+                (count, files, written) = (count + file.count, files + 1, true);
+                continue;
+            }
+            let page = &mut self.pages[index];
+            let Some(editor) = page.editors.get_mut(&file.rel) else {
+                missed.push(file.rel);
+                continue;
+            };
+            editor.become_text(&file.text);
+            (count, files) = (count + file.count, files + 1);
+            if let Some(g) = self.gfx.as_mut() {
+                g.renderer.text.drop_page(page.id);
+                page.show_edit(&file.rel, "replaced", &g.gpu(), &self.ui.filters);
+            }
+            page.want_head(&file.rel);
+            page.preview_unsaved();
+            let now = Instant::now();
+            (self.symbols_stale, self.unsent_edit, self.typed) = (Some(now), Some((path, now)), Some(now));
         }
-        self.find_refresh(!all);
+        if written {
+            self.pages[index].refresh_git();
+        }
+        log::info!("replaced {count} matches in {files} files ({} could not be read)", missed.len());
+        if !missed.is_empty() {
+            let text = format!("Nothing was replaced in {}: it could not be read as text.", missed.join(", "));
+            self.ext.notice(ext::Level::Warn, "Search", text);
+        } else if files > 1 {
+            self.ext.notice(ext::Level::Info, "Search", format!("Replaced {count} occurrences in {files} files."));
+        }
+        self.request_redraw();
+    }
+
+    /// Runs what the Search panel waits for: the query typed a moment ago, files changed since
+    /// the last search, results and replacements done in the background. Whether it still waits.
+    fn poll_search(&mut self) -> bool {
+        if self.ui.search.due() {
+            let query = self.ui.search_query.clone();
+            self.run_search(query);
+        }
+        let marks = self.ui.find.is_none();
+        let (mut busy, mut redraw) = (self.ui.search.waiting(), false);
+        let mut replaced = Vec::new();
+        for (index, page) in self.pages.iter_mut().enumerate() {
+            redraw |= page.grep.poll();
+            match page.grep.due(page.ready().is_some()) {
+                Some(crate::search::Due::All(asked)) => page.start_search(asked, None),
+                Some(crate::search::Due::Files(asked, files)) => page.start_search(asked, Some(files)),
+                None => {}
+            }
+            if marks && page.grep.marks_due {
+                page.mark_search();
+                redraw = true;
+            }
+            if let Some((done, missed)) = page.grep.poll_replace() {
+                replaced.push((index, done, missed));
+            }
+            busy |= page.grep.busy();
+        }
+        for (index, done, missed) in replaced {
+            self.apply_replaced(index, done, missed);
+        }
+        if redraw {
+            self.request_redraw();
+        }
+        busy
     }
 
     fn follow_now(&mut self) -> bool {
@@ -1774,7 +2038,9 @@ impl App {
         self.unsent_edit = Some((page.root.join(&rel), Instant::now()));
         self.typed = Some(Instant::now());
         self.offer_checker(&rel);
-        self.find_refresh(false);
+        if self.ui.find.as_ref().is_some_and(|find| find.mode == ui::FindIn::File) {
+            self.find_refresh(false);
+        }
         self.keep_caret_visible();
         self.request_redraw();
     }
@@ -2015,8 +2281,18 @@ impl App {
         self.request_redraw();
     }
 
+    fn minimap_shown(&self) -> bool {
+        let page = self.pages.get(self.active);
+        let node = page.and_then(|page| page.ready()?.layout.nodes.get(page.selected?));
+        let in_tab = self.ui.tabs.front().is_some();
+        !self.ui.bare && self.ui.prefs.minimap && !in_tab && node.is_some_and(|node| !node.is_dir())
+    }
+
     fn clear(&self) -> Rect {
-        let taken = if self.ui.bare { 0.0 } else { self.ui.cards_reach * self.scale() };
+        let mut taken = if self.ui.bare { 0.0 } else { self.ui.cards_reach * self.scale() };
+        if self.minimap_shown() {
+            taken += ui::MINIMAP_REACH * self.scale();
+        }
         let left = self.canvas.w - taken;
         match left >= self.canvas.w * 0.35 {
             true => Rect::new(self.canvas.x, self.canvas.y, left, self.canvas.h),
@@ -2025,6 +2301,9 @@ impl App {
     }
 
     fn keep_caret_visible(&mut self) {
+        if self.caret_in_tab() {
+            return;
+        }
         let area = self.clear();
         let Some((tl, br)) = self.caret_cell() else { return };
         let Some(page) = self.pages.get_mut(self.active) else { return };
@@ -2230,6 +2509,11 @@ impl App {
                 }
             }
             (ui::Asked::DeleteMany { folder, paths }, ui::Answer::Yes) => self.delete_many(folder, paths),
+            (ui::Asked::ReplaceInFiles { folder }, ui::Answer::Yes) => {
+                if let Some(index) = self.pages.iter().position(|page| page.root == folder) {
+                    self.replace_in_files(index, None, None);
+                }
+            }
             (ui::Asked::Across, ui::Answer::Yes) => {
                 if let Some(job) = self.pending_job.take() {
                     self.transfer_checked(job);
@@ -2323,6 +2607,9 @@ impl App {
 
     fn run_git(&mut self, active: usize, op: crate::git::GitOp) {
         use crate::git::GitOp;
+        if matches!(op, GitOp::Switch(_) | GitOp::Track { .. }) {
+            return self.switch_branch(active, op);
+        }
         if self.pages.get(active).is_none_or(|page| page.git_busy()) {
             let text = "Git is still at something else in this folder: try again when it is done.";
             return self.ext.notice(ext::Level::Warn, "Source Control", text);
@@ -2341,6 +2628,25 @@ impl App {
         if let Some(page) = self.pages.get_mut(active) {
             page.run_git(op);
         }
+        self.request_redraw();
+    }
+
+    /// Switches branch at once on screen; git runs behind. Files not saved are saved first, so that
+    /// git carries them to the other branch or refuses because they would be overwritten.
+    fn switch_branch(&mut self, active: usize, op: crate::git::GitOp) {
+        if self.pages.get(active).is_none_or(|page| !page.can_switch()) {
+            let text = "Git is still at something else in this folder: try again when it is done.";
+            return self.ext.notice(ext::Level::Warn, "Source Control", text);
+        }
+        let unsaved: Vec<(usize, String)> = self.unsaved().into_iter().filter(|(i, _)| *i == active).collect();
+        if !unsaved.is_empty() {
+            self.save_these(unsaved, false);
+            if self.unsaved().iter().any(|(i, _)| *i == active) {
+                let text = "Some files have changes that are not saved: save or discard them, then switch branch.";
+                return self.ext.notice(ext::Level::Warn, "Source Control", text);
+            }
+        }
+        self.pages[active].switch_branch(op);
         self.request_redraw();
     }
 
@@ -2399,8 +2705,9 @@ impl App {
                 return true;
             }
         }
+        let in_tab = self.ui.tabs.front().is_some();
         let Some(page) = self.pages.get_mut(self.active) else { return false };
-        let rows = page.edited_wrap();
+        let rows = if in_tab { None } else { page.edited_wrap() };
         let rows = rows.as_deref();
         let Some(editor) = page.editor_mut() else { return false };
         let mut changed = false;
@@ -2529,6 +2836,9 @@ impl App {
     }
 
     fn player_place(&self) -> Option<Rect> {
+        if self.ui.tabs.front().is_some() {
+            return None;
+        }
         let (card, area) = (self.player_card()?, self.canvas);
         let seen_w = card.right().min(area.right()) - card.x.max(area.x);
         let seen_h = card.bottom().min(area.bottom()) - card.y.max(area.y);
@@ -2727,6 +3037,9 @@ impl App {
     }
 
     fn current_file(&self) -> Option<PathBuf> {
+        if let Some(path) = self.ui.tabs.front_path() {
+            return Some(path.to_path_buf());
+        }
         let page = self.pages.get(self.active)?;
         let r = page.ready()?;
         [page.hover, page.selected].into_iter().flatten().find_map(|i| match r.layout.nodes.get(i)?.kind {
@@ -2865,6 +3178,100 @@ impl App {
             }
         };
         page.target = Some(target);
+        self.request_redraw();
+    }
+
+    fn fly_to_change(&mut self, path: &str) {
+        const ABOVE: u32 = 4;
+        let Some(page) = self.pages.get(self.active) else { return };
+        let change = page.git.as_ref().and_then(|git| git.changes.iter().find(|change| change.path == path));
+        let hunks = change.map(crate::git::FileChange::every_hunk).unwrap_or_default();
+        let node = page.ready().and_then(|r| r.layout.node_for_path(&r.repo, path));
+        let card = node.filter(|&n| page.ready().is_some_and(|r| !r.layout.nodes[n].is_dir()));
+        let turn = match &self.change_turn {
+            Some((id, last, turn)) if *id == page.id && last == path => turn + 1,
+            _ => 0,
+        };
+        // A card showing a diff has its changes at its own rows; a plain one at the lines of its hunks.
+        let row = match page.change_rows(path) {
+            Some(rows) => turn.checked_rem(rows.len()).map(|at| rows[at]),
+            None => crate::git::nth_change(&hunks, turn).map(|line| page.row_of(path, line)),
+        };
+        let (Some(n), Some(row), None) = (card, row, canvas_core::scan::media_kind(path)) else {
+            self.change_turn = None;
+            return self.apply(Action::FlyToPath(path.to_string()));
+        };
+        let row = row.saturating_sub(ABOVE);
+        self.change_turn = Some((page.id, path.to_string(), turn));
+        if let Some(page) = self.pages.get_mut(self.active) {
+            page.selected = Some(n);
+        }
+        self.frame_row(n, row);
+    }
+
+    /// A row of Source Control: the first click shows its file as the diff of that side and goes
+    /// to its first change, the same row again goes to the next one, and after the last one the
+    /// card goes back to how it was.
+    fn focus_change(&mut self, path: String, side: crate::page::DiffSide) {
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let focused = page.diff_focus.as_ref().is_some_and(|(was, on)| *was == path && *on == side);
+        let walked = match &self.change_turn {
+            Some((id, last, turn)) if *id == page.id && *last == path => Some(*turn),
+            _ => None,
+        };
+        let count = page.change_rows(&path).map_or(0, |rows| rows.len());
+        let back = match walked {
+            Some(turn) if focused && turn + 1 < count => return self.fly_to_change(&path),
+            Some(_) => focused,
+            None => focused && count == 0,
+        };
+        if back {
+            page.focus_diff(&path, side);
+            self.change_turn = None;
+            return self.request_redraw();
+        }
+        if !focused {
+            page.focus_diff(&path, side);
+        }
+        self.change_turn = None;
+        self.change_when_diffed = Some((page.id, path, side, Instant::now()));
+        self.request_redraw();
+    }
+
+    fn change_when_diffed(&mut self) {
+        const WAIT: Duration = Duration::from_secs(2);
+        let Some((id, path, side, since)) = self.change_when_diffed.clone() else { return };
+        if self.ui.tabs.front().is_some() {
+            self.change_when_diffed = None;
+            return;
+        }
+        let Some(page) = self.pages.get(self.active).filter(|page| page.id == id) else {
+            self.change_when_diffed = None;
+            return;
+        };
+        if page.diff_side(&path) == Some(side) || since.elapsed() > WAIT {
+            self.change_when_diffed = None;
+            self.fly_to_change(&path);
+        }
+    }
+
+    /// Goes to a row of a card at a size to read it, the row near the top of what is free of
+    /// the canvas, and the card's code from its left edge when it is wider than that.
+    fn frame_row(&mut self, node: usize, row: u32) {
+        self.remember_place();
+        let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
+        let Some(page) = self.pages.get_mut(self.active) else { return };
+        let PageState::Ready(r) = &page.state else { return };
+        let Some(n) = r.layout.nodes.get(node) else { return };
+        let fit = (area.w * 0.7 / n.rect.w).clamp(1.25 * s, 2.0 * s);
+        let z = if (1.0 * s..=3.0 * s).contains(&page.camera.zoom) { page.camera.zoom } else { fit };
+        let cell = n.cell_rect(row, 0, 1);
+        let (x, at) = match n.rect.w * z <= area.w - 48.0 * s {
+            true => (n.rect.center()[0], area.x + area.w * 0.5),
+            false => (cell.x - n.gutter - canvas_core::layout::CARD_PAD, area.x + 24.0 * s),
+        };
+        let y = (cell.y, area.y + 48.0 * s);
+        page.target = Some(Camera { center: [x - (at - vp[0] * 0.5) / z, y.0 - (y.1 - vp[1] * 0.5) / z], zoom: z });
         self.request_redraw();
     }
 
@@ -3017,12 +3424,13 @@ impl App {
             page.version_hover = version;
             self.request_redraw();
         }
+        let titled = on_canvas.then(|| self.title_under(cursor)).flatten();
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let (mut hover, mut cell) = (None, None);
         if on_canvas {
             if let PageState::Ready(r) = &page.state {
                 let world = page.camera.view(vp).to_world(cursor);
-                hover = r.layout.hit(world);
+                hover = titled.or_else(|| r.layout.hit(world));
                 if let Some(n) = hover.map(|h| &r.layout.nodes[h]) {
                     if let NodeKind::File(fi) = n.kind {
                         if page.camera.zoom * LINE_H >= SYMBOL_HOVER_MIN_PX {
@@ -3156,7 +3564,7 @@ impl App {
     /// What "3 references" of a code lens does: the canvas goes to the name and selects it,
     /// which draws its uses.
     fn show_uses(&mut self, path: &Path, line: u32, col: u32) {
-        self.show_path(path, Some((line, col, 1)));
+        self.show_path(path, Some(Spot::at(line, col, 1)));
         let Some((i, rel)) = self.locate_file(path) else { return };
         if i != self.active {
             return;
@@ -3185,7 +3593,9 @@ impl App {
         if page.only_connected {
             self.relayout();
         }
-        self.ui.show(Panel::Symbols);
+        if self.ui.prefs.symbols_panel {
+            self.ui.show(Panel::Symbols);
+        }
         self.request_redraw();
     }
 
@@ -3222,6 +3632,14 @@ impl App {
 
     fn on_canvas_click(&mut self, pos: [f32; 2]) {
         self.completion = None;
+        let vp = self.viewport();
+        let mut unmarked = false;
+        for page in &mut self.pages {
+            unmarked |= page.unmark_unless_on(page.camera.view(vp).to_world(pos));
+        }
+        if unmarked {
+            self.request_redraw();
+        }
         let now = Instant::now();
         let double = self.last_click.is_some_and(|(t, p)| {
             now.duration_since(t) < Duration::from_millis(400)
@@ -3251,7 +3669,6 @@ impl App {
             return;
         }
 
-        let vp = self.viewport();
         let (ctrl, shift) = (self.mods.control_key() || self.mods.super_key(), self.mods.shift_key());
         let alt = self.mods.alt_key();
         let can_edit = self.ui.prefs.edit;
@@ -3260,11 +3677,13 @@ impl App {
             let long = overlay::long_line(page, page.camera.view(vp), self.canvas, self.scale(), file, line)?;
             Some((file, line, long.rest.col_at(pos)?))
         });
+        let titled = self.title_under(pos);
         let Some(page) = self.pages.get_mut(self.active) else { return };
         let PageState::Ready(r) = &page.state else { return };
         let world = page.camera.view(vp).to_world(pos);
         let card = in_strip.and_then(|(file, ..)| r.layout.file_node.get(file).copied());
-        let hit = card.filter(|&n| n != canvas_core::layout::NONE).map(|n| n as usize).or_else(|| r.layout.hit(world));
+        let card = card.filter(|&n| n != canvas_core::layout::NONE).map(|n| n as usize);
+        let hit = card.or(titled).or_else(|| r.layout.hit(world));
         let zoom = page.camera.zoom;
         let readable = Lod::for_zoom(zoom) == Lod::Text;
 
@@ -3395,12 +3814,18 @@ impl App {
                 return;
             }
         }
+        let in_tab = self.ui.tabs.front().is_some();
+        if in_tab && self.tab_key(event) {
+            return;
+        }
         let before_editor = bound.is_some_and(|i| i.command.is_caret()) || (bound.is_some() && alt && !cmd);
         if !before_editor && self.edit_key(event) {
             return;
         }
         if let Some(info) = bound {
-            self.run_command(info.command);
+            if !in_tab || info.scope != Scope::Canvas || info.command == Command::GoToDefinition {
+                self.run_command(info.command);
+            }
             return;
         }
         let Some(chord) = chord else { return };
@@ -3430,8 +3855,9 @@ impl App {
                 self.ui.settings.open = false;
                 self.ui.quick = Some(QuickOpen { query: String::new(), selected: 0, focus: true })
             }
-            Command::SearchInFiles => self.ui.show(Panel::Search),
+            Command::SearchInFiles => self.search_in_files(None),
             Command::Find => self.find(ui::FindOp::Open),
+            Command::Replace => self.find(ui::FindOp::OpenReplace),
             Command::Back => self.travel(true),
             Command::Forward => self.travel(false),
             Command::Settings => self.ui.settings.show(None),
@@ -3467,6 +3893,12 @@ impl App {
             }
             Command::GoToDefinition => self.go_to_definition(),
             Command::OpenFolder => self.pick_folder(),
+            Command::CloseFolder if self.ui.tabs.front().is_some() => {
+                self.tab_op(crate::file_tabs::TabOp::Close(self.ui.tabs.front().unwrap_or_default()))
+            }
+            Command::NextFolder | Command::PreviousFolder if !self.ui.tabs.list.is_empty() => {
+                self.tab_op(crate::file_tabs::TabOp::Cycle(if command == Command::NextFolder { 1 } else { -1 }))
+            }
             Command::CloseFolder => self.close_folder(self.active, false),
             Command::NextFolder => self.cycle(1),
             Command::PreviousFolder => self.cycle(-1),
@@ -3521,7 +3953,11 @@ impl App {
         }
         match action {
             Action::Tree(op) => self.tree_op(op),
-            Action::SwitchTab(i) => self.show_folder(i),
+            Action::SwitchTab(i) => {
+                self.ui.tabs.set_front(None);
+                self.show_folder(i);
+            }
+            Action::Tabs(op) => self.tab_op(op),
             Action::CloseTab(i) => self.close_folder(i, false),
             Action::OpenFolder => self.pick_folder(),
             Action::Rescan => self.rescan(),
@@ -3536,7 +3972,25 @@ impl App {
                 self.request_redraw();
             }
             Action::FrameSelection => self.frame_selection(),
-            Action::FlyToSite(site) => self.frame_site(site),
+            Action::FlyToSite(site) => {
+                if !self.site_in_tab(site) {
+                    self.frame_site(site);
+                }
+            }
+            Action::FlyToChange(path) if self.path_in_tab(&path) => {}
+            Action::FlyToChange(path) => self.fly_to_change(&path),
+            Action::MinimapTo { y, left } => {
+                let (area, vp, s) = (self.clear(), self.viewport(), self.scale());
+                if let Some(page) = self.pages.get_mut(self.active) {
+                    let z = page.camera.zoom;
+                    page.target = None;
+                    page.camera.center[1] = y - (area.y + area.h * 0.5 - vp[1] * 0.5) / z;
+                    if let Some(left) = left {
+                        page.camera.center[0] = left - (area.x + 24.0 * s - vp[0] * 0.5) / z;
+                    }
+                    self.request_redraw();
+                }
+            }
             Action::OpenMedia(path) => {
                 if crate::media::kind(&path).is_some() {
                     self.reveal_file(&path);
@@ -3566,6 +4020,9 @@ impl App {
                 }
             }
             Action::OpenExternally(path) => crate::update::open_page(&path.to_string_lossy()),
+            Action::FlyToPath(path) if self.path_in_tab(&path) => {}
+            Action::FocusDiff(path, _) if self.path_in_tab(&path) => {}
+            Action::FocusDiff(path, side) => self.focus_change(path, side),
             Action::FlyToPath(path) => {
                 if let Some(file) = self.pages.get(self.active).map(|p| p.root.join(&path)) {
                     self.open_media(&file);
@@ -3685,12 +4142,8 @@ impl App {
                     }
                 }
             }
-            Action::Search(query) => {
-                if let Some(page) = self.pages.get_mut(self.active) {
-                    page.run_search(query);
-                }
-                self.request_redraw();
-            }
+            Action::Search(query) => self.run_search(query),
+            Action::SearchPanel(op) => self.search_op(op),
             Action::DragWindow => {
                 if let Some(g) = &self.gfx {
                     let _ = g.window.drag_window();
@@ -3825,6 +4278,8 @@ impl App {
             Action::Versions(op) => self.versions_op(op),
             Action::Answered(about, answer) => self.answered(about, answer),
             Action::TrustFolders => self.trust_from_status(),
+            Action::ShowChurn => self.show_churn(),
+            Action::FollowAgain => self.follow_again(),
             Action::Share(op) => self.share_op(op),
             Action::Workspace(op) => self.workspace_op(op),
             Action::Agent(op) => self.agent_op(op),
@@ -4012,6 +4467,7 @@ impl App {
                 }
                 self.request_redraw();
             }
+            Action::ShowDeleted { path, staged } => self.show_deleted(&path, staged),
             Action::SetOnlyChanged(on) => {
                 if let Some(page) = self.pages.get_mut(self.active) {
                     page.only_changed = on;
@@ -4146,10 +4602,10 @@ impl App {
             Step::Locate => self.apply(Action::FrameSelection),
             Step::Goto(path) => self.apply(Action::FlyToPath(path)),
             Step::Search(text) => {
-                self.ui.search_query = text.clone();
-                self.ui.show(Panel::Search);
-                self.apply(Action::Search(text));
+                self.search_in_files(Some(text));
+                self.ui.search.focus = false;
             }
+            Step::SearchOption(arg) => self.search_option(&arg),
             Step::Select(name) => {
                 let sym = self
                     .pages
@@ -4399,11 +4855,12 @@ impl App {
                     "commit" if !arg.is_empty() => Some(GitOp::commit(arg)),
                     "discard" if arg.is_empty() => Some(GitOp::DiscardAll),
                     "discard" => Some(GitOp::Discard(arg.to_string())),
+                    "pull" => Some(GitOp::Pull),
                     _ => None,
                 };
                 match op {
                     Some(op) => self.apply(Action::Git(op)),
-                    None => log::warn!("script: git needs stage|unstage|discard [path] or commit <message>"),
+                    None => log::warn!("script: git needs stage|unstage|discard [path], commit <message> or pull"),
                 }
             }
             Step::Right(which) => match which.as_str() {
@@ -4459,6 +4916,7 @@ impl App {
                 self.apply(Action::DepsChanged);
             }
             Step::Tab(n) => self.show_folder(n.saturating_sub(1)),
+            Step::FileTab(what) => self.tab_step(&what),
             Step::Folders => {
                 self.ui.show(Panel::Files);
                 self.ui.open_folder_menu = true;
@@ -4699,7 +5157,12 @@ impl App {
                     ("split", _) => view.split = true,
                     ("together", _) => view.split = false,
                     ("around", lines) => view.around = lines.trim().parse().unwrap_or(view.around),
-                    _ => log::warn!("script: diff needs on|off|split|together|fold|unfold|around <lines>"),
+                    ("all", _) => view.side = crate::page::DiffSide::All,
+                    ("staged", _) => view.side = crate::page::DiffSide::Staged,
+                    ("unstaged", _) => view.side = crate::page::DiffSide::Unstaged,
+                    _ => log::warn!(
+                        "script: diff needs on|off|split|together|fold|unfold|around <lines>|all|staged|unstaged"
+                    ),
                 }
                 self.apply(Action::SetDiff(view));
             }
@@ -4790,9 +5253,7 @@ impl App {
                     "next" => self.find(ui::FindOp::Next),
                     "previous" => self.find(ui::FindOp::Previous),
                     "replace" | "replace-all" => {
-                        if let Some(find) = self.ui.find.as_mut() {
-                            find.with = text.to_string();
-                        }
+                        self.ui.find_kept.with = text.to_string();
                         self.find(if verb == "replace" { ui::FindOp::Replace } else { ui::FindOp::ReplaceAll });
                     }
                     "close" => self.find(ui::FindOp::Close),
@@ -4804,6 +5265,35 @@ impl App {
                         }
                         self.find(ui::FindOp::Changed);
                     }
+                }
+            }
+            Step::FindFiles(text) => {
+                self.find(ui::FindOp::Open);
+                self.find(ui::FindOp::Mode(ui::FindIn::Files));
+                if let Some(find) = self.ui.find.as_mut() {
+                    find.query = text.clone();
+                    find.focus = false;
+                }
+                self.find(ui::FindOp::Changed);
+                let count = self.ui.find.as_ref().map_or(0, |find| find.count);
+                log::info!("script: find-files {text:?} found {count}");
+            }
+            Step::FindOption(what) => {
+                let (name, state) = what.split_once(' ').unwrap_or((what.as_str(), "on"));
+                let kept = &mut self.ui.find_kept;
+                let flag = match name {
+                    "case" => Some(&mut kept.options.case),
+                    "word" => Some(&mut kept.options.word),
+                    "regex" => Some(&mut kept.options.regex),
+                    "preserve" => Some(&mut kept.preserve),
+                    _ => None,
+                };
+                match flag {
+                    Some(flag) => {
+                        *flag = state != "off";
+                        self.find(ui::FindOp::Changed);
+                    }
+                    None => log::warn!("script: find-option case|word|regex|preserve on|off"),
                 }
             }
             Step::Drag(from, to) if self.ui.pen.on => {
@@ -4897,6 +5387,7 @@ impl App {
                 None => log::warn!("script: no canvas is shown yet"),
             },
             Step::Trust => self.apply(Action::TrustFolders),
+            Step::Churn => self.script_churn(),
             Step::Quit => self.exit_requested = true,
         }
         self.request_redraw();
@@ -4991,7 +5482,16 @@ impl App {
         }
         let mut git_relayout = false;
         for (i, page) in self.pages.iter_mut().enumerate() {
-            changed |= page.poll_git_op();
+            let done = page.poll_git_op();
+            changed |= done;
+            // The note under Commit is only seen for the folder in view; a branch switched from the
+            // workspace list for another folder says how it went in a notice.
+            if done && i != self.active {
+                if let Some(crate::page::GitNote { ok, text, .. }) = &page.git_note {
+                    let level = if *ok { ext::Level::Info } else { ext::Level::Warn };
+                    self.ext.notice(level, "Source Control", format!("{}: {text}", page.title));
+                }
+            }
             if i == self.active && page.rebase.is_none() && self.ui.cards.contains(&Panel::Rebase) {
                 self.ui.close_panel(&Panel::Rebase);
                 changed = true;
@@ -5023,6 +5523,7 @@ impl App {
         if git_relayout {
             self.relayout();
         }
+        busy |= self.poll_search();
         if let Some(page) = self.pages.get_mut(self.active) {
             let selected = page.ready().and_then(|r| {
                 let n = r.layout.nodes.get(page.selected?)?;
@@ -5065,6 +5566,9 @@ impl App {
             changed = true;
         }
         busy |= self.watcher.busy();
+        self.watch_churn();
+        busy |= self.settle_switches();
+        busy |= self.change_when_diffed.is_some();
         let (folders, trusted) = self.host_folders();
         self.ext.set_folders(folders, trusted);
         let (events, ext_changed) = self.ext.poll();
@@ -5074,7 +5578,9 @@ impl App {
             match event {
                 ext::Event::Write { path, text } => self.write_file(&path, &text),
                 ext::Event::Reveal(path) => self.reveal_file(&path),
-                ext::Event::GoTo { path, line, col, len } => self.show_path(&path, Some((line, col, len))),
+                ext::Event::GoTo { path, line, col, len, mark } => {
+                    self.show_path(&path, Some(Spot { line, col, len, mark }))
+                }
                 ext::Event::Suggestions(found) => self.offer_code(found),
                 ext::Event::Relations { page, of, found } => self.exact_relations(page, of, found),
                 ext::Event::ExtraEdits { path, edits } => self.extra_edits(&path, edits),
@@ -5132,7 +5638,9 @@ impl App {
             self.show_versions();
             changed = true;
         }
-        if self.sync_diffs() {
+        let diffed = self.sync_diffs();
+        self.change_when_diffed();
+        if diffed {
             self.find_refresh(false);
             changed = true;
         }
@@ -5266,6 +5774,10 @@ impl App {
             None => {}
         }
         for (about, choice) in self.ext.take_answers() {
+            if let Some(about) = about.strip_prefix(churn_watch::ASKED) {
+                self.churn_answered(about, &choice);
+                continue;
+            }
             if let Some(path) = about.strip_prefix(version_hints::INSTALL) {
                 self.install_answered(path, &choice);
                 continue;
@@ -5365,14 +5877,12 @@ impl App {
                         if let Some(tip) = known {
                             return (status, Some(tip));
                         }
-                        let tip = on_canvas.then(|| match (sym, page.hover_cell) {
-                            (Some(sym), Some((_, line, _))) => (
-                                format!("{} {}", r.repo.sym(sym).kind.badge(), r.repo.sym_name(sym)),
-                                format!("{}:{}", f.rel_path, line + 1),
-                            ),
-                            _ => (f.name.clone(), f.rel_path.clone()),
-                        });
-                        (status, tip)
+                        // The name and place of what is under the pointer are in the status bar; a box
+                        // following the pointer over every line of code only got in the way.
+                        if let Some(sym) = sym {
+                            status = format!("{status}  ·  {} {}", r.repo.sym(sym).kind.badge(), r.repo.sym_name(sym));
+                        }
+                        (status, None)
                     }
                     NodeKind::Dir => {
                         let path = if n.rel_path.is_empty() { r.repo.name.clone() } else { n.rel_path.clone() };
@@ -5524,7 +6034,9 @@ impl App {
         if let Some(g) = self.gfx.as_ref() {
             self.pictures.begin_frame(&g.egui);
         }
+        self.front_changed();
         self.place_pictures();
+        self.place_card_button();
         self.place_doodles();
         let asked = self.ui.ask.as_ref().and_then(|ask| ask.preview.clone());
         self.ui.ask_picture = match &asked {
@@ -5538,6 +6050,12 @@ impl App {
         let standing = self.stand_still();
         let (status, tooltip) = self.describe();
         let zoom = self.pages.get(self.active).map(|p| p.camera.zoom / s).unwrap_or(1.0);
+        self.ui.minimap.seen = self.pages.get(self.active).map(|page| {
+            let view = page.camera.view(self.viewport());
+            let a = view.to_world([self.canvas.x, self.canvas.y]);
+            let b = view.to_world([self.canvas.right(), self.canvas.bottom()]);
+            Rect::new(a[0], a[1], b[0] - a[0], b[1] - a[1])
+        });
         let mut actions = Vec::new();
         self.ui.tree.os_over = None;
         if self.os_hover {
@@ -5733,6 +6251,7 @@ impl App {
         }
         self.chip_hits = std::mem::take(&mut canvas_overlay.chip_hits);
         self.toggle_hits = std::mem::take(&mut canvas_overlay.toggle_hits);
+        self.title_hits = std::mem::take(&mut canvas_overlay.title_hits);
         self.preview_hits = std::mem::take(&mut canvas_overlay.preview_hits);
         self.lens_hits = std::mem::take(&mut canvas_overlay.lens_hits);
         self.version_hits = std::mem::take(&mut canvas_overlay.version_hits);
@@ -6350,10 +6869,8 @@ impl ApplicationHandler for App {
             (false, t) => t,
         };
         let look_again = self.own_build.is_some().then(|| self.build_checked + Duration::from_secs(5));
-        let wake = match (wake, look_again) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let churn_again = self.churn.is_busy().then(|| now + Duration::from_secs(5));
+        let wake = [wake, look_again, churn_again].into_iter().flatten().min();
         let shown =
             self.gfx.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && can_show(g.window.inner_size()));
         if loading && shown {

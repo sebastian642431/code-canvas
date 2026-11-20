@@ -1,0 +1,27 @@
+title: Files to include and files to exclude narrow the Search panel to one file, and then to everything but two
+folders: git-history
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: search 'fn': 3 hits
+expect-log: search 'fn': 2 hits
+
+wait 3000
+search fn
+wait 1500
+mark everywhere
+wait 450
+search-option include src/util.rs
+wait 1500
+mark only-util
+wait 450
+search-option include
+search-option exclude src/steps.rs, src/util.rs
+wait 1500
+mark all-but-two
+wait 450
+search-option exclude
+wait 1200
+mark both-cleared
+wait 450
+quit

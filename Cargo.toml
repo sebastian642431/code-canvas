@@ -18,6 +18,7 @@ winit = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
 ignore = "0.4"
 rayon = "1"
+regex = "1"
 rfd = "0.18"
 wgpu = "30"
 pollster = "0.4"

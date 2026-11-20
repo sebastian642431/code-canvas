@@ -229,7 +229,7 @@ impl App {
                                 self.let_go_of_follow_page();
                             }
                             let before = self.pages.len();
-                            self.show_path(&path, now.1.map(|line| (line, 0, 1)));
+                            self.show_path(&path, now.1.map(|line| super::Spot::at(line, 0, 1)));
                             if outside && self.pages.len() > before {
                                 self.follow_page = self.pages.last().map(|page| page.id);
                             }

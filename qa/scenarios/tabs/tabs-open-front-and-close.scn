@@ -1,0 +1,41 @@
+title: Files open in tabs one after the other (each right after the one in front), a tab is brought to the front by its number, and closing the one in front brings the one next to it
+folders: rust-small
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: opened .*main\.rs in a tab
+expect-log: tabs: \[.*main\.rs, .*util\.rs, .*steps\.rs\], in front: Some\(2\)
+expect-log: tabs: \[.*main\.rs, .*util\.rs, .*steps\.rs\], in front: Some\(0\)
+expect-log: tabs: \[.*util\.rs, .*steps\.rs\], in front: Some\(0\)
+expect-log: tabs: \[[^,]*util\.rs\], in front: Some\(0\)
+expect-log: tabs: \[\], in front: None
+
+wait 3000
+tab open src/main.rs
+wait 800
+tab open src/util.rs
+wait 800
+tab open src/steps.rs
+wait 1000
+mark three-tabs
+wait 450
+tab report
+tab front 1
+wait 800
+mark first-in-front
+wait 450
+tab report
+tab close
+wait 800
+mark first-closed
+wait 450
+tab report
+tab close 2
+wait 800
+tab report
+tab close
+wait 1000
+mark all-closed-canvas-back
+wait 450
+tab report
+quit

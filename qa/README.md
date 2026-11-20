@@ -42,7 +42,7 @@ quit
 | `folders` | Fixtures the app opens, in order: `git-changes, rust-small`. `name/sub` opens a folder inside one. |
 | `fixtures` | Fixtures made but not opened (to open later with `workspace put {FIX}\name`). |
 | `limit` | Seconds before the run is stopped (90). |
-| `expect-log` | A regular expression the log must match somewhere. May repeat. |
+| `expect-log` | A regular expression the log must match somewhere. May repeat. It ignores case (PowerShell's `-match`): start it with `(?-i)` when case matters. |
 | `forbid-log` | One it must not. `panicked`, `panic:` and `] ERROR ` are always forbidden. |
 | `allow-log` | Lines matching it are not checked against the forbidden ones. |
 | `expect-file` | `path :: regex`: a file (relative to the fixtures) whose text must match. |

@@ -1,0 +1,39 @@
+title: A file with a staged change and a not staged one is drawn with both kinds of bar, the diff modes show them, and staging or unstaging moves a change from one kind to the other
+folders: git-mixed
+limit: 60
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-file: git-mixed/a.txt :: ^a1\nA2 staged\na3\na4 not staged\n
+
+wait 3500
+left changes
+goto a.txt
+wait 1500
+mark a-both-kinds
+wait 450
+diff on
+wait 1500
+mark b-diff-on
+wait 450
+diff split
+wait 1500
+mark c-split
+wait 450
+diff together
+diff off
+wait 800
+git stage a.txt
+wait 1500
+mark d-all-staged
+wait 450
+git unstage a.txt
+wait 1500
+mark e-all-unstaged
+wait 450
+git stage a.txt
+wait 800
+git unstage
+wait 1500
+mark f-unstaged-all
+wait 450
+quit

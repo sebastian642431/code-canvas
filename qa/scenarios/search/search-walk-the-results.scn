@@ -1,0 +1,36 @@
+title: Next and Previous result go through the hits of the Search panel (the canvas flies to each), the list shows as a tree or as one list, and an empty query clears the results
+folders: git-history
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: script: no search option
+expect-log: search 'fn': \d+ hits
+
+wait 3000
+search fn
+wait 1500
+search-option next
+wait 1500
+mark first-hit
+wait 450
+search-option next
+wait 1500
+mark second-hit
+wait 450
+search-option previous
+wait 1500
+mark back-to-first
+wait 450
+search-option list on
+wait 800
+mark as-a-list
+wait 450
+search-option list off
+wait 800
+mark as-a-tree
+wait 450
+search
+wait 1000
+mark cleared
+wait 450
+quit

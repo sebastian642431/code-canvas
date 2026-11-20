@@ -1,0 +1,26 @@
+title: With Preserve Case on, replacing beta by gamma gives gamma for beta and GAMMA for BETA
+folders: edit-odd
+limit: 40
+forbid-log: cannot edit
+forbid-log: nothing offers
+forbid-log: script: ignoring
+expect-file: edit-odd/words.txt :: (?-i)\AAlpha gamma alpha GAMMA\n
+
+wait 3000
+goto words.txt
+wait 800
+tool edit
+edit words.txt 1 1
+find-option preserve on
+find beta
+wait 300
+mark found
+wait 450
+find replace-all gamma
+wait 500
+mark replaced
+wait 450
+find close
+key save
+wait 800
+quit

@@ -1,0 +1,28 @@
+title: Use Regular Expression in the Search panel finds step_1 or step_2 as whole names, and a pattern that does not compile shows an error and no results instead of a crash
+folders: git-history
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: search 'step_\(1\|2\)\\b': 3 hits
+expect-log: search '\(': 
+
+wait 3000
+search-option regex on
+search step_(1|2)\b
+wait 1500
+mark regex-three
+wait 450
+search (
+wait 1200
+mark invalid-pattern
+wait 450
+search [a-
+wait 1200
+mark invalid-class
+wait 450
+search-option regex off
+search (
+wait 1200
+mark literal-paren
+wait 450
+quit

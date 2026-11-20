@@ -1,4 +1,5 @@
 title: A drag with the pencil selects text, typing replaces it, undo brings the selection back, and a click puts the caret on the letter clicked
+prefs: {"minimap": false}
 folders: edit-odd
 limit: 40
 forbid-log: cannot edit

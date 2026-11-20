@@ -1,0 +1,35 @@
+title: The file tabs and the one in front are kept with the session: started again, the three tabs are there with the second in front
+folders: rust-small
+limit: 70
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: tabs: \[.*main\.rs, .*util\.rs, .*steps\.rs\], in front: Some\(1\)
+again-forbid-log: script: ignoring
+again-expect-log: tabs: \[.*main\.rs, .*util\.rs, .*steps\.rs\], in front: Some\(1\)
+again-expect-log: tabs: \[.*main\.rs, .*util\.rs, .*steps\.rs\], in front: None
+
+wait 3000
+tab open src/main.rs
+wait 600
+tab open src/util.rs
+wait 600
+tab open src/steps.rs
+wait 600
+tab front 2
+wait 1000
+mark before-quit
+wait 450
+tab report
+quit
+
+=== again
+wait 4000
+mark after-restart
+wait 600
+tab report
+tab canvas
+wait 800
+mark canvas
+wait 450
+tab report
+quit

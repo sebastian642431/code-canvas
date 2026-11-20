@@ -1,0 +1,21 @@
+title: Reveal on the canvas takes the file in front out of the tabs' view and flies the canvas to its card, the tab stays in the bar
+folders: rust-small
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: tabs: \[.*steps\.rs\], in front: Some\(0\)
+expect-log: tabs: \[.*steps\.rs\], in front: None
+
+wait 3000
+tab open src/steps.rs
+wait 1000
+mark in-the-tab
+wait 450
+tab report
+tab reveal
+wait 2000
+mark revealed-on-the-canvas
+wait 450
+tab report
+where
+quit

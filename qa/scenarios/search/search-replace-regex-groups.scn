@@ -1,0 +1,24 @@
+title: With a regular expression the replacement of the Search panel fills in $1: fn step_N( becomes fn stage_N( for every N, in the file and nowhere else
+folders: plain
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-log: replaced 14 matches in 1 files \(0 could not be read\)
+expect-file: plain/src/steps.rs :: (?s)\Afn stage_1\(\) -> u32 \{\n    1\n\}.*fn stage_14\(\) -> u32 \{\n    14\n\}
+expect-file: plain/src/main.rs :: steps::step_1\(\)
+
+wait 3000
+search-option regex on
+search fn step_(\d+)\(
+wait 1500
+search-option replace fn stage_$1(
+wait 400
+mark preview
+wait 450
+search-option replace-all
+wait 800
+answer Replace
+wait 2500
+mark replaced
+wait 450
+quit

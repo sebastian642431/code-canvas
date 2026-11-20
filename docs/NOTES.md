@@ -43,6 +43,7 @@ to run things. These notes were rescued from the comments the code used to have.
   [main.rs](#cratescode-canvassrcmainrs) ·
   [app.rs](#cratescode-canvassrcapprs) ·
   [bench.rs](#cratescode-canvassrcbenchrs) ·
+  [churn.rs](#cratescode-canvassrcchurnrs) ·
   [codicons.rs, icons.rs](#cratescode-canvassrccodiconsrs-and-iconsrs) ·
   [commit_ai.rs](#cratescode-canvassrccommit_airs) ·
   [editor.rs](#cratescode-canvassrceditorrs) ·
@@ -303,17 +304,21 @@ Resolution rules per language:
   `col_stride` and before `code_origin`, so everything that goes from a cell to a
   place or back keeps working; what measures a column's width takes it off.
   `set_line_numbers` is for the whole app: the layout reads it when it is built.
-- `Node::fold` is how many lines a column of the card holds before the text goes
-  on in the next column: `FOLD_LINES` for every file, unless `SourceFile::fold`
-  says less (`rows_per_column`). The shader gets it per file in the fourth value
-  of its origin. It is what puts the two sides of a diff next to each other. On a
-  wrapped card (`Node::wrap`, below) it counts *rows*: those of its tallest
-  column.
-- `FOLD_LINES` (2048) must stay a multiple of `CHUNK_LINES` and `BLOCK_LINES`, so
-  chunks and blocks never straddle two columns of a folded file. The shader has
-  its own copy, see [shaders](#cratescanvas-rendersrcshaders).
-- Files longer than `FOLD_LINES` are folded into side-by-side columns, like a
-  newspaper, so one huge data file cannot stretch the whole canvas.
+- `Node::fold` is how many rows a column of the card holds before the text goes
+  on in the next column: `ONE_COLUMN` (`u32::MAX`) for every file, so a long file
+  is one column as tall as all its lines, unless `SourceFile::fold` says less
+  (`rows_per_column`). Only the side-by-side diff does: its two halves are two
+  columns of `fold` rows each (`git::side_by_side`). The shader gets it per file
+  in the fourth value of its origin. A wrapped card (`Node::wrap`, below) is
+  always one column. `Node::columns` is how many a card has; whatever loops over
+  them loops at most twice.
+- Columns were once a fold every 2048 lines, side by side like a newspaper: a
+  long file is no longer cut that way. `pack` copes with its very tall card
+  instead: when one item is taller than the box its area asks for, the box is
+  only as wide as all its area at that height plus one more item (`area /
+  tallest + widest + GAP`), so the rest stands in a strip beside the long card, near
+  its top, instead of in one row as wide as the area wants with most of the
+  height under it empty.
 - `MAX_COLS` (160): a card grows with its longest line up to that; longer lines
   are clipped, and the rest of one is shown beside its card under the pointer
   or the caret (`rest_of_line`, below), unless they are wrapped.
@@ -326,11 +331,8 @@ Resolution rules per language:
   whatever is drawn at a line and column (carets, selections, finds, washes,
   problems, decorations, relation ends, assistant marks) lands on its row
   without knowing. What spans columns must ask `cell_rects`: one rectangle per
-  row it crosses. Rows are *virtual*: column `k` of a long file starts at row
-  `k × fold`, so the shader's arithmetic and `FOLD_LINES` columns of lines stay
-  as they were; a shorter column just leaves rows empty at its foot.
-  `Page::show_edit` makes the edited file's `Wrap` again on each edit
-  (`Layout::resize_file`, below).
+  row it crosses. `Page::show_edit` makes the edited file's `Wrap` again on each
+  edit (`Layout::resize_file`, below).
 - `rest_of_line` is the geometry of that rest, in pixels of the screen: rows that
   start where the card cuts the line (`Node::shown_cols`) and go on to the right
   edge of the canvas, wrapping under the first row when the rest is wider. With
@@ -732,10 +734,9 @@ tokens, 12-byte file-relative instances) is in "Rendering" in
 
 ### crates/canvas-render/src/shaders
 
-- `code.wgsl`: the constant `FOLD_LINES` **must match**
-  `canvas_core::layout::FOLD_LINES`. `BAR` = 0.72 is the fraction of the line
+- `code.wgsl`: `BAR` = 0.72 is the fraction of the line
   height a bar covers. `origins[file]`: `x, y` the first character of the file,
-  `z` the x distance between folded columns.
+  `z` the x distance between columns, `w` the rows of a column (`Node::fold`).
 - `rect.wgsl`: rectangles thinner than a pixel stay one pixel wide but fade out by
   their real coverage. Geometry is grown by 1 px for anti-aliasing (`curve.wgsl`
   too).
@@ -1020,6 +1021,11 @@ Showing a path
 - The host answers `showTextDocument` with an editor even for a file the canvas
   has not opened, because extensions go on to call `revealRange` on it; that call
   is what carries the line.
+- The lines of that range (a link such as `package.json:22` or `:10-20` in Claude
+  Code's chat) are marked across the whole card in the theme's `line_mark`
+  (`Page::marked`), behind the text, until a click on the canvas lands off that
+  card or another range is shown. Go to definition and following an assistant
+  mark nothing: they keep the search marker on the name.
 
 Pictures and what plays
 
@@ -1543,6 +1549,39 @@ Camera
   token chunks, text shaping, glyph rasterisation.
 - Frame-interval statistics are logged every few seconds. The first sample of each
   window includes the report itself and is skipped.
+
+### crates/code-canvas/src/churn.rs
+
+A watchdog for loops nobody asked for: a dev server in an error loop appending to
+`logs/<day>.log` made every write read git again (about 12 processes) and kept the
+CPU busy with nothing on screen saying why. No AI, plain counts.
+
+- What is counted, over a sliding minute of one-second buckets (`Window`, fixed
+  size, O(1) per event): each path of each watcher batch, in `App::on_disk_changes`
+  right after `locate_file` and before any skipping, so ignored and skipped files
+  count too; git reads (`Page::refresh_git`) and scans (`Page::start_scan`) per
+  folder, which the page counts in `git_loads` / `scans` and `App::watch_churn`
+  takes every loop.
+- At most `MAX_PATHS` = 256 paths are tracked; when full, the quarter written least
+  (the least recent first among equals) is dropped, so a noisy file outlives a
+  checkout touching thousands of files. Paths and folders gone quiet are dropped at
+  the next check.
+- Limits per minute: one file written `PATH_WRITES` = 30 times, git of one folder
+  read `GIT_RELOADS` = 20 times, one folder scanned `RESCANS` = 5 times.
+- `Churn::check` runs at most once a second. While something is over its limit
+  the status bar shows *Busy* (hover: the top 5 of the minute; click: the notice
+  again), the app wakes every 5 s so the item goes away once things calm down, and
+  the top 3 are logged (`log::warn`) once a minute.
+- One notice per folder for one loop: when a cause warns, every cause over its limit
+  in that folder and the folder's git reads and scans are marked told, so git read
+  for a noisy log does not warn apart. The same cause warns again after
+  `WARN_AGAIN` = 10 minutes; another file is another cause.
+- The notice about a file asks: *Stop following this file* (its path goes in
+  `App::unfollowed`, checked first in `on_disk_changes`, before `locate_file`, so
+  its writes cost a key lookup; for the session only), *Hide it from the canvas*
+  (the page's hidden filter, offered when the file is on the canvas) or *Dismiss*.
+  *N not followed* in the status bar lists the files not followed; a click follows
+  them again and reads them as changed.
 
 ### crates/code-canvas/src/codicons.rs and icons.rs
 
@@ -2244,10 +2283,17 @@ app's own tokenizer does not know (`Lang::Plain`), or every language with
   file whose text equals `HEAD` leaves the list even if the disk still differs.
 - `changed_dirs`: every folder above a changed file, for the explorer's colours.
 - `SearchResults::current`: the match the find bar is on, drawn stronger.
-  `App::find_refresh` searches the text the card shows (smart case: exact when
-  the text typed has a capital), so its columns are the canvas's; replacing goes
-  through `Editor::pos_at_display` and starts from the last match so the earlier
-  ones keep their place.
+  `App::find_refresh` searches the text the card shows (`find::Matcher`; without
+  Match Case it is smart case: exact when the text typed has a capital), so its
+  columns are the canvas's; replacing goes through `Editor::pos_at_display` and
+  starts from the last match so the earlier ones keep their place. With a regular
+  expression or Preserve Case each match gets its own text (`replace_spans`).
+- **Ctrl+F with no file selected finds by name.** The bar's "Files" mode ranks the
+  files and folders the layout shows with `find::names` when the query changes
+  (never per frame) and keeps their paths in `Page::found_names`; the overlay
+  resolves at most `MAX_NAME_MARKS` of them to boxes each frame, so a relayout
+  never leaves a mark on the wrong box. "Text in files" hands the query to the
+  Search panel and closes the bar.
 - **The diff view swaps the text of the card.** `Page::sync_diff` gives every
   changed file (`MAX_DIFFS` at most) the text `git::unified` makes of it, with
   `Repo::replace_source`, and keeps the rows in `diffs`: the layout, the symbols
@@ -2534,7 +2580,9 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `menu` | `menu <x> <y>` | The menu of a right click on a card, in physical pixels. |
 | `part` | `part stage\|unstage <path> <line>` | Stage or unstage the one change at a line (1-based) of a file. |
 | `drag` | `drag <x> <y> <x> <y>` | A drag of the left button on the canvas, in physical pixels: it draws (or rubs out) with the pencil, selects code with the pointer over a file, and moves the canvas otherwise. |
-| `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected, walk the matches, replace the current one or all of them (the pencil must be on). |
+| `find` | `find <text>`, `find next\|previous\|close`, `find replace <text>`, `find replace-all <text>` | Find in the file being edited or selected (by name on the canvas when no file is), walk the matches, replace the current one or all of them (the pencil must be on). |
+| `find-files` | `find-files <text>` | The find bar looking for files and folders of the canvas by name; logs "script: find-files \"<text>\" found <n>". `find next\|previous` walk them. |
+| `find-option` | `find-option case\|word\|regex\|preserve on\|off` | The find bar's toggles: Match Case, Match Whole Word, Use Regular Expression, Preserve Case. |
 | `console` | `console <a line>` | Open the console and type that line and Enter into its shell (no `;` in it: that ends a step). |
 | `term` | `term drag <text> <text>`, `term click <text> [times]`, `term right [text]`, `term copy`, `term report` | The mouse on the screen of the console the keyboard goes to, aimed at text shown there (the lowest row it is on; no spaces in it): a drag from the start of one text to the end of the other, one or more clicks on a text, a right click on a text or the middle. `copy` is Ctrl+C. `report` logs a line per console ("script: console tab <n> [(current)] \"<title>\" card … group … busy … news … broke … ended … commands … failed … cwd …"), then "script: console selection \"…\"", "script: console clipboard \"…\"" (the run's own) and "script: console line at the cursor \"…\"". |
 | `term` (consoles) | `term new [profile]`, `term split [profile]`, `term next`, `term prev`, `term front <n>`, `term kill [n]`, `term rename <name>`, `term tocard`, `term unsplit`, `term colour <0-6>`, `term icon <codicon>`, `term clear`, `term fill`, `term up`, `term down`, `term default <profile>`, `term has <n> <text>`, `term menu new\|more\|tab <n>\|close`, `term page split\|default\|folders\|colour\|icon\|dirs\|commands` | The consoles' own commands, on the current one; `<n>` counts the consoles from 1 in the order of `report`, a profile is `bash`, `pwsh`, `powershell`, `cmd` or `wsl:<distribution>`. `kill` asks like the trash button when something runs. `has` logs "script: console tab <n> shows '<text>'" or "does not show". `menu` opens the kinds menu, the "…" menu or a console's own menu, `page` one of its pages, for a picture. |
@@ -2563,6 +2611,7 @@ keyboard. An example and `scripts/screenshot.ps1` are in "Testing the real app" 
 | `resize` | `resize <width> <height>` | Resize the window, in physical pixels. |
 | `maximize` | `maximize` | Maximize the window. |
 | `trust` | `trust` | What a click on *Restricted mode* in the status bar does: ask about the first folder not trusted. |
+| `churn` | `churn` | Log what kept the app busy in the last minute as "script: churn: a in folder: written N times; ...". |
 | `quit` | `quit` | Leave. |
 
 `UiState::open_folder_menu` exists for `folders`: a script has no click to open

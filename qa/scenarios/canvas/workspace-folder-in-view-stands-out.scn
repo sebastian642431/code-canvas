@@ -1,0 +1,32 @@
+title: The Files panel's workspace list marks the folder in view (tinted row and bar), and moving between the folders moves the mark; no x or plus shows on a row
+folders: rust-small, plain, git-changes
+limit: 50
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+
+wait 3500
+left files
+wait 1000
+mark a-first-in-view
+wait 450
+tab 2
+wait 1200
+mark b-second-in-view
+wait 450
+tab 3
+wait 1200
+mark c-third-in-view
+wait 450
+workspace off {FIX}\plain
+wait 1200
+mark d-one-taken-off
+wait 450
+workspace put {FIX}\plain
+wait 1500
+mark e-put-back
+wait 450
+tab 1
+wait 1000
+mark f-back-to-first
+wait 450
+quit

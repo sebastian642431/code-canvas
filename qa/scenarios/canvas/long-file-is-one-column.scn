@@ -1,0 +1,31 @@
+title: A file of 12000 lines is one long column: going to its end, hovering and clicking in the last lines work, and typing on line 11990 lands exactly there
+folders: odd-files
+limit: 70
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+forbid-log: nothing offers
+expect-file: odd-files/big.rs :: (?s)\npub fn f11988\(\) -> usize \{ 11988 \}\nXpub fn f11989\(\) -> usize \{ 11989 \}\npub fn f11990\(\)
+
+wait 3500
+goto big.rs
+wait 2000
+mark a-top-of-the-column
+wait 450
+where
+tool edit
+edit big.rs 11990 1
+wait 1500
+mark b-line-11990
+wait 450
+where
+hover big.rs 11995 5
+wait 600
+mark c-hover-near-the-end
+wait 450
+type X
+wait 600
+key save
+wait 1500
+mark d-saved
+wait 450
+quit

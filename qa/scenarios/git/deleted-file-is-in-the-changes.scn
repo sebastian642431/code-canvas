@@ -1,0 +1,25 @@
+title: A file deleted on disk is listed in Source Control as a deletion with the files that changed, can be staged and unstaged, and comes back when the deletion is discarded
+folders: git-rename-staged
+limit: 60
+forbid-log: WARN.*script
+forbid-log: script: ignoring
+expect-file: git-rename-staged/src/removed.rs :: ^pub fn removed\(\) \{\}\n$
+
+wait 3500
+left changes
+wait 1200
+mark a-deletion-listed
+wait 450
+git stage src/removed.rs
+wait 1200
+mark b-deletion-staged
+wait 450
+git unstage src/removed.rs
+wait 1200
+git discard src/removed.rs
+wait 600
+answer Discard
+wait 1500
+mark c-file-is-back
+wait 450
+quit

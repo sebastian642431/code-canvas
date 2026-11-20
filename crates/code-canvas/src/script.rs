@@ -9,6 +9,9 @@ pub enum Step {
     Goto(String),
     Select(String),
     Search(String),
+    /// `case|word|regex|list on|off`, `include|exclude|replace <text>`, `replace-all`, `next`, `previous`:
+    /// the options of the Search panel.
+    SearchOption(String),
     Left(String),
     Install(String),
     ExtSearch(String),
@@ -43,6 +46,8 @@ pub enum Step {
     /// `action <row> pick|reword|squash|fixup|drop` or `reword <row> <message>`: what the rebase card plans (rows count from 1).
     Rebase(String),
     Tab(usize),
+    /// `tab open <path>`, `tab canvas`, `tab close`, and so on: the tabs above the canvas (`tab <n>` is a folder).
+    FileTab(String),
     Folders,
     Zoom(f32),
     Quick(String),
@@ -82,11 +87,15 @@ pub enum Step {
     Ignored(String),
     Part(String),
     Find(String),
+    FindFiles(String),
+    FindOption(String),
     Where,
     Colours(String),
     Bars(String),
     Count,
     Trust,
+    /// `churn`: log what kept the app busy in the last minute.
+    Churn,
     Quit,
 }
 
@@ -108,6 +117,7 @@ fn parse_step(text: &str) -> Option<Step> {
         "goto" => Step::Goto(arg.into()),
         "select" => Step::Select(arg.into()),
         "search" => Step::Search(arg.into()),
+        "search-option" => Step::SearchOption(arg.into()),
         "left" => Step::Left(arg.into()),
         "install" => Step::Install(arg.into()),
         "ext-search" => Step::ExtSearch(arg.into()),
@@ -144,7 +154,11 @@ fn parse_step(text: &str) -> Option<Step> {
         "deps" => Step::Deps(arg.into()),
         "history" => Step::History(arg.into()),
         "rebase" => Step::Rebase(arg.into()),
-        "tab" => Step::Tab(arg.parse().ok()?),
+        "tab" => match arg.parse() {
+            Ok(n) => Step::Tab(n),
+            Err(_) if !arg.is_empty() => Step::FileTab(arg.into()),
+            Err(_) => return None,
+        },
         "folders" => Step::Folders,
         "zoom" => Step::Zoom(arg.parse().ok()?),
         "quick" => Step::Quick(arg.into()),
@@ -182,6 +196,8 @@ fn parse_step(text: &str) -> Option<Step> {
             Step::Menu(parts.next()?.ok()?, parts.next()?.ok()?)
         }
         "find" => Step::Find(arg.into()),
+        "find-files" => Step::FindFiles(arg.into()),
+        "find-option" => Step::FindOption(arg.into()),
         "where" => Step::Where,
         "colours" => Step::Colours(arg.into()),
         "colour" => Step::Colour(arg.into()),
@@ -200,6 +216,7 @@ fn parse_step(text: &str) -> Option<Step> {
         },
         "hover" => Step::Hover(arg.into()),
         "trust" => Step::Trust,
+        "churn" => Step::Churn,
         "quit" => Step::Quit,
         _ => return None,
     })
@@ -268,6 +285,15 @@ mod tests {
                 Step::ClickCell("src/a.rs".into(), 2, 170),
                 Step::Quit,
             ]
+        );
+    }
+
+    #[test]
+    fn a_tab_is_a_folder_by_number_and_a_file_tab_by_word() {
+        let s = Script::parse("tab 2; tab open src/a b.rs; tab canvas; tab");
+        assert_eq!(
+            s.steps,
+            vec![Step::Tab(2), Step::FileTab("open src/a b.rs".into()), Step::FileTab("canvas".into())]
         );
     }
 }

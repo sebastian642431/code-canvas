@@ -3,7 +3,7 @@ use egui::{Align2, Color32, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, 
 use super::{c, icon, menu_gap, menu_row, pal, panel_title, small_icon, text_fit, Action, FileIcons, FileOp, ROW_H};
 use crate::git::{After, Change, FileChange, GitOp};
 use crate::icons;
-use crate::page::Page;
+use crate::page::{DiffSide, Page};
 use canvas_render::theme;
 
 pub(super) fn change_color(change: Change) -> Color32 {
@@ -171,7 +171,7 @@ fn group_header(
     (open, clicked)
 }
 
-fn row_button(
+pub(super) fn row_button(
     ui: &mut egui::Ui,
     right: &mut f32,
     mid: f32,
@@ -195,13 +195,14 @@ fn change_row(
     change: &FileChange,
     side: Change,
     staged: bool,
+    focused: bool,
 ) -> Option<Action> {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     if !ui.is_rect_visible(rect) {
         return None;
     }
     let hovered = ui.rect_contains_pointer(rect);
-    if hovered {
+    if hovered || focused {
         ui.painter().rect_filled(rect.shrink2(Vec2::new(6.0, 0.0)), 6.0, pal().row);
     }
     let mid = rect.center().y;
@@ -237,10 +238,16 @@ fn change_row(
                 action = Some(Action::Git(GitOp::Discard(path.clone())));
             }
         }
-        if !deleted {
+        if deleted {
+            let glyph = crate::codicons::glyph("eye").unwrap_or(icons::FILE);
+            let tip = "Show the file as it was before it was deleted";
+            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, tip) {
+                action = Some(Action::ShowDeleted { path: path.clone(), staged });
+            }
+        } else {
             let glyph = crate::codicons::glyph("go-to-file").unwrap_or(icons::FILE);
-            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, "Go to the file") {
-                action = Some(Action::FlyToPath(path.clone()));
+            if row_button(ui, &mut right, mid, ("open", staged, path), glyph, "Open the file in a tab") {
+                action = Some(Action::Tabs(crate::file_tabs::TabOp::Open(path.into())));
             }
         }
         right -= 2.0;
@@ -259,11 +266,29 @@ fn change_row(
     }
     let dir_x = x + name_w + 8.0;
     text_fit(painter, Pos2::new(dir_x, mid), dir, FontId::proportional(11.5), pal().text_faint, right - dir_x);
-    if action.is_none() && resp.clicked() && !deleted {
-        action = Some(Action::FlyToPath(change.path.clone()));
+    let diffable = side != Change::Untracked && !(staged && side == Change::Added);
+    if action.is_none() && resp.clicked() {
+        let shown = if staged { DiffSide::Staged } else { DiffSide::Unstaged };
+        let path = change.path.clone();
+        action = Some(match (deleted, diffable) {
+            (true, _) => Action::ShowDeleted { path, staged },
+            (false, true) => Action::FocusDiff(path, shown),
+            (false, false) => Action::FlyToChange(path),
+        });
     }
     let unsaved = if change.unsaved && !staged { " · not saved yet (staging or committing it saves it)" } else { "" };
-    resp.on_hover_text(format!("{} · {}{unsaved}", change.path, side.label()));
+    let click = match (deleted, diffable, focused, staged) {
+        (true, ..) => "\nClick to see it as it was before",
+        (false, false, ..) => "\nClick to go to its first change, again for the next one",
+        (false, true, true, _) => "\nClick for its next change; after the last one the card goes back to how it was",
+        (false, true, false, true) => {
+            "\nClick to see what is staged (last commit against the index) from its first change"
+        }
+        (false, true, false, false) => {
+            "\nClick to see what is not staged yet (index against the file) from its first change"
+        }
+    };
+    resp.on_hover_text(format!("{} · {}{unsaved}{click}", change.path, side.label()));
     action
 }
 
@@ -371,6 +396,7 @@ pub fn changes_panel(
         changed_neighbours,
         git_note,
         diff,
+        diff_focus,
         showing,
         history,
         ..
@@ -539,9 +565,45 @@ pub fn changes_panel(
                     arrow.on_hover_text("More ways to commit");
                 }
 
-                if let Some((ok, text)) = git_note.as_ref() {
-                    let color = if *ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
-                    ui.label(RichText::new(text).size(11.5).color(color));
+                let now = std::time::Instant::now();
+                if git_note.as_ref().is_some_and(|note| note.left(now).is_none()) {
+                    *git_note = None;
+                }
+                if let Some(note) = git_note.as_mut() {
+                    let color = if note.ok { c(theme::get().git_added) } else { c(theme::get().git_removed) };
+                    // Floats over what is below instead of taking room, so the panel does not jump
+                    // every time a note comes and goes.
+                    let (at, width) = (ui.cursor().min + Vec2::new(0.0, 2.0), ui.available_width());
+                    let shown = egui::Area::new(ui.scope_id().with("git note"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(at)
+                        .show(ui.ctx(), |ui| {
+                            Frame::NONE
+                                .fill(pal().raised)
+                                .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.6)))
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(Margin::symmetric(8, 5))
+                                .show(ui, |ui| {
+                                    ui.set_width((width - 18.0).max(0.0));
+                                    ui.horizontal_top(|ui| {
+                                        let text_size = Vec2::new((ui.available_width() - 26.0).max(0.0), 0.0);
+                                        let wrapping = egui::Layout::top_down(egui::Align::Min);
+                                        ui.allocate_ui_with_layout(text_size, wrapping, |ui| {
+                                            ui.label(RichText::new(&note.text).size(11.5).color(color));
+                                        });
+                                        small_icon(ui, icons::X, "Dismiss")
+                                    })
+                                    .inner
+                                })
+                                .inner
+                        });
+                    if shown.response.contains_pointer() {
+                        note.since = now;
+                    }
+                    match (shown.inner, note.left(now)) {
+                        (false, Some(left)) => ui.ctx().request_repaint_after(left),
+                        _ => *git_note = None,
+                    }
                 }
                 if !g.changes.is_empty() || diff.on {
                     super::diffs_section::show(ui, diff, *only_changed, *changed_folders, *changed_neighbours, &info, actions);
@@ -565,7 +627,8 @@ pub fn changes_panel(
                 }
                 if open {
                     for ch in &staged {
-                        actions.extend(change_row(ui, file_icons, ch, ch.staged.unwrap_or(ch.change), true));
+                        let focused = diff_focus.as_ref().is_some_and(|(p, s)| *p == ch.path && *s == DiffSide::Staged);
+                        actions.extend(change_row(ui, file_icons, ch, ch.staged.unwrap_or(ch.change), true, focused));
                     }
                 }
             }
@@ -577,7 +640,10 @@ pub fn changes_panel(
                 }
                 if open {
                     for ch in &unstaged {
-                        actions.extend(change_row(ui, file_icons, ch, ch.unstaged.unwrap_or(ch.change), false));
+                        let focused =
+                            diff_focus.as_ref().is_some_and(|(p, s)| *p == ch.path && *s == DiffSide::Unstaged);
+                        let side = ch.unstaged.unwrap_or(ch.change);
+                        actions.extend(change_row(ui, file_icons, ch, side, false, focused));
                     }
                 }
             }
