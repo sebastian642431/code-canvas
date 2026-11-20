@@ -6,7 +6,7 @@ members = ["crates/canvas-core", "crates/canvas-render", "crates/canvas-relay", 
 version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sebastian642431/code-canvas"
+repository = "https://github.com/sebastian642431/hawk-canvas"
 rust-version = "1.94"
 
 [workspace.dependencies]

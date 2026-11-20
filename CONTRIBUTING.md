@@ -5,8 +5,8 @@ Thanks for helping! Issues, ideas and pull requests are all welcome — in Engli
 ## Getting started
 
 ```sh
-git clone https://github.com/sebastian642431/code-canvas.git
-cd code-canvas
+git clone https://github.com/sebastian642431/hawk-canvas.git
+cd hawk-canvas
 cargo run --release -- .            # open the project on itself
 cargo test --all
 ```

@@ -194,7 +194,7 @@ muy grandes. Código abierto: cualquiera puede aportar.
 
 ## Instalar y abrir
 
-**Descargar**: en la [página de versiones](https://github.com/sebastian642431/code-canvas/releases)
+**Descargar**: en la [página de versiones](https://github.com/sebastian642431/hawk-canvas/releases)
 está `hawk-canvas.exe` para Windows. Es un solo archivo: se ejecuta, sin instalador.
 Windows puede avisar que es de un editor desconocido (todavía no está firmado): "Más
 información" → "Ejecutar de todas formas". Las extensiones necesitan además

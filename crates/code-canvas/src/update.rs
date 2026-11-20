@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-pub const REPOSITORY: &str = "sebastian642431/code-canvas";
+pub const REPOSITORY: &str = "sebastian642431/hawk-canvas";
+const FORMER_REPOSITORY: &str = "sebastian642431/code-canvas";
 /// The program in a release; releases from before the name Hawk Canvas carry only the second.
 const ASSETS: [&str; 2] = ["hawk-canvas.exe", "code-canvas.exe"];
 const EVERY: Duration = Duration::from_secs(6 * 3600);
@@ -41,13 +42,14 @@ pub fn parse_release(json: &Value) -> Option<Release> {
     }
     let version = text("tag_name")?.trim_start_matches('v').to_string();
     let wanted = format!("https://github.com/{REPOSITORY}/releases/download/");
+    let former = format!("https://github.com/{FORMER_REPOSITORY}/releases/download/");
     let assets = json.get("assets").and_then(Value::as_array).map_or(&[][..], |assets| assets.as_slice());
     let download = ASSETS.iter().find_map(|name| {
         assets
             .iter()
             .filter(|a| a.get("name").and_then(Value::as_str) == Some(*name))
             .filter_map(|a| a.get("browser_download_url").and_then(Value::as_str))
-            .find(|url| url.starts_with(&wanted))
+            .find(|url| url.starts_with(&wanted) || url.starts_with(&former))
             .map(str::to_string)
     });
     let page =
@@ -315,11 +317,11 @@ mod tests {
     fn a_release_from_githubs_answer() {
         let answer = json!({
             "tag_name": "v0.2.0",
-            "html_url": "https://github.com/sebastian642431/code-canvas/releases/tag/v0.2.0",
+            "html_url": "https://github.com/sebastian642431/hawk-canvas/releases/tag/v0.2.0",
             "draft": false,
             "assets": [
-                { "name": "code-canvas-windows-x64.zip", "browser_download_url": "https://github.com/sebastian642431/code-canvas/releases/download/v0.2.0/code-canvas-windows-x64.zip" },
-                { "name": "hawk-canvas.exe", "browser_download_url": "https://github.com/sebastian642431/code-canvas/releases/download/v0.2.0/hawk-canvas.exe" }
+                { "name": "code-canvas-windows-x64.zip", "browser_download_url": "https://github.com/sebastian642431/hawk-canvas/releases/download/v0.2.0/code-canvas-windows-x64.zip" },
+                { "name": "hawk-canvas.exe", "browser_download_url": "https://github.com/sebastian642431/hawk-canvas/releases/download/v0.2.0/hawk-canvas.exe" }
             ]
         });
         let release = parse_release(&answer).unwrap();
@@ -334,8 +336,13 @@ mod tests {
         ]});
         assert_eq!(parse_release(&elsewhere).unwrap().download, None);
 
+        let former = json!({ "tag_name": "v0.1.0", "assets": [
+            { "name": "hawk-canvas.exe", "browser_download_url": "https://github.com/sebastian642431/code-canvas/releases/download/v0.1.0/hawk-canvas.exe" }
+        ]});
+        assert_eq!(parse_release(&former).unwrap().download.is_some(), cfg!(windows));
+
         let both = |names: &[&str]| {
-            let base = "https://github.com/sebastian642431/code-canvas/releases/download/v1.0.0/";
+            let base = "https://github.com/sebastian642431/hawk-canvas/releases/download/v1.0.0/";
             let assets: Vec<Value> = names
                 .iter()
                 .map(|name| json!({ "name": name, "browser_download_url": format!("{base}{name}") }))

@@ -3545,10 +3545,11 @@ shells in the folder that is open, as many as wanted (`consoles.rs`).
 ### crates/code-canvas/src/update.rs
 
 - The latest release is read from GitHub (`REPOSITORY` =
-  `sebastian642431/code-canvas`) when the app starts and every `EVERY` = 6 h while
+  `sebastian642431/hawk-canvas`) when the app starts and every `EVERY` = 6 h while
   it stays open: one small request, nothing about the user in it. A newer one is
   offered once per version, in a notice. `check_now` works with the automatic look
-  switched off too.
+  switched off too. Download URLs from the former repo path
+  (`sebastian642431/code-canvas`) are also accepted.
 - **Replacing a running program on Windows:** its file cannot be overwritten, but
   it can be renamed. `swap` renames the running one to `hawk-canvas.old.exe`,
   gives the new one its name, and `clean_up` removes the old file the next time

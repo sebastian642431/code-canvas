@@ -288,7 +288,7 @@ and [egui](https://github.com/emilk/egui). Built to stay fast on very large repo
 
 ## Install and run
 
-**Download**: the [releases page](https://github.com/sebastian642431/code-canvas/releases)
+**Download**: the [releases page](https://github.com/sebastian642431/hawk-canvas/releases)
 has `hawk-canvas.exe` for Windows. It is a single file: run it, no installer. Windows
 may warn that it comes from an unknown publisher (the file is not signed yet): "More
 info" → "Run anyway". Extensions also need [Node.js](https://nodejs.org) installed.

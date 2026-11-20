@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::npmrc::{Secret, NPM};
 use super::{Facts, Heard, Registry};
 
-const AGENT: &str = "hawk-canvas (https://github.com/sebastian642431/code-canvas)";
+const AGENT: &str = "hawk-canvas (https://github.com/sebastian642431/hawk-canvas)";
 const MOST: u64 = 64 * 1024 * 1024;
 
 pub fn reach(url: &str) -> String {
