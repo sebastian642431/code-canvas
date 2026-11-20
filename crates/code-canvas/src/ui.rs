@@ -1224,6 +1224,9 @@ fn header(ui: &mut egui::Ui, st: &mut UiState, actions: &mut Vec<Action>) {
             let at = Rect::from_center_size(slot.center() + Vec2::new(EDGE * 0.5, 0.0), Vec2::splat(24.0));
             let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
             ui.painter().image(logo.id(), at, uv, Color32::WHITE);
+            // The name beside the logo; it only shows, so the title bar still drags the window.
+            let name = egui::Label::new(RichText::new("Hawk Canvas").size(13.0).color(pal().text));
+            ui.add(name.sense(Sense::hover()).selectable(false));
             ui.add_space(8.0);
 
             left_end = ui.min_rect().right();
